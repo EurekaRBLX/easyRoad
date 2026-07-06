@@ -1,0 +1,15 @@
+{
+	"name": "easyRoad v0.1",
+	"tree": {
+		"$className": "Folder",
+		"Src": {
+			"$path": "src"
+		},
+		"Packages": {
+			"$path": "Packages"
+		},
+		"Loader": {
+			"$path": "loader.server.lua"
+		}
+	}
+}
