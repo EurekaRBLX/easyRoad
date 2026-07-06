@@ -30,9 +30,12 @@ function Fitting.Freeform(
 	return CurveSegment.Cubic(startPos, control1, control2, endPos)
 end
 
--- Curve from a locked start tangent: the guide point is placed along the
--- start tangent, at the classic "half chord" distance which produces a
--- near-circular arc for moderate turn angles.
+-- Curve from a locked start tangent. The end tangent of the circular arc
+-- through both points is the start tangent mirrored across the chord
+-- direction; building a cubic from both tangents (Hermite style)
+-- approximates that arc and - unlike a guide-point quadratic - stays smooth
+-- at ANY turn angle, including end points placed beside or behind the
+-- start. No cusps, no folded frames.
 function Fitting.CurveFromTangent(
 	startPos: Vector3,
 	startTangent: Vector3,
@@ -44,24 +47,25 @@ function Fitting.CurveFromTangent(
 		return CurveSegment.Line(startPos, endPos)
 	end
 	local tangent = startTangent.Unit
+	local chordDir = chord / chordLength
+	local cosAngle = tangent:Dot(chordDir)
 
-	-- Project to find the ideal guide distance: intersection of the start
-	-- tangent ray with the perpendicular bisector direction gives a circular
-	-- arc; fall back to half-chord when nearly straight.
-	local flatTangent = Vector3.new(tangent.X, 0, tangent.Z)
-	local flatChord = Vector3.new(chord.X, 0, chord.Z)
-	local guideDistance = chordLength * 0.5
-	if flatTangent.Magnitude > 1e-6 and flatChord.Magnitude > 1e-6 then
-		local cosAngle = flatTangent.Unit:Dot(flatChord.Unit)
-		-- Guide sits where tangent ray meets the chord's far half. For a
-		-- circular arc through both points: d = |chord| / (2 * cos(theta))
-		if cosAngle > 0.1 then
-			guideDistance = math.min(chordLength / (2 * cosAngle), chordLength * 2)
-		end
+	-- Nearly straight ahead: a plain line is exact
+	if cosAngle > 0.9999 then
+		return CurveSegment.Line(startPos, endPos)
 	end
 
-	local guide = startPos + tangent * guideDistance
-	return CurveSegment.Quadratic(startPos, guide, endPos)
+	local endTangent = chordDir * (2 * cosAngle) - tangent
+	if endTangent.Magnitude < 1e-6 then
+		endTangent = chordDir
+	else
+		endTangent = endTangent.Unit
+	end
+
+	local handle = chordLength / 3
+	local control1 = startPos + tangent * handle
+	local control2 = endPos - endTangent * handle
+	return CurveSegment.Cubic(startPos, control1, control2, endPos)
 end
 
 -- Straight continuation from a locked tangent: the road goes exactly along

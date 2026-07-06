@@ -34,6 +34,7 @@ local function BuildPage(props: {
 	SetEndProfileId: (id: string?) -> (),
 	HandleAction: (action: string) -> (),
 	OpenPage: (page: Page) -> (),
+	OnSettingsChanged: () -> (),
 })
 	local profileOptions: { Components.DropdownOption } = {}
 	for _, profile in props.Library.GetAll() do
@@ -136,9 +137,37 @@ local function BuildPage(props: {
 			Grow = true,
 		})
 
+		children.BankToggle = e(Components.Checkbox, {
+			Label = "Superelevation (banking)",
+			Checked = props.Settings.SuperelevationMode ~= "Off",
+			OnToggled = function(checked: boolean)
+				props.Settings.SuperelevationMode = if checked then "Auto" else "Off"
+				props.OnSettingsChanged()
+			end,
+			LayoutOrder = 7,
+		})
+		children.DesignSpeed = props.Settings.SuperelevationMode ~= "Off" and e(Components.Row, {
+			LayoutOrder = 8,
+		}, {
+			Label = e(Components.Label, {
+				Text = "Design speed (km/h)",
+				LayoutOrder = 1,
+			}),
+			Field = e(Components.NumberField, {
+				Value = props.Settings.DesignSpeedKph,
+				Min = 10,
+				Max = 200,
+				OnChanged = function(value: number)
+					props.Settings.DesignSpeedKph = value
+					props.OnSettingsChanged()
+				end,
+				LayoutOrder = 2,
+			}),
+		})
+
 		children.StatusSection = e(Components.Section, {
 			Text = "Placement",
-			LayoutOrder = 7,
+			LayoutOrder = 9,
 		})
 		children.Hint = e("TextLabel", {
 			Text = props.Hint,
@@ -150,17 +179,17 @@ local function BuildPage(props: {
 			TextSize = Theme.TEXT_SIZE,
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextWrapped = true,
-			LayoutOrder = 8,
+			LayoutOrder = 10,
 		})
 		children.Elevation = e(Components.Label, {
 			Text = string.format("Elevation: %+g studs  (R / F to change)", props.Elevation),
 			Dim = true,
-			LayoutOrder = 9,
+			LayoutOrder = 11,
 		})
 		children.Keys = e(Components.Label, {
 			Text = "Right-click / Esc: cancel placement",
 			Dim = true,
-			LayoutOrder = 10,
+			LayoutOrder = 12,
 		})
 		children.Stop = e(Components.Button, {
 			Text = "Stop Building",
@@ -168,7 +197,7 @@ local function BuildPage(props: {
 			OnClick = function()
 				props.HandleAction("close")
 			end,
-			LayoutOrder = 11,
+			LayoutOrder = 13,
 		})
 	end
 
@@ -259,6 +288,7 @@ local function EasyRoadGui(props: {
 		OpenPage = function(newPage: Page)
 			setPage(newPage)
 		end,
+		OnSettingsChanged = props.OnSettingsChanged,
 	})
 end
 

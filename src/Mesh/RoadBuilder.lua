@@ -32,7 +32,8 @@ local MARKING_THICKNESS = 0.05
 local MARKING_LIFT = 0.03 -- Center height of marking parts above the deck surface
 local CHORD_TOLERANCE = 0.1 -- Max chord deviation (studs) used for adaptive stepping
 local PREVIEW_CHORD_TOLERANCE = 0.35
-local MIN_STEP = 1.5
+local MIN_STEP = 0.75
+local MAX_TURN_PER_STEP = 0.3 -- Radians of heading change allowed per strip
 local RUNOFF_LENGTH_STUDS = 40 -- Superelevation smoothing window
 
 local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
@@ -94,6 +95,9 @@ local function buildStations(
 		if k > 1e-6 then
 			-- Chord deviation of an arc: d = R - sqrt(R^2 - (c/2)^2) ~= c^2 k / 8
 			step = math.min(maxStep, math.sqrt(8 * tolerance / k))
+			-- Also bound the heading change per strip so tight curves can
+			-- never fold a single strip through a large angle
+			step = math.min(step, MAX_TURN_PER_STEP / k)
 		end
 		step = math.max(step, MIN_STEP)
 		s = math.min(s + step, length)
@@ -137,6 +141,10 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	end
 
 	local maxStep = if preview then settings.PreviewMaxSegmentLengthStuds else settings.MaxSegmentLengthStuds
+	if options.ProfileEnd and options.ProfileEnd.Id ~= options.ProfileStart.Id then
+		-- Widening/narrowing tapers read much better with short strips
+		maxStep = math.min(maxStep, 4)
+	end
 	local tolerance = if preview then PREVIEW_CHORD_TOLERANCE else CHORD_TOLERANCE
 	local stations = buildStations(curve, maxStep, tolerance)
 	local stationCount = #stations
@@ -147,6 +155,16 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		rolls[i] = Superelevation.RollAt(curve:CurvatureAt(s), settings, style)
 	end
 	rolls = Superelevation.SmoothRolls(rolls, stations, RUNOFF_LENGTH_STUDS)
+	-- Superelevation is per-segment: taper the bank to zero at both ends of
+	-- the segment (runoff) so chained segments always meet flush at joints
+	-- with no height step between the two bodies.
+	local runoff = math.min(RUNOFF_LENGTH_STUDS, length / 2)
+	if runoff > 1e-3 then
+		for i, s in stations do
+			local taper = math.min(1, s / runoff, (length - s) / runoff)
+			rolls[i] *= math.max(taper, 0)
+		end
+	end
 
 	local frames: { CFrame } = table.create(stationCount)
 	for i, s in stations do
@@ -185,10 +203,18 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		local rollMid = (rolls[i] + rolls[i + 1]) / 2
 		local midFrame = curve:FrameAt(sMid, rollMid)
 
+		-- Guard against degenerate geometry (folded curves / cusps): skip
+		-- intervals where the heading reverses or the frame went non-finite
+		-- rather than emitting strips fanned across the fold.
+		local headingDot = frames[i].LookVector:Dot(frames[i + 1].LookVector)
+		local midPos = midFrame.Position
+		if headingDot < 0 or midPos.X ~= midPos.X or midPos.Y ~= midPos.Y or midPos.Z ~= midPos.Z then
+			continue
+		end
+
 		local chord = (frames[i + 1].Position - frames[i].Position).Magnitude
 		-- Extra length to miter gaps that open up on the outside of curves
-		local turnAngle = math.acos(math.clamp(
-			frames[i].LookVector:Dot(frames[i + 1].LookVector), -1, 1))
+		local turnAngle = math.acos(math.clamp(headingDot, -1, 1))
 
 		for c = 1, componentCount do
 			local w0 = stationWidths[i][c]
@@ -210,6 +236,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			local centerY = if raised then (curbHeight - thickness) / 2 else -thickness / 2
 
 			local miter = math.abs(centerOffset + width / 2) * math.sin(turnAngle)
+			miter = math.min(miter, chord * 2)
 			local partLength = chord + miter + 0.02
 
 			local part = makePart(preview)

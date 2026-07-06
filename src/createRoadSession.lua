@@ -277,12 +277,15 @@ local function createRoadSession(
 	end
 
 	local function rebuildPreview()
-		destroyPreview()
 		local segment = buildSegment(hoverPos)
 		if not segment then
+			destroyPreview()
 			return
 		end
-		local model = RoadBuilder.Build({
+		-- Build the replacement BEFORE destroying the old ghost: no flicker
+		-- between rebuilds, and if the build errors on degenerate geometry
+		-- the previous preview stays on screen instead of vanishing.
+		local ok, model = pcall(RoadBuilder.Build, {
 			Curve = PolyCurve.new({ segment }),
 			ProfileStart = profile,
 			ProfileEnd = endProfile,
@@ -290,6 +293,10 @@ local function createRoadSession(
 			Settings = settings,
 			Preview = true,
 		})
+		if not ok then
+			return
+		end
+		destroyPreview()
 		model.Archivable = false
 		model.Parent = workspace
 		previewModel = model

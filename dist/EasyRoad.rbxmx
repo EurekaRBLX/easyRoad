@@ -234,9 +234,12 @@ function Fitting.Freeform(
 	return CurveSegment.Cubic(startPos, control1, control2, endPos)
 end
 
--- Curve from a locked start tangent: the guide point is placed along the
--- start tangent, at the classic "half chord" distance which produces a
--- near-circular arc for moderate turn angles.
+-- Curve from a locked start tangent. The end tangent of the circular arc
+-- through both points is the start tangent mirrored across the chord
+-- direction; building a cubic from both tangents (Hermite style)
+-- approximates that arc and - unlike a guide-point quadratic - stays smooth
+-- at ANY turn angle, including end points placed beside or behind the
+-- start. No cusps, no folded frames.
 function Fitting.CurveFromTangent(
 	startPos: Vector3,
 	startTangent: Vector3,
@@ -248,24 +251,25 @@ function Fitting.CurveFromTangent(
 		return CurveSegment.Line(startPos, endPos)
 	end
 	local tangent = startTangent.Unit
+	local chordDir = chord / chordLength
+	local cosAngle = tangent:Dot(chordDir)
 
-	-- Project to find the ideal guide distance: intersection of the start
-	-- tangent ray with the perpendicular bisector direction gives a circular
-	-- arc; fall back to half-chord when nearly straight.
-	local flatTangent = Vector3.new(tangent.X, 0, tangent.Z)
-	local flatChord = Vector3.new(chord.X, 0, chord.Z)
-	local guideDistance = chordLength * 0.5
-	if flatTangent.Magnitude &gt; 1e-6 and flatChord.Magnitude &gt; 1e-6 then
-		local cosAngle = flatTangent.Unit:Dot(flatChord.Unit)
-		-- Guide sits where tangent ray meets the chord's far half. For a
-		-- circular arc through both points: d = |chord| / (2 * cos(theta))
-		if cosAngle &gt; 0.1 then
-			guideDistance = math.min(chordLength / (2 * cosAngle), chordLength * 2)
-		end
+	-- Nearly straight ahead: a plain line is exact
+	if cosAngle &gt; 0.9999 then
+		return CurveSegment.Line(startPos, endPos)
 	end
 
-	local guide = startPos + tangent * guideDistance
-	return CurveSegment.Quadratic(startPos, guide, endPos)
+	local endTangent = chordDir * (2 * cosAngle) - tangent
+	if endTangent.Magnitude &lt; 1e-6 then
+		endTangent = chordDir
+	else
+		endTangent = endTangent.Unit
+	end
+
+	local handle = chordLength / 3
+	local control1 = startPos + tangent * handle
+	local control2 = endPos - endTangent * handle
+	return CurveSegment.Cubic(startPos, control1, control2, endPos)
 end
 
 -- Straight continuation from a locked tangent: the road goes exactly along
@@ -632,7 +636,8 @@ local MARKING_THICKNESS = 0.05
 local MARKING_LIFT = 0.03 -- Center height of marking parts above the deck surface
 local CHORD_TOLERANCE = 0.1 -- Max chord deviation (studs) used for adaptive stepping
 local PREVIEW_CHORD_TOLERANCE = 0.35
-local MIN_STEP = 1.5
+local MIN_STEP = 0.75
+local MAX_TURN_PER_STEP = 0.3 -- Radians of heading change allowed per strip
 local RUNOFF_LENGTH_STUDS = 40 -- Superelevation smoothing window
 
 local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
@@ -694,6 +699,9 @@ local function buildStations(
 		if k &gt; 1e-6 then
 			-- Chord deviation of an arc: d = R - sqrt(R^2 - (c/2)^2) ~= c^2 k / 8
 			step = math.min(maxStep, math.sqrt(8 * tolerance / k))
+			-- Also bound the heading change per strip so tight curves can
+			-- never fold a single strip through a large angle
+			step = math.min(step, MAX_TURN_PER_STEP / k)
 		end
 		step = math.max(step, MIN_STEP)
 		s = math.min(s + step, length)
@@ -737,6 +745,10 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	end
 
 	local maxStep = if preview then settings.PreviewMaxSegmentLengthStuds else settings.MaxSegmentLengthStuds
+	if options.ProfileEnd and options.ProfileEnd.Id ~= options.ProfileStart.Id then
+		-- Widening/narrowing tapers read much better with short strips
+		maxStep = math.min(maxStep, 4)
+	end
 	local tolerance = if preview then PREVIEW_CHORD_TOLERANCE else CHORD_TOLERANCE
 	local stations = buildStations(curve, maxStep, tolerance)
 	local stationCount = #stations
@@ -747,6 +759,16 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		rolls[i] = Superelevation.RollAt(curve:CurvatureAt(s), settings, style)
 	end
 	rolls = Superelevation.SmoothRolls(rolls, stations, RUNOFF_LENGTH_STUDS)
+	-- Superelevation is per-segment: taper the bank to zero at both ends of
+	-- the segment (runoff) so chained segments always meet flush at joints
+	-- with no height step between the two bodies.
+	local runoff = math.min(RUNOFF_LENGTH_STUDS, length / 2)
+	if runoff &gt; 1e-3 then
+		for i, s in stations do
+			local taper = math.min(1, s / runoff, (length - s) / runoff)
+			rolls[i] *= math.max(taper, 0)
+		end
+	end
 
 	local frames: { CFrame } = table.create(stationCount)
 	for i, s in stations do
@@ -785,10 +807,18 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		local rollMid = (rolls[i] + rolls[i + 1]) / 2
 		local midFrame = curve:FrameAt(sMid, rollMid)
 
+		-- Guard against degenerate geometry (folded curves / cusps): skip
+		-- intervals where the heading reverses or the frame went non-finite
+		-- rather than emitting strips fanned across the fold.
+		local headingDot = frames[i].LookVector:Dot(frames[i + 1].LookVector)
+		local midPos = midFrame.Position
+		if headingDot &lt; 0 or midPos.X ~= midPos.X or midPos.Y ~= midPos.Y or midPos.Z ~= midPos.Z then
+			continue
+		end
+
 		local chord = (frames[i + 1].Position - frames[i].Position).Magnitude
 		-- Extra length to miter gaps that open up on the outside of curves
-		local turnAngle = math.acos(math.clamp(
-			frames[i].LookVector:Dot(frames[i + 1].LookVector), -1, 1))
+		local turnAngle = math.acos(math.clamp(headingDot, -1, 1))
 
 		for c = 1, componentCount do
 			local w0 = stationWidths[i][c]
@@ -810,6 +840,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			local centerY = if raised then (curbHeight - thickness) / 2 else -thickness / 2
 
 			local miter = math.abs(centerOffset + width / 2) * math.sin(turnAngle)
+			miter = math.min(miter, chord * 2)
 			local partLength = chord + miter + 0.02
 
 			local part = makePart(preview)
@@ -2052,6 +2083,7 @@ local function BuildPage(props: {
 	SetEndProfileId: (id: string?) -&gt; (),
 	HandleAction: (action: string) -&gt; (),
 	OpenPage: (page: Page) -&gt; (),
+	OnSettingsChanged: () -&gt; (),
 })
 	local profileOptions: { Components.DropdownOption } = {}
 	for _, profile in props.Library.GetAll() do
@@ -2154,9 +2186,37 @@ local function BuildPage(props: {
 			Grow = true,
 		})
 
+		children.BankToggle = e(Components.Checkbox, {
+			Label = "Superelevation (banking)",
+			Checked = props.Settings.SuperelevationMode ~= "Off",
+			OnToggled = function(checked: boolean)
+				props.Settings.SuperelevationMode = if checked then "Auto" else "Off"
+				props.OnSettingsChanged()
+			end,
+			LayoutOrder = 7,
+		})
+		children.DesignSpeed = props.Settings.SuperelevationMode ~= "Off" and e(Components.Row, {
+			LayoutOrder = 8,
+		}, {
+			Label = e(Components.Label, {
+				Text = "Design speed (km/h)",
+				LayoutOrder = 1,
+			}),
+			Field = e(Components.NumberField, {
+				Value = props.Settings.DesignSpeedKph,
+				Min = 10,
+				Max = 200,
+				OnChanged = function(value: number)
+					props.Settings.DesignSpeedKph = value
+					props.OnSettingsChanged()
+				end,
+				LayoutOrder = 2,
+			}),
+		})
+
 		children.StatusSection = e(Components.Section, {
 			Text = "Placement",
-			LayoutOrder = 7,
+			LayoutOrder = 9,
 		})
 		children.Hint = e("TextLabel", {
 			Text = props.Hint,
@@ -2168,17 +2228,17 @@ local function BuildPage(props: {
 			TextSize = Theme.TEXT_SIZE,
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextWrapped = true,
-			LayoutOrder = 8,
+			LayoutOrder = 10,
 		})
 		children.Elevation = e(Components.Label, {
 			Text = string.format("Elevation: %+g studs  (R / F to change)", props.Elevation),
 			Dim = true,
-			LayoutOrder = 9,
+			LayoutOrder = 11,
 		})
 		children.Keys = e(Components.Label, {
 			Text = "Right-click / Esc: cancel placement",
 			Dim = true,
-			LayoutOrder = 10,
+			LayoutOrder = 12,
 		})
 		children.Stop = e(Components.Button, {
 			Text = "Stop Building",
@@ -2186,7 +2246,7 @@ local function BuildPage(props: {
 			OnClick = function()
 				props.HandleAction("close")
 			end,
-			LayoutOrder = 11,
+			LayoutOrder = 13,
 		})
 	end
 
@@ -2277,6 +2337,7 @@ local function EasyRoadGui(props: {
 		OpenPage = function(newPage: Page)
 			setPage(newPage)
 		end,
+		OnSettingsChanged = props.OnSettingsChanged,
 	})
 end
 
@@ -3218,12 +3279,15 @@ local function createRoadSession(
 	end
 
 	local function rebuildPreview()
-		destroyPreview()
 		local segment = buildSegment(hoverPos)
 		if not segment then
+			destroyPreview()
 			return
 		end
-		local model = RoadBuilder.Build({
+		-- Build the replacement BEFORE destroying the old ghost: no flicker
+		-- between rebuilds, and if the build errors on degenerate geometry
+		-- the previous preview stays on screen instead of vanishing.
+		local ok, model = pcall(RoadBuilder.Build, {
 			Curve = PolyCurve.new({ segment }),
 			ProfileStart = profile,
 			ProfileEnd = endProfile,
@@ -3231,6 +3295,10 @@ local function createRoadSession(
 			Settings = settings,
 			Preview = true,
 		})
+		if not ok then
+			return
+		end
+		destroyPreview()
 		model.Archivable = false
 		model.Parent = workspace
 		previewModel = model
