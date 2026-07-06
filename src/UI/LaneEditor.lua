@@ -354,8 +354,32 @@ local function LaneEditor(props: {
 			}),
 		})
 
-		children.ColourRow = e(Components.Row, {
+		children.KerbIndentRow = e(Components.Row, {
 			LayoutOrder = afterComponents + 3,
+		}, {
+			Label = e(Components.Label, {
+				Text = "Kerb line offset",
+				LayoutOrder = 1,
+				Width = 80,
+			}),
+			Dropdown = e(Components.Dropdown, {
+				Options = {
+					{ Id = "Inset", Text = "Inset (default)" },
+					{ Id = "Flush", Text = "Flush at edge" },
+				},
+				SelectedId = if profile.KerbIndent == false then "Flush" else "Inset",
+				OnSelected = function(id: string)
+					updateEditing(function(copy)
+						copy.KerbIndent = if id == "Flush" then false else nil
+					end)
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		})
+
+		children.ColourRow = e(Components.Row, {
+			LayoutOrder = afterComponents + 4,
 		}, {
 			Label = e(Components.Label, {
 				Text = "Line colour",
@@ -380,7 +404,7 @@ local function LaneEditor(props: {
 		})
 
 		children.DashRow = e(Components.Row, {
-			LayoutOrder = afterComponents + 4,
+			LayoutOrder = afterComponents + 5,
 		}, {
 			Label = e(Components.Label, {
 				Text = "Dash spacing",
@@ -432,7 +456,7 @@ local function LaneEditor(props: {
 		})
 
 		children.Actions = e(Components.Row, {
-			LayoutOrder = afterComponents + 5,
+			LayoutOrder = afterComponents + 6,
 		}, {
 			Save = e(Components.Button, {
 				Text = if profile.BuiltIn then "Save as Copy" else "Save",

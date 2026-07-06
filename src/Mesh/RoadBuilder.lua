@@ -41,6 +41,7 @@ local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
 	Shoulder = Enum.Material.Asphalt,
 	Bike = Enum.Material.Asphalt,
 	Parking = Enum.Material.Asphalt,
+	Bay = Enum.Material.Asphalt,
 	Sidewalk = Enum.Material.Concrete,
 	Median = Enum.Material.Grass,
 }
@@ -60,6 +61,8 @@ local function colorForKind(kind: RoadProfile.ComponentKind, style: RegionStyles
 		return style.BikeLaneColor
 	elseif kind == "Parking" then
 		return style.AsphaltColor:Lerp(Color3.new(0, 0, 0), 0.15)
+	elseif kind == "Bay" then
+		return style.BayColor
 	end
 	return style.AsphaltColor
 end
@@ -281,6 +284,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			MarkingColor = options.ProfileStart.MarkingColor,
 			DashLengthM = options.ProfileStart.MarkingDashLengthM,
 			DashGapM = options.ProfileStart.MarkingDashGapM,
+			KerbIndent = options.ProfileStart.KerbIndent,
 		})
 		local markingWidth = style.MarkingWidthM * scale
 

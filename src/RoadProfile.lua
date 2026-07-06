@@ -12,7 +12,7 @@
 
 local RegionStyles = require("./RegionStyles")
 
-export type ComponentKind = "Drive" | "Sidewalk" | "Median" | "Shoulder" | "Bike" | "Parking"
+export type ComponentKind = "Drive" | "Sidewalk" | "Median" | "Shoulder" | "Bike" | "Parking" | "Bay"
 
 -- Marking rule for the boundary on the RIGHT side of a lane (only applies
 -- between same-direction traffic lanes). "Auto" defers to the region style.
@@ -38,6 +38,9 @@ export type RoadProfile = {
 	-- Override dash geometry for every dashed line on this road; nil = region default
 	MarkingDashLengthM: number?,
 	MarkingDashGapM: number?,
+	-- Kerb line lateral offset: nil/true = inset (default), false = flush
+	-- against the plain edge-line position.
+	KerbIndent: boolean?,
 }
 
 local ComponentKinds: { ComponentKind } = {
@@ -47,6 +50,7 @@ local ComponentKinds: { ComponentKind } = {
 	"Shoulder" :: ComponentKind,
 	"Bike" :: ComponentKind,
 	"Parking" :: ComponentKind,
+	"Bay" :: ComponentKind, -- Bus / taxi pull-in bay
 }
 
 local BoundaryRules: { BoundaryRule } = {
@@ -74,6 +78,7 @@ local ROADWAY: { [string]: boolean } = {
 	Bike = true,
 	Parking = true,
 	Shoulder = true,
+	Bay = true,
 }
 
 function RoadProfile.IsDirectional(kind: ComponentKind): boolean
@@ -130,6 +135,7 @@ function RoadProfile.Clone(profile: RoadProfile): RoadProfile
 		MarkingColor = profile.MarkingColor,
 		MarkingDashLengthM = profile.MarkingDashLengthM,
 		MarkingDashGapM = profile.MarkingDashGapM,
+		KerbIndent = profile.KerbIndent,
 	}
 end
 
@@ -221,6 +227,7 @@ function RoadProfile.Serialize(profile: RoadProfile): { [string]: any }
 		MarkingColor = profile.MarkingColor,
 		MarkingDashLengthM = profile.MarkingDashLengthM,
 		MarkingDashGapM = profile.MarkingDashGapM,
+		KerbIndent = profile.KerbIndent,
 	}
 end
 
@@ -258,6 +265,7 @@ function RoadProfile.Deserialize(raw: { [string]: any }): RoadProfile?
 		MarkingColor = if typeof(raw.MarkingColor) == "string" then raw.MarkingColor else nil,
 		MarkingDashLengthM = if typeof(raw.MarkingDashLengthM) == "number" then raw.MarkingDashLengthM else nil,
 		MarkingDashGapM = if typeof(raw.MarkingDashGapM) == "number" then raw.MarkingDashGapM else nil,
+		KerbIndent = if typeof(raw.KerbIndent) == "boolean" then raw.KerbIndent else nil,
 	}
 end
 

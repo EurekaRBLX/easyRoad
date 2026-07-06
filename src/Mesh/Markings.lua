@@ -42,6 +42,7 @@ export type MarkingOptions = {
 	MarkingColor: string?, -- "Auto" | "White" | "Yellow" (centre/lane lines)
 	DashLengthM: number?, -- Override dash geometry for every dashed line on this road
 	DashGapM: number?,
+	KerbIndent: boolean?, -- true/nil = inset from the kerb, false = flush at the plain edge-line spot
 }
 
 local Markings = {}
@@ -137,7 +138,8 @@ function Markings.Compute(
 	elseif kerbRestriction == "DoubleYellow" then
 		kerbLineType = "DoubleSolid"
 	end
-	local kerbInset = style.MarkingWidthM * 2.5
+	local kerbIndent = if options then options.KerbIndent else nil
+	local kerbInset = if kerbIndent == false then inset else style.MarkingWidthM * 2.5
 
 	for i = 1, n do
 		local component = componentsStart[i]
@@ -153,8 +155,11 @@ function Markings.Compute(
 
 			-- Left edge of a roadway run: kerb restriction line REPLACES the
 			-- plain region edge line (they occupy the same physical spot -
-			-- a no-parking line already marks the roadway edge).
-			if not previousIsRoadway and component.Kind == "Drive" then
+			-- a no-parking line already marks the roadway edge). Applies to
+			-- any roadway kind at the outer edge (Drive, Parking, Bay, ...) -
+			-- kerb lines matter most exactly where parking/bay lanes meet
+			-- the kerb.
+			if not previousIsRoadway then
 				if kerbLineType and leftIsKerb then
 					addLine(startOffsets[i].Left + kerbInset, endOffsets[i].Left + kerbInset,
 						kerbLineType, style.YellowMarking)
@@ -164,7 +169,7 @@ function Markings.Compute(
 				end
 			end
 			-- Right edge of a roadway run: same rule
-			if not nextIsRoadway and component.Kind == "Drive" then
+			if not nextIsRoadway then
 				if kerbLineType and rightIsKerb then
 					addLine(startOffsets[i].Right - kerbInset, endOffsets[i].Right - kerbInset,
 						kerbLineType, style.YellowMarking)

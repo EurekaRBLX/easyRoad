@@ -59,6 +59,7 @@ export type RegionStyle = {
 	CurbColor: Color3,
 	MedianColor: Color3,
 	BikeLaneColor: Color3,
+	BayColor: Color3, -- Bus/taxi bay surface
 }
 
 local WHITE = Color3.fromRGB(235, 235, 228)
@@ -72,6 +73,7 @@ local GRASS = Color3.fromRGB(88, 126, 66)
 local BIKE_RED = Color3.fromRGB(122, 62, 56)
 local BIKE_GREEN = Color3.fromRGB(60, 110, 70)
 local BIKE_BLUE = Color3.fromRGB(52, 84, 130)
+local BAY_AMBER = Color3.fromRGB(120, 96, 58)
 
 local function dashed(color: Color3, dashLengthM: number, dashGapM: number): MarkingSpec
 	return {
@@ -122,6 +124,7 @@ local Styles: { RegionStyle } = {
 		CurbColor = CURB,
 		MedianColor = GRASS,
 		BikeLaneColor = BIKE_RED,
+		BayColor = BAY_AMBER,
 	}),
 	makeStyle({
 		Id = "HK",
@@ -150,6 +153,7 @@ local Styles: { RegionStyle } = {
 		CurbColor = CURB,
 		MedianColor = GRASS,
 		BikeLaneColor = BIKE_GREEN,
+		BayColor = BAY_AMBER,
 	}),
 	makeStyle({
 		Id = "SG",
@@ -178,6 +182,7 @@ local Styles: { RegionStyle } = {
 		CurbColor = CURB,
 		MedianColor = GRASS,
 		BikeLaneColor = BIKE_GREEN,
+		BayColor = BAY_AMBER,
 	}),
 	makeStyle({
 		Id = "EU",
@@ -206,6 +211,7 @@ local Styles: { RegionStyle } = {
 		CurbColor = CURB,
 		MedianColor = GRASS,
 		BikeLaneColor = BIKE_RED,
+		BayColor = BAY_AMBER,
 	}),
 	makeStyle({
 		Id = "US",
@@ -234,6 +240,7 @@ local Styles: { RegionStyle } = {
 		CurbColor = CURB,
 		MedianColor = GRASS,
 		BikeLaneColor = BIKE_RED,
+		BayColor = BAY_AMBER,
 	}),
 	makeStyle({
 		Id = "JP",
@@ -262,6 +269,7 @@ local Styles: { RegionStyle } = {
 		CurbColor = CURB,
 		MedianColor = GRASS,
 		BikeLaneColor = BIKE_BLUE,
+		BayColor = BAY_AMBER,
 	}),
 	makeStyle({
 		Id = "AU",
@@ -290,6 +298,7 @@ local Styles: { RegionStyle } = {
 		CurbColor = CURB,
 		MedianColor = GRASS,
 		BikeLaneColor = BIKE_RED,
+		BayColor = BAY_AMBER,
 	}),
 }
 

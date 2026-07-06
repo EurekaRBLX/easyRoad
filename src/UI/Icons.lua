@@ -17,6 +17,7 @@ Icons.ForKind = {
 	Drive = Icons.Lane,
 	Bike = Icons.Lane,
 	Parking = Icons.Lane,
+	Bay = Icons.Lane, -- TODO: dedicated bus/taxi bay icon
 	Median = Icons.Median,
 	Shoulder = Icons.Shoulder,
 	Sidewalk = Icons.Sidewalk,
