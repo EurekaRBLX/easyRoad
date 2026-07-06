@@ -4,13 +4,13 @@
 
 local Signal = require(script.Parent.Packages.Signal)
 
-local RIBBON_ICON = "rbxassetid://0" -- TODO: Upload a real icon for release
-local TOOLTIP = "Activate the EasyRoad road building tool, opening the road placement panel."
+local RIBBON_ICON = "rbxassetid://138672874509514"
+local TOOLTIP = "Placing customizable roads with ease."
 
 local buttonClicked = Signal.new()
 
-local toolbar = plugin:CreateToolbar("EasyRoad")
-local button = toolbar:CreateButton("openEasyRoad", TOOLTIP, RIBBON_ICON, "EasyRoad")
+local toolbar = plugin:CreateToolbar("easyRoad")
+local button = toolbar:CreateButton("easyRoad", TOOLTIP, RIBBON_ICON, "easyRoad")
 local clickCn = button.Click:Connect(function()
 	buttonClicked:Fire()
 end)
@@ -48,7 +48,7 @@ local clickedCn = buttonClicked:Connect(function()
 	end
 end)
 
-panel.Title = "EasyRoad"
+panel.Title = "easyRoad"
 panel.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 if panel.Enabled then
 	doInitialLoad()

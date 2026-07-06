@@ -62,7 +62,7 @@ local function BuildPage(props: {
 
 	if not props.Active then
 		children.Inactive = e(Components.Label, {
-			Text = "Press the EasyRoad toolbar button to start building.",
+			Text = "Press the easyRoad toolbar button to start building.",
 			LayoutOrder = 1,
 		})
 		children.Activate = e(Components.Button, {
