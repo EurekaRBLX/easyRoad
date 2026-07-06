@@ -56,12 +56,22 @@ local function SettingsGui(props: {
 
 	return e("ScrollingFrame", {
 		Size = UDim2.fromScale(1, 1),
-		BackgroundColor3 = Theme.BACKGROUND,
+		BackgroundColor3 = Theme.GLASS_BG,
+		BackgroundTransparency = Theme.GLASS_TRANSPARENCY,
 		BorderSizePixel = 0,
 		CanvasSize = UDim2.new(1, 0, 0, 0),
 		AutomaticCanvasSize = Enum.AutomaticSize.Y,
 		ScrollBarThickness = 6,
 	}, {
+		Corner = e("UICorner", {
+			CornerRadius = UDim.new(0, Theme.CORNER_RADIUS),
+		}),
+		Stroke = e("UIStroke", {
+			Color = Theme.GLASS_STROKE,
+			Transparency = Theme.GLASS_STROKE_TRANSPARENCY,
+			Thickness = 1,
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		}),
 		Layout = e("UIListLayout", {
 			SortOrder = Enum.SortOrder.LayoutOrder,
 			Padding = UDim.new(0, 4),

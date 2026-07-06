@@ -1,6 +1,12 @@
 --!strict
--- EasyRoad main: wires the toolbar button, dock panel, settings, road
--- library, placement session, and React UI together.
+-- EasyRoad main: wires the toolbar button, viewport HUD, dock panel,
+-- settings, road library, placement session, and React UI together.
+--
+-- While a build session is active the UI renders as a glassmorphism HUD
+-- inside the viewport (right-anchored); the dock panel keeps working as an
+-- alternative surface when it is open.
+
+local CoreGui = game:GetService("CoreGui")
 
 local Packages = script.Parent.Parent.Packages
 local React = require(Packages.React)
@@ -25,7 +31,12 @@ return function(
 	local session: createRoadSession.RoadSession? = nil
 	local sessionChangedCn: Signal.Connection? = nil
 
-	local reactRoot: ReactRoblox.RootType? = nil
+	-- Shared with the session so HUD clicks don't also place road points
+	local uiState: createRoadSession.UiState = { Hovered = false }
+
+	local panelRoot: ReactRoblox.RootType? = nil
+	local hudRoot: ReactRoblox.RootType? = nil
+	local hudScreenGui: ScreenGui? = nil
 
 	local updateUI: () -> () = nil :: any
 
@@ -47,6 +58,7 @@ return function(
 			sessionChangedCn:Disconnect()
 			sessionChangedCn = nil
 		end
+		uiState.Hovered = false
 	end
 
 	local function startSession()
@@ -54,13 +66,12 @@ return function(
 			return
 		end
 		local initialProfile = library.Get(settings.DefaultProfileId) or library.GetDefault()
-		local newSession = createRoadSession(plugin, settings, getStyle, initialProfile)
+		local newSession = createRoadSession(plugin, settings, getStyle, initialProfile, uiState)
 		sessionChangedCn = newSession.ChangeSignal:Connect(function()
 			updateUI()
 		end)
 		session = newSession
 		setButtonActive(true)
-		panel.Enabled = true
 		updateUI()
 	end
 
@@ -81,19 +92,9 @@ return function(
 		end
 	end
 
-	function updateUI()
-		if not panel.Enabled then
-			if reactRoot then
-				reactRoot:unmount()
-				reactRoot = nil
-			end
-			return
-		end
-		if not reactRoot then
-			reactRoot = ReactRoblox.createRoot(panel)
-		end
+	local function makeGuiProps(): { [string]: any }
 		local currentSession = session
-		assert(reactRoot):render(React.createElement(EasyRoadGui, {
+		return {
 			Active = currentSession ~= nil,
 			ToolMode = if currentSession then currentSession.GetToolMode() else "Curve",
 			Hint = if currentSession then currentSession.GetHint() else "",
@@ -137,7 +138,56 @@ return function(
 				persist()
 				updateUI()
 			end,
-		}))
+		}
+	end
+
+	function updateUI()
+		-- Viewport HUD: shown while a build session is active
+		if session then
+			if not hudRoot then
+				local screen = Instance.new("ScreenGui")
+				screen.Name = "EasyRoadHUD"
+				screen.ResetOnSpawn = false
+				screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+				screen.Parent = CoreGui
+				hudScreenGui = screen
+				hudRoot = ReactRoblox.createRoot(screen)
+			end
+			assert(hudRoot):render(React.createElement("Frame", {
+				AnchorPoint = Vector2.new(1, 0.5),
+				Position = UDim2.new(1, -12, 0.5, 0),
+				Size = UDim2.new(0, 300, 0.8, 0),
+				BackgroundTransparency = 1,
+				[React.Event.MouseEnter] = function()
+					uiState.Hovered = true
+				end,
+				[React.Event.MouseLeave] = function()
+					uiState.Hovered = false
+				end,
+			}, {
+				Gui = React.createElement(EasyRoadGui, makeGuiProps()),
+			}))
+		else
+			if hudRoot then
+				assert(hudRoot):unmount()
+				hudRoot = nil
+			end
+			if hudScreenGui then
+				hudScreenGui:Destroy()
+				hudScreenGui = nil
+			end
+		end
+
+		-- Dock panel: alternative surface whenever it is open
+		if panel.Enabled then
+			if not panelRoot then
+				panelRoot = ReactRoblox.createRoot(panel)
+			end
+			assert(panelRoot):render(React.createElement(EasyRoadGui, makeGuiProps()))
+		elseif panelRoot then
+			panelRoot:unmount()
+			panelRoot = nil
+		end
 	end
 
 	local clickedCn = buttonClicked:Connect(function()
@@ -163,9 +213,17 @@ return function(
 
 	plugin.Unloading:Connect(function()
 		destroySession()
-		if reactRoot then
-			reactRoot:unmount()
-			reactRoot = nil
+		if panelRoot then
+			panelRoot:unmount()
+			panelRoot = nil
+		end
+		if hudRoot then
+			hudRoot:unmount()
+			hudRoot = nil
+		end
+		if hudScreenGui then
+			hudScreenGui:Destroy()
+			hudScreenGui = nil
 		end
 		persist()
 		clickedCn:Disconnect()

@@ -226,9 +226,19 @@ local function BuildPage(props: {
 		}),
 	})
 
+	children.Corner = e("UICorner", {
+		CornerRadius = UDim.new(0, Theme.CORNER_RADIUS),
+	})
+	children.Stroke = e("UIStroke", {
+		Color = Theme.GLASS_STROKE,
+		Transparency = Theme.GLASS_STROKE_TRANSPARENCY,
+		Thickness = 1,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	})
 	return e("ScrollingFrame", {
 		Size = UDim2.fromScale(1, 1),
-		BackgroundColor3 = Theme.BACKGROUND,
+		BackgroundColor3 = Theme.GLASS_BG,
+		BackgroundTransparency = Theme.GLASS_TRANSPARENCY,
 		BorderSizePixel = 0,
 		CanvasSize = UDim2.new(1, 0, 0, 0),
 		AutomaticCanvasSize = Enum.AutomaticSize.Y,

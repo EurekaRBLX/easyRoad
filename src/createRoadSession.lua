@@ -49,11 +49,16 @@ export type RoadSession = {
 local ROADS_FOLDER_NAME = "Roads"
 local PREVIEW_REBUILD_INTERVAL = 0.05
 
+export type UiState = {
+	Hovered: boolean,
+}
+
 local function createRoadSession(
 	plugin: Plugin,
 	settings: Settings.EasyRoadSettings,
 	getStyle: () -> RegionStyles.RegionStyle,
-	initialProfile: RoadProfile.RoadProfile
+	initialProfile: RoadProfile.RoadProfile,
+	uiState: UiState?
 ): RoadSession
 	local changeSignal = Signal.new()
 
@@ -337,6 +342,10 @@ local function createRoadSession(
 	-- Input handling ----------------------------------------------------------------------
 
 	local function onClick()
+		-- Clicks on the viewport HUD must not also place road points
+		if uiState and uiState.Hovered then
+			return
+		end
 		local point, snapTangent = pickPoint()
 		if not point then
 			return

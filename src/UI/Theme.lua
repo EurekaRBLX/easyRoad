@@ -22,4 +22,14 @@ Theme.FONT_MONO = Enum.Font.RobotoMono
 Theme.ROW_HEIGHT = 26
 Theme.PADDING = 8
 
+-- Industrial glassmorphism: Roblox UI has no backdrop blur, so glass is
+-- approximated with translucent near-black cards, thin bright strokes,
+-- and rounded corners.
+Theme.GLASS_BG = Color3.fromRGB(16, 18, 22)
+Theme.GLASS_TRANSPARENCY = 0.2
+Theme.GLASS_ELEMENT_TRANSPARENCY = 0.35
+Theme.GLASS_STROKE = Color3.fromRGB(255, 255, 255)
+Theme.GLASS_STROKE_TRANSPARENCY = 0.72
+Theme.CORNER_RADIUS = 10
+
 return Theme

@@ -15,6 +15,7 @@ local e = React.createElement
 
 local Theme = require("./Theme")
 local Components = require("./Components")
+local Icons = require("./Icons")
 local RoadProfile = require("../RoadProfile")
 local RoadLibraryModule = require("../RoadLibrary")
 
@@ -49,6 +50,13 @@ local function ComponentRow(props: {
 	return e(Components.Row, {
 		LayoutOrder = props.LayoutOrder,
 	}, {
+		Icon = e("ImageLabel", {
+			Image = Icons.ForKind[component.Kind] or Icons.Lane,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0, 26, 0, 26),
+			ScaleType = Enum.ScaleType.Fit,
+			LayoutOrder = 0,
+		}),
 		Kind = e(Components.Dropdown, {
 			Options = kindOptions,
 			SelectedId = component.Kind,
@@ -328,9 +336,19 @@ local function LaneEditor(props: {
 		LayoutOrder = 100,
 	})
 
+	children.Corner = e("UICorner", {
+		CornerRadius = UDim.new(0, Theme.CORNER_RADIUS),
+	})
+	children.Stroke = e("UIStroke", {
+		Color = Theme.GLASS_STROKE,
+		Transparency = Theme.GLASS_STROKE_TRANSPARENCY,
+		Thickness = 1,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	})
 	return e("ScrollingFrame", {
 		Size = UDim2.fromScale(1, 1),
-		BackgroundColor3 = Theme.BACKGROUND,
+		BackgroundColor3 = Theme.GLASS_BG,
+		BackgroundTransparency = Theme.GLASS_TRANSPARENCY,
 		BorderSizePixel = 0,
 		CanvasSize = UDim2.new(1, 0, 0, 0),
 		AutomaticCanvasSize = Enum.AutomaticSize.Y,
