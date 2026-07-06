@@ -108,7 +108,7 @@ local function SettingsGui(props: {
 				"Drives on the %s • %.2fm lanes • %s center line",
 				if activeStyle.DriveOnLeft then "left" else "right",
 				activeStyle.DefaultLaneWidthM,
-				string.lower(activeStyle.CenterLine.Pattern)
+				string.lower(activeStyle.CenterLine.Line)
 			),
 			Dim = true,
 			LayoutOrder = 3,

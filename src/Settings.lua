@@ -41,7 +41,7 @@ export type EasyRoadSettings = {
 local function loadSettings(plugin: Plugin): EasyRoadSettings
 	local raw = plugin:GetSetting(kSettingsKey) or {}
 	return {
-		RegionId = raw.RegionId or "US",
+		RegionId = raw.RegionId or "UK",
 		MetersToStuds = raw.MetersToStuds or 3.571,
 		DesignSpeedKph = raw.DesignSpeedKph or 60,
 		SuperelevationMode = raw.SuperelevationMode or "Auto",

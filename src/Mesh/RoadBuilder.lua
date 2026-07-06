@@ -276,7 +276,10 @@ function RoadBuilder.Build(options: BuildOptions): Model
 
 	-- Markings -------------------------------------------------------------------
 	if settings.AutoMarkings then
-		local lines = Markings.Compute(componentsStart, componentsEnd, style)
+		local lines = Markings.Compute(componentsStart, componentsEnd, style, {
+			KerbRestriction = options.ProfileStart.KerbRestriction,
+			MarkingColor = options.ProfileStart.MarkingColor,
+		})
 		local markingWidth = style.MarkingWidthM * scale
 
 		local function placeMarkingPart(
@@ -309,38 +312,56 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		for _, line in lines do
 			local offset0 = line.OffsetStartM * scale
 			local offset1 = line.OffsetEndM * scale
-			local pattern = line.Spec.Pattern
-			local color = line.Spec.Color
+			local color = line.Color
+			local separation = markingWidth * 0.9
 
 			local function offsetAt(s: number): number
 				return offset0 + (offset1 - offset0) * transitionAlpha(s)
 			end
 
-			if pattern == "Solid" or pattern == "DoubleSolid" then
+			-- Each compound line type is one or two rails, each rail either
+			-- solid or dashed. lateral = rail offset from the boundary line.
+			local function renderSolid(lateral: number)
 				for i = 1, stationCount - 1 do
 					local s0 = stations[i]
 					local s1 = stations[i + 1]
 					local sMid = (s0 + s1) / 2
-					local partLength = (s1 - s0) + 0.05
-					if pattern == "DoubleSolid" then
-						local separation = markingWidth * 0.9
-						placeMarkingPart(sMid, partLength, offsetAt(sMid) - separation, color, i)
-						placeMarkingPart(sMid, partLength, offsetAt(sMid) + separation, color, i)
-					else
-						placeMarkingPart(sMid, partLength, offsetAt(sMid), color, i)
-					end
+					placeMarkingPart(sMid, (s1 - s0) + 0.05, offsetAt(sMid) + lateral, color, i)
 				end
-			elseif pattern == "Dashed" then
-				local dashLength = style.DashLengthM * scale
-				local gapLength = style.DashGapM * scale
+			end
+
+			local function renderDashed(lateral: number)
+				local dashLength = line.DashLengthM * scale
+				local gapLength = line.DashGapM * scale
 				local s = gapLength / 2
 				local dashIndex = 0
 				while s + dashLength < length do
 					local sMid = s + dashLength / 2
-					placeMarkingPart(sMid, dashLength, offsetAt(sMid), color, dashIndex)
+					placeMarkingPart(sMid, dashLength, offsetAt(sMid) + lateral, color, dashIndex)
 					dashIndex += 1
 					s += dashLength + gapLength
 				end
+			end
+
+			local lineType = line.Line
+			if lineType == "Solid" then
+				renderSolid(0)
+			elseif lineType == "Dashed" then
+				renderDashed(0)
+			elseif lineType == "DoubleSolid" then
+				renderSolid(-separation)
+				renderSolid(separation)
+			elseif lineType == "DoubleDashed" then
+				renderDashed(-separation)
+				renderDashed(separation)
+			elseif lineType == "SolidDash" then
+				-- Solid on the left of the boundary, dashes on the right:
+				-- right-hand traffic may cross, left-hand may not
+				renderSolid(-separation)
+				renderDashed(separation)
+			elseif lineType == "DashSolid" then
+				renderDashed(-separation)
+				renderSolid(separation)
 			end
 		end
 	end

@@ -21,6 +21,14 @@ local RoadLibraryModule = require("../RoadLibrary")
 
 type RoadLibrary = RoadLibraryModule.RoadLibrary
 
+local BOUNDARY_LABELS: { [string]: string } = {
+	Auto = "\u{2506}", -- dashed bar
+	Solid = "\u{2502}",
+	DoubleSolid = "\u{2551}",
+	SolidDash = "\u{2502}\u{254C}",
+	DashSolid = "\u{254C}\u{2502}",
+}
+
 local function directionLabel(direction: number): string
 	if direction > 0 then
 		return "→"
@@ -67,6 +75,7 @@ local function ComponentRow(props: {
 					Direction = if RoadProfile.IsDirectional(id :: RoadProfile.ComponentKind)
 						then (if component.Direction == 0 then 1 else component.Direction)
 						else 0,
+					RightBoundary = component.RightBoundary,
 				})
 			end,
 			LayoutOrder = 1,
@@ -81,6 +90,7 @@ local function ComponentRow(props: {
 					Kind = component.Kind,
 					WidthM = value,
 					Direction = component.Direction,
+					RightBoundary = component.RightBoundary,
 				})
 			end,
 			LayoutOrder = 2,
@@ -94,6 +104,7 @@ local function ComponentRow(props: {
 						Kind = component.Kind,
 						WidthM = component.WidthM,
 						Direction = if component.Direction >= 0 then -1 else 1,
+						RightBoundary = component.RightBoundary,
 					})
 				end
 			end,
@@ -120,11 +131,28 @@ local function ComponentRow(props: {
 			LayoutOrder = 5,
 			Size = UDim2.new(0, 24, 0, Theme.ROW_HEIGHT),
 		}),
+		Boundary = props.Index < props.Count and e(Components.Button, {
+			Text = BOUNDARY_LABELS[component.RightBoundary or "Auto"] or BOUNDARY_LABELS.Auto,
+			OnClick = function()
+				local rules = RoadProfile.BoundaryRules
+				local current = component.RightBoundary or "Auto"
+				local index = table.find(rules, current) or 1
+				local nextRule = rules[(index % #rules) + 1]
+				props.OnChanged({
+					Kind = component.Kind,
+					WidthM = component.WidthM,
+					Direction = component.Direction,
+					RightBoundary = if nextRule == "Auto" then nil else nextRule,
+				})
+			end,
+			LayoutOrder = 6,
+			Size = UDim2.new(0, 34, 0, Theme.ROW_HEIGHT),
+		}),
 		Remove = e(Components.Button, {
 			Text = "✕",
 			Danger = true,
 			OnClick = props.OnRemove,
-			LayoutOrder = 6,
+			LayoutOrder = 7,
 			Size = UDim2.new(0, 24, 0, Theme.ROW_HEIGHT),
 		}),
 	})
@@ -245,7 +273,7 @@ local function LaneEditor(props: {
 		})
 
 		children.ColumnHint = e(Components.Label, {
-			Text = "Components (left → right) — kind, width (m), direction",
+			Text = "Components (left → right) — kind, width (m), direction, right boundary line",
 			Dim = true,
 			LayoutOrder = 4,
 		})
@@ -297,8 +325,58 @@ local function LaneEditor(props: {
 			LayoutOrder = afterComponents + 1,
 		})
 
-		children.Actions = e(Components.Row, {
+		children.KerbRow = e(Components.Row, {
 			LayoutOrder = afterComponents + 2,
+		}, {
+			Label = e(Components.Label, {
+				Text = "Kerb lines",
+				LayoutOrder = 1,
+				Width = 80,
+			}),
+			Dropdown = e(Components.Dropdown, {
+				Options = {
+					{ Id = "None", Text = "No restriction" },
+					{ Id = "SingleYellow", Text = "Single yellow (no parking)" },
+					{ Id = "DoubleYellow", Text = "Double yellow (no parking)" },
+				},
+				SelectedId = profile.KerbRestriction or "None",
+				OnSelected = function(id: string)
+					updateEditing(function(copy)
+						copy.KerbRestriction = if id == "None" then nil else id
+					end)
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		})
+
+		children.ColourRow = e(Components.Row, {
+			LayoutOrder = afterComponents + 3,
+		}, {
+			Label = e(Components.Label, {
+				Text = "Line colour",
+				LayoutOrder = 1,
+				Width = 80,
+			}),
+			Dropdown = e(Components.Dropdown, {
+				Options = {
+					{ Id = "Auto", Text = "Auto (region)" },
+					{ Id = "White", Text = "White" },
+					{ Id = "Yellow", Text = "Yellow" },
+				},
+				SelectedId = profile.MarkingColor or "Auto",
+				OnSelected = function(id: string)
+					updateEditing(function(copy)
+						copy.MarkingColor = if id == "Auto" then nil else id
+					end)
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		})
+
+		children.Actions = e(Components.Row, {
+			LayoutOrder = afterComponents + 4,
 		}, {
 			Save = e(Components.Button, {
 				Text = if profile.BuiltIn then "Save as Copy" else "Save",

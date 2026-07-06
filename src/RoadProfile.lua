@@ -14,10 +14,15 @@ local RegionStyles = require("./RegionStyles")
 
 export type ComponentKind = "Drive" | "Sidewalk" | "Median" | "Shoulder" | "Bike" | "Parking"
 
+-- Marking rule for the boundary on the RIGHT side of a lane (only applies
+-- between same-direction traffic lanes). "Auto" defers to the region style.
+export type BoundaryRule = "Auto" | "Solid" | "DoubleSolid" | "SolidDash" | "DashSolid"
+
 export type ProfileComponent = {
 	Kind: ComponentKind,
 	WidthM: number,
 	Direction: number, -- +1 forward, -1 backward, 0 = not directional
+	RightBoundary: BoundaryRule?, -- nil = Auto
 }
 
 export type RoadProfile = {
@@ -26,6 +31,10 @@ export type RoadProfile = {
 	Category: string,
 	BuiltIn: boolean,
 	Components: { ProfileComponent },
+	-- Kerb (no parking/stopping) lines: "None" | "SingleYellow" | "DoubleYellow"
+	KerbRestriction: string?,
+	-- Force centre/lane line colour: "Auto" | "White" | "Yellow"
+	MarkingColor: string?,
 }
 
 local ComponentKinds: { ComponentKind } = {
@@ -37,9 +46,18 @@ local ComponentKinds: { ComponentKind } = {
 	"Parking" :: ComponentKind,
 }
 
+local BoundaryRules: { BoundaryRule } = {
+	"Auto" :: BoundaryRule,
+	"Solid" :: BoundaryRule,
+	"DoubleSolid" :: BoundaryRule,
+	"SolidDash" :: BoundaryRule,
+	"DashSolid" :: BoundaryRule,
+}
+
 local RoadProfile = {}
 
 RoadProfile.ComponentKinds = ComponentKinds
+RoadProfile.BoundaryRules = BoundaryRules
 
 -- Kinds which carry directional traffic
 local DIRECTIONAL: { [string]: boolean } = {
@@ -96,6 +114,7 @@ function RoadProfile.Clone(profile: RoadProfile): RoadProfile
 			Kind = component.Kind,
 			WidthM = component.WidthM,
 			Direction = component.Direction,
+			RightBoundary = component.RightBoundary,
 		})
 	end
 	return {
@@ -104,6 +123,8 @@ function RoadProfile.Clone(profile: RoadProfile): RoadProfile
 		Category = profile.Category,
 		BuiltIn = profile.BuiltIn,
 		Components = components,
+		KerbRestriction = profile.KerbRestriction,
+		MarkingColor = profile.MarkingColor,
 	}
 end
 
@@ -136,7 +157,12 @@ function RoadProfile.MatchForTransition(
 	end
 
 	local function zeroOf(component: ProfileComponent): ProfileComponent
-		return { Kind = component.Kind, WidthM = 0, Direction = component.Direction }
+		return {
+			Kind = component.Kind,
+			WidthM = 0,
+			Direction = component.Direction,
+			RightBoundary = component.RightBoundary,
+		}
 	end
 
 	local outA: { ProfileComponent } = {}
@@ -178,6 +204,7 @@ function RoadProfile.Serialize(profile: RoadProfile): { [string]: any }
 			Kind = component.Kind,
 			WidthM = component.WidthM,
 			Direction = component.Direction,
+			RightBoundary = component.RightBoundary,
 		})
 	end
 	return {
@@ -185,6 +212,8 @@ function RoadProfile.Serialize(profile: RoadProfile): { [string]: any }
 		Name = profile.Name,
 		Category = profile.Category,
 		Components = components,
+		KerbRestriction = profile.KerbRestriction,
+		MarkingColor = profile.MarkingColor,
 	}
 end
 
@@ -200,10 +229,16 @@ function RoadProfile.Deserialize(raw: { [string]: any }): RoadProfile?
 		if not table.find(ComponentKinds, rawComponent.Kind) then
 			return nil
 		end
+		local rightBoundary: BoundaryRule? = nil
+		if typeof(rawComponent.RightBoundary) == "string"
+			and table.find(BoundaryRules, rawComponent.RightBoundary) then
+			rightBoundary = rawComponent.RightBoundary :: BoundaryRule
+		end
 		table.insert(components, {
 			Kind = rawComponent.Kind :: ComponentKind,
 			WidthM = rawComponent.WidthM,
 			Direction = if typeof(rawComponent.Direction) == "number" then rawComponent.Direction else 0,
+			RightBoundary = rightBoundary,
 		})
 	end
 	return {
@@ -212,6 +247,8 @@ function RoadProfile.Deserialize(raw: { [string]: any }): RoadProfile?
 		Category = if typeof(raw.Category) == "string" then raw.Category else "Custom",
 		BuiltIn = false,
 		Components = components,
+		KerbRestriction = if typeof(raw.KerbRestriction) == "string" then raw.KerbRestriction else nil,
+		MarkingColor = if typeof(raw.MarkingColor) == "string" then raw.MarkingColor else nil,
 	}
 end
 
