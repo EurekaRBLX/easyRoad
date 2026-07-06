@@ -4,7 +4,7 @@
 
 local Signal = require(script.Parent.Packages.Signal)
 
-local RIBBON_ICON = "rbxassetid://138672874509514"
+local RIBBON_ICON = "rbxassetid://139521183742106"
 local TOOLTIP = "Placing customizable roads with ease."
 
 local buttonClicked = Signal.new()

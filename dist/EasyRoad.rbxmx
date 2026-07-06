@@ -744,8 +744,30 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		return model
 	end
 
+	local isTransition = options.ProfileEnd ~= nil
+		and (options.ProfileEnd :: RoadProfile.RoadProfile).Id ~= options.ProfileStart.Id
+
+	-- Widening/narrowing happens over a standard taper at the END of the
+	-- segment (UK practice: taper length proportional to the width change),
+	-- not stretched across the whole road.
+	local taperLength = length
+	if isTransition then
+		local widthDeltaStuds = math.abs(
+			RoadProfile.TotalWidthM(options.ProfileStart)
+				- RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
+		) * scale
+		taperLength = math.clamp(widthDeltaStuds * 15, 20, length)
+	end
+	-- 0 before the taper begins, then 0 -&gt; 1 across the taper zone
+	local function transitionAlpha(s: number): number
+		if not isTransition then
+			return math.clamp(s / length, 0, 1)
+		end
+		return math.clamp((s - (length - taperLength)) / taperLength, 0, 1)
+	end
+
 	local maxStep = if preview then settings.PreviewMaxSegmentLengthStuds else settings.MaxSegmentLengthStuds
-	if options.ProfileEnd and options.ProfileEnd.Id ~= options.ProfileStart.Id then
+	if isTransition then
 		-- Widening/narrowing tapers read much better with short strips
 		maxStep = math.min(maxStep, 4)
 	end
@@ -779,7 +801,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	local stationWidths: { { number } } = table.create(stationCount)
 	local stationOffsets: { { number } } = table.create(stationCount) -- Left edge offset per component
 	for i, s in stations do
-		local u = s / length
+		local u = transitionAlpha(s)
 		local widths = table.create(componentCount)
 		local total = 0
 		for c = 1, componentCount do
@@ -837,7 +859,10 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			local partHeight = if raised then thickness + curbHeight else thickness
 			-- Deck (roadway) top surface sits at frame level; raised
 			-- components (sidewalk/median) stand a curb height above it.
-			local centerY = if raised then (curbHeight - thickness) / 2 else -thickness / 2
+			-- Alternating strips drop by a sub-visible epsilon so overlapping
+			-- neighbor strips never z-fight.
+			local centerY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2)
+				- (i % 2) * 0.004
 
 			local miter = math.abs(centerOffset + width / 2) * math.sin(turnAngle)
 			miter = math.min(miter, chord * 2)
@@ -862,7 +887,8 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			sMid: number,
 			partLength: number,
 			offsetStuds: number,
-			color: Color3
+			color: Color3,
+			altIndex: number
 		)
 			-- Recompute roll at this s by interpolating station rolls
 			local rollMid = 0
@@ -880,7 +906,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			part.Material = Enum.Material.SmoothPlastic
 			part.Color = color
 			part.Size = Vector3.new(markingWidth, MARKING_THICKNESS, partLength)
-			part.CFrame = frame * CFrame.new(offsetStuds, MARKING_LIFT, 0)
+			part.CFrame = frame * CFrame.new(offsetStuds, MARKING_LIFT + (altIndex % 2) * 0.004, 0)
 			part.Parent = model
 		end
 
@@ -891,8 +917,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			local color = line.Spec.Color
 
 			local function offsetAt(s: number): number
-				local u = math.clamp(s / length, 0, 1)
-				return offset0 + (offset1 - offset0) * u
+				return offset0 + (offset1 - offset0) * transitionAlpha(s)
 			end
 
 			if pattern == "Solid" or pattern == "DoubleSolid" then
@@ -903,19 +928,21 @@ function RoadBuilder.Build(options: BuildOptions): Model
 					local partLength = (s1 - s0) + 0.05
 					if pattern == "DoubleSolid" then
 						local separation = markingWidth * 0.9
-						placeMarkingPart(sMid, partLength, offsetAt(sMid) - separation, color)
-						placeMarkingPart(sMid, partLength, offsetAt(sMid) + separation, color)
+						placeMarkingPart(sMid, partLength, offsetAt(sMid) - separation, color, i)
+						placeMarkingPart(sMid, partLength, offsetAt(sMid) + separation, color, i)
 					else
-						placeMarkingPart(sMid, partLength, offsetAt(sMid), color)
+						placeMarkingPart(sMid, partLength, offsetAt(sMid), color, i)
 					end
 				end
 			elseif pattern == "Dashed" then
 				local dashLength = style.DashLengthM * scale
 				local gapLength = style.DashGapM * scale
 				local s = gapLength / 2
+				local dashIndex = 0
 				while s + dashLength &lt; length do
 					local sMid = s + dashLength / 2
-					placeMarkingPart(sMid, dashLength, offsetAt(sMid), color)
+					placeMarkingPart(sMid, dashLength, offsetAt(sMid), color, dashIndex)
+					dashIndex += 1
 					s += dashLength + gapLength
 				end
 			end
@@ -53401,7 +53428,7 @@ return Signal
 
 local Signal = require(script.Parent.Packages.Signal)
 
-local RIBBON_ICON = "rbxassetid://138672874509514"
+local RIBBON_ICON = "rbxassetid://139521183742106"
 local TOOLTIP = "Placing customizable roads with ease."
 
 local buttonClicked = Signal.new()
