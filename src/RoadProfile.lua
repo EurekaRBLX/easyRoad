@@ -35,6 +35,9 @@ export type RoadProfile = {
 	KerbRestriction: string?,
 	-- Force centre/lane line colour: "Auto" | "White" | "Yellow"
 	MarkingColor: string?,
+	-- Override dash geometry for every dashed line on this road; nil = region default
+	MarkingDashLengthM: number?,
+	MarkingDashGapM: number?,
 }
 
 local ComponentKinds: { ComponentKind } = {
@@ -125,6 +128,8 @@ function RoadProfile.Clone(profile: RoadProfile): RoadProfile
 		Components = components,
 		KerbRestriction = profile.KerbRestriction,
 		MarkingColor = profile.MarkingColor,
+		MarkingDashLengthM = profile.MarkingDashLengthM,
+		MarkingDashGapM = profile.MarkingDashGapM,
 	}
 end
 
@@ -214,6 +219,8 @@ function RoadProfile.Serialize(profile: RoadProfile): { [string]: any }
 		Components = components,
 		KerbRestriction = profile.KerbRestriction,
 		MarkingColor = profile.MarkingColor,
+		MarkingDashLengthM = profile.MarkingDashLengthM,
+		MarkingDashGapM = profile.MarkingDashGapM,
 	}
 end
 
@@ -249,6 +256,8 @@ function RoadProfile.Deserialize(raw: { [string]: any }): RoadProfile?
 		Components = components,
 		KerbRestriction = if typeof(raw.KerbRestriction) == "string" then raw.KerbRestriction else nil,
 		MarkingColor = if typeof(raw.MarkingColor) == "string" then raw.MarkingColor else nil,
+		MarkingDashLengthM = if typeof(raw.MarkingDashLengthM) == "number" then raw.MarkingDashLengthM else nil,
+		MarkingDashGapM = if typeof(raw.MarkingDashGapM) == "number" then raw.MarkingDashGapM else nil,
 	}
 end
 

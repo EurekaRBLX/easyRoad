@@ -279,6 +279,8 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		local lines = Markings.Compute(componentsStart, componentsEnd, style, {
 			KerbRestriction = options.ProfileStart.KerbRestriction,
 			MarkingColor = options.ProfileStart.MarkingColor,
+			DashLengthM = options.ProfileStart.MarkingDashLengthM,
+			DashGapM = options.ProfileStart.MarkingDashGapM,
 		})
 		local markingWidth = style.MarkingWidthM * scale
 

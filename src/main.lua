@@ -15,6 +15,7 @@ local Signal = require(Packages.Signal)
 
 local Settings = require("./Settings")
 local RegionStyles = require("./RegionStyles")
+local RoadProfile = require("./RoadProfile")
 local createRoadLibrary = require("./RoadLibrary")
 local createRoadSession = require("./createRoadSession")
 local EasyRoadGui = require("./UI/EasyRoadGui")
@@ -100,6 +101,10 @@ return function(
 			Hint = if currentSession then currentSession.GetHint() else "",
 			Elevation = if currentSession then currentSession.GetElevation() else 0,
 			ProfileId = if currentSession then currentSession.GetProfile().Id else settings.DefaultProfileId,
+			-- The full active profile (which may carry session-only width
+			-- tweaks) so the build HUD can list and edit component widths
+			-- without touching the saved library road.
+			ActiveProfile = if currentSession then currentSession.GetProfile() else nil,
 			EndProfileId = if currentSession and currentSession.GetEndProfile()
 				then (currentSession.GetEndProfile() :: any).Id
 				else nil,
@@ -125,6 +130,37 @@ return function(
 				if currentSession then
 					currentSession.SetEndProfile(if id then library.Get(id) else nil)
 				end
+			end,
+			-- Session-only width tweak: clones the active profile, edits one
+			-- component's width, and feeds it straight to the session. Does
+			-- NOT touch the saved library road unless explicitly saved.
+			AdjustComponentWidth = function(index: number, widthM: number)
+				if not currentSession then
+					return
+				end
+				local clone = RoadProfile.Clone(currentSession.GetProfile())
+				local component = clone.Components[index]
+				if not component then
+					return
+				end
+				component.WidthM = math.max(widthM, 0.1)
+				currentSession.SetProfile(clone)
+				updateUI()
+			end,
+			SaveActiveProfileAsNew = function()
+				if not currentSession then
+					return
+				end
+				local clone = RoadProfile.Clone(currentSession.GetProfile())
+				clone.Id = "user_" .. tostring(os.time())
+				clone.Name = clone.Name .. " (Modified)"
+				clone.Category = "Custom"
+				clone.BuiltIn = false
+				library.SaveUserProfile(clone)
+				settings.DefaultProfileId = clone.Id
+				currentSession.SetProfile(clone)
+				persist()
+				updateUI()
 			end,
 			HandleAction = handleAction,
 			OnSettingsChanged = function()

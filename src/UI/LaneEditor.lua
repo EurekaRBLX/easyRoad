@@ -18,6 +18,8 @@ local Components = require("./Components")
 local Icons = require("./Icons")
 local RoadProfile = require("../RoadProfile")
 local RoadLibraryModule = require("../RoadLibrary")
+local RegionStyles = require("../RegionStyles")
+local Settings = require("../Settings")
 
 type RoadLibrary = RoadLibraryModule.RoadLibrary
 
@@ -160,10 +162,12 @@ end
 
 local function LaneEditor(props: {
 	Library: RoadLibrary,
+	Settings: Settings.EasyRoadSettings,
 	OnLibraryChanged: () -> (),
 	OnClose: () -> (),
 })
 	local library = props.Library
+	local regionStyle = RegionStyles.Get(props.Settings.RegionId)
 	-- false = nothing selected (React state can't reliably hold nil)
 	local editing: RoadProfile.RoadProfile | false, setEditing = React.useState(
 		false :: RoadProfile.RoadProfile | false
@@ -375,8 +379,60 @@ local function LaneEditor(props: {
 			}),
 		})
 
-		children.Actions = e(Components.Row, {
+		children.DashRow = e(Components.Row, {
 			LayoutOrder = afterComponents + 4,
+		}, {
+			Label = e(Components.Label, {
+				Text = "Dash spacing",
+				LayoutOrder = 1,
+				Width = 80,
+			}),
+			LengthLabel = e(Components.Label, {
+				Text = "len(m)",
+				Dim = true,
+				LayoutOrder = 2,
+			}),
+			LengthField = e(Components.NumberField, {
+				Value = profile.MarkingDashLengthM or regionStyle.DashLengthM,
+				Min = 0.25,
+				Max = 20,
+				OnChanged = function(value: number)
+					updateEditing(function(copy)
+						copy.MarkingDashLengthM = value
+					end)
+				end,
+				LayoutOrder = 3,
+			}),
+			GapLabel = e(Components.Label, {
+				Text = "gap(m)",
+				Dim = true,
+				LayoutOrder = 4,
+			}),
+			GapField = e(Components.NumberField, {
+				Value = profile.MarkingDashGapM or regionStyle.DashGapM,
+				Min = 0.25,
+				Max = 30,
+				OnChanged = function(value: number)
+					updateEditing(function(copy)
+						copy.MarkingDashGapM = value
+					end)
+				end,
+				LayoutOrder = 5,
+			}),
+			Reset = (profile.MarkingDashLengthM ~= nil or profile.MarkingDashGapM ~= nil) and e(Components.Button, {
+				Text = "Reset",
+				OnClick = function()
+					updateEditing(function(copy)
+						copy.MarkingDashLengthM = nil
+						copy.MarkingDashGapM = nil
+					end)
+				end,
+				LayoutOrder = 6,
+			}),
+		})
+
+		children.Actions = e(Components.Row, {
+			LayoutOrder = afterComponents + 5,
 		}, {
 			Save = e(Components.Button, {
 				Text = if profile.BuiltIn then "Save as Copy" else "Save",

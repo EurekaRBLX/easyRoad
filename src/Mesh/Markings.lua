@@ -40,6 +40,8 @@ export type MarkingLine = {
 export type MarkingOptions = {
 	KerbRestriction: string?, -- "None" | "SingleYellow" | "DoubleYellow"
 	MarkingColor: string?, -- "Auto" | "White" | "Yellow" (centre/lane lines)
+	DashLengthM: number?, -- Override dash geometry for every dashed line on this road
+	DashGapM: number?,
 }
 
 local Markings = {}
@@ -72,6 +74,8 @@ function Markings.Compute(
 
 	local kerbRestriction = if options then options.KerbRestriction else nil
 	local colorOverride = if options then options.MarkingColor else nil
+	local dashLengthOverride = if options then options.DashLengthM else nil
+	local dashGapOverride = if options then options.DashGapM else nil
 
 	local startOffsets = offsetsFor(componentsStart)
 	local endOffsets = offsetsFor(componentsEnd)
@@ -99,8 +103,8 @@ function Markings.Compute(
 			OffsetEndM = offsetEnd,
 			Line = spec.Line,
 			Color = color,
-			DashLengthM = spec.DashLengthM or style.DashLengthM,
-			DashGapM = spec.DashGapM or style.DashGapM,
+			DashLengthM = dashLengthOverride or spec.DashLengthM or style.DashLengthM,
+			DashGapM = dashGapOverride or spec.DashGapM or style.DashGapM,
 		})
 	end
 
@@ -120,8 +124,8 @@ function Markings.Compute(
 			OffsetEndM = offsetEnd,
 			Line = lineType,
 			Color = color,
-			DashLengthM = dashLengthM or style.DashLengthM,
-			DashGapM = dashGapM or style.DashGapM,
+			DashLengthM = dashLengthOverride or dashLengthM or style.DashLengthM,
+			DashGapM = dashGapOverride or dashGapM or style.DashGapM,
 		})
 	end
 
@@ -144,30 +148,29 @@ function Markings.Compute(
 		local previousIsRoadway = previousComponent and RoadProfile.IsRoadway(previousComponent.Kind)
 
 		if isRoadway then
-			-- Edge line at the left edge of a roadway run
-			if not previousIsRoadway and component.Kind == "Drive" then
-				addSpec(startOffsets[i].Left + inset, endOffsets[i].Left + inset,
-					style.EdgeLine, style.EdgeLine.Color)
-			end
-			-- Edge line at the right edge of a roadway run
-			if not nextIsRoadway and component.Kind == "Drive" then
-				addSpec(startOffsets[i].Right - inset, endOffsets[i].Right - inset,
-					style.EdgeLine, style.EdgeLine.Color)
-			end
+			local leftIsKerb = previousComponent == nil or RoadProfile.IsRaised(previousComponent.Kind)
+			local rightIsKerb = nextComponent == nil or RoadProfile.IsRaised(nextComponent.Kind)
 
-			-- Kerb restriction lines at roadway edges that meet a kerb
-			if kerbLineType then
-				local leftIsKerb = previousComponent == nil
-					or RoadProfile.IsRaised(previousComponent.Kind)
-				local rightIsKerb = nextComponent == nil
-					or RoadProfile.IsRaised(nextComponent.Kind)
-				if leftIsKerb then
+			-- Left edge of a roadway run: kerb restriction line REPLACES the
+			-- plain region edge line (they occupy the same physical spot -
+			-- a no-parking line already marks the roadway edge).
+			if not previousIsRoadway and component.Kind == "Drive" then
+				if kerbLineType and leftIsKerb then
 					addLine(startOffsets[i].Left + kerbInset, endOffsets[i].Left + kerbInset,
 						kerbLineType, style.YellowMarking)
+				else
+					addSpec(startOffsets[i].Left + inset, endOffsets[i].Left + inset,
+						style.EdgeLine, style.EdgeLine.Color)
 				end
-				if rightIsKerb then
+			end
+			-- Right edge of a roadway run: same rule
+			if not nextIsRoadway and component.Kind == "Drive" then
+				if kerbLineType and rightIsKerb then
 					addLine(startOffsets[i].Right - kerbInset, endOffsets[i].Right - kerbInset,
 						kerbLineType, style.YellowMarking)
+				else
+					addSpec(startOffsets[i].Right - inset, endOffsets[i].Right - inset,
+						style.EdgeLine, style.EdgeLine.Color)
 				end
 			end
 		end

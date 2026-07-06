@@ -532,6 +532,8 @@ export type MarkingLine = {
 export type MarkingOptions = {
 	KerbRestriction: string?, -- "None" | "SingleYellow" | "DoubleYellow"
 	MarkingColor: string?, -- "Auto" | "White" | "Yellow" (centre/lane lines)
+	DashLengthM: number?, -- Override dash geometry for every dashed line on this road
+	DashGapM: number?,
 }
 
 local Markings = {}
@@ -564,6 +566,8 @@ function Markings.Compute(
 
 	local kerbRestriction = if options then options.KerbRestriction else nil
 	local colorOverride = if options then options.MarkingColor else nil
+	local dashLengthOverride = if options then options.DashLengthM else nil
+	local dashGapOverride = if options then options.DashGapM else nil
 
 	local startOffsets = offsetsFor(componentsStart)
 	local endOffsets = offsetsFor(componentsEnd)
@@ -591,8 +595,8 @@ function Markings.Compute(
 			OffsetEndM = offsetEnd,
 			Line = spec.Line,
 			Color = color,
-			DashLengthM = spec.DashLengthM or style.DashLengthM,
-			DashGapM = spec.DashGapM or style.DashGapM,
+			DashLengthM = dashLengthOverride or spec.DashLengthM or style.DashLengthM,
+			DashGapM = dashGapOverride or spec.DashGapM or style.DashGapM,
 		})
 	end
 
@@ -612,8 +616,8 @@ function Markings.Compute(
 			OffsetEndM = offsetEnd,
 			Line = lineType,
 			Color = color,
-			DashLengthM = dashLengthM or style.DashLengthM,
-			DashGapM = dashGapM or style.DashGapM,
+			DashLengthM = dashLengthOverride or dashLengthM or style.DashLengthM,
+			DashGapM = dashGapOverride or dashGapM or style.DashGapM,
 		})
 	end
 
@@ -636,30 +640,29 @@ function Markings.Compute(
 		local previousIsRoadway = previousComponent and RoadProfile.IsRoadway(previousComponent.Kind)
 
 		if isRoadway then
-			-- Edge line at the left edge of a roadway run
-			if not previousIsRoadway and component.Kind == "Drive" then
-				addSpec(startOffsets[i].Left + inset, endOffsets[i].Left + inset,
-					style.EdgeLine, style.EdgeLine.Color)
-			end
-			-- Edge line at the right edge of a roadway run
-			if not nextIsRoadway and component.Kind == "Drive" then
-				addSpec(startOffsets[i].Right - inset, endOffsets[i].Right - inset,
-					style.EdgeLine, style.EdgeLine.Color)
-			end
+			local leftIsKerb = previousComponent == nil or RoadProfile.IsRaised(previousComponent.Kind)
+			local rightIsKerb = nextComponent == nil or RoadProfile.IsRaised(nextComponent.Kind)
 
-			-- Kerb restriction lines at roadway edges that meet a kerb
-			if kerbLineType then
-				local leftIsKerb = previousComponent == nil
-					or RoadProfile.IsRaised(previousComponent.Kind)
-				local rightIsKerb = nextComponent == nil
-					or RoadProfile.IsRaised(nextComponent.Kind)
-				if leftIsKerb then
+			-- Left edge of a roadway run: kerb restriction line REPLACES the
+			-- plain region edge line (they occupy the same physical spot -
+			-- a no-parking line already marks the roadway edge).
+			if not previousIsRoadway and component.Kind == "Drive" then
+				if kerbLineType and leftIsKerb then
 					addLine(startOffsets[i].Left + kerbInset, endOffsets[i].Left + kerbInset,
 						kerbLineType, style.YellowMarking)
+				else
+					addSpec(startOffsets[i].Left + inset, endOffsets[i].Left + inset,
+						style.EdgeLine, style.EdgeLine.Color)
 				end
-				if rightIsKerb then
+			end
+			-- Right edge of a roadway run: same rule
+			if not nextIsRoadway and component.Kind == "Drive" then
+				if kerbLineType and rightIsKerb then
 					addLine(startOffsets[i].Right - kerbInset, endOffsets[i].Right - kerbInset,
 						kerbLineType, style.YellowMarking)
+				else
+					addSpec(startOffsets[i].Right - inset, endOffsets[i].Right - inset,
+						style.EdgeLine, style.EdgeLine.Color)
 				end
 			end
 		end
@@ -978,6 +981,8 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		local lines = Markings.Compute(componentsStart, componentsEnd, style, {
 			KerbRestriction = options.ProfileStart.KerbRestriction,
 			MarkingColor = options.ProfileStart.MarkingColor,
+			DashLengthM = options.ProfileStart.MarkingDashLengthM,
+			DashGapM = options.ProfileStart.MarkingDashGapM,
 		})
 		local markingWidth = style.MarkingWidthM * scale
 
@@ -1538,6 +1543,9 @@ export type RoadProfile = {
 	KerbRestriction: string?,
 	-- Force centre/lane line colour: "Auto" | "White" | "Yellow"
 	MarkingColor: string?,
+	-- Override dash geometry for every dashed line on this road; nil = region default
+	MarkingDashLengthM: number?,
+	MarkingDashGapM: number?,
 }
 
 local ComponentKinds: { ComponentKind } = {
@@ -1628,6 +1636,8 @@ function RoadProfile.Clone(profile: RoadProfile): RoadProfile
 		Components = components,
 		KerbRestriction = profile.KerbRestriction,
 		MarkingColor = profile.MarkingColor,
+		MarkingDashLengthM = profile.MarkingDashLengthM,
+		MarkingDashGapM = profile.MarkingDashGapM,
 	}
 end
 
@@ -1717,6 +1727,8 @@ function RoadProfile.Serialize(profile: RoadProfile): { [string]: any }
 		Components = components,
 		KerbRestriction = profile.KerbRestriction,
 		MarkingColor = profile.MarkingColor,
+		MarkingDashLengthM = profile.MarkingDashLengthM,
+		MarkingDashGapM = profile.MarkingDashGapM,
 	}
 end
 
@@ -1752,6 +1764,8 @@ function RoadProfile.Deserialize(raw: { [string]: any }): RoadProfile?
 		Components = components,
 		KerbRestriction = if typeof(raw.KerbRestriction) == "string" then raw.KerbRestriction else nil,
 		MarkingColor = if typeof(raw.MarkingColor) == "string" then raw.MarkingColor else nil,
+		MarkingDashLengthM = if typeof(raw.MarkingDashLengthM) == "number" then raw.MarkingDashLengthM else nil,
+		MarkingDashGapM = if typeof(raw.MarkingDashGapM) == "number" then raw.MarkingDashGapM else nil,
 	}
 end
 
@@ -2336,9 +2350,11 @@ local e = React.createElement
 
 local Theme = require("./Theme")
 local Components = require("./Components")
+local Icons = require("./Icons")
 local LaneEditor = require("./LaneEditor")
 local SettingsGui = require("./SettingsGui")
 local Settings = require("../Settings")
+local RoadProfile = require("../RoadProfile")
 local RoadLibraryModule = require("../RoadLibrary")
 
 type RoadLibrary = RoadLibraryModule.RoadLibrary
@@ -2351,12 +2367,15 @@ local function BuildPage(props: {
 	Hint: string,
 	Elevation: number,
 	ProfileId: string?,
+	ActiveProfile: RoadProfile.RoadProfile?,
 	EndProfileId: string?,
 	Library: RoadLibrary,
 	Settings: Settings.EasyRoadSettings,
 	SetToolMode: (mode: string) -&gt; (),
 	SetProfileId: (id: string) -&gt; (),
 	SetEndProfileId: (id: string?) -&gt; (),
+	AdjustComponentWidth: (index: number, widthM: number) -&gt; (),
+	SaveActiveProfileAsNew: () -&gt; (),
 	HandleAction: (action: string) -&gt; (),
 	OpenPage: (page: Page) -&gt; (),
 	OnSettingsChanged: () -&gt; (),
@@ -2462,6 +2481,46 @@ local function BuildPage(props: {
 			Grow = true,
 		})
 
+		if props.ActiveProfile then
+			local activeProfile = props.ActiveProfile
+			children.WidthsSection = e(Components.Section, {
+				Text = "Adjust Widths",
+				LayoutOrder = 7,
+			})
+			for index, component in activeProfile.Components do
+				children["Width" .. index] = e(Components.Row, {
+					LayoutOrder = 7 + index,
+				}, {
+					Icon = e("ImageLabel", {
+						Image = Icons.ForKind[component.Kind] or Icons.Lane,
+						BackgroundTransparency = 1,
+						Size = UDim2.new(0, 20, 0, 20),
+						ScaleType = Enum.ScaleType.Fit,
+						LayoutOrder = 1,
+					}),
+					Label = e(Components.Label, {
+						Text = component.Kind
+							.. (if component.Direction &gt; 0 then " →" elseif component.Direction &lt; 0 then " ←" else ""),
+						LayoutOrder = 2,
+					}),
+					Field = e(Components.NumberField, {
+						Value = component.WidthM,
+						Min = 0.1,
+						Max = 30,
+						OnChanged = function(value: number)
+							props.AdjustComponentWidth(index, value)
+						end,
+						LayoutOrder = 3,
+					}),
+				})
+			end
+			children.SaveAsNewRoad = e(Components.Button, {
+				Text = "Save as New Road...",
+				OnClick = props.SaveActiveProfileAsNew,
+				LayoutOrder = 8 + #activeProfile.Components,
+			})
+		end
+
 		children.BankToggle = e(Components.Checkbox, {
 			Label = "Superelevation (banking)",
 			Checked = props.Settings.SuperelevationMode ~= "Off",
@@ -2469,10 +2528,10 @@ local function BuildPage(props: {
 				props.Settings.SuperelevationMode = if checked then "Auto" else "Off"
 				props.OnSettingsChanged()
 			end,
-			LayoutOrder = 7,
+			LayoutOrder = 50,
 		})
 		children.DesignSpeed = props.Settings.SuperelevationMode ~= "Off" and e(Components.Row, {
-			LayoutOrder = 8,
+			LayoutOrder = 51,
 		}, {
 			Label = e(Components.Label, {
 				Text = "Design speed (km/h)",
@@ -2492,7 +2551,7 @@ local function BuildPage(props: {
 
 		children.StatusSection = e(Components.Section, {
 			Text = "Placement",
-			LayoutOrder = 9,
+			LayoutOrder = 52,
 		})
 		children.Hint = e("TextLabel", {
 			Text = props.Hint,
@@ -2504,17 +2563,17 @@ local function BuildPage(props: {
 			TextSize = Theme.TEXT_SIZE,
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextWrapped = true,
-			LayoutOrder = 10,
+			LayoutOrder = 53,
 		})
 		children.Elevation = e(Components.Label, {
 			Text = string.format("Elevation: %+g studs  (R / F to change)", props.Elevation),
 			Dim = true,
-			LayoutOrder = 11,
+			LayoutOrder = 54,
 		})
 		children.Keys = e(Components.Label, {
 			Text = "Right-click / Esc: cancel placement",
 			Dim = true,
-			LayoutOrder = 12,
+			LayoutOrder = 55,
 		})
 		children.Stop = e(Components.Button, {
 			Text = "Stop Building",
@@ -2522,16 +2581,16 @@ local function BuildPage(props: {
 			OnClick = function()
 				props.HandleAction("close")
 			end,
-			LayoutOrder = 13,
+			LayoutOrder = 56,
 		})
 	end
 
 	children.NavSection = e(Components.Section, {
 		Text = "Configure",
-		LayoutOrder = 20,
+		LayoutOrder = 60,
 	})
 	children.Nav = e(Components.Row, {
-		LayoutOrder = 21,
+		LayoutOrder = 61,
 	}, {
 		Editor = e(Components.Button, {
 			Text = "Edit Roads...",
@@ -2577,12 +2636,15 @@ local function EasyRoadGui(props: {
 	Hint: string,
 	Elevation: number,
 	ProfileId: string?,
+	ActiveProfile: RoadProfile.RoadProfile?,
 	EndProfileId: string?,
 	Library: RoadLibrary,
 	Settings: Settings.EasyRoadSettings,
 	SetToolMode: (mode: string) -&gt; (),
 	SetProfileId: (id: string) -&gt; (),
 	SetEndProfileId: (id: string?) -&gt; (),
+	AdjustComponentWidth: (index: number, widthM: number) -&gt; (),
+	SaveActiveProfileAsNew: () -&gt; (),
 	HandleAction: (action: string) -&gt; (),
 	OnSettingsChanged: () -&gt; (),
 	OnLibraryChanged: () -&gt; (),
@@ -2592,6 +2654,7 @@ local function EasyRoadGui(props: {
 	if page == "editor" then
 		return e(LaneEditor, {
 			Library = props.Library,
+			Settings = props.Settings,
 			OnLibraryChanged = props.OnLibraryChanged,
 			OnClose = function()
 				setPage("build" :: Page)
@@ -2613,12 +2676,15 @@ local function EasyRoadGui(props: {
 		Hint = props.Hint,
 		Elevation = props.Elevation,
 		ProfileId = props.ProfileId,
+		ActiveProfile = props.ActiveProfile,
 		EndProfileId = props.EndProfileId,
 		Library = props.Library,
 		Settings = props.Settings,
 		SetToolMode = props.SetToolMode,
 		SetProfileId = props.SetProfileId,
 		SetEndProfileId = props.SetEndProfileId,
+		AdjustComponentWidth = props.AdjustComponentWidth,
+		SaveActiveProfileAsNew = props.SaveActiveProfileAsNew,
 		HandleAction = props.HandleAction,
 		OpenPage = function(newPage: Page)
 			setPage(newPage)
@@ -2673,6 +2739,8 @@ local Components = require("./Components")
 local Icons = require("./Icons")
 local RoadProfile = require("../RoadProfile")
 local RoadLibraryModule = require("../RoadLibrary")
+local RegionStyles = require("../RegionStyles")
+local Settings = require("../Settings")
 
 type RoadLibrary = RoadLibraryModule.RoadLibrary
 
@@ -2815,10 +2883,12 @@ end
 
 local function LaneEditor(props: {
 	Library: RoadLibrary,
+	Settings: Settings.EasyRoadSettings,
 	OnLibraryChanged: () -&gt; (),
 	OnClose: () -&gt; (),
 })
 	local library = props.Library
+	local regionStyle = RegionStyles.Get(props.Settings.RegionId)
 	-- false = nothing selected (React state can't reliably hold nil)
 	local editing: RoadProfile.RoadProfile | false, setEditing = React.useState(
 		false :: RoadProfile.RoadProfile | false
@@ -3030,8 +3100,60 @@ local function LaneEditor(props: {
 			}),
 		})
 
-		children.Actions = e(Components.Row, {
+		children.DashRow = e(Components.Row, {
 			LayoutOrder = afterComponents + 4,
+		}, {
+			Label = e(Components.Label, {
+				Text = "Dash spacing",
+				LayoutOrder = 1,
+				Width = 80,
+			}),
+			LengthLabel = e(Components.Label, {
+				Text = "len(m)",
+				Dim = true,
+				LayoutOrder = 2,
+			}),
+			LengthField = e(Components.NumberField, {
+				Value = profile.MarkingDashLengthM or regionStyle.DashLengthM,
+				Min = 0.25,
+				Max = 20,
+				OnChanged = function(value: number)
+					updateEditing(function(copy)
+						copy.MarkingDashLengthM = value
+					end)
+				end,
+				LayoutOrder = 3,
+			}),
+			GapLabel = e(Components.Label, {
+				Text = "gap(m)",
+				Dim = true,
+				LayoutOrder = 4,
+			}),
+			GapField = e(Components.NumberField, {
+				Value = profile.MarkingDashGapM or regionStyle.DashGapM,
+				Min = 0.25,
+				Max = 30,
+				OnChanged = function(value: number)
+					updateEditing(function(copy)
+						copy.MarkingDashGapM = value
+					end)
+				end,
+				LayoutOrder = 5,
+			}),
+			Reset = (profile.MarkingDashLengthM ~= nil or profile.MarkingDashGapM ~= nil) and e(Components.Button, {
+				Text = "Reset",
+				OnClick = function()
+					updateEditing(function(copy)
+						copy.MarkingDashLengthM = nil
+						copy.MarkingDashGapM = nil
+					end)
+				end,
+				LayoutOrder = 6,
+			}),
+		})
+
+		children.Actions = e(Components.Row, {
+			LayoutOrder = afterComponents + 5,
 		}, {
 			Save = e(Components.Button, {
 				Text = if profile.BuiltIn then "Save as Copy" else "Save",
@@ -3955,6 +4077,7 @@ local Signal = require(Packages.Signal)
 
 local Settings = require("./Settings")
 local RegionStyles = require("./RegionStyles")
+local RoadProfile = require("./RoadProfile")
 local createRoadLibrary = require("./RoadLibrary")
 local createRoadSession = require("./createRoadSession")
 local EasyRoadGui = require("./UI/EasyRoadGui")
@@ -4040,6 +4163,10 @@ return function(
 			Hint = if currentSession then currentSession.GetHint() else "",
 			Elevation = if currentSession then currentSession.GetElevation() else 0,
 			ProfileId = if currentSession then currentSession.GetProfile().Id else settings.DefaultProfileId,
+			-- The full active profile (which may carry session-only width
+			-- tweaks) so the build HUD can list and edit component widths
+			-- without touching the saved library road.
+			ActiveProfile = if currentSession then currentSession.GetProfile() else nil,
 			EndProfileId = if currentSession and currentSession.GetEndProfile()
 				then (currentSession.GetEndProfile() :: any).Id
 				else nil,
@@ -4065,6 +4192,37 @@ return function(
 				if currentSession then
 					currentSession.SetEndProfile(if id then library.Get(id) else nil)
 				end
+			end,
+			-- Session-only width tweak: clones the active profile, edits one
+			-- component's width, and feeds it straight to the session. Does
+			-- NOT touch the saved library road unless explicitly saved.
+			AdjustComponentWidth = function(index: number, widthM: number)
+				if not currentSession then
+					return
+				end
+				local clone = RoadProfile.Clone(currentSession.GetProfile())
+				local component = clone.Components[index]
+				if not component then
+					return
+				end
+				component.WidthM = math.max(widthM, 0.1)
+				currentSession.SetProfile(clone)
+				updateUI()
+			end,
+			SaveActiveProfileAsNew = function()
+				if not currentSession then
+					return
+				end
+				local clone = RoadProfile.Clone(currentSession.GetProfile())
+				clone.Id = "user_" .. tostring(os.time())
+				clone.Name = clone.Name .. " (Modified)"
+				clone.Category = "Custom"
+				clone.BuiltIn = false
+				library.SaveUserProfile(clone)
+				settings.DefaultProfileId = clone.Id
+				currentSession.SetProfile(clone)
+				persist()
+				updateUI()
 			end,
 			HandleAction = handleAction,
 			OnSettingsChanged = function()

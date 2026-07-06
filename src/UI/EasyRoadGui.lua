@@ -11,9 +11,11 @@ local e = React.createElement
 
 local Theme = require("./Theme")
 local Components = require("./Components")
+local Icons = require("./Icons")
 local LaneEditor = require("./LaneEditor")
 local SettingsGui = require("./SettingsGui")
 local Settings = require("../Settings")
+local RoadProfile = require("../RoadProfile")
 local RoadLibraryModule = require("../RoadLibrary")
 
 type RoadLibrary = RoadLibraryModule.RoadLibrary
@@ -26,12 +28,15 @@ local function BuildPage(props: {
 	Hint: string,
 	Elevation: number,
 	ProfileId: string?,
+	ActiveProfile: RoadProfile.RoadProfile?,
 	EndProfileId: string?,
 	Library: RoadLibrary,
 	Settings: Settings.EasyRoadSettings,
 	SetToolMode: (mode: string) -> (),
 	SetProfileId: (id: string) -> (),
 	SetEndProfileId: (id: string?) -> (),
+	AdjustComponentWidth: (index: number, widthM: number) -> (),
+	SaveActiveProfileAsNew: () -> (),
 	HandleAction: (action: string) -> (),
 	OpenPage: (page: Page) -> (),
 	OnSettingsChanged: () -> (),
@@ -137,6 +142,46 @@ local function BuildPage(props: {
 			Grow = true,
 		})
 
+		if props.ActiveProfile then
+			local activeProfile = props.ActiveProfile
+			children.WidthsSection = e(Components.Section, {
+				Text = "Adjust Widths",
+				LayoutOrder = 7,
+			})
+			for index, component in activeProfile.Components do
+				children["Width" .. index] = e(Components.Row, {
+					LayoutOrder = 7 + index,
+				}, {
+					Icon = e("ImageLabel", {
+						Image = Icons.ForKind[component.Kind] or Icons.Lane,
+						BackgroundTransparency = 1,
+						Size = UDim2.new(0, 20, 0, 20),
+						ScaleType = Enum.ScaleType.Fit,
+						LayoutOrder = 1,
+					}),
+					Label = e(Components.Label, {
+						Text = component.Kind
+							.. (if component.Direction > 0 then " →" elseif component.Direction < 0 then " ←" else ""),
+						LayoutOrder = 2,
+					}),
+					Field = e(Components.NumberField, {
+						Value = component.WidthM,
+						Min = 0.1,
+						Max = 30,
+						OnChanged = function(value: number)
+							props.AdjustComponentWidth(index, value)
+						end,
+						LayoutOrder = 3,
+					}),
+				})
+			end
+			children.SaveAsNewRoad = e(Components.Button, {
+				Text = "Save as New Road...",
+				OnClick = props.SaveActiveProfileAsNew,
+				LayoutOrder = 8 + #activeProfile.Components,
+			})
+		end
+
 		children.BankToggle = e(Components.Checkbox, {
 			Label = "Superelevation (banking)",
 			Checked = props.Settings.SuperelevationMode ~= "Off",
@@ -144,10 +189,10 @@ local function BuildPage(props: {
 				props.Settings.SuperelevationMode = if checked then "Auto" else "Off"
 				props.OnSettingsChanged()
 			end,
-			LayoutOrder = 7,
+			LayoutOrder = 50,
 		})
 		children.DesignSpeed = props.Settings.SuperelevationMode ~= "Off" and e(Components.Row, {
-			LayoutOrder = 8,
+			LayoutOrder = 51,
 		}, {
 			Label = e(Components.Label, {
 				Text = "Design speed (km/h)",
@@ -167,7 +212,7 @@ local function BuildPage(props: {
 
 		children.StatusSection = e(Components.Section, {
 			Text = "Placement",
-			LayoutOrder = 9,
+			LayoutOrder = 52,
 		})
 		children.Hint = e("TextLabel", {
 			Text = props.Hint,
@@ -179,17 +224,17 @@ local function BuildPage(props: {
 			TextSize = Theme.TEXT_SIZE,
 			TextXAlignment = Enum.TextXAlignment.Left,
 			TextWrapped = true,
-			LayoutOrder = 10,
+			LayoutOrder = 53,
 		})
 		children.Elevation = e(Components.Label, {
 			Text = string.format("Elevation: %+g studs  (R / F to change)", props.Elevation),
 			Dim = true,
-			LayoutOrder = 11,
+			LayoutOrder = 54,
 		})
 		children.Keys = e(Components.Label, {
 			Text = "Right-click / Esc: cancel placement",
 			Dim = true,
-			LayoutOrder = 12,
+			LayoutOrder = 55,
 		})
 		children.Stop = e(Components.Button, {
 			Text = "Stop Building",
@@ -197,16 +242,16 @@ local function BuildPage(props: {
 			OnClick = function()
 				props.HandleAction("close")
 			end,
-			LayoutOrder = 13,
+			LayoutOrder = 56,
 		})
 	end
 
 	children.NavSection = e(Components.Section, {
 		Text = "Configure",
-		LayoutOrder = 20,
+		LayoutOrder = 60,
 	})
 	children.Nav = e(Components.Row, {
-		LayoutOrder = 21,
+		LayoutOrder = 61,
 	}, {
 		Editor = e(Components.Button, {
 			Text = "Edit Roads...",
@@ -252,12 +297,15 @@ local function EasyRoadGui(props: {
 	Hint: string,
 	Elevation: number,
 	ProfileId: string?,
+	ActiveProfile: RoadProfile.RoadProfile?,
 	EndProfileId: string?,
 	Library: RoadLibrary,
 	Settings: Settings.EasyRoadSettings,
 	SetToolMode: (mode: string) -> (),
 	SetProfileId: (id: string) -> (),
 	SetEndProfileId: (id: string?) -> (),
+	AdjustComponentWidth: (index: number, widthM: number) -> (),
+	SaveActiveProfileAsNew: () -> (),
 	HandleAction: (action: string) -> (),
 	OnSettingsChanged: () -> (),
 	OnLibraryChanged: () -> (),
@@ -267,6 +315,7 @@ local function EasyRoadGui(props: {
 	if page == "editor" then
 		return e(LaneEditor, {
 			Library = props.Library,
+			Settings = props.Settings,
 			OnLibraryChanged = props.OnLibraryChanged,
 			OnClose = function()
 				setPage("build" :: Page)
@@ -288,12 +337,15 @@ local function EasyRoadGui(props: {
 		Hint = props.Hint,
 		Elevation = props.Elevation,
 		ProfileId = props.ProfileId,
+		ActiveProfile = props.ActiveProfile,
 		EndProfileId = props.EndProfileId,
 		Library = props.Library,
 		Settings = props.Settings,
 		SetToolMode = props.SetToolMode,
 		SetProfileId = props.SetProfileId,
 		SetEndProfileId = props.SetEndProfileId,
+		AdjustComponentWidth = props.AdjustComponentWidth,
+		SaveActiveProfileAsNew = props.SaveActiveProfileAsNew,
 		HandleAction = props.HandleAction,
 		OpenPage = function(newPage: Page)
 			setPage(newPage)
