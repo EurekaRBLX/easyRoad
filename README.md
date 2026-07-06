@@ -14,6 +14,16 @@ rojo build default.project.json -o EasyRoad.rbxm
 Then drag the `.rbxm` into your Studio plugins folder (or use
 `rojo build --plugin EasyRoad.rbxm`... i.e. install as a local plugin).
 
+**No toolchain?** Two alternatives:
+
+* Download the prebuilt [`dist/EasyRoad.rbxmx`](dist/EasyRoad.rbxmx) from
+  this repo and drop it in your Studio plugins folder (Studio loads
+  `.rbxmx` the same as `.rbxm`). It is rebuilt whenever the source changes.
+* CI also builds `EasyRoad.rbxm` on every push (see the Actions tab) —
+  grab the artifact from the latest run.
+
+To rebuild `dist/` yourself without Rojo: `python3 tools/build_rbxmx.py`.
+
 ## Using it
 
 1. Click the **EasyRoad** toolbar button. The panel opens and the placement
