@@ -292,7 +292,7 @@ local function SettingsGui(props: {
 		}),
 
 		Close = e(Components.Button, {
-			Text = "Back",
+			Text = "Close",
 			OnClick = props.OnClose,
 			LayoutOrder = 100,
 		}),

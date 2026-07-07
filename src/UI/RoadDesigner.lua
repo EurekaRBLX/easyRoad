@@ -492,6 +492,13 @@ end
 
 -- Full designer panel ---------------------------------------------------------------
 
+export type PanelPicker = {
+	Options: { Components.DropdownOption },
+	SelectedId: string?,
+	OnPick: (id: string) -> (),
+	OnNew: (() -> ())?,
+}
+
 local function Panel(props: {
 	Profile: RoadProfile.RoadProfile,
 	RegionStyle: RegionStyles.RegionStyle,
@@ -499,6 +506,7 @@ local function Panel(props: {
 	OnRename: ((name: string) -> ())?,
 	Subtitle: string?,
 	ReadOnlyLanes: boolean?,
+	Picker: PanelPicker?, -- Road switcher shown atop the properties card
 	Actions: { DesignerAction },
 })
 	local profile = props.Profile
@@ -511,8 +519,26 @@ local function Panel(props: {
 	-- Properties card
 	local propertiesChildren: { [string]: any } = {}
 	propertiesChildren.Header = e(Components.Section, { Text = "Road Properties", LayoutOrder = 1 })
+	if props.Picker then
+		local picker = props.Picker :: PanelPicker
+		propertiesChildren.PickerRow = e(Components.Row, { LayoutOrder = 2 }, {
+			Dropdown = e(Components.Dropdown, {
+				Options = picker.Options,
+				SelectedId = picker.SelectedId,
+				Placeholder = "Pick a road...",
+				OnSelected = picker.OnPick,
+				LayoutOrder = 1,
+				Grow = true,
+			}),
+			New = picker.OnNew and e(Components.Button, {
+				Text = "New",
+				OnClick = picker.OnNew :: () -> (),
+				LayoutOrder = 2,
+			}),
+		})
+	end
 	if props.OnRename then
-		propertiesChildren.NameRow = e(Components.Row, { LayoutOrder = 2 }, {
+		propertiesChildren.NameRow = e(Components.Row, { LayoutOrder = 3 }, {
 			Label = e(Components.Label, { Text = "Name", LayoutOrder = 1, Width = 44 }),
 			NameBox = e("TextBox", {
 				Text = profile.Name,
@@ -537,18 +563,18 @@ local function Panel(props: {
 	else
 		propertiesChildren.NameLabel = e(Components.Label, {
 			Text = profile.Name,
-			LayoutOrder = 2,
+			LayoutOrder = 3,
 		})
 	end
 	if props.Subtitle then
 		propertiesChildren.Subtitle = e(Components.Label, {
 			Text = props.Subtitle,
 			Dim = true,
-			LayoutOrder = 3,
+			LayoutOrder = 4,
 		})
 	end
 	local afterOptions =
-		ProfileFields.InsertMarkingOptions(propertiesChildren, profile, props.RegionStyle, 4, props.OnChange)
+		ProfileFields.InsertMarkingOptions(propertiesChildren, profile, props.RegionStyle, 5, props.OnChange)
 	local actionButtons: { [string]: any } = {}
 	for index, action in props.Actions do
 		actionButtons["Action" .. index] = e(Components.Button, {
@@ -602,6 +628,7 @@ local RoadDesigner = {
 	LaneStripCard = LaneStripCard,
 	PaletteCard = PaletteCard,
 	ScrollColumn = scrollColumn,
+	DecorateCard = decorateCard,
 	DefaultWidthFor = defaultWidthFor,
 }
 

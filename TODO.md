@@ -23,6 +23,22 @@ Not user-facing; internal planning only.
 
 ## Recently shipped
 
+- **Top mode bar + separated surfaces (CS2 architecture).** A glass top
+  bar (`UI/TopBar.lua`) toggled by the toolbar button switches between the
+  plugin's three functions so nothing is crammed into one surface:
+  - *Road Tools* — placement session with a compact CS2-style tool panel
+    bottom-left (`UI/BuildBar.lua`: tool mode, road picker, widen-to,
+    banking, elevation, hints, stop) — like the CS2 road tool box.
+  - *Road Editor* — the full designer bottom bar (properties | lane strip
+    | modules palette) for creating/editing road types, now with a road
+    picker + New button directly in the properties card
+    (`RoadDesigner.Panel` `Picker` prop). Tools/Editor are exclusive modes.
+  - *Settings* — the grand settings (region profile, scale, banking,
+    snapping, geometry) live in the docked Studio sidebar panel
+    (`SettingsGui` renders straight into the DockWidgetPluginGui).
+  `UI/EasyRoadGui.lua` and `UI/LaneEditor.lua` (the old page-routed dock
+  UI) are deleted. Selecting a placed road still opens the designer bound
+  to that road, independent of the top bar.
 - **CS2-style build bar; old right-side panel removed.** The floating
   right-anchored panel is gone. While placing roads, the bottom bar now
   shows [Road Tool card | live lane strip | Modules palette]: tool modes,

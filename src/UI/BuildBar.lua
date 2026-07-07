@@ -1,13 +1,12 @@
 --!strict
--- The build bar: CS2-style bottom-of-viewport UI shown while placing roads.
+-- The road tool panel: compact CS2-style placement panel (bottom-left of
+-- the viewport) shown while placing roads.
 --
---   [ ROAD TOOL card ]  [ live lane strip of the active road ]  [ MODULES ]
---
--- The tool card holds tool mode (straight / curve / freeform), the road
--- picker, the widen/narrow transition target, banking, elevation and
--- placement hints. The lane strip edits the ACTIVE road live - session-only
--- tweaks that show up in the preview immediately and can be kept with
--- "Save as New Road...". This replaces the old right-side dock-style panel.
+-- Placement controls only - tool mode, which road to place, widen/narrow
+-- transition target, banking, elevation and hints. Creating or editing
+-- road types is the Road Editor's job (the full designer), and the grand
+-- settings live in the docked sidebar panel, so this stays small like the
+-- CS2 road tool box.
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -15,11 +14,10 @@ local Packages = Plugin.Packages
 local React = require(Packages.React)
 local e = React.createElement
 
+local Theme = require("./Theme")
 local Components = require("./Components")
 local RoadDesigner = require("./RoadDesigner")
-local RoadProfile = require("../RoadProfile")
 local RoadLibraryModule = require("../RoadLibrary")
-local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
 
 type RoadLibrary = RoadLibraryModule.RoadLibrary
@@ -34,20 +32,10 @@ local function BuildBar(props: {
 	SetEndProfileId: (id: string?) -> (),
 	Settings: Settings.EasyRoadSettings,
 	OnSettingsChanged: () -> (),
-	Profile: RoadProfile.RoadProfile,
-	OnChangeProfile: (transform: (profile: RoadProfile.RoadProfile) -> ()) -> (),
-	SaveAsNew: () -> (),
 	Hint: string,
 	Elevation: number,
-	RegionStyle: RegionStyles.RegionStyle,
 	OnStop: () -> (),
 })
-	local profile = props.Profile
-	local count = #profile.Components
-
-	local selectedIndex, setSelectedIndex = React.useState(0)
-	local sel: number? = if selectedIndex >= 1 and selectedIndex <= count then selectedIndex else nil
-
 	local profileOptions: { Components.DropdownOption } = {}
 	for _, libraryProfile in props.Library.GetAll() do
 		table.insert(profileOptions, { Id = libraryProfile.Id, Text = libraryProfile.Name })
@@ -59,10 +47,10 @@ local function BuildBar(props: {
 		table.insert(endProfileOptions, { Id = libraryProfile.Id, Text = libraryProfile.Name })
 	end
 
-	-- Tool card ------------------------------------------------------------------
-	local toolChildren: { [string]: any } = {}
-	toolChildren.Header = e(Components.Section, { Text = "Road Tool", LayoutOrder = 1 })
-	toolChildren.Tools = e(Components.Row, { LayoutOrder = 2 }, {
+	local children: { [string]: any } = {}
+	RoadDesigner.DecorateCard(children)
+	children.Header = e(Components.Section, { Text = "Road Tool", LayoutOrder = 1 })
+	children.Tools = e(Components.Row, { LayoutOrder = 2 }, {
 		Straight = e(Components.Button, {
 			Text = "Straight",
 			Selected = props.ToolMode == "Straight",
@@ -91,7 +79,7 @@ local function BuildBar(props: {
 			Grow = true,
 		}),
 	})
-	toolChildren.Profile = e(Components.Dropdown, {
+	children.Profile = e(Components.Dropdown, {
 		Options = profileOptions,
 		SelectedId = props.ProfileId,
 		Placeholder = "Pick a road...",
@@ -99,7 +87,7 @@ local function BuildBar(props: {
 		LayoutOrder = 3,
 		Grow = true,
 	})
-	toolChildren.Transition = e(Components.Row, { LayoutOrder = 4 }, {
+	children.Transition = e(Components.Row, { LayoutOrder = 4 }, {
 		Label = e(Components.Label, { Text = "Widen to", LayoutOrder = 1, Width = 60 }),
 		Dropdown = e(Components.Dropdown, {
 			Options = endProfileOptions,
@@ -111,7 +99,7 @@ local function BuildBar(props: {
 			Grow = true,
 		}),
 	})
-	toolChildren.BankToggle = e(Components.Checkbox, {
+	children.BankToggle = e(Components.Checkbox, {
 		Label = "Superelevation (banking)",
 		Checked = props.Settings.SuperelevationMode ~= "Off",
 		OnToggled = function(checked: boolean)
@@ -120,7 +108,7 @@ local function BuildBar(props: {
 		end,
 		LayoutOrder = 5,
 	})
-	toolChildren.Speed = props.Settings.SuperelevationMode ~= "Off"
+	children.Speed = props.Settings.SuperelevationMode ~= "Off"
 		and e(Components.Row, { LayoutOrder = 6 }, {
 			Label = e(Components.Label, { Text = "Speed (km/h)", LayoutOrder = 1, Width = 90 }),
 			Field = e(Components.NumberField, {
@@ -134,60 +122,39 @@ local function BuildBar(props: {
 				LayoutOrder = 2,
 			}),
 		})
-	toolChildren.Elevation = e(Components.Label, {
+	children.Elevation = e(Components.Label, {
 		Text = string.format("Elevation %+g studs (R / F)", props.Elevation),
 		Dim = true,
 		LayoutOrder = 7,
 	})
-	toolChildren.Hint = e(Components.Label, {
+	children.Hint = e("TextLabel", {
 		Text = props.Hint,
-		Dim = true,
+		TextColor3 = Theme.DIM,
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		Font = Theme.FONT,
+		TextSize = Theme.TEXT_SIZE,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextWrapped = true,
 		LayoutOrder = 8,
 	})
-	toolChildren.SaveAsNew = e(Components.Button, {
-		Text = "Save as New Road...",
-		OnClick = props.SaveAsNew,
-		LayoutOrder = 9,
-	})
-	toolChildren.Stop = e(Components.Button, {
+	children.Stop = e(Components.Button, {
 		Text = "Stop Building",
 		Danger = true,
 		OnClick = props.OnStop,
-		LayoutOrder = 10,
+		LayoutOrder = 9,
 	})
 
-	return e("Frame", {
+	return e("ScrollingFrame", {
 		Size = UDim2.fromScale(1, 1),
-		BackgroundTransparency = 1,
-	}, {
-		Layout = e("UIListLayout", {
-			FillDirection = Enum.FillDirection.Horizontal,
-			SortOrder = Enum.SortOrder.LayoutOrder,
-			Padding = UDim.new(0, 8),
-		}),
-		Tool = RoadDesigner.ScrollColumn(240, 1, toolChildren),
-		StripCard = e(RoadDesigner.LaneStripCard, {
-			Profile = profile,
-			SelectedIndex = selectedIndex,
-			OnSelect = setSelectedIndex,
-			OnChange = props.OnChangeProfile,
-			LayoutOrder = 2,
-		}),
-		Palette = e(RoadDesigner.PaletteCard, {
-			OnInsert = function(kind: RoadProfile.ComponentKind)
-				local at = if sel then (sel :: number) + 1 else count + 1
-				props.OnChangeProfile(function(copy)
-					table.insert(copy.Components, at, {
-						Kind = kind,
-						WidthM = RoadDesigner.DefaultWidthFor(kind, props.RegionStyle),
-						Direction = if RoadProfile.IsDirectional(kind) then 1 else 0,
-					})
-				end)
-				setSelectedIndex(at)
-			end,
-			LayoutOrder = 3,
-		}),
-	})
+		BackgroundColor3 = Theme.GLASS_BG,
+		BackgroundTransparency = Theme.GLASS_TRANSPARENCY,
+		BorderSizePixel = 0,
+		CanvasSize = UDim2.new(1, 0, 0, 0),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollBarThickness = 4,
+	}, children)
 end
 
 return BuildBar
