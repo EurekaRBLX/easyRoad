@@ -21,6 +21,15 @@ local RoadProfile = require("./RoadProfile")
 local RegionStyles = require("./RegionStyles")
 local Settings = require("./Settings")
 
+-- Seed data for continuing a build session from this road's end (the
+-- "Place More" pie-menu action) - the exact same shape createRoadSession's
+-- SessionSeed expects, plus which profile to start the continuation with.
+export type Continuation = {
+	Position: Vector3,
+	Tangent: Vector3,
+	Profile: RoadProfile.RoadProfile,
+}
+
 export type RoadEditSession = {
 	ChangeSignal: Signal.Signal<>,
 	GetSelectedRoad: () -> Model?,
@@ -32,6 +41,13 @@ export type RoadEditSession = {
 	Apply: () -> (),
 	Revert: () -> (),
 	Deselect: () -> (),
+	-- Selecting a road first shows a contextual pie menu (Edit Road Segment /
+	-- Place More / Use as Template / Cancel); OpenEditor transitions from
+	-- that menu into the full designer for this same road.
+	IsShowingMenu: () -> boolean,
+	OpenEditor: () -> (),
+	GetAnchorWorldPosition: () -> Vector3?,
+	GetContinuation: () -> Continuation?,
 	Destroy: () -> (),
 }
 
@@ -45,6 +61,7 @@ local function createRoadEditSession(
 	local selectedRoad: Model? = nil
 	local originalData: RoadInstance.RoadData? = nil
 	local editingProfile: RoadProfile.RoadProfile? = nil -- Local staged clone of ProfileStart
+	local showingMenu = false -- true = pie menu, false = full designer
 
 	local function loadSelection()
 		local road: Model? = nil
@@ -60,6 +77,7 @@ local function createRoadEditSession(
 		selectedRoad = road
 		originalData = if road then RoadInstance.Read(road) else nil
 		editingProfile = if originalData then RoadProfile.Clone(originalData.ProfileStart) else nil
+		showingMenu = road ~= nil
 		changeSignal:Fire()
 	end
 
@@ -140,6 +158,36 @@ local function createRoadEditSession(
 
 	function session.Deselect()
 		Selection:Set({})
+	end
+
+	function session.IsShowingMenu(): boolean
+		return showingMenu
+	end
+
+	function session.OpenEditor()
+		showingMenu = false
+		changeSignal:Fire()
+	end
+
+	function session.GetAnchorWorldPosition(): Vector3?
+		if not originalData then
+			return nil
+		end
+		local curve = originalData.Curve
+		return curve:PosAt(curve.Length / 2)
+	end
+
+	function session.GetContinuation(): Continuation?
+		if not originalData then
+			return nil
+		end
+		local curve = originalData.Curve
+		local profile = originalData.ProfileEnd or originalData.ProfileStart
+		return {
+			Position = curve:PosAt(curve.Length),
+			Tangent = curve:TangentAt(curve.Length),
+			Profile = RoadProfile.Clone(profile),
+		}
 	end
 
 	function session.Destroy()

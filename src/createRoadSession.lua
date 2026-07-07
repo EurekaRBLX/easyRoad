@@ -54,12 +54,21 @@ export type UiState = {
 	Hovered: boolean,
 }
 
+-- Continues from an exact existing point/tangent (e.g. "Place More" on an
+-- already-placed road) instead of starting a fresh placement from scratch -
+-- the same state the session is already in right after committing a road.
+export type SessionSeed = {
+	Position: Vector3,
+	Tangent: Vector3,
+}
+
 local function createRoadSession(
 	plugin: Plugin,
 	settings: Settings.EasyRoadSettings,
 	getStyle: () -> RegionStyles.RegionStyle,
 	initialProfile: RoadProfile.RoadProfile,
-	uiState: UiState?
+	uiState: UiState?,
+	seed: SessionSeed?
 ): RoadSession
 	local changeSignal = Signal.new()
 
@@ -67,8 +76,8 @@ local function createRoadSession(
 	local profile = initialProfile
 	local endProfile: RoadProfile.RoadProfile? = nil
 
-	local points: { Vector3 } = {}
-	local lockedTangent: Vector3? = nil
+	local points: { Vector3 } = if seed then { seed.Position } else {}
+	local lockedTangent: Vector3? = if seed then seed.Tangent else nil
 	local hoverPos: Vector3? = nil
 	local elevation = 0
 
@@ -511,6 +520,11 @@ local function createRoadSession(
 			markerFolder = nil
 		end
 		changeSignal:DisconnectAll()
+	end
+
+	if seed then
+		updateMarkers()
+		previewDirty = true
 	end
 
 	return session

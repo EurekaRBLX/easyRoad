@@ -21,55 +21,50 @@ Not user-facing; internal planning only.
   taper zone's station density isn't fine enough, or strip mitering breaks
   down when component count differs across the taper.
 
-## Next up — needs a decision
+## Recently shipped: pie menu (click a placed road)
 
-**Pie-menu / hover-based road editing (CS2-style interaction model).** The
-user's actual vision, described in detail this round, is a bigger change
-than an incremental UI tweak - it replaces "click a placed road, get a
-panel" with a full contextual-menu interaction model:
+The reference the user provided (a screenshot from a CS2-like game) clarified
+that the "pie menu" isn't an actual wedge-sliced radial widget - it's a
+handful of plain pill-shaped buttons scattered around the object (top/left/
+right/bottom), which is much cheaper to build well in Roblox than a true
+radial menu. Shipped this round:
 
-- **Hover** an already-placed road (no tool active) shows a pie/radial
-  menu with at least two actions: **"Open Road Builder"** (continue
-  placing more of that exact road from its endpoint - see the snapping
-  note below) and **"Edit Road Segment"** (a deeper editor for just that
-  segment: lane reconfiguration, marking type per boundary
-  double-white/single-white/dash/"stretch dash" - a marking style not
-  implemented yet, bus stop placement). This is distinct from - and would
-  likely replace or wrap - today's click-to-select `RoadEditSession`/
-  `RoadInspector` flow.
-- **Road Editor entry point** should itself open with a pie menu: "Edit
-  existing road" (opens the library), "Create new road" (starts from an
-  empty layout with zero components, not the current 4-component
-  template), or "Place more of the existing road" (continues building the
-  currently-open road elsewhere).
-- **Numeric key shortcuts** (1/2/3/4 etc., or numpad) as a fast alternative
-  to clicking dropdown/pie options for marking type selection.
-- **Retractable side panels** - the Properties and Modules/Library cards
-  should be collapsible to the side, not permanently docked open.
-- A pie/radial menu is a real, nontrivial GUI widget to build well in
-  Roblox (custom wedge geometry, per-wedge hover hit-testing, no built-in
-  primitive for it) and hover-based detection on placed roads needs new
-  always-on mouse-hover raycast logic distinct from the click-select
-  approach `RoadEditSession` uses today. Given the size, this needs a
-  design pass (how the pie menu coexists with the Road Tools/Editor/
-  Settings top bar, whether "Edit Road Segment" replaces or extends
-  `RoadInspector`) before implementation, rather than being built inline
-  alongside everything else this round.
+- **`UI/PieMenu.lua`**: 4 fixed pill-button slots around a world-space
+  anchor point, camera-tracked every frame via `WorldToViewportPoint` (its
+  own `ScreenGui`, deliberately *not* `IgnoreGuiInset` - that convention
+  matches `WorldToViewportPoint`'s coordinate space, whereas the bottom
+  HUD's `ScreenGui` ignores the inset for the drag-ghost math; the two
+  needed to differ). Hides itself when the anchor is off-screen or behind
+  the camera.
+- Selecting a placed road now shows this menu **first**, before the full
+  designer: **Edit Road Segment** (opens today's `RoadInspector` designer,
+  unchanged), **Place More** (starts a new build session seeded at this
+  road's exact end position/tangent with its exact profile - via
+  `createRoadSession`'s new optional `seed` parameter and
+  `RoadEditSession.GetContinuation()` - no proximity re-snapping needed),
+  **Use as Template** (clones this road's profile into a new user profile
+  and opens the Road Editor with it pre-loaded), **Cancel** (deselects).
+  `RoadEditSession` gained `IsShowingMenu`/`OpenEditor` to track which of
+  the two states (menu vs. full designer) is current for the selected road.
 
-**Persistent segment endpoint memory - already partially true.** The user
-asked that "the system remembers where a road segment ends/starts so we
-can continue building at any time with precision." Every placed road
-already stores its exact start/end position + tangent as attributes
-(`RW_StartPos`/`RW_EndPos`/`RW_StartTan`/`RW_EndTan` - see
-`RoadInstance.lua`), and starting a *new* placement within
-`Settings.SnapRadiusStuds` of any existing road's endpoint already snaps to
-it precisely and locks the tangent (`createRoadSession.lua`'s
-`findEndpointSnap`). What's likely still missing is the pie-menu's "Place
-more of the existing road" entry point specifically: clicking that action
-on an already-selected road should start a build session pre-seeded at
-that exact road's end with its exact profile loaded, without relying on
-proximity/re-clicking near the endpoint. That's a small, well-scoped
-addition once the pie-menu shell exists.
+**Not done yet** (still needs its own design pass, per the reasoning
+below): hover-based (not click-based) triggering, the Road Editor's own
+entry-point pie menu ("Edit existing" / "Create new empty" / "Place more"),
+numeric-key shortcuts for marking selection, retractable side panels, and
+the "stretch dash" marking style / bus stop placement mentioned alongside
+"Edit Road Segment". These remain unscoped:
+
+- **Hover** (rather than click-to-select) as the trigger needs new
+  always-on mouse-hover raycast logic, distinct from the
+  `Selection`-based approach `RoadEditSession` uses today - clicking was
+  the tractable first step; hover is a separate follow-up.
+- **Road Editor's own entry pie menu** and an empty-layout "Create new"
+  (today's New still uses the 4-component starter template, not zero
+  components) haven't been touched.
+- **Numeric key shortcuts** and **retractable side panels** are UI polish
+  on top of the current designer, not started.
+- **"Stretch dash" marking style** isn't a `LineType` `Mesh/Markings.lua`
+  understands yet.
 
 ## Recently shipped
 

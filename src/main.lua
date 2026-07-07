@@ -34,6 +34,7 @@ local BuildBar = require("./UI/BuildBar")
 local TopBar = require("./UI/TopBar")
 local SettingsGui = require("./UI/SettingsGui")
 local Components = require("./UI/Components")
+local PieMenu = require("./UI/PieMenu")
 
 return function(
 	plugin: Plugin,
@@ -63,6 +64,8 @@ return function(
 	local topScreenGui: ScreenGui? = nil
 	local bottomRoot: ReactRoblox.RootType? = nil
 	local bottomScreenGui: ScreenGui? = nil
+	local pieMenuRoot: ReactRoblox.RootType? = nil
+	local pieMenuScreenGui: ScreenGui? = nil
 
 	local updateUI: () -> () = nil :: any
 
@@ -95,13 +98,18 @@ return function(
 		uiState.Hovered = false
 	end
 
-	local function startSession()
+	-- profileOverride/seed power the pie menu's "Place More" action: continue
+	-- building from an exact existing road's end, with its exact profile,
+	-- rather than starting fresh with the default road.
+	local function startSession(seed: createRoadSession.SessionSeed?, profileOverride: RoadProfile.RoadProfile?)
 		if session then
 			return
 		end
 		designProfile = nil -- Tools and Editor are exclusive modes
-		local initialProfile = library.Get(settings.DefaultProfileId) or library.GetDefault()
-		local newSession = createRoadSession(plugin, settings, getStyle, initialProfile, uiState)
+		pluginOpen = true
+		setButtonActive(true)
+		local initialProfile = profileOverride or library.Get(settings.DefaultProfileId) or library.GetDefault()
+		local newSession = createRoadSession(plugin, settings, getStyle, initialProfile, uiState, seed)
 		sessionChangedCn = newSession.ChangeSignal:Connect(function()
 			updateUI()
 		end)
@@ -114,10 +122,12 @@ return function(
 		updateUI()
 	end
 
-	local function openEditor()
+	local function openEditor(sourceProfile: RoadProfile.RoadProfile?)
 		destroySession()
 		plugin:Deactivate()
-		local source = library.Get(settings.DefaultProfileId) or library.GetDefault()
+		pluginOpen = true
+		setButtonActive(true)
+		local source = sourceProfile or library.Get(settings.DefaultProfileId) or library.GetDefault()
 		designProfile = RoadProfile.Clone(source)
 		updateUI()
 	end
@@ -328,7 +338,7 @@ return function(
 				Position = UDim2.new(0, 12, 1, -12),
 				Size = UDim2.new(0, 300, 0, 400),
 			}
-		elseif editSession.GetSelectedRoad() then
+		elseif editSession.GetSelectedRoad() and not editSession.IsShowingMenu() then
 			bottomContent = React.createElement(RoadInspector, {
 				Session = editSession,
 				RegionStyle = getStyle(),
@@ -369,6 +379,81 @@ return function(
 			if bottomScreenGui then
 				bottomScreenGui:Destroy()
 				bottomScreenGui = nil
+			end
+		end
+
+		-- Pie menu -------------------------------------------------------------
+		-- Shown the moment a placed road is selected, before the full
+		-- designer: Edit Road Segment / Place More / Use as Template /
+		-- Cancel, CS2-style. Rendered in its own ScreenGui WITHOUT
+		-- IgnoreGuiInset, matching WorldToViewportPoint's coordinate space
+		-- (the bottom HUD's ScreenGui ignores the inset instead, for the
+		-- drag-ghost math - the two need different conventions).
+		local menuRoad = editSession.GetSelectedRoad()
+		if menuRoad and editSession.IsShowingMenu() and not session and not designProfile then
+			local anchor = editSession.GetAnchorWorldPosition()
+			if anchor then
+				if not pieMenuRoot then
+					local screen = Instance.new("ScreenGui")
+					screen.Name = "EasyRoadPieMenu"
+					screen.ResetOnSpawn = false
+					screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+					screen.Parent = CoreGui
+					pieMenuScreenGui = screen
+					pieMenuRoot = ReactRoblox.createRoot(screen)
+				end
+				assert(pieMenuRoot):render(React.createElement(PieMenu, {
+					WorldPosition = anchor,
+					Top = {
+						Text = "Edit Road Segment",
+						OnClick = function()
+							editSession.OpenEditor()
+						end,
+					},
+					Left = {
+						Text = "Place More",
+						OnClick = function()
+							local continuation = editSession.GetContinuation()
+							editSession.Deselect()
+							if continuation then
+								startSession({
+									Position = continuation.Position,
+									Tangent = continuation.Tangent,
+								}, continuation.Profile)
+							end
+						end,
+					},
+					Right = {
+						Text = "Use as Template",
+						OnClick = function()
+							local profile = editSession.GetProfile()
+							editSession.Deselect()
+							if profile then
+								local clone = RoadProfile.Clone(profile)
+								clone.Id = "user_" .. tostring(os.time())
+								clone.Name = clone.Name .. " (Custom)"
+								clone.Category = "Custom"
+								clone.BuiltIn = false
+								openEditor(clone)
+							end
+						end,
+					},
+					Bottom = {
+						Text = "Cancel",
+						OnClick = function()
+							editSession.Deselect()
+						end,
+					},
+				}))
+			end
+		else
+			if pieMenuRoot then
+				assert(pieMenuRoot):unmount()
+				pieMenuRoot = nil
+			end
+			if pieMenuScreenGui then
+				pieMenuScreenGui:Destroy()
+				pieMenuScreenGui = nil
 			end
 		end
 
@@ -441,6 +526,14 @@ return function(
 		if bottomScreenGui then
 			bottomScreenGui:Destroy()
 			bottomScreenGui = nil
+		end
+		if pieMenuRoot then
+			pieMenuRoot:unmount()
+			pieMenuRoot = nil
+		end
+		if pieMenuScreenGui then
+			pieMenuScreenGui:Destroy()
+			pieMenuScreenGui = nil
 		end
 		editSession.Destroy()
 		editSessionChangedCn:Disconnect()
