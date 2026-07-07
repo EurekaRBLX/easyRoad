@@ -97,12 +97,14 @@ function ProfileFields.InsertMarkingOptions(
 	})
 	order += 1
 
-	children["PF_DashRow"] = e(Components.Row, {
+	-- Split across two narrow rows (rather than one packed row) so this
+	-- fits inside a fixed-width column without spilling past its edge and
+	-- forcing a horizontal scrollbar.
+	children["PF_DashLengthRow"] = e(Components.Row, {
 		LayoutOrder = order,
 	}, {
-		Label = e(Components.Label, { Text = "Dash spacing", LayoutOrder = 1, Width = 80 }),
-		LengthLabel = e(Components.Label, { Text = "len(m)", Dim = true, LayoutOrder = 2 }),
-		LengthField = e(Components.NumberField, {
+		Label = e(Components.Label, { Text = "Dash length (m)", LayoutOrder = 1, Width = 100 }),
+		Field = e(Components.NumberField, {
 			Value = profile.MarkingDashLengthM or regionStyle.DashLengthM,
 			Min = 0.25,
 			Max = 20,
@@ -111,10 +113,17 @@ function ProfileFields.InsertMarkingOptions(
 					copy.MarkingDashLengthM = value
 				end)
 			end,
-			LayoutOrder = 3,
+			LayoutOrder = 2,
+			Width = 48,
 		}),
-		GapLabel = e(Components.Label, { Text = "gap(m)", Dim = true, LayoutOrder = 4 }),
-		GapField = e(Components.NumberField, {
+	})
+	order += 1
+
+	children["PF_DashGapRow"] = e(Components.Row, {
+		LayoutOrder = order,
+	}, {
+		Label = e(Components.Label, { Text = "Dash gap (m)", LayoutOrder = 1, Width = 100 }),
+		Field = e(Components.NumberField, {
 			Value = profile.MarkingDashGapM or regionStyle.DashGapM,
 			Min = 0.25,
 			Max = 30,
@@ -123,7 +132,8 @@ function ProfileFields.InsertMarkingOptions(
 					copy.MarkingDashGapM = value
 				end)
 			end,
-			LayoutOrder = 5,
+			LayoutOrder = 2,
+			Width = 48,
 		}),
 		Reset = (profile.MarkingDashLengthM ~= nil or profile.MarkingDashGapM ~= nil) and e(Components.Button, {
 			Text = "Reset",
@@ -133,7 +143,7 @@ function ProfileFields.InsertMarkingOptions(
 					copy.MarkingDashGapM = nil
 				end)
 			end,
-			LayoutOrder = 6,
+			LayoutOrder = 3,
 		}),
 	})
 	order += 1

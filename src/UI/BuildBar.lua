@@ -40,12 +40,13 @@ local function ToolButton(props: {
 		elseif hovered then Theme.BUTTON_HOVER
 		else Theme.BUTTON
 
+	-- Fixed-share width (not auto-sized to text) so three of these always
+	-- fit the tool card's fixed width without spilling past its edge.
 	return e("TextButton", {
 		Text = "",
 		BackgroundColor3 = color,
 		BackgroundTransparency = if props.Selected then 0.1 else Theme.GLASS_ELEMENT_TRANSPARENCY,
 		Size = UDim2.new(0, 0, 0, 52),
-		AutomaticSize = Enum.AutomaticSize.X,
 		LayoutOrder = props.LayoutOrder,
 		[React.Event.Activated] = props.OnClick,
 		[React.Event.MouseEnter] = function()
@@ -56,10 +57,7 @@ local function ToolButton(props: {
 		end,
 	}, {
 		Corner = e("UICorner", { CornerRadius = UDim.new(0, 6) }),
-		Padding = e("UIPadding", {
-			PaddingLeft = UDim.new(0, 8),
-			PaddingRight = UDim.new(0, 8),
-		}),
+		Flex = e("UIFlexItem", { FlexMode = Enum.UIFlexMode.Grow }),
 		Layout = e("UIListLayout", {
 			SortOrder = Enum.SortOrder.LayoutOrder,
 			HorizontalAlignment = Enum.HorizontalAlignment.Center,
@@ -69,7 +67,7 @@ local function ToolButton(props: {
 		Icon = e("ImageLabel", {
 			Image = TOOL_ICONS[props.Mode] or "",
 			BackgroundTransparency = 1,
-			Size = UDim2.new(0, 28, 0, 28),
+			Size = UDim2.new(0, 26, 0, 26),
 			ScaleType = Enum.ScaleType.Fit,
 			LayoutOrder = 1,
 		}),
@@ -77,10 +75,10 @@ local function ToolButton(props: {
 			Text = props.Label,
 			TextColor3 = Theme.WHITE,
 			BackgroundTransparency = 1,
-			Size = UDim2.new(0, 0, 0, 14),
-			AutomaticSize = Enum.AutomaticSize.X,
+			Size = UDim2.new(1, 0, 0, 14),
 			Font = Theme.FONT,
 			TextSize = 12,
+			TextTruncate = Enum.TextTruncate.AtEnd,
 			LayoutOrder = 2,
 		}),
 	})
@@ -98,6 +96,7 @@ local function BuildBar(props: {
 	OnSettingsChanged: () -> (),
 	Hint: string,
 	Elevation: number,
+	AdjustElevation: (delta: number) -> (),
 	OnStop: () -> (),
 })
 	local profileOptions: { Components.DropdownOption } = {}
@@ -186,10 +185,34 @@ local function BuildBar(props: {
 				LayoutOrder = 2,
 			}),
 		})
-	children.Elevation = e(Components.Label, {
-		Text = string.format("Elevation %+g studs (R / F)", props.Elevation),
+	children.Elevation = e(Components.Row, { LayoutOrder = 8 }, {
+		Label = e(Components.Label, { Text = "Elevation", LayoutOrder = 1, Width = 64 }),
+		Down = e(Components.Button, {
+			Text = "\u{2193}",
+			OnClick = function()
+				props.AdjustElevation(-props.Settings.ElevationStepStuds)
+			end,
+			LayoutOrder = 2,
+			Size = UDim2.new(0, 26, 0, Theme.ROW_HEIGHT),
+		}),
+		Value = e(Components.Label, {
+			Text = string.format("%+g studs", props.Elevation),
+			LayoutOrder = 3,
+			Width = 66,
+		}),
+		Up = e(Components.Button, {
+			Text = "\u{2191}",
+			OnClick = function()
+				props.AdjustElevation(props.Settings.ElevationStepStuds)
+			end,
+			LayoutOrder = 4,
+			Size = UDim2.new(0, 26, 0, Theme.ROW_HEIGHT),
+		}),
+	})
+	children.ElevationHint = e(Components.Label, {
+		Text = "(or R / F keys)",
 		Dim = true,
-		LayoutOrder = 8,
+		LayoutOrder = 9,
 	})
 	children.Hint = e("TextLabel", {
 		Text = props.Hint,
@@ -201,13 +224,13 @@ local function BuildBar(props: {
 		TextSize = Theme.TEXT_SIZE,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = true,
-		LayoutOrder = 9,
+		LayoutOrder = 10,
 	})
 	children.Stop = e(Components.Button, {
 		Text = "Stop Building",
 		Danger = true,
 		OnClick = props.OnStop,
-		LayoutOrder = 10,
+		LayoutOrder = 11,
 	})
 
 	return e("ScrollingFrame", {

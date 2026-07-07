@@ -7,23 +7,26 @@
 --                                  (module icon, direction arrow, width;
 --                                  click to select, then edit width /
 --                                  direction / marking, reorder, remove)
---   RoadDesigner.PaletteCard     - "Available Modules" tile grid, nearly
---                                  full height; click OR drag a module onto
---                                  the lane strip to insert it
 --   RoadDesigner.RoadLibraryList - scrollable road picker (name + category)
 --                                  used instead of a plain dropdown
 --   RoadDesigner.Panel           - Road Properties (left, full height) and
---                                  Modules (right, full height) as two tall
---                                  columns, with the lane strip pinned along
---                                  the very bottom spanning full width -
---                                  matches the CS2 / easyRoad 2 reference
---                                  layout. Used by the road library editor
---                                  and the placed-road inspector.
+--                                  a right card (right, full height) as two
+--                                  tall columns, with the lane strip pinned
+--                                  along the very bottom spanning full width
+--                                  - matches the CS2 / easyRoad 2 reference
+--                                  layout. The right card is "Modules" alone,
+--                                  or - when a road picker is supplied -
+--                                  Modules and "Created Roads" as two tabs
+--                                  sharing the card, matching CS2's AVAILABLE
+--                                  LANES / CREATED ROADS tab bar. Used by the
+--                                  road library editor and the placed-road
+--                                  inspector.
 --
 -- Presentation-only: everything operates on a RoadProfile via OnChange
 -- (clone-and-transform), with the caller supplying action buttons.
 
 local UserInputService = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -47,7 +50,11 @@ export type DesignerAction = {
 
 local STRIP_HEIGHT = 140
 local TILE_WIDTH = 58
-local TILE_STEP = TILE_WIDTH + 4 -- Tile width + Strip's tile padding
+
+-- Instance names used to hit-test drag-and-drop drops via
+-- GuiService:GetGuiObjectsAtPosition instead of manual coordinate math.
+local LANE_TILE_NAME_PREFIX = "EasyRoadLaneTile"
+local LANE_STRIP_NAME = "EasyRoadLaneStrip"
 
 -- Palette entries: every placeable module, with Commonwealth-flavoured
 -- display names (Sidewalk reads as "Pavement", matching the reference kit).
@@ -242,6 +249,7 @@ end
 
 local function LaneTile(props: {
 	Component: RoadProfile.ProfileComponent,
+	Index: number,
 	Selected: boolean,
 	ReadOnly: boolean,
 	OnClick: () -> (),
@@ -249,6 +257,7 @@ local function LaneTile(props: {
 })
 	local component = props.Component
 	return e("TextButton", {
+		Name = LANE_TILE_NAME_PREFIX .. tostring(props.Index),
 		Text = "",
 		BackgroundColor3 = if props.Selected then Theme.SELECTED else Theme.FIELD,
 		BackgroundTransparency = if props.Selected then 0.15 else Theme.GLASS_ELEMENT_TRANSPARENCY,
@@ -319,7 +328,6 @@ local function LaneStripCard(props: {
 	SelectedIndex: number, -- 0 = none
 	OnSelect: (index: number) -> (), -- 0 clears
 	OnChange: (transform: (profile: RoadProfile.RoadProfile) -> ()) -> (),
-	StripRef: { current: ScrollingFrame? }?,
 	LayoutOrder: number,
 })
 	local profile = props.Profile
@@ -358,6 +366,7 @@ local function LaneStripCard(props: {
 	for index, component in profile.Components do
 		tiles["Tile" .. index] = e(LaneTile, {
 			Component = component,
+			Index = index,
 			Selected = sel == index,
 			ReadOnly = readOnly,
 			OnClick = function()
@@ -367,7 +376,7 @@ local function LaneStripCard(props: {
 		})
 	end
 	children.Strip = e("ScrollingFrame", {
-		ref = props.StripRef,
+		Name = LANE_STRIP_NAME,
 		Size = UDim2.new(1, 0, 0, 78),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
@@ -560,51 +569,6 @@ end
 
 -- The module palette card: click OR drag a module to insert it into the
 -- road. Nearly full height, matching the CS2 / easyRoad 2 reference.
-local function PaletteCard(props: {
-	OnInsert: (kind: RoadProfile.ComponentKind) -> (),
-	OnDragStart: ((kind: RoadProfile.ComponentKind, label: string, pos: Vector2) -> ())?,
-	Width: number?,
-	LayoutOrder: number,
-})
-	local children: { [string]: any } = {}
-	decorateCard(children)
-	children.Header = e(Components.Section, { Text = "Modules", LayoutOrder = 1 })
-
-	local grid: { [string]: any } = {
-		Layout = e("UIGridLayout", {
-			CellSize = UDim2.new(0, 56, 0, 58),
-			CellPadding = UDim2.new(0, 4, 0, 4),
-			SortOrder = Enum.SortOrder.LayoutOrder,
-		}),
-	}
-	for index, entry in PALETTE do
-		grid["Module" .. index] = e(ModuleTile, {
-			Kind = entry.Kind,
-			Label = entry.Label,
-			OnClick = function()
-				props.OnInsert(entry.Kind)
-			end,
-			OnDragStart = props.OnDragStart,
-			LayoutOrder = index,
-		})
-	end
-	children.Grid = e("ScrollingFrame", {
-		Size = UDim2.new(1, 0, 1, -28),
-		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		CanvasSize = UDim2.new(0, 0, 0, 0),
-		AutomaticCanvasSize = Enum.AutomaticSize.Y,
-		ScrollingDirection = Enum.ScrollingDirection.Y,
-		ScrollBarThickness = 4,
-		LayoutOrder = 2,
-	}, grid)
-
-	local frameProps = cardProps()
-	frameProps.Size = UDim2.new(0, props.Width or 190, 1, 0)
-	frameProps.LayoutOrder = props.LayoutOrder
-	return e("Frame", frameProps, children)
-end
-
 -- Drag-and-drop controller ----------------------------------------------------------
 -- Shared by Panel: press-and-drag a module tile past a small threshold to
 -- pick it up (a plain click still inserts via OnInsert as before); dropping
@@ -612,12 +576,40 @@ end
 
 type DragPayload = { Kind: RoadProfile.ComponentKind, Label: string }
 
+-- Finds what's under a screen point via Roblox's own GUI hit-testing
+-- (correct regardless of GuiInset, DPI scale, or exactly how tiles are
+-- laid out) rather than comparing raw input coordinates against a cached
+-- AbsolutePosition, which was fragile and the likely source of the "drop
+-- doesn't register" bugs in the previous version. Returns the lane index
+-- to insert before (nil = append at the end) and whether the point was
+-- over the strip at all (false = not a valid drop).
+local function resolveDrop(screenPos: Vector2): (number?, boolean)
+	local objects = GuiService:GetGuiObjectsAtPosition(screenPos.X, screenPos.Y)
+	for _, hit in objects do
+		local current: Instance? = hit
+		while current do
+			local name = current.Name
+			if name == LANE_STRIP_NAME then
+				return nil, true
+			end
+			local tileIndex = string.match(name, "^" .. LANE_TILE_NAME_PREFIX .. "(%d+)$")
+			if tileIndex then
+				return tonumber(tileIndex), true
+			end
+			if current:IsA("ScreenGui") then
+				break
+			end
+			current = current.Parent
+		end
+	end
+	return nil, false
+end
+
 local function useLaneDrag(onInsertAt: (index: number, kind: RoadProfile.ComponentKind) -> ())
 	local dragging, setDragging = React.useState(nil :: DragPayload?)
 	local dragPos, setDragPos = React.useState(Vector2.new(0, 0))
 	local startPos = React.useRef(Vector2.new(0, 0))
 	local movedPastThreshold = React.useRef(false)
-	local stripRef = React.useRef(nil :: ScrollingFrame?)
 
 	React.useEffect(function()
 		if not dragging then
@@ -636,21 +628,13 @@ local function useLaneDrag(onInsertAt: (index: number, kind: RoadProfile.Compone
 		local endCn = UserInputService.InputEnded:Connect(function(input: InputObject)
 			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 				if movedPastThreshold.current then
-					local strip = stripRef.current
 					local payload = dragging
-					if strip and payload then
-						local absPos = strip.AbsolutePosition
-						local absSize = strip.AbsoluteSize
-						local mouse = Vector2.new(input.Position.X, input.Position.Y)
-						if
-							mouse.X >= absPos.X - 20
-							and mouse.X <= absPos.X + absSize.X + 20
-							and mouse.Y >= absPos.Y - 60
-							and mouse.Y <= absPos.Y + absSize.Y + 60
-						then
-							local relX = mouse.X - absPos.X + strip.CanvasPosition.X
-							local index = math.floor(relX / TILE_STEP) + 1
+					if payload then
+						local index, overStrip = resolveDrop(Vector2.new(input.Position.X, input.Position.Y))
+						if index then
 							onInsertAt(index, payload.Kind)
+						elseif overStrip then
+							onInsertAt(math.huge, payload.Kind) -- Caller clamps to the end
 						end
 					end
 				end
@@ -666,7 +650,6 @@ local function useLaneDrag(onInsertAt: (index: number, kind: RoadProfile.Compone
 	return {
 		Dragging = if movedPastThreshold.current then dragging else nil,
 		DragPos = dragPos,
-		StripRef = stripRef,
 		BeginDrag = function(kind: RoadProfile.ComponentKind, label: string, pos: Vector2)
 			startPos.current = pos
 			setDragPos(pos)
@@ -683,6 +666,94 @@ export type PanelPicker = {
 	OnPick: (id: string) -> (),
 	OnNew: (() -> ())?,
 }
+
+-- The right-hand card: Modules and (when a road picker is supplied) a
+-- "Created Roads" library, as two tabs sharing one card - matching CS2's
+-- AVAILABLE LANES / CREATED ROADS tab bar, instead of the road picker
+-- living inside the Properties card.
+local function PaletteOrLibraryCard(props: {
+	Picker: PanelPicker?,
+	OnInsert: (kind: RoadProfile.ComponentKind) -> (),
+	OnDragStart: ((kind: RoadProfile.ComponentKind, label: string, pos: Vector2) -> ())?,
+	Width: number?,
+	LayoutOrder: number,
+})
+	local activeTab: "Modules" | "Library", setActiveTab = React.useState("Modules" :: "Modules" | "Library")
+
+	local children: { [string]: any } = {}
+	decorateCard(children)
+
+	if props.Picker then
+		children.Tabs = e(Components.Row, { LayoutOrder = 1 }, {
+			ModulesTab = e(Components.Button, {
+				Text = "Modules",
+				Selected = activeTab == "Modules",
+				OnClick = function()
+					setActiveTab("Modules")
+				end,
+				LayoutOrder = 1,
+				Grow = true,
+			}),
+			LibraryTab = e(Components.Button, {
+				Text = "Created Roads",
+				Selected = activeTab == "Library",
+				OnClick = function()
+					setActiveTab("Library")
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		})
+	else
+		children.Header = e(Components.Section, { Text = "Modules", LayoutOrder = 1 })
+	end
+
+	if activeTab == "Library" and props.Picker then
+		local picker = props.Picker :: PanelPicker
+		children.Library = e(RoadLibraryList, {
+			Options = picker.Options,
+			SelectedId = picker.SelectedId,
+			OnPick = picker.OnPick,
+			OnNew = picker.OnNew,
+			Height = 170,
+			LayoutOrder = 2,
+		})
+	else
+		local grid: { [string]: any } = {
+			Layout = e("UIGridLayout", {
+				CellSize = UDim2.new(0, 56, 0, 58),
+				CellPadding = UDim2.new(0, 4, 0, 4),
+				SortOrder = Enum.SortOrder.LayoutOrder,
+			}),
+		}
+		for index, entry in PALETTE do
+			grid["Module" .. index] = e(ModuleTile, {
+				Kind = entry.Kind,
+				Label = entry.Label,
+				OnClick = function()
+					props.OnInsert(entry.Kind)
+				end,
+				OnDragStart = props.OnDragStart,
+				LayoutOrder = index,
+			})
+		end
+		children.Grid = e("ScrollingFrame", {
+			Size = UDim2.new(1, 0, 1, -28),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			CanvasSize = UDim2.new(0, 0, 0, 0),
+			AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			ScrollingDirection = Enum.ScrollingDirection.Y,
+			ScrollBarThickness = 4,
+			LayoutOrder = 2,
+		}, grid)
+	end
+
+	local frameProps = cardProps()
+	frameProps.Size = UDim2.new(0, props.Width or 220, 1, 0)
+	frameProps.LayoutOrder = props.LayoutOrder
+	return e("Frame", frameProps, children)
+end
 
 local function Panel(props: {
 	Profile: RoadProfile.RoadProfile,
@@ -721,20 +792,8 @@ local function Panel(props: {
 	-- Properties card
 	local propertiesChildren: { [string]: any } = {}
 	propertiesChildren.Header = e(Components.Section, { Text = "Road Properties", LayoutOrder = 1 })
-	if props.Picker then
-		local picker = props.Picker :: PanelPicker
-		propertiesChildren.PickerSection = e(Components.Label, { Text = "Road library", Dim = true, LayoutOrder = 2 })
-		propertiesChildren.PickerList = e(RoadLibraryList, {
-			Options = picker.Options,
-			SelectedId = picker.SelectedId,
-			OnPick = picker.OnPick,
-			OnNew = picker.OnNew,
-			Height = 120,
-			LayoutOrder = 3,
-		})
-	end
 	if props.OnRename then
-		propertiesChildren.NameRow = e(Components.Row, { LayoutOrder = 4 }, {
+		propertiesChildren.NameRow = e(Components.Row, { LayoutOrder = 2 }, {
 			Label = e(Components.Label, { Text = "Name", LayoutOrder = 1, Width = 44 }),
 			NameBox = e("TextBox", {
 				Text = profile.Name,
@@ -759,18 +818,18 @@ local function Panel(props: {
 	else
 		propertiesChildren.NameLabel = e(Components.Label, {
 			Text = profile.Name,
-			LayoutOrder = 4,
+			LayoutOrder = 2,
 		})
 	end
 	if props.Subtitle then
 		propertiesChildren.Subtitle = e(Components.Label, {
 			Text = props.Subtitle,
 			Dim = true,
-			LayoutOrder = 5,
+			LayoutOrder = 3,
 		})
 	end
 	local afterOptions =
-		ProfileFields.InsertMarkingOptions(propertiesChildren, profile, props.RegionStyle, 6, props.OnChange)
+		ProfileFields.InsertMarkingOptions(propertiesChildren, profile, props.RegionStyle, 4, props.OnChange)
 	local actionButtons: { [string]: any } = {}
 	for index, action in props.Actions do
 		actionButtons["Action" .. index] = e(Components.Button, {
@@ -832,7 +891,8 @@ local function Panel(props: {
 				Padding = UDim.new(0, 8),
 			}),
 			Properties = scrollColumn(240, 1, propertiesChildren),
-			Palette = not readOnly and e(PaletteCard, {
+			Palette = not readOnly and e(PaletteOrLibraryCard, {
+				Picker = props.Picker,
 				Width = 220,
 				OnInsert = function(kind: RoadProfile.ComponentKind)
 					insertKind(kind, nil)
@@ -847,7 +907,6 @@ local function Panel(props: {
 			SelectedIndex = selectedIndex,
 			OnSelect = setSelectedIndex,
 			OnChange = props.OnChange,
-			StripRef = drag.StripRef,
 			LayoutOrder = 2,
 		}),
 		Ghost = ghost,
@@ -857,7 +916,6 @@ end
 local RoadDesigner = {
 	Panel = Panel,
 	LaneStripCard = LaneStripCard,
-	PaletteCard = PaletteCard,
 	RoadLibraryList = RoadLibraryList,
 	ScrollColumn = scrollColumn,
 	DecorateCard = decorateCard,

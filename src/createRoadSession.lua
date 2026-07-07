@@ -40,6 +40,7 @@ export type RoadSession = {
 	SetEndProfile: (profile: RoadProfile.RoadProfile?) -> (),
 	GetEndProfile: () -> RoadProfile.RoadProfile?,
 	GetElevation: () -> number,
+	AdjustElevation: (delta: number) -> (),
 	GetHint: () -> string,
 	GetPointCount: () -> number,
 	CancelPlacement: () -> (),
@@ -75,6 +76,15 @@ local function createRoadSession(
 	local markerFolder: Folder? = nil
 	local previewDirty = false
 	local lastPreviewTime = 0
+
+	-- Shared by the R/F keys and the build bar's up/down elevation buttons:
+	-- whichever point is placed next gets whatever elevation is current at
+	-- the moment it's clicked.
+	local function adjustElevation(delta: number)
+		elevation += delta
+		previewDirty = true
+		changeSignal:Fire()
+	end
 
 	local connections: { RBXScriptConnection } = {}
 
@@ -398,13 +408,9 @@ local function createRoadSession(
 			return
 		end
 		if input.KeyCode == Enum.KeyCode.R then
-			elevation += settings.ElevationStepStuds
-			previewDirty = true
-			changeSignal:Fire()
+			adjustElevation(settings.ElevationStepStuds)
 		elseif input.KeyCode == Enum.KeyCode.F then
-			elevation -= settings.ElevationStepStuds
-			previewDirty = true
-			changeSignal:Fire()
+			adjustElevation(-settings.ElevationStepStuds)
 		elseif input.KeyCode == Enum.KeyCode.Escape then
 			cancelPlacement()
 		end
@@ -473,6 +479,8 @@ local function createRoadSession(
 	function session.GetElevation(): number
 		return elevation
 	end
+
+	session.AdjustElevation = adjustElevation
 
 	function session.GetPointCount(): number
 		return #points

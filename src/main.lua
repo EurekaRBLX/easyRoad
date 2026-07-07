@@ -150,6 +150,7 @@ return function(
 				screen.Name = "EasyRoadTopBar"
 				screen.ResetOnSpawn = false
 				screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+				screen.IgnoreGuiInset = true
 				screen.Parent = CoreGui
 				topScreenGui = screen
 				topRoot = ReactRoblox.createRoot(screen)
@@ -314,6 +315,9 @@ return function(
 				end,
 				Hint = currentSession.GetHint(),
 				Elevation = currentSession.GetElevation(),
+				AdjustElevation = function(delta: number)
+					currentSession.AdjustElevation(delta)
+				end,
 				OnStop = function()
 					stopSession()
 					plugin:Deactivate()
@@ -342,6 +346,7 @@ return function(
 				screen.Name = "EasyRoadHUD"
 				screen.ResetOnSpawn = false
 				screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+				screen.IgnoreGuiInset = true
 				screen.Parent = CoreGui
 				bottomScreenGui = screen
 				bottomRoot = ReactRoblox.createRoot(screen)

@@ -21,8 +21,83 @@ Not user-facing; internal planning only.
   taper zone's station density isn't fine enough, or strip mitering breaks
   down when component count differs across the taper.
 
+## Next up — needs a decision
+
+**Pie-menu / hover-based road editing (CS2-style interaction model).** The
+user's actual vision, described in detail this round, is a bigger change
+than an incremental UI tweak - it replaces "click a placed road, get a
+panel" with a full contextual-menu interaction model:
+
+- **Hover** an already-placed road (no tool active) shows a pie/radial
+  menu with at least two actions: **"Open Road Builder"** (continue
+  placing more of that exact road from its endpoint - see the snapping
+  note below) and **"Edit Road Segment"** (a deeper editor for just that
+  segment: lane reconfiguration, marking type per boundary
+  double-white/single-white/dash/"stretch dash" - a marking style not
+  implemented yet, bus stop placement). This is distinct from - and would
+  likely replace or wrap - today's click-to-select `RoadEditSession`/
+  `RoadInspector` flow.
+- **Road Editor entry point** should itself open with a pie menu: "Edit
+  existing road" (opens the library), "Create new road" (starts from an
+  empty layout with zero components, not the current 4-component
+  template), or "Place more of the existing road" (continues building the
+  currently-open road elsewhere).
+- **Numeric key shortcuts** (1/2/3/4 etc., or numpad) as a fast alternative
+  to clicking dropdown/pie options for marking type selection.
+- **Retractable side panels** - the Properties and Modules/Library cards
+  should be collapsible to the side, not permanently docked open.
+- A pie/radial menu is a real, nontrivial GUI widget to build well in
+  Roblox (custom wedge geometry, per-wedge hover hit-testing, no built-in
+  primitive for it) and hover-based detection on placed roads needs new
+  always-on mouse-hover raycast logic distinct from the click-select
+  approach `RoadEditSession` uses today. Given the size, this needs a
+  design pass (how the pie menu coexists with the Road Tools/Editor/
+  Settings top bar, whether "Edit Road Segment" replaces or extends
+  `RoadInspector`) before implementation, rather than being built inline
+  alongside everything else this round.
+
+**Persistent segment endpoint memory - already partially true.** The user
+asked that "the system remembers where a road segment ends/starts so we
+can continue building at any time with precision." Every placed road
+already stores its exact start/end position + tangent as attributes
+(`RW_StartPos`/`RW_EndPos`/`RW_StartTan`/`RW_EndTan` - see
+`RoadInstance.lua`), and starting a *new* placement within
+`Settings.SnapRadiusStuds` of any existing road's endpoint already snaps to
+it precisely and locks the tangent (`createRoadSession.lua`'s
+`findEndpointSnap`). What's likely still missing is the pie-menu's "Place
+more of the existing road" entry point specifically: clicking that action
+on an already-selected road should start a build session pre-seeded at
+that exact road's end with its exact profile loaded, without relying on
+proximity/re-clicking near the endpoint. That's a small, well-scoped
+addition once the pie-menu shell exists.
+
 ## Recently shipped
 
+- **Bug-fix round: overflow, elevation, library placement, drag-and-drop.**
+  - Fixed horizontal overflow in the Road Properties column: the dash
+    length/gap row was packed too tightly for the fixed-width card and
+    forced a horizontal scrollbar; split into two narrower rows
+    (`ProfileFields.lua`). Road Tool panel's tool buttons now share row
+    width evenly (`UIFlexItem`) instead of relying on auto-sized text width,
+    removing the same risk there.
+  - Elevation now has explicit up/down arrow buttons in the Road Tool
+    panel (alongside R/F, which still works) - `createRoadSession.lua`
+    exposes `AdjustElevation(delta)`, shared by both the keybinds and the
+    new buttons.
+  - The road picker moved out of the Road Properties card into its own
+    "Created Roads" tab sharing the right-hand card with Modules
+    (`RoadDesigner.PaletteOrLibraryCard`), matching CS2's AVAILABLE LANES /
+    CREATED ROADS tab bar instead of living inside Properties.
+  - Rewrote drag-and-drop to use `GuiService:GetGuiObjectsAtPosition` at
+    drop time (walking ancestry for a named lane tile/strip) instead of
+    comparing raw input coordinates against a cached `AbsolutePosition` +
+    assumed tile width - the previous version had a real GuiInset/coordinate
+    mismatch (ScreenGuis now also set `IgnoreGuiInset = true` so the drag
+    ghost tracks the cursor precisely) and no longer depends on tile-size
+    assumptions matching what's actually rendered.
+  - Note: the logo image mentioned below was tried and reverted per
+    follow-up feedback - the top bar is text-only again, styled in
+    `BuilderSansMedium` and the brand orange.
 - **Branding pass: brand orange + Builder Sans + logo.** Every button/
   checkbox/selected-state colour that used to be blue is now the easyRoad
   brand orange (#D98455, `Theme.ACCENT`/`SELECTED`/`ACCENT_HOVER`); UI text
