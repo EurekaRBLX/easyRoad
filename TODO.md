@@ -23,6 +23,23 @@ Not user-facing; internal planning only.
 
 ## Recently shipped
 
+- **CS2-style build bar; old right-side panel removed.** The floating
+  right-anchored panel is gone. While placing roads, the bottom bar now
+  shows [Road Tool card | live lane strip | Modules palette]: tool modes,
+  road picker, transition target, banking + design speed, elevation and
+  hints on the left; the ACTIVE road's cross-section as editable tiles in
+  the middle (session-only tweaks, kept via "Save as New Road..."); module
+  insertion on the right. `UI/RoadDesigner.lua` was split into reusable
+  `LaneStripCard` / `PaletteCard` / `Panel` so build, library editing, and
+  placed-road editing all share one strip implementation
+  (`UI/BuildBar.lua` composes the build variant). Layout fixes for small
+  logical viewports (high-DPI screens): the bottom bar spans the full
+  width, fixed card widths shrunk (240 / flex / 140), section headers
+  truncate instead of bleeding across cards. Glyph fixes: dropdown chevron
+  and boundary/move/remove button labels now use ASCII-safe characters
+  (Studio's SourceSans renders ▾ and box-drawing glyphs as tofu boxes).
+  The dock panel still carries the legacy page UI as a secondary surface
+  (also the nav to Settings / road picker).
 - **CS2-style road designer (`UI/RoadDesigner.lua`).** The road
   configuration UI is now a wide bottom-of-viewport HUD with three glass
   cards, modelled on the CS2 road builder / easyRoad 2 reference: a lane

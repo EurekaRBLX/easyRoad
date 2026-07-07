@@ -84,7 +84,7 @@ local function RoadInspector(props: {
 	table.insert(actions, { Text = "Close", OnClick = session.Deselect })
 
 	local isTransition = session.IsTransition()
-	return e(RoadDesigner, {
+	return e(RoadDesigner.Panel, {
 		Profile = profile,
 		RegionStyle = props.RegionStyle,
 		Subtitle = if isTransition

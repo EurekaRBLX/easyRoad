@@ -26,6 +26,7 @@ function Components.Section(props: {
 		Font = Theme.FONT_BOLD,
 		TextSize = Theme.HEADER_TEXT_SIZE,
 		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
 		LayoutOrder = props.LayoutOrder,
 	})
 end
@@ -305,8 +306,10 @@ function Components.Dropdown(props: {
 		Flex = props.Grow and e("UIFlexItem", {
 			FlexMode = Enum.UIFlexMode.Grow,
 		}),
+		-- Chevron is a plain down arrow: Studio's SourceSans lacks the small
+		-- triangle glyphs and renders them as tofu boxes.
 		Header = e("TextButton", {
-			Text = selectedText .. "  ▾",
+			Text = selectedText .. "  \u{2193}",
 			TextColor3 = Theme.WHITE,
 			BackgroundColor3 = Theme.FIELD,
 			BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,

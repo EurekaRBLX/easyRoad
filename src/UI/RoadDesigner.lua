@@ -1,21 +1,24 @@
 --!strict
 -- The road designer: Cities: Skylines 2-style road configuration UI.
 --
--- Renders as a wide bottom-of-viewport HUD with three glass cards:
+-- Ships three building blocks plus a ready-made panel:
 --
---   [ ROAD PROPERTIES ]  [ ROAD CONFIGURATION (lane strip) ]  [ MODULES ]
+--   RoadDesigner.LaneStripCard  - the cross-section as a row of tiles
+--                                 (module icon, direction arrow, width;
+--                                 click to select, then edit width /
+--                                 direction / boundary, reorder, remove)
+--   RoadDesigner.PaletteCard    - "Available Modules" tile grid; click a
+--                                 module to insert it into the road
+--   RoadDesigner.Panel          - [properties | lane strip | palette] in a
+--                                 wide bottom-of-viewport row, used by the
+--                                 road library editor and the placed-road
+--                                 inspector
 --
--- The lane strip shows the cross-section as a row of tiles (module icon,
--- direction arrow, width) exactly like the reference easyRoad 2 / CS2
--- bottom bars; click a tile to select it and edit its width / direction /
--- boundary, click a module in the palette to insert a new lane after the
--- selection. The properties card carries the road name, kerb rules,
--- marking colour, and dash spacing.
+-- The build bar composes the same strip + palette with a tool card instead
+-- of the properties card, so building and editing look and feel identical.
 --
--- Presentation-only: operates on a RoadProfile via OnChange (clone-and-
--- transform), with the caller supplying the action buttons (Save / Apply /
--- Close / ...), so the same designer serves both the road library editor
--- and the placed-road inspector.
+-- Presentation-only: everything operates on a RoadProfile via OnChange
+-- (clone-and-transform), with the caller supplying action buttons.
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -37,6 +40,9 @@ export type DesignerAction = {
 	OnClick: () -> (),
 }
 
+local LEFT_CARD_WIDTH = 240
+local PALETTE_WIDTH = 140
+
 -- Palette entries: every placeable module, with Commonwealth-flavoured
 -- display names (Sidewalk reads as "Pavement", matching the reference kit).
 local PALETTE: { { Kind: RoadProfile.ComponentKind, Label: string } } = {
@@ -54,12 +60,14 @@ for _, entry in PALETTE do
 	KIND_LABEL[entry.Kind] = entry.Label
 end
 
+-- ASCII-safe labels: Studio's SourceSans renders the box-drawing glyphs as
+-- tofu boxes, so the boundary rule cycle uses plain characters.
 local BOUNDARY_LABELS: { [string]: string } = {
-	Auto = "\u{2506}", -- dashed bar
-	Solid = "\u{2502}",
-	DoubleSolid = "\u{2551}",
-	SolidDash = "\u{2502}\u{254C}",
-	DashSolid = "\u{254C}\u{2502}",
+	Auto = "- -",
+	Solid = "|",
+	DoubleSolid = "||",
+	SolidDash = "|:",
+	DashSolid = ":|",
 }
 
 local function defaultWidthFor(kind: RoadProfile.ComponentKind, style: RegionStyles.RegionStyle): number
@@ -81,14 +89,60 @@ end
 
 local function arrowFor(direction: number): string
 	if direction > 0 then
-		return "\u{2191}" -- up arrow: with the road
+		return "\u{2191}" -- with the road
 	elseif direction < 0 then
-		return "\u{2193}" -- down arrow: against it
+		return "\u{2193}" -- against it
 	end
-	return "\u{2014}"
+	return "-"
 end
 
--- One tile in the lane strip
+-- Glass card scaffolding --------------------------------------------------------
+
+local function cardProps(): { [string]: any }
+	return {
+		BackgroundColor3 = Theme.GLASS_BG,
+		BackgroundTransparency = Theme.GLASS_TRANSPARENCY,
+		BorderSizePixel = 0,
+	}
+end
+
+local function decorateCard(children: { [string]: any })
+	children.Corner = e("UICorner", { CornerRadius = UDim.new(0, Theme.CORNER_RADIUS) })
+	children.Stroke = e("UIStroke", {
+		Color = Theme.GLASS_STROKE,
+		Transparency = Theme.GLASS_STROKE_TRANSPARENCY,
+		Thickness = 1,
+		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+	})
+	children.Padding = e("UIPadding", {
+		PaddingLeft = UDim.new(0, Theme.PADDING),
+		PaddingRight = UDim.new(0, Theme.PADDING),
+		PaddingTop = UDim.new(0, Theme.PADDING),
+		PaddingBottom = UDim.new(0, Theme.PADDING),
+	})
+	children.Layout = e("UIListLayout", {
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Padding = UDim.new(0, 4),
+	})
+end
+
+-- A glass vertical scrolling column (left card slot)
+local function scrollColumn(width: number, layoutOrder: number, children: { [string]: any })
+	decorateCard(children)
+	return e("ScrollingFrame", {
+		Size = UDim2.new(0, width, 1, 0),
+		BackgroundColor3 = Theme.GLASS_BG,
+		BackgroundTransparency = Theme.GLASS_TRANSPARENCY,
+		BorderSizePixel = 0,
+		CanvasSize = UDim2.new(1, 0, 0, 0),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollBarThickness = 4,
+		LayoutOrder = layoutOrder,
+	}, children)
+end
+
+-- Lane strip ---------------------------------------------------------------------
+
 local function LaneTile(props: {
 	Component: RoadProfile.ProfileComponent,
 	Selected: boolean,
@@ -160,91 +214,20 @@ local function LaneTile(props: {
 	})
 end
 
--- One tile in the module palette
-local function ModuleTile(props: {
-	Kind: RoadProfile.ComponentKind,
-	Label: string,
-	OnClick: () -> (),
+-- The lane strip card: header, tile strip, and (when a tile is selected)
+-- the edit controls for that lane. Grows to fill the row (UIFlexItem).
+local function LaneStripCard(props: {
+	Profile: RoadProfile.RoadProfile,
+	ReadOnly: boolean?,
+	SelectedIndex: number, -- 0 = none
+	OnSelect: (index: number) -> (), -- 0 clears
+	OnChange: (transform: (profile: RoadProfile.RoadProfile) -> ()) -> (),
 	LayoutOrder: number,
 })
-	return e("TextButton", {
-		Text = "",
-		BackgroundColor3 = Theme.FIELD,
-		BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,
-		LayoutOrder = props.LayoutOrder,
-		[React.Event.Activated] = props.OnClick,
-	}, {
-		Corner = e("UICorner", { CornerRadius = UDim.new(0, 6) }),
-		Layout = e("UIListLayout", {
-			SortOrder = Enum.SortOrder.LayoutOrder,
-			HorizontalAlignment = Enum.HorizontalAlignment.Center,
-			VerticalAlignment = Enum.VerticalAlignment.Center,
-			Padding = UDim.new(0, 2),
-		}),
-		Icon = e("ImageLabel", {
-			Image = Icons.ForKind[props.Kind] or Icons.Lane,
-			BackgroundTransparency = 1,
-			Size = UDim2.new(0, 30, 0, 30),
-			ScaleType = Enum.ScaleType.Fit,
-			LayoutOrder = 1,
-		}),
-		Label = e("TextLabel", {
-			Text = props.Label,
-			TextColor3 = Theme.OFFWHITE,
-			BackgroundTransparency = 1,
-			Size = UDim2.new(1, -2, 0, 12),
-			Font = Theme.FONT,
-			TextSize = 11,
-			TextTruncate = Enum.TextTruncate.AtEnd,
-			LayoutOrder = 2,
-		}),
-	})
-end
-
--- Glass card wrapper
-local function cardProps(): { [string]: any }
-	return {
-		BackgroundColor3 = Theme.GLASS_BG,
-		BackgroundTransparency = Theme.GLASS_TRANSPARENCY,
-		BorderSizePixel = 0,
-	}
-end
-
-local function cardDecoration(children: { [string]: any })
-	children.Corner = e("UICorner", { CornerRadius = UDim.new(0, Theme.CORNER_RADIUS) })
-	children.Stroke = e("UIStroke", {
-		Color = Theme.GLASS_STROKE,
-		Transparency = Theme.GLASS_STROKE_TRANSPARENCY,
-		Thickness = 1,
-		ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-	})
-	children.Padding = e("UIPadding", {
-		PaddingLeft = UDim.new(0, Theme.PADDING),
-		PaddingRight = UDim.new(0, Theme.PADDING),
-		PaddingTop = UDim.new(0, Theme.PADDING),
-		PaddingBottom = UDim.new(0, Theme.PADDING),
-	})
-	children.Layout = e("UIListLayout", {
-		SortOrder = Enum.SortOrder.LayoutOrder,
-		Padding = UDim.new(0, 4),
-	})
-end
-
-local function RoadDesigner(props: {
-	Profile: RoadProfile.RoadProfile,
-	RegionStyle: RegionStyles.RegionStyle,
-	OnChange: (transform: (profile: RoadProfile.RoadProfile) -> ()) -> (),
-	OnRename: ((name: string) -> ())?,
-	Subtitle: string?,
-	ReadOnlyLanes: boolean?,
-	Actions: { DesignerAction },
-})
 	local profile = props.Profile
-	local readOnly = props.ReadOnlyLanes == true
+	local readOnly = props.ReadOnly == true
 	local count = #profile.Components
-
-	local selectedIndex, setSelectedIndex = React.useState(0)
-	local sel: number? = if selectedIndex >= 1 and selectedIndex <= count then selectedIndex else nil
+	local sel: number? = if props.SelectedIndex >= 1 and props.SelectedIndex <= count then props.SelectedIndex else nil
 	local selected: RoadProfile.ProfileComponent? = if sel then profile.Components[sel :: number] else nil
 
 	local function changeSelected(patch: (component: RoadProfile.ProfileComponent) -> RoadProfile.ProfileComponent)
@@ -260,77 +243,11 @@ local function RoadDesigner(props: {
 		end)
 	end
 
-	local function insertKind(kind: RoadProfile.ComponentKind)
-		local at = if sel then (sel :: number) + 1 else count + 1
-		props.OnChange(function(copy)
-			table.insert(copy.Components, at, {
-				Kind = kind,
-				WidthM = defaultWidthFor(kind, props.RegionStyle),
-				Direction = if RoadProfile.IsDirectional(kind) then 1 else 0,
-			})
-		end)
-		setSelectedIndex(at)
-	end
-
-	-- Properties card -----------------------------------------------------------
-	local propertiesChildren: { [string]: any } = {}
-	cardDecoration(propertiesChildren)
-	propertiesChildren.Header = e(Components.Section, { Text = "Road Properties", LayoutOrder = 1 })
-	if props.OnRename then
-		propertiesChildren.NameRow = e(Components.Row, { LayoutOrder = 2 }, {
-			Label = e(Components.Label, { Text = "Name", LayoutOrder = 1, Width = 44 }),
-			NameBox = e("TextBox", {
-				Text = profile.Name,
-				TextColor3 = Theme.WHITE,
-				BackgroundColor3 = Theme.FIELD,
-				BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,
-				Size = UDim2.new(1, -52, 0, Theme.ROW_HEIGHT),
-				Font = Theme.FONT,
-				TextSize = Theme.TEXT_SIZE,
-				ClearTextOnFocus = false,
-				LayoutOrder = 2,
-				[React.Event.FocusLost] = function(object: TextBox)
-					if object.Text ~= "" and props.OnRename then
-						(props.OnRename :: (name: string) -> ())(object.Text)
-					end
-				end,
-			}, {
-				Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
-			}),
-		})
-	else
-		propertiesChildren.NameLabel = e(Components.Label, {
-			Text = profile.Name,
-			LayoutOrder = 2,
-		})
-	end
-	if props.Subtitle then
-		propertiesChildren.Subtitle = e(Components.Label, {
-			Text = props.Subtitle,
-			Dim = true,
-			LayoutOrder = 3,
-		})
-	end
-	local afterOptions =
-		ProfileFields.InsertMarkingOptions(propertiesChildren, profile, props.RegionStyle, 4, props.OnChange)
-	local actionButtons: { [string]: any } = {}
-	for index, action in props.Actions do
-		actionButtons["Action" .. index] = e(Components.Button, {
-			Text = action.Text,
-			Selected = action.Selected,
-			Danger = action.Danger,
-			OnClick = action.OnClick,
-			LayoutOrder = index,
-			Grow = true,
-		})
-	end
-	propertiesChildren.Actions = e(Components.Row, { LayoutOrder = afterOptions }, actionButtons)
-
-	-- Lane strip card ------------------------------------------------------------
-	local stripChildren: { [string]: any } = {}
-	cardDecoration(stripChildren)
-	stripChildren.Header = e(Components.Section, {
-		Text = string.format("Road Configuration — %.1f m", RoadProfile.TotalWidthM(profile)),
+	local children: { [string]: any } = {}
+	decorateCard(children)
+	children.Flex = e("UIFlexItem", { FlexMode = Enum.UIFlexMode.Grow })
+	children.Header = e(Components.Section, {
+		Text = string.format("Road Layout - %.1f m", RoadProfile.TotalWidthM(profile)),
 		LayoutOrder = 1,
 	})
 
@@ -347,12 +264,12 @@ local function RoadDesigner(props: {
 			Selected = sel == index,
 			ReadOnly = readOnly,
 			OnClick = function()
-				setSelectedIndex(if selectedIndex == index then 0 else index)
+				props.OnSelect(if props.SelectedIndex == index then 0 else index)
 			end,
 			LayoutOrder = index,
 		})
 	end
-	stripChildren.Strip = e("ScrollingFrame", {
+	children.Strip = e("ScrollingFrame", {
 		Size = UDim2.new(1, 0, 0, 122),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
@@ -364,18 +281,18 @@ local function RoadDesigner(props: {
 	}, tiles)
 
 	if readOnly then
-		stripChildren.Controls = e(Components.Label, {
-			Text = "Lane-by-lane editing is disabled for transition roads.",
+		children.Controls = e(Components.Label, {
+			Text = "Lane editing is disabled for transition roads.",
 			Dim = true,
 			LayoutOrder = 3,
 		})
 	elseif selected then
 		local selectedComponent = selected :: RoadProfile.ProfileComponent
-		stripChildren.Controls = e(Components.Row, { LayoutOrder = 3 }, {
+		children.Controls = e(Components.Row, { LayoutOrder = 3 }, {
 			KindLabel = e(Components.Label, {
 				Text = KIND_LABEL[selectedComponent.Kind] or selectedComponent.Kind,
 				LayoutOrder = 1,
-				Width = 64,
+				Width = 62,
 			}),
 			WidthField = e(Components.NumberField, {
 				Value = selectedComponent.WidthM,
@@ -431,7 +348,7 @@ local function RoadDesigner(props: {
 				Size = UDim2.new(0, 36, 0, Theme.ROW_HEIGHT),
 			}),
 			MoveLeft = e(Components.Button, {
-				Text = "\u{25C0}",
+				Text = "<",
 				OnClick = function()
 					local index = sel :: number
 					if index > 1 then
@@ -439,14 +356,14 @@ local function RoadDesigner(props: {
 							local moved = table.remove(copy.Components, index) :: RoadProfile.ProfileComponent
 							table.insert(copy.Components, index - 1, moved)
 						end)
-						setSelectedIndex(index - 1)
+						props.OnSelect(index - 1)
 					end
 				end,
 				LayoutOrder = 5,
 				Size = UDim2.new(0, 26, 0, Theme.ROW_HEIGHT),
 			}),
 			MoveRight = e(Components.Button, {
-				Text = "\u{25B6}",
+				Text = ">",
 				OnClick = function()
 					local index = sel :: number
 					if index < count then
@@ -454,41 +371,94 @@ local function RoadDesigner(props: {
 							local moved = table.remove(copy.Components, index) :: RoadProfile.ProfileComponent
 							table.insert(copy.Components, index + 1, moved)
 						end)
-						setSelectedIndex(index + 1)
+						props.OnSelect(index + 1)
 					end
 				end,
 				LayoutOrder = 6,
 				Size = UDim2.new(0, 26, 0, Theme.ROW_HEIGHT),
 			}),
 			Remove = e(Components.Button, {
-				Text = "\u{2715}",
+				Text = "X",
 				Danger = true,
 				OnClick = function()
 					local index = sel :: number
 					props.OnChange(function(copy)
 						table.remove(copy.Components, index)
 					end)
-					setSelectedIndex(0)
+					props.OnSelect(0)
 				end,
 				LayoutOrder = 7,
 				Size = UDim2.new(0, 26, 0, Theme.ROW_HEIGHT),
 			}),
 		})
 	else
-		stripChildren.Controls = e(Components.Label, {
-			Text = "Select a lane tile to edit it, or add modules from the palette.",
+		children.Controls = e(Components.Label, {
+			Text = "Click a lane tile to edit it; add modules from the palette.",
 			Dim = true,
 			LayoutOrder = 3,
 		})
 	end
 
-	-- Module palette card ----------------------------------------------------------
-	local paletteChildren: { [string]: any } = {}
-	cardDecoration(paletteChildren)
-	paletteChildren.Header = e(Components.Section, { Text = "Modules", LayoutOrder = 1 })
+	local frameProps = cardProps()
+	frameProps.Size = UDim2.new(0, 0, 1, 0)
+	frameProps.LayoutOrder = props.LayoutOrder
+	return e("Frame", frameProps, children)
+end
+
+-- Module palette -------------------------------------------------------------------
+
+local function ModuleTile(props: {
+	Kind: RoadProfile.ComponentKind,
+	Label: string,
+	OnClick: () -> (),
+	LayoutOrder: number,
+})
+	return e("TextButton", {
+		Text = "",
+		BackgroundColor3 = Theme.FIELD,
+		BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,
+		LayoutOrder = props.LayoutOrder,
+		[React.Event.Activated] = props.OnClick,
+	}, {
+		Corner = e("UICorner", { CornerRadius = UDim.new(0, 6) }),
+		Layout = e("UIListLayout", {
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			HorizontalAlignment = Enum.HorizontalAlignment.Center,
+			VerticalAlignment = Enum.VerticalAlignment.Center,
+			Padding = UDim.new(0, 2),
+		}),
+		Icon = e("ImageLabel", {
+			Image = Icons.ForKind[props.Kind] or Icons.Lane,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0, 26, 0, 26),
+			ScaleType = Enum.ScaleType.Fit,
+			LayoutOrder = 1,
+		}),
+		Label = e("TextLabel", {
+			Text = props.Label,
+			TextColor3 = Theme.OFFWHITE,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -2, 0, 12),
+			Font = Theme.FONT,
+			TextSize = 11,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			LayoutOrder = 2,
+		}),
+	})
+end
+
+-- The module palette card: click a module to insert it into the road.
+local function PaletteCard(props: {
+	OnInsert: (kind: RoadProfile.ComponentKind) -> (),
+	LayoutOrder: number,
+})
+	local children: { [string]: any } = {}
+	decorateCard(children)
+	children.Header = e(Components.Section, { Text = "Modules", LayoutOrder = 1 })
+
 	local grid: { [string]: any } = {
 		Layout = e("UIGridLayout", {
-			CellSize = UDim2.new(0, 52, 0, 56),
+			CellSize = UDim2.new(0, 50, 0, 52),
 			CellPadding = UDim2.new(0, 4, 0, 4),
 			SortOrder = Enum.SortOrder.LayoutOrder,
 		}),
@@ -498,18 +468,100 @@ local function RoadDesigner(props: {
 			Kind = entry.Kind,
 			Label = entry.Label,
 			OnClick = function()
-				insertKind(entry.Kind)
+				props.OnInsert(entry.Kind)
 			end,
 			LayoutOrder = index,
 		})
 	end
-	paletteChildren.Grid = e("Frame", {
-		Size = UDim2.new(1, 0, 1, -24),
+	children.Grid = e("ScrollingFrame", {
+		Size = UDim2.new(1, 0, 1, -28),
 		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		CanvasSize = UDim2.new(0, 0, 0, 0),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+		ScrollBarThickness = 4,
 		LayoutOrder = 2,
 	}, grid)
 
-	-- Assemble ------------------------------------------------------------------------
+	local frameProps = cardProps()
+	frameProps.Size = UDim2.new(0, PALETTE_WIDTH, 1, 0)
+	frameProps.LayoutOrder = props.LayoutOrder
+	return e("Frame", frameProps, children)
+end
+
+-- Full designer panel ---------------------------------------------------------------
+
+local function Panel(props: {
+	Profile: RoadProfile.RoadProfile,
+	RegionStyle: RegionStyles.RegionStyle,
+	OnChange: (transform: (profile: RoadProfile.RoadProfile) -> ()) -> (),
+	OnRename: ((name: string) -> ())?,
+	Subtitle: string?,
+	ReadOnlyLanes: boolean?,
+	Actions: { DesignerAction },
+})
+	local profile = props.Profile
+	local readOnly = props.ReadOnlyLanes == true
+	local count = #profile.Components
+
+	local selectedIndex, setSelectedIndex = React.useState(0)
+	local sel: number? = if selectedIndex >= 1 and selectedIndex <= count then selectedIndex else nil
+
+	-- Properties card
+	local propertiesChildren: { [string]: any } = {}
+	propertiesChildren.Header = e(Components.Section, { Text = "Road Properties", LayoutOrder = 1 })
+	if props.OnRename then
+		propertiesChildren.NameRow = e(Components.Row, { LayoutOrder = 2 }, {
+			Label = e(Components.Label, { Text = "Name", LayoutOrder = 1, Width = 44 }),
+			NameBox = e("TextBox", {
+				Text = profile.Name,
+				TextColor3 = Theme.WHITE,
+				BackgroundColor3 = Theme.FIELD,
+				BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,
+				Size = UDim2.new(1, -52, 0, Theme.ROW_HEIGHT),
+				Font = Theme.FONT,
+				TextSize = Theme.TEXT_SIZE,
+				TextTruncate = Enum.TextTruncate.AtEnd,
+				ClearTextOnFocus = false,
+				LayoutOrder = 2,
+				[React.Event.FocusLost] = function(object: TextBox)
+					if object.Text ~= "" and props.OnRename then
+						(props.OnRename :: (name: string) -> ())(object.Text)
+					end
+				end,
+			}, {
+				Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+			}),
+		})
+	else
+		propertiesChildren.NameLabel = e(Components.Label, {
+			Text = profile.Name,
+			LayoutOrder = 2,
+		})
+	end
+	if props.Subtitle then
+		propertiesChildren.Subtitle = e(Components.Label, {
+			Text = props.Subtitle,
+			Dim = true,
+			LayoutOrder = 3,
+		})
+	end
+	local afterOptions =
+		ProfileFields.InsertMarkingOptions(propertiesChildren, profile, props.RegionStyle, 4, props.OnChange)
+	local actionButtons: { [string]: any } = {}
+	for index, action in props.Actions do
+		actionButtons["Action" .. index] = e(Components.Button, {
+			Text = action.Text,
+			Selected = action.Selected,
+			Danger = action.Danger,
+			OnClick = action.OnClick,
+			LayoutOrder = index,
+			Grow = true,
+		})
+	end
+	propertiesChildren.Actions = e(Components.Row, { LayoutOrder = afterOptions }, actionButtons)
+
 	return e("Frame", {
 		Size = UDim2.fromScale(1, 1),
 		BackgroundTransparency = 1,
@@ -519,30 +571,38 @@ local function RoadDesigner(props: {
 			SortOrder = Enum.SortOrder.LayoutOrder,
 			Padding = UDim.new(0, 8),
 		}),
-		Properties = e("ScrollingFrame", {
-			Size = UDim2.new(0, 260, 1, 0),
-			BackgroundColor3 = Theme.GLASS_BG,
-			BackgroundTransparency = Theme.GLASS_TRANSPARENCY,
-			BorderSizePixel = 0,
-			CanvasSize = UDim2.new(1, 0, 0, 0),
-			AutomaticCanvasSize = Enum.AutomaticSize.Y,
-			ScrollBarThickness = 4,
-			LayoutOrder = 1,
-		}, propertiesChildren),
-		StripCard = (function()
-			local frameProps = cardProps()
-			frameProps.Size = UDim2.new(0, 0, 1, 0)
-			frameProps.LayoutOrder = 2
-			stripChildren.Flex = e("UIFlexItem", { FlexMode = Enum.UIFlexMode.Grow })
-			return e("Frame", frameProps, stripChildren)
-		end)(),
-		PaletteCard = not readOnly and (function()
-			local frameProps = cardProps()
-			frameProps.Size = UDim2.new(0, 188, 1, 0)
-			frameProps.LayoutOrder = 3
-			return e("Frame", frameProps, paletteChildren)
-		end)(),
+		Properties = scrollColumn(LEFT_CARD_WIDTH, 1, propertiesChildren),
+		StripCard = e(LaneStripCard, {
+			Profile = profile,
+			ReadOnly = readOnly,
+			SelectedIndex = selectedIndex,
+			OnSelect = setSelectedIndex,
+			OnChange = props.OnChange,
+			LayoutOrder = 2,
+		}),
+		Palette = not readOnly and e(PaletteCard, {
+			OnInsert = function(kind: RoadProfile.ComponentKind)
+				local at = if sel then (sel :: number) + 1 else count + 1
+				props.OnChange(function(copy)
+					table.insert(copy.Components, at, {
+						Kind = kind,
+						WidthM = defaultWidthFor(kind, props.RegionStyle),
+						Direction = if RoadProfile.IsDirectional(kind) then 1 else 0,
+					})
+				end)
+				setSelectedIndex(at)
+			end,
+			LayoutOrder = 3,
+		}),
 	})
 end
+
+local RoadDesigner = {
+	Panel = Panel,
+	LaneStripCard = LaneStripCard,
+	PaletteCard = PaletteCard,
+	ScrollColumn = scrollColumn,
+	DefaultWidthFor = defaultWidthFor,
+}
 
 return RoadDesigner

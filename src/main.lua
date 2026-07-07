@@ -1,10 +1,11 @@
 --!strict
--- EasyRoad main: wires the toolbar button, viewport HUD, dock panel,
+-- EasyRoad main: wires the toolbar button, bottom HUD, dock panel,
 -- settings, road library, placement session, and React UI together.
 --
--- While a build session is active the UI renders as a glassmorphism HUD
--- inside the viewport (right-anchored); the dock panel keeps working as an
--- alternative surface when it is open.
+-- All viewport UI lives in ONE bottom-anchored CS2-style bar: the build
+-- bar while placing roads, the road designer when editing a library road,
+-- and the placed-road inspector when a road is selected. The dock panel
+-- keeps working as an alternative surface when it is open.
 
 local CoreGui = game:GetService("CoreGui")
 
@@ -22,6 +23,7 @@ local createRoadEditSession = require("./RoadEditSession")
 local EasyRoadGui = require("./UI/EasyRoadGui")
 local RoadDesigner = require("./UI/RoadDesigner")
 local RoadInspector = require("./UI/RoadInspector")
+local BuildBar = require("./UI/BuildBar")
 
 return function(
 	plugin: Plugin,
@@ -39,8 +41,6 @@ return function(
 	local uiState: createRoadSession.UiState = { Hovered = false }
 
 	local panelRoot: ReactRoblox.RootType? = nil
-	local hudRoot: ReactRoblox.RootType? = nil
-	local hudScreenGui: ScreenGui? = nil
 	local bottomRoot: ReactRoblox.RootType? = nil
 	local bottomScreenGui: ScreenGui? = nil
 
@@ -199,46 +199,10 @@ return function(
 	end
 
 	function updateUI()
-		-- Viewport HUD: shown while a build session is active
-		if session then
-			if not hudRoot then
-				local screen = Instance.new("ScreenGui")
-				screen.Name = "EasyRoadHUD"
-				screen.ResetOnSpawn = false
-				screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-				screen.Parent = CoreGui
-				hudScreenGui = screen
-				hudRoot = ReactRoblox.createRoot(screen)
-			end
-			assert(hudRoot):render(React.createElement("Frame", {
-				AnchorPoint = Vector2.new(1, 0.5),
-				Position = UDim2.new(1, -12, 0.5, 0),
-				Size = UDim2.new(0, 300, 0.8, 0),
-				BackgroundTransparency = 1,
-				[React.Event.MouseEnter] = function()
-					uiState.Hovered = true
-				end,
-				[React.Event.MouseLeave] = function()
-					uiState.Hovered = false
-				end,
-			}, {
-				Gui = React.createElement(EasyRoadGui, makeGuiProps()),
-			}))
-		else
-			if hudRoot then
-				assert(hudRoot):unmount()
-				hudRoot = nil
-			end
-			if hudScreenGui then
-				hudScreenGui:Destroy()
-				hudScreenGui = nil
-			end
-		end
-
-		-- Bottom designer HUD: the CS2-style lane strip. Shows the library
-		-- road being designed (if any), otherwise the placed road currently
-		-- selected (when the build tool isn't active, to avoid clashing with
-		-- placement clicks).
+		-- Bottom HUD: the CS2-style lane strip bar. Priority order:
+		--   1. a library road open in the designer,
+		--   2. the build bar while placing roads,
+		--   3. the placed road currently selected.
 		local bottomContent: any = nil
 		if designProfile then
 			local editing = designProfile :: RoadProfile.RoadProfile
@@ -280,7 +244,7 @@ return function(
 					updateUI()
 				end,
 			})
-			bottomContent = React.createElement(RoadDesigner, {
+			bottomContent = React.createElement(RoadDesigner.Panel, {
 				Profile = editing,
 				RegionStyle = getStyle(),
 				Subtitle = if editing.BuiltIn
@@ -300,7 +264,64 @@ return function(
 				end,
 				Actions = actions,
 			})
-		elseif not session and editSession.GetSelectedRoad() then
+		elseif session then
+			local currentSession = session :: createRoadSession.RoadSession
+			bottomContent = React.createElement(BuildBar, {
+				ToolMode = currentSession.GetToolMode(),
+				SetToolMode = function(mode: string)
+					currentSession.SetToolMode(mode :: createRoadSession.ToolMode)
+				end,
+				Library = library,
+				ProfileId = currentSession.GetProfile().Id,
+				SetProfileId = function(id: string)
+					local profile = library.Get(id)
+					if profile then
+						settings.DefaultProfileId = id
+						currentSession.SetProfile(profile)
+						persist()
+						updateUI()
+					end
+				end,
+				EndProfileId = if currentSession.GetEndProfile()
+					then (currentSession.GetEndProfile() :: RoadProfile.RoadProfile).Id
+					else nil,
+				SetEndProfileId = function(id: string?)
+					currentSession.SetEndProfile(if id then library.Get(id) else nil)
+				end,
+				Settings = settings,
+				OnSettingsChanged = function()
+					library.SetStyle(getStyle())
+					persist()
+					updateUI()
+				end,
+				Profile = currentSession.GetProfile(),
+				OnChangeProfile = function(transform: (profile: RoadProfile.RoadProfile) -> ())
+					local clone = RoadProfile.Clone(currentSession.GetProfile())
+					transform(clone)
+					currentSession.SetProfile(clone)
+					updateUI()
+				end,
+				SaveAsNew = function()
+					local clone = RoadProfile.Clone(currentSession.GetProfile())
+					clone.Id = "user_" .. tostring(os.time())
+					clone.Name = clone.Name .. " (Modified)"
+					clone.Category = "Custom"
+					clone.BuiltIn = false
+					library.SaveUserProfile(clone)
+					settings.DefaultProfileId = clone.Id
+					currentSession.SetProfile(clone)
+					persist()
+					updateUI()
+				end,
+				Hint = currentSession.GetHint(),
+				Elevation = currentSession.GetElevation(),
+				RegionStyle = getStyle(),
+				OnStop = function()
+					stopSession()
+					plugin:Deactivate()
+				end,
+			})
+		elseif editSession.GetSelectedRoad() then
 			bottomContent = React.createElement(RoadInspector, {
 				Session = editSession,
 				RegionStyle = getStyle(),
@@ -317,12 +338,10 @@ return function(
 				bottomScreenGui = screen
 				bottomRoot = ReactRoblox.createRoot(screen)
 			end
-			-- Leave room on the right for the build HUD so the two never
-			-- overlap when both are on screen.
 			assert(bottomRoot):render(React.createElement("Frame", {
 				AnchorPoint = Vector2.new(0, 1),
 				Position = UDim2.new(0, 12, 1, -12),
-				Size = UDim2.new(1, -340, 0, 250),
+				Size = UDim2.new(1, -24, 0, 260),
 				BackgroundTransparency = 1,
 				[React.Event.MouseEnter] = function()
 					uiState.Hovered = true
@@ -382,14 +401,6 @@ return function(
 		if panelRoot then
 			panelRoot:unmount()
 			panelRoot = nil
-		end
-		if hudRoot then
-			hudRoot:unmount()
-			hudRoot = nil
-		end
-		if hudScreenGui then
-			hudScreenGui:Destroy()
-			hudScreenGui = nil
 		end
 		if bottomRoot then
 			bottomRoot:unmount()
