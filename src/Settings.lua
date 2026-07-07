@@ -6,6 +6,8 @@
 -- meters-to-studs scale, superelevation behavior, snapping, and geometry
 -- quality. Per-road configuration lives in RoadProfile / RoadLibrary instead.
 
+local Keybinds = require("./Keybinds")
+
 local kSettingsKey = "easyRoadState"
 
 export type SuperelevationMode = "Auto" | "Manual" | "Off"
@@ -28,11 +30,18 @@ export type EasyRoadSettings = {
 	GridSizeStuds: number,
 	SnapToGrid: boolean,
 	ElevationStepStuds: number,
+	-- Remembered so the next building session starts where the last one
+	-- left off instead of always resetting to ground level.
+	LastElevationStuds: number,
 
 	-- Geometry quality / dimensions
 	RoadThicknessStuds: number,
 	MaxSegmentLengthStuds: number,
 	PreviewMaxSegmentLengthStuds: number,
+
+	-- Rebindable keys (see Keybinds.lua); each action may have multiple
+	-- bound inputs.
+	Keybinds: Keybinds.KeybindMap,
 
 	-- Serialized user-created road profiles (managed by RoadLibrary)
 	UserProfiles: { { [string]: any } },
@@ -53,9 +62,11 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		GridSizeStuds = raw.GridSizeStuds or 4,
 		SnapToGrid = if raw.SnapToGrid == nil then false else raw.SnapToGrid,
 		ElevationStepStuds = raw.ElevationStepStuds or 1,
+		LastElevationStuds = raw.LastElevationStuds or 0,
 		RoadThicknessStuds = raw.RoadThicknessStuds or 1,
 		MaxSegmentLengthStuds = raw.MaxSegmentLengthStuds or 8,
 		PreviewMaxSegmentLengthStuds = raw.PreviewMaxSegmentLengthStuds or 16,
+		Keybinds = Keybinds.Sanitize(raw.Keybinds),
 		UserProfiles = raw.UserProfiles or {},
 	}
 end
@@ -74,9 +85,11 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		GridSizeStuds = settings.GridSizeStuds,
 		SnapToGrid = settings.SnapToGrid,
 		ElevationStepStuds = settings.ElevationStepStuds,
+		LastElevationStuds = settings.LastElevationStuds,
 		RoadThicknessStuds = settings.RoadThicknessStuds,
 		MaxSegmentLengthStuds = settings.MaxSegmentLengthStuds,
 		PreviewMaxSegmentLengthStuds = settings.PreviewMaxSegmentLengthStuds,
+		Keybinds = settings.Keybinds,
 		UserProfiles = settings.UserProfiles,
 	})
 end

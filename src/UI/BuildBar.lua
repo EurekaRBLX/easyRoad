@@ -71,7 +71,9 @@ local function ToolButton(props: {
 			ScaleType = Enum.ScaleType.Fit,
 			LayoutOrder = 1,
 		}),
-		Label = e("TextLabel", {
+		-- Label only shows on hover, tooltip-style, so the icon alone
+		-- identifies the tool the rest of the time.
+		Label = hovered and e("TextLabel", {
 			Text = props.Label,
 			TextColor3 = Theme.WHITE,
 			BackgroundTransparency = 1,
@@ -188,7 +190,8 @@ local function BuildBar(props: {
 	children.Elevation = e(Components.Row, { LayoutOrder = 8 }, {
 		Label = e(Components.Label, { Text = "Elevation", LayoutOrder = 1, Width = 64 }),
 		Down = e(Components.Button, {
-			Text = "\u{2193}",
+			Text = "",
+			Icon = "rbxassetid://6034818372",
 			OnClick = function()
 				props.AdjustElevation(-props.Settings.ElevationStepStuds)
 			end,
@@ -201,7 +204,8 @@ local function BuildBar(props: {
 			Width = 66,
 		}),
 		Up = e(Components.Button, {
-			Text = "\u{2191}",
+			Text = "",
+			Icon = "rbxassetid://6034818379",
 			OnClick = function()
 				props.AdjustElevation(props.Settings.ElevationStepStuds)
 			end,
@@ -233,15 +237,15 @@ local function BuildBar(props: {
 		LayoutOrder = 11,
 	})
 
-	return e("ScrollingFrame", {
-		Size = UDim2.fromScale(1, 1),
-		BackgroundColor3 = Theme.GLASS_BG,
-		BackgroundTransparency = Theme.GLASS_TRANSPARENCY,
-		BorderSizePixel = 0,
-		CanvasSize = UDim2.new(1, 0, 0, 0),
-		AutomaticCanvasSize = Enum.AutomaticSize.Y,
-		ScrollBarThickness = 4,
-	}, children)
+	local scrollProps = Components.ScrollBar()
+	scrollProps.Size = UDim2.fromScale(1, 1)
+	scrollProps.BackgroundColor3 = Theme.GLASS_BG
+	scrollProps.BackgroundTransparency = Theme.GLASS_TRANSPARENCY
+	scrollProps.BorderSizePixel = 0
+	scrollProps.CanvasSize = UDim2.new(0, 0, 0, 0)
+	scrollProps.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	scrollProps.ScrollingDirection = Enum.ScrollingDirection.Y
+	return e("ScrollingFrame", scrollProps, children)
 end
 
 return BuildBar

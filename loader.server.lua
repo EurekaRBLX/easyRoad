@@ -1,5 +1,5 @@
 -- EasyRoad loader
--- Creates the toolbar button + dock panel and lazy loads the main plugin
+-- Creates the toolbar button + dock panels and lazy loads the main plugin
 -- code on first activation.
 
 local Signal = require(script.Parent.Packages.Signal)
@@ -21,22 +21,31 @@ plugin.Unloading:Connect(function()
 	clickCn:Disconnect()
 end)
 
--- Create the dockable panel
-local params = DockWidgetPluginGuiInfo.new(
-	Enum.InitialDockState.Float,
-	false, -- Is it initially enabled
-	false, -- Override the previous state
-	280, -- Default width
-	420, -- Default height
-	260, -- Minimum width
-	320  -- Minimum height
-)
-local panel = plugin:CreateDockWidgetPluginGuiAsync("EasyRoadPanel", params)
+-- Settings are a few separate docks, named by function, rather than one
+-- panel with internal tabs - each is independently dockable/movable.
+local function createDock(id: string, title: string): DockWidgetPluginGui
+	local params = DockWidgetPluginGuiInfo.new(
+		Enum.InitialDockState.Float,
+		false, -- Is it initially enabled
+		false, -- Override the previous state
+		280, -- Default width
+		420, -- Default height
+		260, -- Minimum width
+		320 -- Minimum height
+	)
+	local dock = plugin:CreateDockWidgetPluginGuiAsync(id, params)
+	dock.Title = title
+	dock.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	return dock
+end
+
+local regionalDock = createDock("EasyRoadRegionalDock", "easyRoad - Regional Preference")
+local keybindsDock = createDock("EasyRoadKeybindsDock", "easyRoad - Keybinds")
 
 local loaded = false
 local function doInitialLoad()
 	loaded = true
-	require(script.Parent.Src.main)(plugin, panel, buttonClicked, setButtonActive)
+	require(script.Parent.Src.main)(plugin, regionalDock, keybindsDock, buttonClicked, setButtonActive)
 end
 
 -- Lazy load the main plugin on first click
@@ -48,9 +57,7 @@ local clickedCn = buttonClicked:Connect(function()
 	end
 end)
 
-panel.Title = "easyRoad"
-panel.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-if panel.Enabled then
+if regionalDock.Enabled or keybindsDock.Enabled then
 	doInitialLoad()
 end
 

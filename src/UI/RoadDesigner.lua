@@ -25,7 +25,7 @@
 -- Presentation-only: everything operates on a RoadProfile via OnChange
 -- (clone-and-transform), with the caller supplying action buttons.
 
-local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -140,16 +140,16 @@ end
 -- A glass vertical scrolling column (left card slot)
 local function scrollColumn(width: number, layoutOrder: number, children: { [string]: any })
 	decorateCard(children)
-	return e("ScrollingFrame", {
-		Size = UDim2.new(0, width, 1, 0),
-		BackgroundColor3 = Theme.GLASS_BG,
-		BackgroundTransparency = Theme.GLASS_TRANSPARENCY,
-		BorderSizePixel = 0,
-		CanvasSize = UDim2.new(1, 0, 0, 0),
-		AutomaticCanvasSize = Enum.AutomaticSize.Y,
-		ScrollBarThickness = 4,
-		LayoutOrder = layoutOrder,
-	}, children)
+	local scrollProps = Components.ScrollBar()
+	scrollProps.Size = UDim2.new(0, width, 1, 0)
+	scrollProps.BackgroundColor3 = Theme.GLASS_BG
+	scrollProps.BackgroundTransparency = Theme.GLASS_TRANSPARENCY
+	scrollProps.BorderSizePixel = 0
+	scrollProps.CanvasSize = UDim2.new(0, 0, 0, 0)
+	scrollProps.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	scrollProps.ScrollingDirection = Enum.ScrollingDirection.Y
+	scrollProps.LayoutOrder = layoutOrder
+	return e("ScrollingFrame", scrollProps, children)
 end
 
 -- Road library list ----------------------------------------------------------------
@@ -211,6 +211,16 @@ local function RoadLibraryList(props: {
 		})
 	end
 
+	local listScrollProps = Components.ScrollBar()
+	listScrollProps.Size = UDim2.new(1, 0, 0, props.Height or 140)
+	listScrollProps.BackgroundColor3 = Theme.FIELD
+	listScrollProps.BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY
+	listScrollProps.BorderSizePixel = 0
+	listScrollProps.CanvasSize = UDim2.new(0, 0, 0, 0)
+	listScrollProps.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	listScrollProps.ScrollingDirection = Enum.ScrollingDirection.Y
+	listScrollProps.LayoutOrder = 1
+
 	return e("Frame", {
 		Size = UDim2.new(1, 0, 0, 0),
 		AutomaticSize = Enum.AutomaticSize.Y,
@@ -221,16 +231,7 @@ local function RoadLibraryList(props: {
 			SortOrder = Enum.SortOrder.LayoutOrder,
 			Padding = UDim.new(0, 4),
 		}),
-		List = e("ScrollingFrame", {
-			Size = UDim2.new(1, 0, 0, props.Height or 140),
-			BackgroundColor3 = Theme.FIELD,
-			BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,
-			BorderSizePixel = 0,
-			CanvasSize = UDim2.new(0, 0, 0, 0),
-			AutomaticCanvasSize = Enum.AutomaticSize.Y,
-			ScrollBarThickness = 4,
-			LayoutOrder = 1,
-		}, rows),
+		List = e("ScrollingFrame", listScrollProps, rows),
 		New = props.OnNew and e(Components.Button, {
 			Text = "+ New Road",
 			OnClick = props.OnNew :: () -> (),
@@ -383,26 +384,25 @@ local function LaneStripCard(props: {
 			LayoutOrder = index,
 		})
 	end
-	children.Strip = e("ScrollingFrame", {
-		Size = UDim2.new(1, 0, 0, 78),
-		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		CanvasSize = UDim2.new(0, 0, 0, 0),
-		AutomaticCanvasSize = Enum.AutomaticSize.X,
-		ScrollingDirection = Enum.ScrollingDirection.X,
-		ScrollBarThickness = 4,
-		LayoutOrder = 2,
-		[React.Event.MouseEnter] = function()
-			if props.OnStripHoverChanged then
-				(props.OnStripHoverChanged :: (hovered: boolean) -> ())(true)
-			end
-		end,
-		[React.Event.MouseLeave] = function()
-			if props.OnStripHoverChanged then
-				(props.OnStripHoverChanged :: (hovered: boolean) -> ())(false)
-			end
-		end,
-	}, tiles)
+	local stripScrollProps = Components.ScrollBar()
+	stripScrollProps.Size = UDim2.new(1, 0, 0, 78)
+	stripScrollProps.BackgroundTransparency = 1
+	stripScrollProps.BorderSizePixel = 0
+	stripScrollProps.CanvasSize = UDim2.new(0, 0, 0, 0)
+	stripScrollProps.AutomaticCanvasSize = Enum.AutomaticSize.X
+	stripScrollProps.ScrollingDirection = Enum.ScrollingDirection.X -- Deliberate exception: this strip scrolls horizontally
+	stripScrollProps.LayoutOrder = 2
+	stripScrollProps[React.Event.MouseEnter] = function()
+		if props.OnStripHoverChanged then
+			(props.OnStripHoverChanged :: (hovered: boolean) -> ())(true)
+		end
+	end
+	stripScrollProps[React.Event.MouseLeave] = function()
+		if props.OnStripHoverChanged then
+			(props.OnStripHoverChanged :: (hovered: boolean) -> ())(false)
+		end
+	end
+	children.Strip = e("ScrollingFrame", stripScrollProps, tiles)
 
 	if readOnly then
 		children.Controls = e(Components.Label, {
@@ -539,7 +539,7 @@ local function ModuleTile(props: {
 	Kind: RoadProfile.ComponentKind,
 	Label: string,
 	OnClick: () -> (),
-	OnDragStart: ((kind: RoadProfile.ComponentKind, label: string, pos: Vector2) -> ())?,
+	OnDragStart: ((kind: RoadProfile.ComponentKind, label: string) -> ())?,
 	LayoutOrder: number,
 })
 	return e("TextButton", {
@@ -553,7 +553,7 @@ local function ModuleTile(props: {
 				props.OnDragStart
 				and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch)
 			then
-				(props.OnDragStart :: any)(props.Kind, props.Label, Vector2.new(input.Position.X, input.Position.Y))
+				(props.OnDragStart :: any)(props.Kind, props.Label)
 			end
 		end,
 	}, {
@@ -602,10 +602,12 @@ end
 
 type DragPayload = { Kind: RoadProfile.ComponentKind, Label: string }
 
-local function useLaneDrag(onInsertAt: (index: number, kind: RoadProfile.ComponentKind) -> ())
+-- Mouse tracking during drag uses plugin:GetMouse() polled on RenderStepped
+-- rather than UserInputService - the latter is unreliable for tracking mouse
+-- position/buttons over Studio's docked plugin GUIs in edit mode.
+local function useLaneDrag(pluginObj: Plugin, onInsertAt: (index: number, kind: RoadProfile.ComponentKind) -> ())
 	local dragging, setDragging = React.useState(nil :: DragPayload?)
 	local dragPos, setDragPos = React.useState(Vector2.new(0, 0))
-	local startPos = React.useRef(Vector2.new(0, 0))
 	local movedPastThreshold = React.useRef(false)
 	local hoveredTile = React.useRef(0) -- 0 = no tile hovered
 	local hoveredStrip = React.useRef(false)
@@ -615,42 +617,44 @@ local function useLaneDrag(onInsertAt: (index: number, kind: RoadProfile.Compone
 			return nil
 		end
 		movedPastThreshold.current = false
-		local moveCn = UserInputService.InputChanged:Connect(function(input: InputObject)
-			if input.UserInputType == Enum.UserInputType.MouseMovement then
-				local pos = Vector2.new(input.Position.X, input.Position.Y)
-				if (pos - startPos.current).Magnitude > 6 then
-					movedPastThreshold.current = true
-				end
-				setDragPos(pos)
+		local mouse = pluginObj:GetMouse()
+		local startPos = Vector2.new(mouse.X, mouse.Y)
+
+		local stepCn = RunService.RenderStepped:Connect(function()
+			local pos = Vector2.new(mouse.X, mouse.Y)
+			if (pos - startPos).Magnitude > 6 then
+				movedPastThreshold.current = true
 			end
+			setDragPos(pos)
 		end)
-		local endCn = UserInputService.InputEnded:Connect(function(input: InputObject)
-			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-				if movedPastThreshold.current then
-					local payload = dragging
-					if payload then
-						if hoveredTile.current > 0 then
-							onInsertAt(hoveredTile.current, payload.Kind)
-						elseif hoveredStrip.current then
-							onInsertAt(math.huge, payload.Kind) -- Caller clamps to the end
-						end
+
+		local function finishDrag()
+			if movedPastThreshold.current then
+				local payload = dragging
+				if payload then
+					if hoveredTile.current > 0 then
+						onInsertAt(hoveredTile.current, payload.Kind)
+					elseif hoveredStrip.current then
+						onInsertAt(math.huge, payload.Kind) -- Caller clamps to the end
 					end
 				end
-				setDragging(nil)
 			end
-		end)
+			setDragging(nil)
+		end
+		local upCn = mouse.Button1Up:Connect(finishDrag)
+
 		return function()
-			moveCn:Disconnect()
-			endCn:Disconnect()
+			stepCn:Disconnect()
+			upCn:Disconnect()
 		end
 	end, { dragging } :: { any })
 
 	return {
 		Dragging = if movedPastThreshold.current then dragging else nil,
 		DragPos = dragPos,
-		BeginDrag = function(kind: RoadProfile.ComponentKind, label: string, pos: Vector2)
-			startPos.current = pos
-			setDragPos(pos)
+		BeginDrag = function(kind: RoadProfile.ComponentKind, label: string)
+			local mouse = pluginObj:GetMouse()
+			setDragPos(Vector2.new(mouse.X, mouse.Y))
 			setDragging({ Kind = kind, Label = label })
 		end,
 		OnTileHoverChanged = function(index: number, hovered: boolean)
@@ -685,8 +689,9 @@ export type PanelPicker = {
 local function PaletteOrLibraryCard(props: {
 	Picker: PanelPicker?,
 	OnInsert: (kind: RoadProfile.ComponentKind) -> (),
-	OnDragStart: ((kind: RoadProfile.ComponentKind, label: string, pos: Vector2) -> ())?,
+	OnDragStart: ((kind: RoadProfile.ComponentKind, label: string) -> ())?,
 	Width: number?,
+	AlignRight: boolean?,
 	LayoutOrder: number,
 })
 	local activeTab: "Modules" | "Library", setActiveTab = React.useState("Modules" :: "Modules" | "Library")
@@ -748,25 +753,29 @@ local function PaletteOrLibraryCard(props: {
 				LayoutOrder = index,
 			})
 		end
-		children.Grid = e("ScrollingFrame", {
-			Size = UDim2.new(1, 0, 1, -28),
-			BackgroundTransparency = 1,
-			BorderSizePixel = 0,
-			CanvasSize = UDim2.new(0, 0, 0, 0),
-			AutomaticCanvasSize = Enum.AutomaticSize.Y,
-			ScrollingDirection = Enum.ScrollingDirection.Y,
-			ScrollBarThickness = 4,
-			LayoutOrder = 2,
-		}, grid)
+		local gridScrollProps = Components.ScrollBar()
+		gridScrollProps.Size = UDim2.new(1, 0, 1, -28)
+		gridScrollProps.BackgroundTransparency = 1
+		gridScrollProps.BorderSizePixel = 0
+		gridScrollProps.CanvasSize = UDim2.new(0, 0, 0, 0)
+		gridScrollProps.AutomaticCanvasSize = Enum.AutomaticSize.Y
+		gridScrollProps.ScrollingDirection = Enum.ScrollingDirection.Y
+		gridScrollProps.LayoutOrder = 2
+		children.Grid = e("ScrollingFrame", gridScrollProps, grid)
 	end
 
 	local frameProps = cardProps()
 	frameProps.Size = UDim2.new(0, props.Width or 220, 1, 0)
 	frameProps.LayoutOrder = props.LayoutOrder
+	if props.AlignRight then
+		frameProps.AnchorPoint = Vector2.new(1, 0)
+		frameProps.Position = UDim2.new(1, 0, 0, 0)
+	end
 	return e("Frame", frameProps, children)
 end
 
 local function Panel(props: {
+	PluginObj: Plugin,
 	Profile: RoadProfile.RoadProfile,
 	RegionStyle: RegionStyles.RegionStyle,
 	OnChange: (transform: (profile: RoadProfile.RoadProfile) -> ()) -> (),
@@ -798,7 +807,7 @@ local function Panel(props: {
 		setSelectedIndex(at)
 	end
 
-	local drag = useLaneDrag(insertKind)
+	local drag = useLaneDrag(props.PluginObj, insertKind)
 
 	-- Properties card
 	local propertiesChildren: { [string]: any } = {}
@@ -891,20 +900,19 @@ local function Panel(props: {
 			SortOrder = Enum.SortOrder.LayoutOrder,
 			Padding = UDim.new(0, 8),
 		}),
+		-- Properties pinned to the left edge, Modules/Library pinned to the
+		-- right edge - independently anchored (no shared list layout) so the
+		-- gap opens up in the middle instead of hugging the Properties card.
 		Top = e("Frame", {
 			Size = UDim2.new(1, 0, 1, -(STRIP_HEIGHT + 8)),
 			BackgroundTransparency = 1,
 			LayoutOrder = 1,
 		}, {
-			Layout = e("UIListLayout", {
-				FillDirection = Enum.FillDirection.Horizontal,
-				SortOrder = Enum.SortOrder.LayoutOrder,
-				Padding = UDim.new(0, 8),
-			}),
 			Properties = scrollColumn(240, 1, propertiesChildren),
 			Palette = not readOnly and e(PaletteOrLibraryCard, {
 				Picker = props.Picker,
 				Width = 220,
+				AlignRight = true,
 				OnInsert = function(kind: RoadProfile.ComponentKind)
 					insertKind(kind, nil)
 				end,

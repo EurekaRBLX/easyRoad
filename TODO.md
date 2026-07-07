@@ -79,6 +79,57 @@ solved first. Main cost is per-row `ViewportFrame` + model instance
 overhead if the library grows long (would want to reuse/pool instances
 rather than one permanently-live `ViewportFrame` per row).
 
+## Recently shipped: keybinds, docked settings split, drag-and-drop take 3
+
+- **Rebindable keybinds.** New `Keybinds.lua` module (action ids, default
+  bindings, human-readable `Describe`, `CaptureLabel` for turning a live
+  `InputObject` into a plain string, `Matches`/`Sanitize`). Settings now
+  persist `Keybinds: {[actionId]: {string}}` (plain strings, e.g. `"R"`/
+  `"MouseButton2"` - never raw `Enum`s, matching `RoadProfile`'s
+  Kind-as-string convention) and a new `KeybindsGui.lua` lets each action
+  have multiple bound inputs, each with its own "-" remove button and a
+  shared "+ Add binding" that listens for the next key/click.
+  `createRoadSession.lua` now reads `settings.Keybinds` instead of
+  hardcoded R/F/Escape.
+- **Settings split into two independent docks**, not tabs sharing one
+  panel: "Regional Preference" (region/scale/superelevation/snapping/
+  geometry - everything the old single settings page had minus keybinds)
+  and "Keybinds", each its own `DockWidgetPluginGui` (`loader.server.lua`),
+  toggled together from the top bar's Settings button.
+- **Elevation height now remembered across sessions**
+  (`Settings.LastElevationStuds`), instead of resetting to 0 every time a
+  build session starts.
+- **Scrollbar styling.** `Components.ScrollBar()` returns a shared
+  grey-black, 50%-transparent scrollbar style
+  (`Theme.SCROLLBAR_COLOR`/`_TRANSPARENCY`/`_THICKNESS`) applied to every
+  `ScrollingFrame` in the plugin; every one of them also now forces
+  `ScrollingDirection = Y` + a zeroed `CanvasSize.X` (the lane strip is the
+  deliberate exception, staying horizontal) so nothing can drift
+  sideways.
+- **Drag-and-drop rewritten a third time**, now using `plugin:GetMouse()`
+  polled on `RunService.RenderStepped` for position and `mouse.Button1Up`
+  to end the drag - the pattern the user supplied from the devforum -
+  instead of `UserInputService.InputChanged`/`InputEnded`, which is
+  suspected unreliable for mouse tracking (as opposed to keyboard input,
+  which already worked fine via `UserInputService.InputBegan`) over
+  Studio's docked plugin GUIs in edit mode. The hover-based drop-target
+  resolution (`MouseEnter`/`MouseLeave` on tiles/strip) from the previous
+  rewrite is unchanged - only the begin/end/position tracking moved.
+  `RoadDesigner.Panel`/`RoadInspector` now take a `PluginObj: Plugin` prop
+  threaded down from `main.lua` so the hook can call `:GetMouse()`.
+- **BuildBar tool buttons are icon-first**: the Straight/Curve/Free text
+  label now only appears on hover (tooltip-style), matching the request to
+  reduce visual weight when nothing's focused.
+- **New elevation arrow icons** (`rbxassetid://6034818379` up /
+  `6034818372` down) replace the unicode ↑/↓ glyphs on the elevation
+  buttons; `Components.Button` gained an optional `Icon` prop to support
+  this without a one-off button variant.
+- **Road Editor's Top row**: Properties and Modules/Library are now
+  independently anchored (`AnchorPoint`/`Position`, no shared horizontal
+  `UIListLayout`) - Properties pinned to the left edge, Modules pinned to
+  the right edge, so the gap opens in the middle instead of the two cards
+  hugging each other with dead space only past the Palette.
+
 ## Recently shipped: real fixes from Studio testing (round after the pie menu)
 
 - **Found and fixed the actual root cause of the recurring "Properties

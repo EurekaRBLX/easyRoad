@@ -33,4 +33,11 @@ Theme.GLASS_STROKE = Color3.fromRGB(255, 255, 255)
 Theme.GLASS_STROKE_TRANSPARENCY = 0.72
 Theme.CORNER_RADIUS = 10
 
+-- Scrollbar: a soft grey-black bar, not a blunt fully-opaque one, so
+-- scrolling reads as an affordance rather than a UI element competing for
+-- attention.
+Theme.SCROLLBAR_COLOR = Color3.fromRGB(90, 90, 96)
+Theme.SCROLLBAR_TRANSPARENCY = 0.5
+Theme.SCROLLBAR_THICKNESS = 5
+
 return Theme

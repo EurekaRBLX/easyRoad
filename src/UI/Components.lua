@@ -12,6 +12,20 @@ local Theme = require("./Theme")
 
 local Components = {}
 
+-- Common cosmetic ScrollingFrame properties: a soft, low-contrast scrollbar
+-- instead of a blunt fully-opaque one. Does NOT set ScrollingDirection or
+-- CanvasSize - callers must still pick those explicitly (most should be
+-- vertical-only with CanvasSize.X pinned to 0; the horizontal lane strip is
+-- a deliberate exception). Merge into a ScrollingFrame's own prop table,
+-- e.g. `local props = Components.ScrollBar(); props.Size = ...`.
+function Components.ScrollBar(): { [string]: any }
+	return {
+		ScrollBarImageColor3 = Theme.SCROLLBAR_COLOR,
+		ScrollBarImageTransparency = Theme.SCROLLBAR_TRANSPARENCY,
+		ScrollBarThickness = Theme.SCROLLBAR_THICKNESS,
+	}
+end
+
 -- Section header --------------------------------------------------------------
 
 function Components.Section(props: {
@@ -35,6 +49,7 @@ end
 
 function Components.Button(props: {
 	Text: string,
+	Icon: string?, -- When set, replaces the text with a centered icon image
 	OnClick: () -> (),
 	Selected: boolean?,
 	Danger: boolean?,
@@ -59,7 +74,7 @@ function Components.Button(props: {
 	-- "Use as Template", ...) could still overflow a fixed-width column
 	-- instead of actually sharing the row's available width.
 	return e("TextButton", {
-		Text = props.Text,
+		Text = if props.Icon then "" else props.Text,
 		TextColor3 = Theme.WHITE,
 		BackgroundColor3 = color,
 		BackgroundTransparency = if props.Selected or props.Danger then 0.1 else Theme.GLASS_ELEMENT_TRANSPARENCY,
@@ -88,6 +103,14 @@ function Components.Button(props: {
 		}),
 		Flex = props.Grow and e("UIFlexItem", {
 			FlexMode = Enum.UIFlexMode.Grow,
+		}),
+		Icon = props.Icon and e("ImageLabel", {
+			Image = props.Icon,
+			BackgroundTransparency = 1,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.new(0, 16, 0, 16),
+			ScaleType = Enum.ScaleType.Fit,
 		}),
 	})
 end

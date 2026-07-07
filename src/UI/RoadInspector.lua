@@ -20,6 +20,7 @@ local RegionStyles = require("../RegionStyles")
 local RoadEditSession = require("../RoadEditSession")
 
 local function RoadInspector(props: {
+	PluginObj: Plugin,
 	Session: RoadEditSession.RoadEditSession,
 	RegionStyle: RegionStyles.RegionStyle,
 })
@@ -85,6 +86,7 @@ local function RoadInspector(props: {
 
 	local isTransition = session.IsTransition()
 	return e(RoadDesigner.Panel, {
+		PluginObj = props.PluginObj,
 		Profile = profile,
 		RegionStyle = props.RegionStyle,
 		Subtitle = if isTransition

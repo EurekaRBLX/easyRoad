@@ -1,6 +1,6 @@
 --!strict
 -- EasyRoad main: wires the toolbar button, the top mode bar, the bottom
--- HUD surfaces, the docked settings sidebar, the road library, and the
+-- HUD surfaces, the two settings docks, the road library, and the
 -- placement/edit sessions together.
 --
 -- One glass top bar switches between the plugin's functions, CS2-style,
@@ -9,13 +9,15 @@
 --   Road Tools   - placement session; compact tool panel bottom-left
 --   Road Editor  - create/edit road types; full designer bottom bar
 --                  (properties | lane strip | modules palette)
---   Settings     - grand settings (region profile, scale, banking, ...)
---                  docked in the Studio sidebar panel
+--   Settings     - grand settings, as separate docks named by function
+--                  (Regional Preference, Keybinds) rather than tabs in
+--                  one panel - toggled together by the Settings button
 --
 -- Selecting an already-placed road (outside of a build session) opens the
 -- same designer bottom bar bound to that road, with Apply/Revert.
 
 local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
 
 local Packages = script.Parent.Parent.Packages
 local React = require(Packages.React)
@@ -25,6 +27,7 @@ local Signal = require(Packages.Signal)
 local Settings = require("./Settings")
 local RegionStyles = require("./RegionStyles")
 local RoadProfile = require("./RoadProfile")
+local KeybindsModule = require("./Keybinds")
 local createRoadLibrary = require("./RoadLibrary")
 local createRoadSession = require("./createRoadSession")
 local createRoadEditSession = require("./RoadEditSession")
@@ -32,13 +35,15 @@ local RoadDesigner = require("./UI/RoadDesigner")
 local RoadInspector = require("./UI/RoadInspector")
 local BuildBar = require("./UI/BuildBar")
 local TopBar = require("./UI/TopBar")
-local SettingsGui = require("./UI/SettingsGui")
+local RegionalPreferenceGui = require("./UI/RegionalPreferenceGui")
+local KeybindsGui = require("./UI/KeybindsGui")
 local Components = require("./UI/Components")
 local PieMenu = require("./UI/PieMenu")
 
 return function(
 	plugin: Plugin,
-	panel: DockWidgetPluginGui,
+	regionalDock: DockWidgetPluginGui,
+	keybindsDock: DockWidgetPluginGui,
 	buttonClicked: Signal.Signal<>,
 	setButtonActive: (active: boolean) -> ()
 )
@@ -59,7 +64,8 @@ return function(
 	-- Shared with the session so HUD clicks don't also place road points
 	local uiState: createRoadSession.UiState = { Hovered = false }
 
-	local panelRoot: ReactRoblox.RootType? = nil
+	local regionalRoot: ReactRoblox.RootType? = nil
+	local keybindsRoot: ReactRoblox.RootType? = nil
 	local topRoot: ReactRoblox.RootType? = nil
 	local topScreenGui: ScreenGui? = nil
 	local bottomRoot: ReactRoblox.RootType? = nil
@@ -84,6 +90,24 @@ return function(
 	local function persist()
 		settings.UserProfiles = library.SerializeUserProfiles()
 		Settings.Save(plugin, settings)
+	end
+
+	-- Keybinds settings dock: listens for the next key/click and reports it
+	-- back, so "+  Add binding" can capture whatever the user presses.
+	local function captureNextKeybind(onCaptured: (label: string) -> ())
+		local connection: RBXScriptConnection? = nil
+		connection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+			if gameProcessed then
+				return
+			end
+			local label = KeybindsModule.CaptureLabel(input)
+			if label then
+				if connection then
+					connection:Disconnect()
+				end
+				onCaptured(label)
+			end
+		end)
 	end
 
 	local function destroySession()
@@ -168,7 +192,7 @@ return function(
 			assert(topRoot):render(React.createElement(TopBar, {
 				ToolsActive = session ~= nil,
 				EditorActive = designProfile ~= nil,
-				SettingsOpen = panel.Enabled,
+				SettingsOpen = regionalDock.Enabled or keybindsDock.Enabled,
 				OnTools = function()
 					if session then
 						stopSession()
@@ -185,7 +209,11 @@ return function(
 					end
 				end,
 				OnSettings = function()
-					panel.Enabled = not panel.Enabled
+					-- Settings are separate docks, named by function, rather
+					-- than tabs in one panel - toggle both together.
+					local open = not (regionalDock.Enabled or keybindsDock.Enabled)
+					regionalDock.Enabled = open
+					keybindsDock.Enabled = open
 				end,
 				OnHoverChanged = function(hovered: boolean)
 					uiState.Hovered = hovered
@@ -254,6 +282,7 @@ return function(
 			end
 
 			bottomContent = React.createElement(RoadDesigner.Panel, {
+				PluginObj = plugin,
 				Profile = editing,
 				RegionStyle = getStyle(),
 				Subtitle = if editing.BuiltIn
@@ -340,6 +369,7 @@ return function(
 			}
 		elseif editSession.GetSelectedRoad() and not editSession.IsShowingMenu() then
 			bottomContent = React.createElement(RoadInspector, {
+				PluginObj = plugin,
 				Session = editSession,
 				RegionStyle = getStyle(),
 			})
@@ -457,27 +487,51 @@ return function(
 			end
 		end
 
-		-- Docked settings sidebar ----------------------------------------------
-		if panel.Enabled then
-			if not panelRoot then
-				panelRoot = ReactRoblox.createRoot(panel)
+		-- Docked settings sidebars: separate docks, named by function --------
+		local function onSettingsChanged()
+			-- Region (or other grand settings) may have changed: rebuild the
+			-- built-in road set to match and persist everything.
+			library.SetStyle(getStyle())
+			persist()
+			updateUI()
+		end
+
+		if regionalDock.Enabled then
+			if not regionalRoot then
+				regionalRoot = ReactRoblox.createRoot(regionalDock)
 			end
-			assert(panelRoot):render(React.createElement(SettingsGui, {
+			assert(regionalRoot):render(React.createElement(RegionalPreferenceGui, {
+				Settings = settings,
+				OnSettingsChanged = onSettingsChanged,
+				OnClose = function()
+					regionalDock.Enabled = false
+				end,
+			}))
+		elseif regionalRoot then
+			regionalRoot:unmount()
+			regionalRoot = nil
+		end
+
+		if keybindsDock.Enabled then
+			if not keybindsRoot then
+				keybindsRoot = ReactRoblox.createRoot(keybindsDock)
+			end
+			assert(keybindsRoot):render(React.createElement(KeybindsGui, {
 				Settings = settings,
 				OnSettingsChanged = function()
-					-- Region (or other grand settings) may have changed: rebuild
-					-- the built-in road set to match and persist everything.
-					library.SetStyle(getStyle())
 					persist()
 					updateUI()
 				end,
+				OnCapture = function(_actionId: string, onCaptured: (label: string) -> ())
+					captureNextKeybind(onCaptured)
+				end,
 				OnClose = function()
-					panel.Enabled = false
+					keybindsDock.Enabled = false
 				end,
 			}))
-		elseif panelRoot then
-			panelRoot:unmount()
-			panelRoot = nil
+		elseif keybindsRoot then
+			keybindsRoot:unmount()
+			keybindsRoot = nil
 		end
 	end
 
@@ -492,11 +546,14 @@ return function(
 		updateUI()
 	end)
 
-	panel:GetPropertyChangedSignal("Enabled"):Connect(function()
+	regionalDock:GetPropertyChangedSignal("Enabled"):Connect(function()
+		updateUI()
+	end)
+	keybindsDock:GetPropertyChangedSignal("Enabled"):Connect(function()
 		updateUI()
 	end)
 
-	-- Initial UI show in the case where the panel starts enabled
+	-- Initial UI show in the case where a dock starts enabled
 	updateUI()
 
 	-- When the user switches to another Studio tool, stop placing (the top
@@ -507,9 +564,13 @@ return function(
 
 	plugin.Unloading:Connect(function()
 		destroySession()
-		if panelRoot then
-			panelRoot:unmount()
-			panelRoot = nil
+		if regionalRoot then
+			regionalRoot:unmount()
+			regionalRoot = nil
+		end
+		if keybindsRoot then
+			keybindsRoot:unmount()
+			keybindsRoot = nil
 		end
 		if topRoot then
 			topRoot:unmount()

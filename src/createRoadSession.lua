@@ -28,6 +28,7 @@ local RoadBuilder = require("./Mesh/RoadBuilder")
 local RoadProfile = require("./RoadProfile")
 local RegionStyles = require("./RegionStyles")
 local Settings = require("./Settings")
+local Keybinds = require("./Keybinds")
 
 export type ToolMode = "Straight" | "Curve" | "Freeform"
 
@@ -79,7 +80,9 @@ local function createRoadSession(
 	local points: { Vector3 } = if seed then { seed.Position } else {}
 	local lockedTangent: Vector3? = if seed then seed.Tangent else nil
 	local hoverPos: Vector3? = nil
-	local elevation = 0
+	-- Remembers where the user left off instead of always resetting to
+	-- ground level on a fresh session.
+	local elevation = settings.LastElevationStuds
 
 	local previewModel: Model? = nil
 	local markerFolder: Folder? = nil
@@ -91,6 +94,7 @@ local function createRoadSession(
 	-- the moment it's clicked.
 	local function adjustElevation(delta: number)
 		elevation += delta
+		settings.LastElevationStuds = elevation
 		previewDirty = true
 		changeSignal:Fire()
 	end
@@ -398,7 +402,6 @@ local function createRoadSession(
 	end
 
 	table.insert(connections, mouse.Button1Down:Connect(onClick))
-	table.insert(connections, mouse.Button2Down:Connect(cancelPlacement))
 	table.insert(connections, mouse.Move:Connect(function()
 		local ground = raycastGround()
 		if ground then
@@ -412,20 +415,21 @@ local function createRoadSession(
 		end
 	end))
 
+	-- Rebindable via the Keybinds settings dock (src/Keybinds.lua); each
+	-- action can have multiple bound inputs (Cancel Placement defaults to
+	-- Escape, right-click, AND middle-click - right-click alone doubles as
+	-- Studio's camera-orbit gesture, so a plain right-click cancelling a
+	-- placement the user only meant to pan around was worth a second option).
 	table.insert(connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		if gameProcessed then
 			return
 		end
-		if input.KeyCode == Enum.KeyCode.R then
+		local binds = settings.Keybinds
+		if Keybinds.Matches(binds.ElevationUp, input) then
 			adjustElevation(settings.ElevationStepStuds)
-		elseif input.KeyCode == Enum.KeyCode.F then
+		elseif Keybinds.Matches(binds.ElevationDown, input) then
 			adjustElevation(-settings.ElevationStepStuds)
-		elseif input.KeyCode == Enum.KeyCode.Escape then
-			cancelPlacement()
-		elseif input.UserInputType == Enum.UserInputType.MouseButton3 then
-			-- Middle-click also cancels: right-click alone doubles as
-			-- Studio's camera-orbit gesture, so it can cancel a placement
-			-- the user only meant to pan around.
+		elseif Keybinds.Matches(binds.CancelPlacement, input) then
 			cancelPlacement()
 		end
 	end))
