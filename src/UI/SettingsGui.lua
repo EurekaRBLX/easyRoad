@@ -1,7 +1,10 @@
 --!strict
--- The grand settings panel: region style, scale, superelevation behavior,
--- snapping, and geometry quality. Everything here affects every road the
--- plugin builds from now on.
+-- The grand settings panel, docked in the Studio sidebar. Tabbed:
+--   Regional Preference - region style, scale, superelevation, snapping,
+--                          geometry quality (everything that used to be the
+--                          whole page)
+--   Keybinds             - what the placement keys currently do (not yet
+--                          rebindable - see TODO.md)
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -13,6 +16,8 @@ local Theme = require("./Theme")
 local Components = require("./Components")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
+
+type SettingsTab = "Regional" | "Keybinds"
 
 local function LabeledRow(props: {
 	Label: string,
@@ -34,10 +39,21 @@ local function LabeledRow(props: {
 	}, children)
 end
 
-local function SettingsGui(props: {
+local function KeybindRow(props: {
+	Action: string,
+	Keys: string,
+	LayoutOrder: number,
+})
+	return e(Components.Row, { LayoutOrder = props.LayoutOrder }, {
+		Action = e(Components.Label, { Text = props.Action, LayoutOrder = 1, Width = 150 }),
+		Keys = e(Components.Label, { Text = props.Keys, Dim = true, LayoutOrder = 2 }),
+	})
+end
+
+local function RegionalPreferencePage(props: {
 	Settings: Settings.EasyRoadSettings,
 	OnSettingsChanged: () -> (),
-	OnClose: () -> (),
+	LayoutOrder: number,
 })
 	local settings = props.Settings
 
@@ -54,26 +70,15 @@ local function SettingsGui(props: {
 
 	local activeStyle = RegionStyles.Get(settings.RegionId)
 
-	-- Renders directly into the docked Studio sidebar panel - already a
-	-- bordered container, so no glass card / corner radius of its own here,
-	-- just a small inward indent so content doesn't touch the panel edges.
-	return e("ScrollingFrame", {
-		Size = UDim2.fromScale(1, 1),
-		BackgroundColor3 = Theme.PANEL,
-		BorderSizePixel = 0,
-		CanvasSize = UDim2.new(1, 0, 0, 0),
-		AutomaticCanvasSize = Enum.AutomaticSize.Y,
-		ScrollBarThickness = 6,
+	return e("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = props.LayoutOrder,
 	}, {
 		Layout = e("UIListLayout", {
 			SortOrder = Enum.SortOrder.LayoutOrder,
 			Padding = UDim.new(0, 4),
-		}),
-		Padding = e("UIPadding", {
-			PaddingLeft = UDim.new(0, Theme.PADDING + 5),
-			PaddingRight = UDim.new(0, Theme.PADDING + 5),
-			PaddingTop = UDim.new(0, Theme.PADDING + 5),
-			PaddingBottom = UDim.new(0, Theme.PADDING + 5),
 		}),
 
 		StyleSection = e(Components.Section, {
@@ -283,7 +288,91 @@ local function SettingsGui(props: {
 				}),
 			},
 		}),
+	})
+end
 
+local function KeybindsPage(props: { LayoutOrder: number })
+	return e("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = props.LayoutOrder,
+	}, {
+		Layout = e("UIListLayout", {
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Padding = UDim.new(0, 4),
+		}),
+		Section = e(Components.Section, { Text = "Placement", LayoutOrder = 1 }),
+		Elevation = e(KeybindRow, { Action = "Raise / lower elevation", Keys = "R / F", LayoutOrder = 2 }),
+		Cancel = e(KeybindRow, {
+			Action = "Cancel placement",
+			Keys = "Esc, right-click, or middle-click",
+			LayoutOrder = 3,
+		}),
+		Note = e(Components.Label, {
+			Text = "Right-click also orbits the camera in Studio - middle-click "
+				.. "cancels without that conflict. Rebindable keys aren't in yet.",
+			Dim = true,
+			LayoutOrder = 4,
+		}),
+	})
+end
+
+local function SettingsGui(props: {
+	Settings: Settings.EasyRoadSettings,
+	OnSettingsChanged: () -> (),
+	OnClose: () -> (),
+})
+	local tab: SettingsTab, setTab = React.useState("Regional" :: SettingsTab)
+
+	-- Renders directly into the docked Studio sidebar panel - already a
+	-- bordered container, so no glass card / corner radius of its own here,
+	-- just a small inward indent so content doesn't touch the panel edges.
+	return e("ScrollingFrame", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Theme.PANEL,
+		BorderSizePixel = 0,
+		CanvasSize = UDim2.new(1, 0, 0, 0),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollBarThickness = 6,
+	}, {
+		Layout = e("UIListLayout", {
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Padding = UDim.new(0, 4),
+		}),
+		Padding = e("UIPadding", {
+			PaddingLeft = UDim.new(0, Theme.PADDING + 5),
+			PaddingRight = UDim.new(0, Theme.PADDING + 5),
+			PaddingTop = UDim.new(0, Theme.PADDING + 5),
+			PaddingBottom = UDim.new(0, Theme.PADDING + 5),
+		}),
+		Tabs = e(Components.Row, { LayoutOrder = 1 }, {
+			Regional = e(Components.Button, {
+				Text = "Regional Preference",
+				Selected = tab == "Regional",
+				OnClick = function()
+					setTab("Regional")
+				end,
+				LayoutOrder = 1,
+				Grow = true,
+			}),
+			Keybinds = e(Components.Button, {
+				Text = "Keybinds",
+				Selected = tab == "Keybinds",
+				OnClick = function()
+					setTab("Keybinds")
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		}),
+		Page = if tab == "Regional"
+			then e(RegionalPreferencePage, {
+				Settings = props.Settings,
+				OnSettingsChanged = props.OnSettingsChanged,
+				LayoutOrder = 2,
+			})
+			else e(KeybindsPage, { LayoutOrder = 2 }),
 		Close = e(Components.Button, {
 			Text = "Close",
 			OnClick = props.OnClose,

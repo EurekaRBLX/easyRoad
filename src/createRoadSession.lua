@@ -422,6 +422,11 @@ local function createRoadSession(
 			adjustElevation(-settings.ElevationStepStuds)
 		elseif input.KeyCode == Enum.KeyCode.Escape then
 			cancelPlacement()
+		elseif input.UserInputType == Enum.UserInputType.MouseButton3 then
+			-- Middle-click also cancels: right-click alone doubles as
+			-- Studio's camera-orbit gesture, so it can cancel a placement
+			-- the user only meant to pan around.
+			cancelPlacement()
 		end
 	end))
 

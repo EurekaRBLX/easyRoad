@@ -1471,7 +1471,7 @@ export type RoadEditSession = {
 	Apply: () -&gt; (),
 	Revert: () -&gt; (),
 	Deselect: () -&gt; (),
-	-- Selecting a road first shows a contextual pie menu (Edit Road Segment /
+	-- Selecting a road first shows a contextual pie menu (Edit on Road Builder /
 	-- Place More / Use as Template / Cancel); OpenEditor transitions from
 	-- that menu into the full designer for this same road.
 	IsShowingMenu: () -&gt; boolean,
@@ -2668,13 +2668,19 @@ function Components.Button(props: {
 		color = Theme.BUTTON_HOVER
 	end
 
+	-- Grow must win over auto-sizing-to-text: combining AutomaticSize.X with
+	-- a UIFlexItem made the button report its full text width as its flex
+	-- basis, so a row of Grow buttons with long labels ("Save as Copy",
+	-- "Use as Template", ...) could still overflow a fixed-width column
+	-- instead of actually sharing the row's available width.
 	return e("TextButton", {
 		Text = props.Text,
 		TextColor3 = Theme.WHITE,
 		BackgroundColor3 = color,
 		BackgroundTransparency = if props.Selected or props.Danger then 0.1 else Theme.GLASS_ELEMENT_TRANSPARENCY,
 		Size = props.Size or UDim2.new(0, 0, 0, Theme.ROW_HEIGHT),
-		AutomaticSize = if props.Size then Enum.AutomaticSize.None else Enum.AutomaticSize.X,
+		AutomaticSize = if props.Size or props.Grow then Enum.AutomaticSize.None else Enum.AutomaticSize.X,
+		TextTruncate = Enum.TextTruncate.AtEnd,
 		Font = Theme.FONT,
 		TextSize = Theme.TEXT_SIZE,
 		LayoutOrder = props.LayoutOrder,
@@ -3311,7 +3317,6 @@ return ProfileFields
 -- (clone-and-transform), with the caller supplying action buttons.
 
 local UserInputService = game:GetService("UserInputService")
-local GuiService = game:GetService("GuiService")
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -3335,11 +3340,6 @@ export type DesignerAction = {
 
 local STRIP_HEIGHT = 140
 local TILE_WIDTH = 58
-
--- Instance names used to hit-test drag-and-drop drops via
--- GuiService:GetGuiObjectsAtPosition instead of manual coordinate math.
-local LANE_TILE_NAME_PREFIX = "EasyRoadLaneTile"
-local LANE_STRIP_NAME = "EasyRoadLaneStrip"
 
 -- Palette entries: every placeable module, with Commonwealth-flavoured
 -- display names (Sidewalk reads as "Pavement", matching the reference kit).
@@ -3538,11 +3538,11 @@ local function LaneTile(props: {
 	Selected: boolean,
 	ReadOnly: boolean,
 	OnClick: () -&gt; (),
+	OnHoverChanged: ((index: number, hovered: boolean) -&gt; ())?,
 	LayoutOrder: number,
 })
 	local component = props.Component
 	return e("TextButton", {
-		Name = LANE_TILE_NAME_PREFIX .. tostring(props.Index),
 		Text = "",
 		BackgroundColor3 = if props.Selected then Theme.SELECTED else Theme.FIELD,
 		BackgroundTransparency = if props.Selected then 0.15 else Theme.GLASS_ELEMENT_TRANSPARENCY,
@@ -3552,6 +3552,16 @@ local function LaneTile(props: {
 		[React.Event.Activated] = function()
 			if not props.ReadOnly then
 				props.OnClick()
+			end
+		end,
+		[React.Event.MouseEnter] = function()
+			if props.OnHoverChanged then
+				(props.OnHoverChanged :: (index: number, hovered: boolean) -&gt; ())(props.Index, true)
+			end
+		end,
+		[React.Event.MouseLeave] = function()
+			if props.OnHoverChanged then
+				(props.OnHoverChanged :: (index: number, hovered: boolean) -&gt; ())(props.Index, false)
 			end
 		end,
 	}, {
@@ -3613,6 +3623,8 @@ local function LaneStripCard(props: {
 	SelectedIndex: number, -- 0 = none
 	OnSelect: (index: number) -&gt; (), -- 0 clears
 	OnChange: (transform: (profile: RoadProfile.RoadProfile) -&gt; ()) -&gt; (),
+	OnTileHoverChanged: ((index: number, hovered: boolean) -&gt; ())?,
+	OnStripHoverChanged: ((hovered: boolean) -&gt; ())?,
 	LayoutOrder: number,
 })
 	local profile = props.Profile
@@ -3646,6 +3658,7 @@ local function LaneStripCard(props: {
 			FillDirection = Enum.FillDirection.Horizontal,
 			SortOrder = Enum.SortOrder.LayoutOrder,
 			Padding = UDim.new(0, 4),
+			HorizontalAlignment = Enum.HorizontalAlignment.Center,
 		}),
 	}
 	for index, component in profile.Components do
@@ -3657,11 +3670,11 @@ local function LaneStripCard(props: {
 			OnClick = function()
 				props.OnSelect(if props.SelectedIndex == index then 0 else index)
 			end,
+			OnHoverChanged = props.OnTileHoverChanged,
 			LayoutOrder = index,
 		})
 	end
 	children.Strip = e("ScrollingFrame", {
-		Name = LANE_STRIP_NAME,
 		Size = UDim2.new(1, 0, 0, 78),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
@@ -3670,6 +3683,16 @@ local function LaneStripCard(props: {
 		ScrollingDirection = Enum.ScrollingDirection.X,
 		ScrollBarThickness = 4,
 		LayoutOrder = 2,
+		[React.Event.MouseEnter] = function()
+			if props.OnStripHoverChanged then
+				(props.OnStripHoverChanged :: (hovered: boolean) -&gt; ())(true)
+			end
+		end,
+		[React.Event.MouseLeave] = function()
+			if props.OnStripHoverChanged then
+				(props.OnStripHoverChanged :: (hovered: boolean) -&gt; ())(false)
+			end
+		end,
 	}, tiles)
 
 	if readOnly then
@@ -3858,43 +3881,25 @@ end
 -- Shared by Panel: press-and-drag a module tile past a small threshold to
 -- pick it up (a plain click still inserts via OnInsert as before); dropping
 -- over the lane strip inserts the module at the nearest tile position.
+--
+-- Drop resolution is done via plain MouseEnter/MouseLeave hover tracking on
+-- the lane tiles and the strip itself (LaneStripCard's OnTileHoverChanged /
+-- OnStripHoverChanged), not by hit-testing a screen coordinate - the
+-- previous version tried both a manual AbsolutePosition/tile-width formula
+-- and GuiService:GetGuiObjectsAtPosition, and neither reliably matched
+-- what's actually on screen in Studio's plugin/edit-mode GUI context.
+-- Hover events are the same mechanism every button's hover-highlight in
+-- this UI already relies on, so they're known to work here.
 
 type DragPayload = { Kind: RoadProfile.ComponentKind, Label: string }
-
--- Finds what's under a screen point via Roblox's own GUI hit-testing
--- (correct regardless of GuiInset, DPI scale, or exactly how tiles are
--- laid out) rather than comparing raw input coordinates against a cached
--- AbsolutePosition, which was fragile and the likely source of the "drop
--- doesn't register" bugs in the previous version. Returns the lane index
--- to insert before (nil = append at the end) and whether the point was
--- over the strip at all (false = not a valid drop).
-local function resolveDrop(screenPos: Vector2): (number?, boolean)
-	local objects = GuiService:GetGuiObjectsAtPosition(screenPos.X, screenPos.Y)
-	for _, hit in objects do
-		local current: Instance? = hit
-		while current do
-			local name = current.Name
-			if name == LANE_STRIP_NAME then
-				return nil, true
-			end
-			local tileIndex = string.match(name, "^" .. LANE_TILE_NAME_PREFIX .. "(%d+)$")
-			if tileIndex then
-				return tonumber(tileIndex), true
-			end
-			if current:IsA("ScreenGui") then
-				break
-			end
-			current = current.Parent
-		end
-	end
-	return nil, false
-end
 
 local function useLaneDrag(onInsertAt: (index: number, kind: RoadProfile.ComponentKind) -&gt; ())
 	local dragging, setDragging = React.useState(nil :: DragPayload?)
 	local dragPos, setDragPos = React.useState(Vector2.new(0, 0))
 	local startPos = React.useRef(Vector2.new(0, 0))
 	local movedPastThreshold = React.useRef(false)
+	local hoveredTile = React.useRef(0) -- 0 = no tile hovered
+	local hoveredStrip = React.useRef(false)
 
 	React.useEffect(function()
 		if not dragging then
@@ -3915,10 +3920,9 @@ local function useLaneDrag(onInsertAt: (index: number, kind: RoadProfile.Compone
 				if movedPastThreshold.current then
 					local payload = dragging
 					if payload then
-						local index, overStrip = resolveDrop(Vector2.new(input.Position.X, input.Position.Y))
-						if index then
-							onInsertAt(index, payload.Kind)
-						elseif overStrip then
+						if hoveredTile.current &gt; 0 then
+							onInsertAt(hoveredTile.current, payload.Kind)
+						elseif hoveredStrip.current then
 							onInsertAt(math.huge, payload.Kind) -- Caller clamps to the end
 						end
 					end
@@ -3939,6 +3943,19 @@ local function useLaneDrag(onInsertAt: (index: number, kind: RoadProfile.Compone
 			startPos.current = pos
 			setDragPos(pos)
 			setDragging({ Kind = kind, Label = label })
+		end,
+		OnTileHoverChanged = function(index: number, hovered: boolean)
+			if hovered then
+				hoveredTile.current = index
+			elseif hoveredTile.current == index then
+				hoveredTile.current = 0
+			end
+		end,
+		OnStripHoverChanged = function(hovered: boolean)
+			hoveredStrip.current = hovered
+			if not hovered then
+				hoveredTile.current = 0
+			end
 		end,
 	}
 end
@@ -4192,6 +4209,8 @@ local function Panel(props: {
 			SelectedIndex = selectedIndex,
 			OnSelect = setSelectedIndex,
 			OnChange = props.OnChange,
+			OnTileHoverChanged = drag.OnTileHoverChanged,
+			OnStripHoverChanged = drag.OnStripHoverChanged,
 			LayoutOrder = 2,
 		}),
 		Ghost = ghost,
@@ -4317,9 +4336,12 @@ end
 
 return RoadInspector
 </ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX22"><Properties><string name="Name">SettingsGui</string><ProtectedString name="Source">--!strict
--- The grand settings panel: region style, scale, superelevation behavior,
--- snapping, and geometry quality. Everything here affects every road the
--- plugin builds from now on.
+-- The grand settings panel, docked in the Studio sidebar. Tabbed:
+--   Regional Preference - region style, scale, superelevation, snapping,
+--                          geometry quality (everything that used to be the
+--                          whole page)
+--   Keybinds             - what the placement keys currently do (not yet
+--                          rebindable - see TODO.md)
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -4331,6 +4353,8 @@ local Theme = require("./Theme")
 local Components = require("./Components")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
+
+type SettingsTab = "Regional" | "Keybinds"
 
 local function LabeledRow(props: {
 	Label: string,
@@ -4352,10 +4376,21 @@ local function LabeledRow(props: {
 	}, children)
 end
 
-local function SettingsGui(props: {
+local function KeybindRow(props: {
+	Action: string,
+	Keys: string,
+	LayoutOrder: number,
+})
+	return e(Components.Row, { LayoutOrder = props.LayoutOrder }, {
+		Action = e(Components.Label, { Text = props.Action, LayoutOrder = 1, Width = 150 }),
+		Keys = e(Components.Label, { Text = props.Keys, Dim = true, LayoutOrder = 2 }),
+	})
+end
+
+local function RegionalPreferencePage(props: {
 	Settings: Settings.EasyRoadSettings,
 	OnSettingsChanged: () -&gt; (),
-	OnClose: () -&gt; (),
+	LayoutOrder: number,
 })
 	local settings = props.Settings
 
@@ -4372,26 +4407,15 @@ local function SettingsGui(props: {
 
 	local activeStyle = RegionStyles.Get(settings.RegionId)
 
-	-- Renders directly into the docked Studio sidebar panel - already a
-	-- bordered container, so no glass card / corner radius of its own here,
-	-- just a small inward indent so content doesn't touch the panel edges.
-	return e("ScrollingFrame", {
-		Size = UDim2.fromScale(1, 1),
-		BackgroundColor3 = Theme.PANEL,
-		BorderSizePixel = 0,
-		CanvasSize = UDim2.new(1, 0, 0, 0),
-		AutomaticCanvasSize = Enum.AutomaticSize.Y,
-		ScrollBarThickness = 6,
+	return e("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = props.LayoutOrder,
 	}, {
 		Layout = e("UIListLayout", {
 			SortOrder = Enum.SortOrder.LayoutOrder,
 			Padding = UDim.new(0, 4),
-		}),
-		Padding = e("UIPadding", {
-			PaddingLeft = UDim.new(0, Theme.PADDING + 5),
-			PaddingRight = UDim.new(0, Theme.PADDING + 5),
-			PaddingTop = UDim.new(0, Theme.PADDING + 5),
-			PaddingBottom = UDim.new(0, Theme.PADDING + 5),
 		}),
 
 		StyleSection = e(Components.Section, {
@@ -4601,7 +4625,91 @@ local function SettingsGui(props: {
 				}),
 			},
 		}),
+	})
+end
 
+local function KeybindsPage(props: { LayoutOrder: number })
+	return e("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = props.LayoutOrder,
+	}, {
+		Layout = e("UIListLayout", {
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Padding = UDim.new(0, 4),
+		}),
+		Section = e(Components.Section, { Text = "Placement", LayoutOrder = 1 }),
+		Elevation = e(KeybindRow, { Action = "Raise / lower elevation", Keys = "R / F", LayoutOrder = 2 }),
+		Cancel = e(KeybindRow, {
+			Action = "Cancel placement",
+			Keys = "Esc, right-click, or middle-click",
+			LayoutOrder = 3,
+		}),
+		Note = e(Components.Label, {
+			Text = "Right-click also orbits the camera in Studio - middle-click "
+				.. "cancels without that conflict. Rebindable keys aren't in yet.",
+			Dim = true,
+			LayoutOrder = 4,
+		}),
+	})
+end
+
+local function SettingsGui(props: {
+	Settings: Settings.EasyRoadSettings,
+	OnSettingsChanged: () -&gt; (),
+	OnClose: () -&gt; (),
+})
+	local tab: SettingsTab, setTab = React.useState("Regional" :: SettingsTab)
+
+	-- Renders directly into the docked Studio sidebar panel - already a
+	-- bordered container, so no glass card / corner radius of its own here,
+	-- just a small inward indent so content doesn't touch the panel edges.
+	return e("ScrollingFrame", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Theme.PANEL,
+		BorderSizePixel = 0,
+		CanvasSize = UDim2.new(1, 0, 0, 0),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollBarThickness = 6,
+	}, {
+		Layout = e("UIListLayout", {
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Padding = UDim.new(0, 4),
+		}),
+		Padding = e("UIPadding", {
+			PaddingLeft = UDim.new(0, Theme.PADDING + 5),
+			PaddingRight = UDim.new(0, Theme.PADDING + 5),
+			PaddingTop = UDim.new(0, Theme.PADDING + 5),
+			PaddingBottom = UDim.new(0, Theme.PADDING + 5),
+		}),
+		Tabs = e(Components.Row, { LayoutOrder = 1 }, {
+			Regional = e(Components.Button, {
+				Text = "Regional Preference",
+				Selected = tab == "Regional",
+				OnClick = function()
+					setTab("Regional")
+				end,
+				LayoutOrder = 1,
+				Grow = true,
+			}),
+			Keybinds = e(Components.Button, {
+				Text = "Keybinds",
+				Selected = tab == "Keybinds",
+				OnClick = function()
+					setTab("Keybinds")
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		}),
+		Page = if tab == "Regional"
+			then e(RegionalPreferencePage, {
+				Settings = props.Settings,
+				OnSettingsChanged = props.OnSettingsChanged,
+				LayoutOrder = 2,
+			})
+			else e(KeybindsPage, { LayoutOrder = 2 }),
 		Close = e(Components.Button, {
 			Text = "Close",
 			OnClick = props.OnClose,
@@ -5169,6 +5277,11 @@ local function createRoadSession(
 			adjustElevation(-settings.ElevationStepStuds)
 		elseif input.KeyCode == Enum.KeyCode.Escape then
 			cancelPlacement()
+		elseif input.UserInputType == Enum.UserInputType.MouseButton3 then
+			-- Middle-click also cancels: right-click alone doubles as
+			-- Studio's camera-orbit gesture, so it can cancel a placement
+			-- the user only meant to pan around.
+			cancelPlacement()
 		end
 	end))
 
@@ -5664,7 +5777,7 @@ return function(
 
 		-- Pie menu -------------------------------------------------------------
 		-- Shown the moment a placed road is selected, before the full
-		-- designer: Edit Road Segment / Place More / Use as Template /
+		-- designer: Edit on Road Builder / Place More / Use as Template /
 		-- Cancel, CS2-style. Rendered in its own ScreenGui WITHOUT
 		-- IgnoreGuiInset, matching WorldToViewportPoint's coordinate space
 		-- (the bottom HUD's ScreenGui ignores the inset instead, for the
@@ -5685,7 +5798,7 @@ return function(
 				assert(pieMenuRoot):render(React.createElement(PieMenu, {
 					WorldPosition = anchor,
 					Top = {
-						Text = "Edit Road Segment",
+						Text = "Edit on Road Builder",
 						OnClick = function()
 							editSession.OpenEditor()
 						end,

@@ -26,7 +26,6 @@
 -- (clone-and-transform), with the caller supplying action buttons.
 
 local UserInputService = game:GetService("UserInputService")
-local GuiService = game:GetService("GuiService")
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -50,11 +49,6 @@ export type DesignerAction = {
 
 local STRIP_HEIGHT = 140
 local TILE_WIDTH = 58
-
--- Instance names used to hit-test drag-and-drop drops via
--- GuiService:GetGuiObjectsAtPosition instead of manual coordinate math.
-local LANE_TILE_NAME_PREFIX = "EasyRoadLaneTile"
-local LANE_STRIP_NAME = "EasyRoadLaneStrip"
 
 -- Palette entries: every placeable module, with Commonwealth-flavoured
 -- display names (Sidewalk reads as "Pavement", matching the reference kit).
@@ -253,11 +247,11 @@ local function LaneTile(props: {
 	Selected: boolean,
 	ReadOnly: boolean,
 	OnClick: () -> (),
+	OnHoverChanged: ((index: number, hovered: boolean) -> ())?,
 	LayoutOrder: number,
 })
 	local component = props.Component
 	return e("TextButton", {
-		Name = LANE_TILE_NAME_PREFIX .. tostring(props.Index),
 		Text = "",
 		BackgroundColor3 = if props.Selected then Theme.SELECTED else Theme.FIELD,
 		BackgroundTransparency = if props.Selected then 0.15 else Theme.GLASS_ELEMENT_TRANSPARENCY,
@@ -267,6 +261,16 @@ local function LaneTile(props: {
 		[React.Event.Activated] = function()
 			if not props.ReadOnly then
 				props.OnClick()
+			end
+		end,
+		[React.Event.MouseEnter] = function()
+			if props.OnHoverChanged then
+				(props.OnHoverChanged :: (index: number, hovered: boolean) -> ())(props.Index, true)
+			end
+		end,
+		[React.Event.MouseLeave] = function()
+			if props.OnHoverChanged then
+				(props.OnHoverChanged :: (index: number, hovered: boolean) -> ())(props.Index, false)
 			end
 		end,
 	}, {
@@ -328,6 +332,8 @@ local function LaneStripCard(props: {
 	SelectedIndex: number, -- 0 = none
 	OnSelect: (index: number) -> (), -- 0 clears
 	OnChange: (transform: (profile: RoadProfile.RoadProfile) -> ()) -> (),
+	OnTileHoverChanged: ((index: number, hovered: boolean) -> ())?,
+	OnStripHoverChanged: ((hovered: boolean) -> ())?,
 	LayoutOrder: number,
 })
 	local profile = props.Profile
@@ -361,6 +367,7 @@ local function LaneStripCard(props: {
 			FillDirection = Enum.FillDirection.Horizontal,
 			SortOrder = Enum.SortOrder.LayoutOrder,
 			Padding = UDim.new(0, 4),
+			HorizontalAlignment = Enum.HorizontalAlignment.Center,
 		}),
 	}
 	for index, component in profile.Components do
@@ -372,11 +379,11 @@ local function LaneStripCard(props: {
 			OnClick = function()
 				props.OnSelect(if props.SelectedIndex == index then 0 else index)
 			end,
+			OnHoverChanged = props.OnTileHoverChanged,
 			LayoutOrder = index,
 		})
 	end
 	children.Strip = e("ScrollingFrame", {
-		Name = LANE_STRIP_NAME,
 		Size = UDim2.new(1, 0, 0, 78),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
@@ -385,6 +392,16 @@ local function LaneStripCard(props: {
 		ScrollingDirection = Enum.ScrollingDirection.X,
 		ScrollBarThickness = 4,
 		LayoutOrder = 2,
+		[React.Event.MouseEnter] = function()
+			if props.OnStripHoverChanged then
+				(props.OnStripHoverChanged :: (hovered: boolean) -> ())(true)
+			end
+		end,
+		[React.Event.MouseLeave] = function()
+			if props.OnStripHoverChanged then
+				(props.OnStripHoverChanged :: (hovered: boolean) -> ())(false)
+			end
+		end,
 	}, tiles)
 
 	if readOnly then
@@ -573,43 +590,25 @@ end
 -- Shared by Panel: press-and-drag a module tile past a small threshold to
 -- pick it up (a plain click still inserts via OnInsert as before); dropping
 -- over the lane strip inserts the module at the nearest tile position.
+--
+-- Drop resolution is done via plain MouseEnter/MouseLeave hover tracking on
+-- the lane tiles and the strip itself (LaneStripCard's OnTileHoverChanged /
+-- OnStripHoverChanged), not by hit-testing a screen coordinate - the
+-- previous version tried both a manual AbsolutePosition/tile-width formula
+-- and GuiService:GetGuiObjectsAtPosition, and neither reliably matched
+-- what's actually on screen in Studio's plugin/edit-mode GUI context.
+-- Hover events are the same mechanism every button's hover-highlight in
+-- this UI already relies on, so they're known to work here.
 
 type DragPayload = { Kind: RoadProfile.ComponentKind, Label: string }
-
--- Finds what's under a screen point via Roblox's own GUI hit-testing
--- (correct regardless of GuiInset, DPI scale, or exactly how tiles are
--- laid out) rather than comparing raw input coordinates against a cached
--- AbsolutePosition, which was fragile and the likely source of the "drop
--- doesn't register" bugs in the previous version. Returns the lane index
--- to insert before (nil = append at the end) and whether the point was
--- over the strip at all (false = not a valid drop).
-local function resolveDrop(screenPos: Vector2): (number?, boolean)
-	local objects = GuiService:GetGuiObjectsAtPosition(screenPos.X, screenPos.Y)
-	for _, hit in objects do
-		local current: Instance? = hit
-		while current do
-			local name = current.Name
-			if name == LANE_STRIP_NAME then
-				return nil, true
-			end
-			local tileIndex = string.match(name, "^" .. LANE_TILE_NAME_PREFIX .. "(%d+)$")
-			if tileIndex then
-				return tonumber(tileIndex), true
-			end
-			if current:IsA("ScreenGui") then
-				break
-			end
-			current = current.Parent
-		end
-	end
-	return nil, false
-end
 
 local function useLaneDrag(onInsertAt: (index: number, kind: RoadProfile.ComponentKind) -> ())
 	local dragging, setDragging = React.useState(nil :: DragPayload?)
 	local dragPos, setDragPos = React.useState(Vector2.new(0, 0))
 	local startPos = React.useRef(Vector2.new(0, 0))
 	local movedPastThreshold = React.useRef(false)
+	local hoveredTile = React.useRef(0) -- 0 = no tile hovered
+	local hoveredStrip = React.useRef(false)
 
 	React.useEffect(function()
 		if not dragging then
@@ -630,10 +629,9 @@ local function useLaneDrag(onInsertAt: (index: number, kind: RoadProfile.Compone
 				if movedPastThreshold.current then
 					local payload = dragging
 					if payload then
-						local index, overStrip = resolveDrop(Vector2.new(input.Position.X, input.Position.Y))
-						if index then
-							onInsertAt(index, payload.Kind)
-						elseif overStrip then
+						if hoveredTile.current > 0 then
+							onInsertAt(hoveredTile.current, payload.Kind)
+						elseif hoveredStrip.current then
 							onInsertAt(math.huge, payload.Kind) -- Caller clamps to the end
 						end
 					end
@@ -654,6 +652,19 @@ local function useLaneDrag(onInsertAt: (index: number, kind: RoadProfile.Compone
 			startPos.current = pos
 			setDragPos(pos)
 			setDragging({ Kind = kind, Label = label })
+		end,
+		OnTileHoverChanged = function(index: number, hovered: boolean)
+			if hovered then
+				hoveredTile.current = index
+			elseif hoveredTile.current == index then
+				hoveredTile.current = 0
+			end
+		end,
+		OnStripHoverChanged = function(hovered: boolean)
+			hoveredStrip.current = hovered
+			if not hovered then
+				hoveredTile.current = 0
+			end
 		end,
 	}
 end
@@ -907,6 +918,8 @@ local function Panel(props: {
 			SelectedIndex = selectedIndex,
 			OnSelect = setSelectedIndex,
 			OnChange = props.OnChange,
+			OnTileHoverChanged = drag.OnTileHoverChanged,
+			OnStripHoverChanged = drag.OnStripHoverChanged,
 			LayoutOrder = 2,
 		}),
 		Ghost = ghost,

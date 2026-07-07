@@ -53,13 +53,19 @@ function Components.Button(props: {
 		color = Theme.BUTTON_HOVER
 	end
 
+	-- Grow must win over auto-sizing-to-text: combining AutomaticSize.X with
+	-- a UIFlexItem made the button report its full text width as its flex
+	-- basis, so a row of Grow buttons with long labels ("Save as Copy",
+	-- "Use as Template", ...) could still overflow a fixed-width column
+	-- instead of actually sharing the row's available width.
 	return e("TextButton", {
 		Text = props.Text,
 		TextColor3 = Theme.WHITE,
 		BackgroundColor3 = color,
 		BackgroundTransparency = if props.Selected or props.Danger then 0.1 else Theme.GLASS_ELEMENT_TRANSPARENCY,
 		Size = props.Size or UDim2.new(0, 0, 0, Theme.ROW_HEIGHT),
-		AutomaticSize = if props.Size then Enum.AutomaticSize.None else Enum.AutomaticSize.X,
+		AutomaticSize = if props.Size or props.Grow then Enum.AutomaticSize.None else Enum.AutomaticSize.X,
+		TextTruncate = Enum.TextTruncate.AtEnd,
 		Font = Theme.FONT,
 		TextSize = Theme.TEXT_SIZE,
 		LayoutOrder = props.LayoutOrder,

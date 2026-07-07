@@ -384,7 +384,7 @@ return function(
 
 		-- Pie menu -------------------------------------------------------------
 		-- Shown the moment a placed road is selected, before the full
-		-- designer: Edit Road Segment / Place More / Use as Template /
+		-- designer: Edit on Road Builder / Place More / Use as Template /
 		-- Cancel, CS2-style. Rendered in its own ScreenGui WITHOUT
 		-- IgnoreGuiInset, matching WorldToViewportPoint's coordinate space
 		-- (the bottom HUD's ScreenGui ignores the inset instead, for the
@@ -405,7 +405,7 @@ return function(
 				assert(pieMenuRoot):render(React.createElement(PieMenu, {
 					WorldPosition = anchor,
 					Top = {
-						Text = "Edit Road Segment",
+						Text = "Edit on Road Builder",
 						OnClick = function()
 							editSession.OpenEditor()
 						end,

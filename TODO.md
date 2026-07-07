@@ -21,6 +21,99 @@ Not user-facing; internal planning only.
   taper zone's station density isn't fine enough, or strip mitering breaks
   down when component count differs across the taper.
 
+## Next up — needs a decision or real design work
+
+**"Edit Road Segment" — a genuinely new feature, not yet built.** The pie
+menu's "Edit on Road Builder" (renamed this round, was "Edit Road Segment")
+opens today's full designer. The user's *actual* "Edit Road Segment" ask is
+a different, deeper thing entirely - shown by a second-level hover menu with
+its own options:
+- **Add Bus Bay**: pick it, then click directly on a Sidewalk/Parking part
+  in the 3D viewport to designate that spot as a bus stop - a real in-world
+  point-and-click placement flow, not a UI-only toggle.
+- **Edit Lane Markings**: pick a marking and change its type via numpad/
+  number keys (1/2/3/4) instead of a dropdown; a **"stretch" interaction**
+  where dragging a marking's end (Studio-resize-handle style) extends it
+  and its sibling lanes' markings together in that segment, i.e. lengthens
+  the marking for a run of lanes at once.
+- Both of the above are meant to be reachable through their own small
+  hover-circle-style menu (same "pills around a point" pattern as the pie
+  menu, not a literal circle).
+
+This needs its own design pass before writing code: the marking "stretch"
+in particular means real drag-resize handles in the 3D viewport (adorner-
+style, like Studio's own resize handles) plus a rule for how "siblings in
+that segment" is defined and how the extended length is stored/rendered -
+none of which exists in `Mesh/Markings.lua` today (markings are computed
+per-segment as one continuous run already, so "stretching" would mean
+something like a *partial-length* override on top of that, a new concept).
+Attempting this alongside everything else already in this round risked
+shipping something as unreliable as the first drag-and-drop attempt was;
+it's called out here specifically so it isn't quietly dropped.
+
+**Custom region profiles.** The user wants to create their own region
+presets (not just pick from UK/HK/SG/EU/US/JP/AU). `RegionStyles.RegionStyle`
+has ~25 fields (drive side, six component widths, curb height, three
+marking specs, marking width/dash length/gap, white/yellow colours, max
+superelevation + design speed, six material colours, `BayColor`) - building
+a full editor for it is comparable in size to the `RoadProfile` editor
+(`RoadDesigner.lua`) that took a full round on its own. The shape of the
+work: a `RegionStyles.Serialize`/`Deserialize` pair (mirroring
+`RoadProfile.lua`'s), a `Settings.UserRegions` slot (mirroring
+`UserProfiles`), a small library layer (mirroring `RoadLibrary.lua`), and
+an editor UI (mirroring `RoadDesigner`/`ProfileFields`, but for region
+fields instead of lane components). Reasonable to tackle as its own round;
+flagging rather than shipping a partial version that only exposes a few of
+the ~25 fields.
+
+**Road library icons — CS2-style thumbnails ARE feasible, not ruled out.**
+The user asked whether matching CS2's per-road rendered cross-section
+thumbnails needs "a render algorithm." It doesn't need an external one:
+Roblox's `ViewportFrame` renders a live 3D scene into a 2D UI panel, so each
+`RoadLibraryList` row could hold a small `ViewportFrame` with a simplified,
+flat (non-curved) extrusion of that road's cross-section and its own
+`Camera`, built via a cut-down version of `Mesh/RoadBuilder.lua`'s
+extrusion logic. Not started - the current library rows are plain text -
+but confirmed buildable rather than needing a "render algorithm" problem
+solved first. Main cost is per-row `ViewportFrame` + model instance
+overhead if the library grows long (would want to reuse/pool instances
+rather than one permanently-live `ViewportFrame` per row).
+
+## Recently shipped: real fixes from Studio testing (round after the pie menu)
+
+- **Found and fixed the actual root cause of the recurring "Properties
+  card too wide" bug.** `Components.Button`'s `Grow` option still set
+  `AutomaticSize.X` alongside the `UIFlexItem` - combining "size exactly to
+  text" with "share available row space" meant a row of Grow buttons with
+  long labels ("Save as Copy", "Use as Template", ...) reported its full
+  text width as its flex basis and could still overflow a fixed-width
+  column. This is why the overflow kept coming back after earlier
+  formatting fixes. Fixed: `Grow` now forces `AutomaticSize.None` and adds
+  `TextTruncate`.
+- **Lane strip is now centered**, not left-stuck with dead space on short
+  roads.
+- **Drag-and-drop rewritten again**, this time using plain hover tracking
+  (`MouseEnter`/`MouseLeave` on tiles and the strip) instead of hit-testing
+  a screen coordinate. The previous `GuiService:GetGuiObjectsAtPosition`
+  attempt was still unreliable - plausibly because that API doesn't
+  reliably see `CoreGui`-parented plugin UI in Studio's edit-mode context,
+  which would explain "still just bugs." Hover events are the same
+  mechanism every hover-highlight in this UI already uses successfully, so
+  this version has much less room for a coordinate-space mismatch to hide
+  in.
+- **Settings split into tabs**: Regional Preference (everything that used
+  to be the whole page) and a new Keybinds tab (currently informational -
+  lists R/F for elevation and Esc/right-click/middle-click for cancel;
+  not rebindable yet).
+- **Middle-click also cancels placement**, alongside the existing Escape
+  and right-click - right-click doubles as Studio's camera-orbit gesture,
+  so a quick right-click meant to nudge the camera could cancel a
+  placement unintentionally. Right-click was kept (not removed) since CS2
+  users expect it; say the word if it should go.
+- **Pie menu rename**: the existing "open the full designer" action is now
+  labelled "Edit on Road Builder" - "Edit Road Segment" is reserved for the
+  new, not-yet-built feature described below.
+
 ## Recently shipped: pie menu (click a placed road)
 
 The reference the user provided (a screenshot from a CS2-like game) clarified

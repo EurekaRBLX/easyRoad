@@ -41,7 +41,7 @@ export type RoadEditSession = {
 	Apply: () -> (),
 	Revert: () -> (),
 	Deselect: () -> (),
-	-- Selecting a road first shows a contextual pie menu (Edit Road Segment /
+	-- Selecting a road first shows a contextual pie menu (Edit on Road Builder /
 	-- Place More / Use as Template / Cancel); OpenEditor transitions from
 	-- that menu into the full designer for this same road.
 	IsShowingMenu: () -> boolean,
