@@ -23,6 +23,23 @@ Not user-facing; internal planning only.
 
 ## Recently shipped
 
+- **CS2-style road designer (`UI/RoadDesigner.lua`).** The road
+  configuration UI is now a wide bottom-of-viewport HUD with three glass
+  cards, modelled on the CS2 road builder / easyRoad 2 reference: a lane
+  strip (one tile per component — module icon, direction arrow ↑/↓, width;
+  click to select, then edit width/direction/boundary or reorder/remove), a
+  Modules palette (Lane / Pavement / Median / Shoulder / Bike / Parking /
+  Bus Bay tiles using the reference icon set; click to insert after the
+  selection), and a Road Properties card (name, kerb lines, kerb offset,
+  line colour, dash spacing, action buttons). The same designer serves
+  both the library editor (Edit Roads → pick a road → designer opens with
+  Save/Delete/Close) and the placed-road inspector (select a placed road →
+  designer opens with Apply/Revert/Close). The old vertical list editor
+  and left-side inspector panel are gone; `UI/LaneEditor.lua` is now just
+  the picker page, `UI/RoadInspector.lua` the session-binding wrapper, and
+  `UI/ProfileFields.lua` the shared kerb/colour/dash rows. Not yet done:
+  true drag-and-drop (insertion is click-based), and the build HUD's
+  "Adjust Widths" section hasn't been replaced by a strip yet.
 - **Select a placed road → contextual edit panel.** Click any already-placed
   road in the viewport with Studio's ordinary selection tool (no need to
   activate easyRoad) and a left-anchored inspector HUD appears, editing that

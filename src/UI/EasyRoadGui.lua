@@ -307,6 +307,7 @@ local function EasyRoadGui(props: {
 	AdjustComponentWidth: (index: number, widthM: number) -> (),
 	SaveActiveProfileAsNew: () -> (),
 	HandleAction: (action: string) -> (),
+	OpenDesigner: (profile: RoadProfile.RoadProfile) -> (),
 	OnSettingsChanged: () -> (),
 	OnLibraryChanged: () -> (),
 })
@@ -315,8 +316,7 @@ local function EasyRoadGui(props: {
 	if page == "editor" then
 		return e(LaneEditor, {
 			Library = props.Library,
-			Settings = props.Settings,
-			OnLibraryChanged = props.OnLibraryChanged,
+			OpenDesigner = props.OpenDesigner,
 			OnClose = function()
 				setPage("build" :: Page)
 			end,

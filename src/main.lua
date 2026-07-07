@@ -20,6 +20,7 @@ local createRoadLibrary = require("./RoadLibrary")
 local createRoadSession = require("./createRoadSession")
 local createRoadEditSession = require("./RoadEditSession")
 local EasyRoadGui = require("./UI/EasyRoadGui")
+local RoadDesigner = require("./UI/RoadDesigner")
 local RoadInspector = require("./UI/RoadInspector")
 
 return function(
@@ -40,8 +41,12 @@ return function(
 	local panelRoot: ReactRoblox.RootType? = nil
 	local hudRoot: ReactRoblox.RootType? = nil
 	local hudScreenGui: ScreenGui? = nil
-	local inspectorRoot: ReactRoblox.RootType? = nil
-	local inspectorScreenGui: ScreenGui? = nil
+	local bottomRoot: ReactRoblox.RootType? = nil
+	local bottomScreenGui: ScreenGui? = nil
+
+	-- Library road being edited in the bottom designer HUD (a working copy;
+	-- only written to the library when the user saves)
+	local designProfile: RoadProfile.RoadProfile? = nil
 
 	local updateUI: () -> () = nil :: any
 
@@ -175,6 +180,10 @@ return function(
 				updateUI()
 			end,
 			HandleAction = handleAction,
+			OpenDesigner = function(profile: RoadProfile.RoadProfile)
+				designProfile = profile
+				updateUI()
+			end,
 			OnSettingsChanged = function()
 				-- Region (or other grand settings) may have changed: rebuild
 				-- the built-in road set to match and persist everything.
@@ -226,37 +235,112 @@ return function(
 			end
 		end
 
-		-- Road inspector HUD: shown when a placed road is selected and the
-		-- build tool isn't active (avoids clashing with build placement).
-		if not session and editSession.GetSelectedRoad() then
-			if not inspectorRoot then
+		-- Bottom designer HUD: the CS2-style lane strip. Shows the library
+		-- road being designed (if any), otherwise the placed road currently
+		-- selected (when the build tool isn't active, to avoid clashing with
+		-- placement clicks).
+		local bottomContent: any = nil
+		if designProfile then
+			local editing = designProfile :: RoadProfile.RoadProfile
+			local actions: { RoadDesigner.DesignerAction } = {
+				{
+					Text = if editing.BuiltIn then "Save as Copy" else "Save",
+					Selected = true,
+					OnClick = function()
+						local toSave = RoadProfile.Clone(editing)
+						if editing.BuiltIn then
+							toSave.Id = "user_" .. tostring(os.time())
+							toSave.Name = editing.Name .. " (Custom)"
+							toSave.Category = "Custom"
+						end
+						toSave.BuiltIn = false
+						library.SaveUserProfile(toSave)
+						designProfile = toSave
+						persist()
+						updateUI()
+					end,
+				},
+			}
+			if not editing.BuiltIn and library.Get(editing.Id) ~= nil then
+				table.insert(actions, {
+					Text = "Delete",
+					Danger = true,
+					OnClick = function()
+						library.DeleteUserProfile(editing.Id)
+						designProfile = nil
+						persist()
+						updateUI()
+					end,
+				})
+			end
+			table.insert(actions, {
+				Text = "Close",
+				OnClick = function()
+					designProfile = nil
+					updateUI()
+				end,
+			})
+			bottomContent = React.createElement(RoadDesigner, {
+				Profile = editing,
+				RegionStyle = getStyle(),
+				Subtitle = if editing.BuiltIn
+					then "Built-in template — saving creates an editable copy."
+					else nil,
+				OnChange = function(transform: (profile: RoadProfile.RoadProfile) -> ())
+					local copy = RoadProfile.Clone(editing)
+					transform(copy)
+					designProfile = copy
+					updateUI()
+				end,
+				OnRename = function(name: string)
+					local copy = RoadProfile.Clone(editing)
+					copy.Name = name
+					designProfile = copy
+					updateUI()
+				end,
+				Actions = actions,
+			})
+		elseif not session and editSession.GetSelectedRoad() then
+			bottomContent = React.createElement(RoadInspector, {
+				Session = editSession,
+				RegionStyle = getStyle(),
+			})
+		end
+
+		if bottomContent then
+			if not bottomRoot then
 				local screen = Instance.new("ScreenGui")
-				screen.Name = "EasyRoadInspectorHUD"
+				screen.Name = "EasyRoadDesignerHUD"
 				screen.ResetOnSpawn = false
 				screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 				screen.Parent = CoreGui
-				inspectorScreenGui = screen
-				inspectorRoot = ReactRoblox.createRoot(screen)
+				bottomScreenGui = screen
+				bottomRoot = ReactRoblox.createRoot(screen)
 			end
-			assert(inspectorRoot):render(React.createElement("Frame", {
-				AnchorPoint = Vector2.new(0, 0.5),
-				Position = UDim2.new(0, 12, 0.5, 0),
-				Size = UDim2.new(0, 300, 0.7, 0),
+			-- Leave room on the right for the build HUD so the two never
+			-- overlap when both are on screen.
+			assert(bottomRoot):render(React.createElement("Frame", {
+				AnchorPoint = Vector2.new(0, 1),
+				Position = UDim2.new(0, 12, 1, -12),
+				Size = UDim2.new(1, -340, 0, 250),
 				BackgroundTransparency = 1,
+				[React.Event.MouseEnter] = function()
+					uiState.Hovered = true
+				end,
+				[React.Event.MouseLeave] = function()
+					uiState.Hovered = false
+				end,
 			}, {
-				Gui = React.createElement(RoadInspector, {
-					Session = editSession,
-					RegionStyle = getStyle(),
-				}),
+				Gui = bottomContent,
 			}))
 		else
-			if inspectorRoot then
-				assert(inspectorRoot):unmount()
-				inspectorRoot = nil
+			if bottomRoot then
+				assert(bottomRoot):unmount()
+				bottomRoot = nil
 			end
-			if inspectorScreenGui then
-				inspectorScreenGui:Destroy()
-				inspectorScreenGui = nil
+			if bottomScreenGui then
+				bottomScreenGui:Destroy()
+				bottomScreenGui = nil
 			end
 		end
 
@@ -307,13 +391,13 @@ return function(
 			hudScreenGui:Destroy()
 			hudScreenGui = nil
 		end
-		if inspectorRoot then
-			inspectorRoot:unmount()
-			inspectorRoot = nil
+		if bottomRoot then
+			bottomRoot:unmount()
+			bottomRoot = nil
 		end
-		if inspectorScreenGui then
-			inspectorScreenGui:Destroy()
-			inspectorScreenGui = nil
+		if bottomScreenGui then
+			bottomScreenGui:Destroy()
+			bottomScreenGui = nil
 		end
 		editSession.Destroy()
 		editSessionChangedCn:Disconnect()
