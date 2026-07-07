@@ -10,14 +10,21 @@ local Icons = {
 	Median = "rbxassetid://120501958565449",
 	Shoulder = "rbxassetid://125978730755092",
 	Sidewalk = "rbxassetid://102169083647798", -- Pavement / walkway
+	Bike = "rbxassetid://117323310944439",
+	Parking = "rbxassetid://135215443300853",
+	-- Not surfaced in the palette yet - reserved for the future per-instance
+	-- "click a placed road" panel (see TODO.md). BusLane replaces the old
+	-- Bay/"Bus Bay" module concept; BusStop is a future decoration icon.
+	BusLane = "rbxassetid://86439959503324",
+	BusStop = "rbxassetid://97224093362859",
 }
 
 -- Best icon for each cross-section component kind
 Icons.ForKind = {
 	Drive = Icons.Lane,
-	Bike = Icons.Lane,
-	Parking = Icons.Lane,
-	Bay = Icons.Lane, -- TODO: dedicated bus/taxi bay icon
+	Bike = Icons.Bike,
+	Parking = Icons.Parking,
+	Bay = Icons.BusLane,
 	Median = Icons.Median,
 	Shoulder = Icons.Shoulder,
 	Sidewalk = Icons.Sidewalk,

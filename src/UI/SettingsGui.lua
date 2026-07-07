@@ -54,33 +54,26 @@ local function SettingsGui(props: {
 
 	local activeStyle = RegionStyles.Get(settings.RegionId)
 
+	-- Renders directly into the docked Studio sidebar panel - already a
+	-- bordered container, so no glass card / corner radius of its own here,
+	-- just a small inward indent so content doesn't touch the panel edges.
 	return e("ScrollingFrame", {
 		Size = UDim2.fromScale(1, 1),
-		BackgroundColor3 = Theme.GLASS_BG,
-		BackgroundTransparency = Theme.GLASS_TRANSPARENCY,
+		BackgroundColor3 = Theme.PANEL,
 		BorderSizePixel = 0,
 		CanvasSize = UDim2.new(1, 0, 0, 0),
 		AutomaticCanvasSize = Enum.AutomaticSize.Y,
 		ScrollBarThickness = 6,
 	}, {
-		Corner = e("UICorner", {
-			CornerRadius = UDim.new(0, Theme.CORNER_RADIUS),
-		}),
-		Stroke = e("UIStroke", {
-			Color = Theme.GLASS_STROKE,
-			Transparency = Theme.GLASS_STROKE_TRANSPARENCY,
-			Thickness = 1,
-			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-		}),
 		Layout = e("UIListLayout", {
 			SortOrder = Enum.SortOrder.LayoutOrder,
 			Padding = UDim.new(0, 4),
 		}),
 		Padding = e("UIPadding", {
-			PaddingLeft = UDim.new(0, Theme.PADDING),
-			PaddingRight = UDim.new(0, Theme.PADDING),
-			PaddingTop = UDim.new(0, Theme.PADDING),
-			PaddingBottom = UDim.new(0, Theme.PADDING),
+			PaddingLeft = UDim.new(0, Theme.PADDING + 5),
+			PaddingRight = UDim.new(0, Theme.PADDING + 5),
+			PaddingTop = UDim.new(0, Theme.PADDING + 5),
+			PaddingBottom = UDim.new(0, Theme.PADDING + 5),
 		}),
 
 		StyleSection = e(Components.Section, {

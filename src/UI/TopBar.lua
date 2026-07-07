@@ -17,6 +17,8 @@ local e = React.createElement
 local Theme = require("./Theme")
 local Components = require("./Components")
 
+local LOGO_IMAGE = "rbxassetid://73102883268322"
+
 local function TopBar(props: {
 	ToolsActive: boolean,
 	EditorActive: boolean,
@@ -64,6 +66,13 @@ local function TopBar(props: {
 			Padding = UDim.new(0, 6),
 			VerticalAlignment = Enum.VerticalAlignment.Center,
 		}),
+		Logo = e("ImageLabel", {
+			Image = LOGO_IMAGE,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0, 26, 0, 26),
+			ScaleType = Enum.ScaleType.Fit,
+			LayoutOrder = 1,
+		}),
 		Title = e("TextLabel", {
 			Text = "easyRoad",
 			TextColor3 = Theme.DIM,
@@ -72,25 +81,25 @@ local function TopBar(props: {
 			AutomaticSize = Enum.AutomaticSize.X,
 			Font = Theme.FONT_BOLD,
 			TextSize = Theme.TEXT_SIZE,
-			LayoutOrder = 1,
+			LayoutOrder = 2,
 		}),
 		Tools = e(Components.Button, {
 			Text = "Road Tools",
 			Selected = props.ToolsActive,
 			OnClick = props.OnTools,
-			LayoutOrder = 2,
+			LayoutOrder = 3,
 		}),
 		Editor = e(Components.Button, {
 			Text = "Road Editor",
 			Selected = props.EditorActive,
 			OnClick = props.OnEditor,
-			LayoutOrder = 3,
+			LayoutOrder = 4,
 		}),
 		Settings = e(Components.Button, {
 			Text = "Settings",
 			Selected = props.SettingsOpen,
 			OnClick = props.OnSettings,
-			LayoutOrder = 4,
+			LayoutOrder = 5,
 		}),
 	})
 end

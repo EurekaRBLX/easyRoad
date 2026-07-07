@@ -22,6 +22,70 @@ local Settings = require("../Settings")
 
 type RoadLibrary = RoadLibraryModule.RoadLibrary
 
+local TOOL_ICONS: { [string]: string } = {
+	Straight = "rbxassetid://80355330590276",
+	Curve = "rbxassetid://90102359516465",
+	Freeform = "rbxassetid://112290052468250",
+}
+
+local function ToolButton(props: {
+	Mode: string,
+	Label: string,
+	Selected: boolean,
+	OnClick: () -> (),
+	LayoutOrder: number,
+})
+	local hovered, setHovered = React.useState(false)
+	local color = if props.Selected then (if hovered then Theme.ACCENT_HOVER else Theme.SELECTED)
+		elseif hovered then Theme.BUTTON_HOVER
+		else Theme.BUTTON
+
+	return e("TextButton", {
+		Text = "",
+		BackgroundColor3 = color,
+		BackgroundTransparency = if props.Selected then 0.1 else Theme.GLASS_ELEMENT_TRANSPARENCY,
+		Size = UDim2.new(0, 0, 0, 52),
+		AutomaticSize = Enum.AutomaticSize.X,
+		LayoutOrder = props.LayoutOrder,
+		[React.Event.Activated] = props.OnClick,
+		[React.Event.MouseEnter] = function()
+			setHovered(true)
+		end,
+		[React.Event.MouseLeave] = function()
+			setHovered(false)
+		end,
+	}, {
+		Corner = e("UICorner", { CornerRadius = UDim.new(0, 6) }),
+		Padding = e("UIPadding", {
+			PaddingLeft = UDim.new(0, 8),
+			PaddingRight = UDim.new(0, 8),
+		}),
+		Layout = e("UIListLayout", {
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			HorizontalAlignment = Enum.HorizontalAlignment.Center,
+			VerticalAlignment = Enum.VerticalAlignment.Center,
+			Padding = UDim.new(0, 1),
+		}),
+		Icon = e("ImageLabel", {
+			Image = TOOL_ICONS[props.Mode] or "",
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0, 28, 0, 28),
+			ScaleType = Enum.ScaleType.Fit,
+			LayoutOrder = 1,
+		}),
+		Label = e("TextLabel", {
+			Text = props.Label,
+			TextColor3 = Theme.WHITE,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0, 0, 0, 14),
+			AutomaticSize = Enum.AutomaticSize.X,
+			Font = Theme.FONT,
+			TextSize = 12,
+			LayoutOrder = 2,
+		}),
+	})
+end
+
 local function BuildBar(props: {
 	ToolMode: string,
 	SetToolMode: (mode: string) -> (),
@@ -51,43 +115,43 @@ local function BuildBar(props: {
 	RoadDesigner.DecorateCard(children)
 	children.Header = e(Components.Section, { Text = "Road Tool", LayoutOrder = 1 })
 	children.Tools = e(Components.Row, { LayoutOrder = 2 }, {
-		Straight = e(Components.Button, {
-			Text = "Straight",
+		Straight = e(ToolButton, {
+			Mode = "Straight",
+			Label = "Straight",
 			Selected = props.ToolMode == "Straight",
 			OnClick = function()
 				props.SetToolMode("Straight")
 			end,
 			LayoutOrder = 1,
-			Grow = true,
 		}),
-		Curve = e(Components.Button, {
-			Text = "Curve",
+		Curve = e(ToolButton, {
+			Mode = "Curve",
+			Label = "Curve",
 			Selected = props.ToolMode == "Curve",
 			OnClick = function()
 				props.SetToolMode("Curve")
 			end,
 			LayoutOrder = 2,
-			Grow = true,
 		}),
-		Freeform = e(Components.Button, {
-			Text = "Free",
+		Freeform = e(ToolButton, {
+			Mode = "Freeform",
+			Label = "Free",
 			Selected = props.ToolMode == "Freeform",
 			OnClick = function()
 				props.SetToolMode("Freeform")
 			end,
 			LayoutOrder = 3,
-			Grow = true,
 		}),
 	})
-	children.Profile = e(Components.Dropdown, {
+	children.ProfileLabel = e(Components.Label, { Text = "Road library", Dim = true, LayoutOrder = 3 })
+	children.Profile = e(RoadDesigner.RoadLibraryList, {
 		Options = profileOptions,
 		SelectedId = props.ProfileId,
-		Placeholder = "Pick a road...",
-		OnSelected = props.SetProfileId,
-		LayoutOrder = 3,
-		Grow = true,
+		OnPick = props.SetProfileId,
+		Height = 90,
+		LayoutOrder = 4,
 	})
-	children.Transition = e(Components.Row, { LayoutOrder = 4 }, {
+	children.Transition = e(Components.Row, { LayoutOrder = 5 }, {
 		Label = e(Components.Label, { Text = "Widen to", LayoutOrder = 1, Width = 60 }),
 		Dropdown = e(Components.Dropdown, {
 			Options = endProfileOptions,
@@ -106,10 +170,10 @@ local function BuildBar(props: {
 			props.Settings.SuperelevationMode = if checked then "Auto" else "Off"
 			props.OnSettingsChanged()
 		end,
-		LayoutOrder = 5,
+		LayoutOrder = 6,
 	})
 	children.Speed = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 6 }, {
+		and e(Components.Row, { LayoutOrder = 7 }, {
 			Label = e(Components.Label, { Text = "Speed (km/h)", LayoutOrder = 1, Width = 90 }),
 			Field = e(Components.NumberField, {
 				Value = props.Settings.DesignSpeedKph,
@@ -125,7 +189,7 @@ local function BuildBar(props: {
 	children.Elevation = e(Components.Label, {
 		Text = string.format("Elevation %+g studs (R / F)", props.Elevation),
 		Dim = true,
-		LayoutOrder = 7,
+		LayoutOrder = 8,
 	})
 	children.Hint = e("TextLabel", {
 		Text = props.Hint,
@@ -137,13 +201,13 @@ local function BuildBar(props: {
 		TextSize = Theme.TEXT_SIZE,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = true,
-		LayoutOrder = 8,
+		LayoutOrder = 9,
 	})
 	children.Stop = e(Components.Button, {
 		Text = "Stop Building",
 		Danger = true,
 		OnClick = props.OnStop,
-		LayoutOrder = 9,
+		LayoutOrder = 10,
 	})
 
 	return e("ScrollingFrame", {

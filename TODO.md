@@ -23,6 +23,41 @@ Not user-facing; internal planning only.
 
 ## Recently shipped
 
+- **Branding pass: brand orange + Builder Sans + logo.** Every button/
+  checkbox/selected-state colour that used to be blue is now the easyRoad
+  brand orange (#D98455, `Theme.ACCENT`/`SELECTED`/`ACCENT_HOVER`); UI text
+  uses `Enum.Font.BuilderSans`/`BuilderSansBold` instead of SourceSans; the
+  top bar shows the easyRoad logo (`rbxassetid://73102883268322`) next to
+  the title.
+- **Icon updates.** Bike (`117323310944439`) and Parking
+  (`135215443300853`) module icons updated; new tool-mode icons for
+  Straight/Curve/Freeform in the Road Tool panel (`80355330590276`/
+  `90102359516465`/`112290052468250`). "Bus Bay" is removed from the
+  Modules palette - see the Backlog entry below, it's moving to the future
+  per-instance road panel as "Bus Lane" with a new icon.
+- **Discoverable lane marking control.** The per-lane boundary control (in
+  the lane strip's selected-tile row) is now a labeled dropdown - "Solid -
+  no lane change", "Solid | Dash - right may merge left", etc. - instead of
+  an unlabeled glyph-cycling button, so the existing per-lane marking-type
+  feature (already fully implemented in `Mesh/Markings.lua`) is actually
+  discoverable. Global dash length/gap remain in Road Properties.
+- **Road Editor layout overhaul.** `RoadDesigner.Panel` now matches the
+  CS2 / easyRoad 2 reference layout: Road Properties (left) and Modules
+  (right) are two full-height columns, with the lane strip ("Road Layout")
+  pinned along the very bottom spanning the full width underneath both -
+  instead of three cards crammed into one row that forced the properties
+  column to scroll. The road picker in both the Road Editor and the Road
+  Tool panel is now a scrollable library list (name, click to select, "+
+  New Road") instead of a dropdown.
+- **Drag-and-drop module insertion.** Palette tiles in the Road Editor can
+  now be dragged onto the lane strip to insert at the drop position (press
+  and drag past a small threshold; a plain click still inserts after the
+  selected lane, unchanged). Implemented as a small shared controller in
+  `RoadDesigner.lua` using `useState`/`useRef`/`useEffect` + a global
+  `UserInputService` listener while dragging is active.
+- **Settings panel indent.** The docked settings sidebar no longer draws
+  its own glass card/corner (it's already inside a bordered Studio dock
+  widget); content is now inset ~5px further from the panel edges.
 - **Top mode bar + separated surfaces (CS2 architecture).** A glass top
   bar (`UI/TopBar.lua`) toggled by the toolbar button switches between the
   plugin's three functions so nothing is crammed into one surface:
@@ -150,10 +185,37 @@ inspector panel — both reuse the same Apply-in-place machinery just added.
   include a shoulder; should be a toggle.
 - **Snapping beyond endpoints.** Mid-segment snap, automatic junction
   creation when a new road crosses an existing one.
-- **Full CS2-style module-palette UI redesign** (icon-tile drag/drop,
-  matching the `easyRoad 2` reference screenshots). Explicitly deferred —
-  "stick with current UI for developing's sake" — revisit once the core
-  feature set stabilizes.
+- **Bus Lane as a per-instance road-click option.** The old "Bus Bay"
+  module is being retired from the general Modules palette on purpose -
+  the user wants it (renamed "Bus Lane") to instead appear when clicking an
+  already-placed road, alongside other per-instance options (kerb indent,
+  etc.) in the future contextual click-road panel. Icon reserved:
+  `Icons.BusLane` (`rbxassetid://86439959503324`). The `Bay` component kind
+  itself still exists in `RoadProfile`/`RoadBuilder`/`RegionStyles` (only
+  the palette tile was removed), so this is a UI-surfacing task, not a
+  rebuild of the underlying feature.
+- **Bus stop icon reserved, unused.** `Icons.BusStop`
+  (`rbxassetid://97224093362859`) is stashed in `UI/Icons.lua` for a future
+  bus-stop decoration/marking; nothing renders it yet.
+- **Parallel mode.** CS2-style "place a mirrored road alongside an existing
+  one, offset by N studs" workflow. Not started.
+- **Per-point elevation - clarify with user.** The user asked for "define
+  the position and elevation of point A, then point B, like CS2." As far
+  as I can tell this already works mechanically:
+  `createRoadSession.lua`'s `elevation` value is live and applied to
+  whichever point is clicked next (press R/F to change height, then click -
+  that click's point gets the height that was current at the moment of the
+  click; earlier already-placed points keep whatever height they had when
+  *they* were clicked), and since curve points are full `Vector3`s the
+  resulting curve already ramps smoothly between differing point heights.
+  If the ask was actually about something else - editing a point's height
+  *after* it's placed without restarting the whole placement, or a visible
+  ramp preview UI - that's not implemented and would need new work Flagged
+  here rather than guessed at and possibly built wrong.
+- **"ProductIon" (settings page ask, unclear).** The request included "in
+  the settings page we just add ProductIon" with no further context - not
+  acted on this round since I couldn't confidently tell what was meant.
+  Please clarify and it'll go in next round.
 
 ## Housekeeping
 

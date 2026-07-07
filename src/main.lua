@@ -280,7 +280,7 @@ return function(
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
 				Position = UDim2.new(0, 12, 1, -12),
-				Size = UDim2.new(1, -24, 0, 260),
+				Size = UDim2.new(1, -24, 0, 420),
 			}
 		elseif session then
 			local currentSession = session :: createRoadSession.RoadSession
@@ -322,7 +322,7 @@ return function(
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
 				Position = UDim2.new(0, 12, 1, -12),
-				Size = UDim2.new(0, 300, 0, 340),
+				Size = UDim2.new(0, 300, 0, 400),
 			}
 		elseif editSession.GetSelectedRoad() then
 			bottomContent = React.createElement(RoadInspector, {
@@ -332,7 +332,7 @@ return function(
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
 				Position = UDim2.new(0, 12, 1, -12),
-				Size = UDim2.new(1, -24, 0, 260),
+				Size = UDim2.new(1, -24, 0, 420),
 			}
 		end
 
