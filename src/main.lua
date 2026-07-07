@@ -18,7 +18,9 @@ local RegionStyles = require("./RegionStyles")
 local RoadProfile = require("./RoadProfile")
 local createRoadLibrary = require("./RoadLibrary")
 local createRoadSession = require("./createRoadSession")
+local createRoadEditSession = require("./RoadEditSession")
 local EasyRoadGui = require("./UI/EasyRoadGui")
+local RoadInspector = require("./UI/RoadInspector")
 
 return function(
 	plugin: Plugin,
@@ -38,12 +40,22 @@ return function(
 	local panelRoot: ReactRoblox.RootType? = nil
 	local hudRoot: ReactRoblox.RootType? = nil
 	local hudScreenGui: ScreenGui? = nil
+	local inspectorRoot: ReactRoblox.RootType? = nil
+	local inspectorScreenGui: ScreenGui? = nil
 
 	local updateUI: () -> () = nil :: any
 
 	local function getStyle(): RegionStyles.RegionStyle
 		return RegionStyles.Get(settings.RegionId)
 	end
+
+	-- Selection-based road editing: always listening (independent of the
+	-- build session) so clicking an already-placed road with Studio's
+	-- ordinary selection shows the inspector, no tool activation required.
+	local editSession = createRoadEditSession(plugin, settings, getStyle)
+	local editSessionChangedCn = editSession.ChangeSignal:Connect(function()
+		updateUI()
+	end)
 
 	local function persist()
 		settings.UserProfiles = library.SerializeUserProfiles()
@@ -214,6 +226,40 @@ return function(
 			end
 		end
 
+		-- Road inspector HUD: shown when a placed road is selected and the
+		-- build tool isn't active (avoids clashing with build placement).
+		if not session and editSession.GetSelectedRoad() then
+			if not inspectorRoot then
+				local screen = Instance.new("ScreenGui")
+				screen.Name = "EasyRoadInspectorHUD"
+				screen.ResetOnSpawn = false
+				screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+				screen.Parent = CoreGui
+				inspectorScreenGui = screen
+				inspectorRoot = ReactRoblox.createRoot(screen)
+			end
+			assert(inspectorRoot):render(React.createElement("Frame", {
+				AnchorPoint = Vector2.new(0, 0.5),
+				Position = UDim2.new(0, 12, 0.5, 0),
+				Size = UDim2.new(0, 300, 0.7, 0),
+				BackgroundTransparency = 1,
+			}, {
+				Gui = React.createElement(RoadInspector, {
+					Session = editSession,
+					RegionStyle = getStyle(),
+				}),
+			}))
+		else
+			if inspectorRoot then
+				assert(inspectorRoot):unmount()
+				inspectorRoot = nil
+			end
+			if inspectorScreenGui then
+				inspectorScreenGui:Destroy()
+				inspectorScreenGui = nil
+			end
+		end
+
 		-- Dock panel: alternative surface whenever it is open
 		if panel.Enabled then
 			if not panelRoot then
@@ -261,6 +307,16 @@ return function(
 			hudScreenGui:Destroy()
 			hudScreenGui = nil
 		end
+		if inspectorRoot then
+			inspectorRoot:unmount()
+			inspectorRoot = nil
+		end
+		if inspectorScreenGui then
+			inspectorScreenGui:Destroy()
+			inspectorScreenGui = nil
+		end
+		editSession.Destroy()
+		editSessionChangedCn:Disconnect()
 		persist()
 		clickedCn:Disconnect()
 	end)

@@ -23,6 +23,25 @@ Not user-facing; internal planning only.
 
 ## Recently shipped
 
+- **Select a placed road → contextual edit panel.** Click any already-placed
+  road in the viewport with Studio's ordinary selection tool (no need to
+  activate easyRoad) and a left-anchored inspector HUD appears, editing that
+  road's cross-section (kind/width/direction/boundary per component, with
+  add/remove/reorder), kerb restriction, kerb line offset, marking colour,
+  and dash spacing in place — "Apply to Road" rebuilds just that model as a
+  single undo step. Placed roads now carry their full curve control points
+  and serialized start/end profiles as attributes (`RW_CurveKind`/`RW_P0..P3`/
+  `RW_ProfileStartJson`/`RW_ProfileEndJson` — see `RoadInstance.lua`), so a
+  road with session-only tweaks (a widened lane, a swapped-in Bay) can be
+  reopened and edited without needing the library profile it started from.
+  Roads that transition between two profiles show a note and only expose the
+  kerb/colour/dash rows (component-by-component editing across a transition
+  is still Road Editor-only). Roads placed before this change lack the new
+  attributes and show a "can't be edited in place" note in the inspector.
+  New modules: `RoadInstance.lua`, `RoadEditSession.lua`,
+  `UI/RoadInspector.lua`; `UI/ProfileFields.lua` factors the shared
+  component/kerb/colour/dash rows out of `UI/LaneEditor.lua` so the road
+  editor and the new inspector can't drift apart.
 - Marking rule engine: full line vocabulary (solid/dashed/double/asymmetric
   merge), per-lane boundary rules, kerb restrictions (single/double
   yellow), region-forced marking colour, per-road dash spacing override.
@@ -42,29 +61,20 @@ Not user-facing; internal planning only.
 
 ## Next up — needs a decision
 
-**Select a placed road → contextual edit panel.** Right now a road is
-frozen the moment it's placed: no way to add a bus/taxi bay, flip the kerb
-indent, or retouch a lane width on something already in the world — you'd
-have to delete and re-place it. The user has asked for exactly this
-workflow ("this is for when a user press on a road segment where they will
-see option to do so") for both Bay and kerb-indent. This requires:
-- Click-detection on placed `Road` models in the viewport (outside of an
-  active build session)
-- Per-instance profile storage on the placed model (today only
-  `RW_ProfileStartId` / `RW_ProfileEndId` attributes are stored — the full
-  component list with any live edits needs to travel with the instance,
-  not just a profile-library reference)
-- A contextual panel (reuse the glass HUD style) that edits that instance
-  and rebuilds just that model
-- This is also the natural foundation for "editing already-placed roads"
-  in general (drag endpoints, re-profile), and for future lane-connector /
-  junction editing interactions.
+**Junctions & intersections.** With placed roads now selectable and
+editable, the next structurally biggest gap is that roads can only ever
+meet end-to-end (chained placement or endpoint snap) — there's no way to
+make two roads actually intersect mid-network, no corner fillets, no stop
+lines, no roundabouts. This is a large, mostly-greenfield feature (junction
+node data model, per-lane connection graph, re-deriving markings at the
+junction) and probably deserves a design pass before code. Worth reusing
+the inspector's rebuild-in-place convention (`RoadEditSession.Apply`) for
+whatever rebuilds a junction node's roads after an edit, so the two
+features share one pattern instead of two.
 
-This is the recommended next step — it's smaller than full junctions,
-unlocks two already-requested features, and closes a real workflow gap.
-Alternative: go straight to the junction/node foundation (see below),
-which is the structurally biggest missing capability but doesn't depend on
-selection.
+Smaller alternative that builds on the inspector instead of junctions:
+dragging a placed road's endpoint, or a duplicate/delete action in the
+inspector panel — both reuse the same Apply-in-place machinery just added.
 
 ## Backlog (not yet started)
 

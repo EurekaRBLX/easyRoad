@@ -18,6 +18,7 @@ local RoadProfile = require("../RoadProfile")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
 local Markings = require("./Markings")
+local RoadInstance = require("../RoadInstance")
 
 export type BuildOptions = {
 	Curve: PolyCurve.PolyCurve,
@@ -373,14 +374,22 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	end
 
 	-- Metadata for endpoint snapping and later editing ---------------------------
-	model:SetAttribute("RW_Road", true)
-	model:SetAttribute("RW_StartPos", curve:PosAt(0))
-	model:SetAttribute("RW_EndPos", curve:PosAt(length))
-	model:SetAttribute("RW_StartTan", curve:TangentAt(0))
-	model:SetAttribute("RW_EndTan", curve:TangentAt(length))
-	model:SetAttribute("RW_ProfileStartId", options.ProfileStart.Id)
-	model:SetAttribute("RW_ProfileEndId",
-		if options.ProfileEnd then options.ProfileEnd.Id else options.ProfileStart.Id)
+	-- Single-segment curves (every road placed by the current session) get
+	-- the full curve + profile stamp so they can be reopened and edited
+	-- later; multi-segment curves (not produced anywhere yet) fall back to
+	-- just the endpoint/tangent data used for snapping.
+	if #curve.Segments == 1 then
+		RoadInstance.StampModel(model, curve.Segments[1], options.ProfileStart, options.ProfileEnd)
+	else
+		model:SetAttribute("RW_Road", true)
+		model:SetAttribute("RW_StartPos", curve:PosAt(0))
+		model:SetAttribute("RW_EndPos", curve:PosAt(length))
+		model:SetAttribute("RW_StartTan", curve:TangentAt(0))
+		model:SetAttribute("RW_EndTan", curve:TangentAt(length))
+		model:SetAttribute("RW_ProfileStartId", options.ProfileStart.Id)
+		model:SetAttribute("RW_ProfileEndId",
+			if options.ProfileEnd then options.ProfileEnd.Id else options.ProfileStart.Id)
+	end
 
 	return model
 end
