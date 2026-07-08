@@ -362,19 +362,23 @@ return function(
 					updateUI()
 				end
 			end
-			-- Two separate floating boxes side by side, CS2-style, not one
-			-- box with everything stacked on top of itself: Tool Mode
-			-- (bottom-left) and Road Library (bottom-right), each wrapped
-			-- in its own positioning Frame (BuildBar/RoadLibraryPanel both
-			-- fill whatever parent they're given via fromScale(1,1)), both
-			-- bottom-aligned within a shared invisible wrapper so
-			-- hover-tracking (below) stays scoped to roughly their combined
-			-- visible footprint instead of the whole screen.
+			-- Two separate floating boxes, CS2-style, not one box with
+			-- everything stacked on top of itself: Tool Mode left-aligned
+			-- (Studio has much less usable width than a dedicated game
+			-- window, so bottom-center doesn't work here) and Road Library
+			-- bottom-right, each independently anchored to the screen with
+			-- their own padding rather than positioned relative to a
+			-- shared sub-box. Each is wrapped in its own positioning Frame
+			-- (BuildBar/RoadLibraryPanel both fill whatever parent they're
+			-- given via fromScale(1,1)). Hover is tracked per-panel (see
+			-- toolModeHovered/roadLibraryHovered above), not on the
+			-- now-full-screen outer wrapper, so the large gap between the
+			-- two panels can't re-create the earlier hover-trap bug.
 			skipGenericHover = true
 			bottomContent = React.createElement(React.Fragment, nil, {
 				ToolMode = React.createElement("Frame", {
 					AnchorPoint = Vector2.new(0, 1),
-					Position = UDim2.new(0, 0, 1, 0),
+					Position = UDim2.new(0, 16, 1, -12),
 					Size = UDim2.new(0, 260, 0, 430),
 					BackgroundTransparency = 1,
 					[React.Event.MouseEnter] = function()
@@ -420,8 +424,8 @@ return function(
 				}),
 				RoadLibrary = React.createElement("Frame", {
 					AnchorPoint = Vector2.new(1, 1),
-					Position = UDim2.new(1, 0, 1, 0),
-					Size = UDim2.new(0, 340, 0, 170),
+					Position = UDim2.new(1, -16, 1, -12),
+					Size = UDim2.new(0, 340, 0, 260),
 					BackgroundTransparency = 1,
 					[React.Event.MouseEnter] = function()
 						roadLibraryHovered = true
@@ -441,10 +445,14 @@ return function(
 					}),
 				}),
 			})
+			-- Full-screen wrapper: each inner panel positions itself
+			-- relative to the actual screen edges (see above), not a
+			-- shared sub-box. Safe against the hover-trap bug because this
+			-- wrapper itself carries no hover handlers (skipGenericHover).
 			bottomFrameProps = {
-				AnchorPoint = Vector2.new(0.5, 1),
-				Position = UDim2.new(0.5, 0, 1, -12),
-				Size = UDim2.new(0, 612, 0, 430),
+				AnchorPoint = Vector2.new(0, 0),
+				Position = UDim2.new(0, 0, 0, 0),
+				Size = UDim2.new(1, 0, 1, 0),
 			}
 		elseif editSession.GetSelectedRoad() and editSession.IsConfirmingBay() then
 			local draft = editSession.GetBayDraft()

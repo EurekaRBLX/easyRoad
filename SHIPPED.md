@@ -4,6 +4,22 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Road Tools left-aligned, Road Library grid
+
+- **Tool Mode is now left-aligned with padding** instead of sitting bottom-
+  center as half of a shared wrapper - Studio has much less usable screen
+  width than a dedicated game window, so CS2's own bottom-center layout
+  doesn't translate directly (queued user feedback from a prior round).
+  Road Library moved to be independently bottom-right-anchored (same 16px/
+  12px padding) rather than positioned relative to Tool Mode, so the two
+  panels no longer share one sized wrapper - each is now anchored straight
+  to the screen. (Hover-tracking already lived on each panel individually
+  after this round's placement-bug fix, so decoupling their positioning
+  didn't reintroduce the hover-trap bug.)
+- **Road Library tiles are now a real wrapping grid** (`UIGridLayout`,
+  auto-column-count, vertical scroll for more rows), not a single
+  horizontal scrolling strip - closer to CS2's own library grid.
+
 ## Fixed road placement, centerline-anchored curves, trapezoid bay, drag-to-draw bay
 
 - **Critical: road placement was completely broken by last round's two-panel

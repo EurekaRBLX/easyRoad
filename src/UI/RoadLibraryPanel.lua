@@ -1,8 +1,8 @@
 --!strict
 -- The road library panel: category tabs (Streets / Avenues / Highways /
--- Paths / Custom) above a horizontal strip of road tiles - a separate
--- floating panel from ToolModePanel, matching the CS2 reference layout
--- (two distinct boxes side by side, not one box with everything stacked).
+-- Paths / Custom) above a scrolling grid of road tiles, CS2-style - a
+-- separate floating panel from ToolModePanel, matching the CS2 reference
+-- layout (two distinct boxes, not one box with everything stacked).
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -133,10 +133,13 @@ local function RoadLibraryPanel(props: {
 	end
 
 	local tiles: { [string]: any } = {
-		Layout = e("UIListLayout", {
-			FillDirection = Enum.FillDirection.Horizontal,
+		Layout = e("UIGridLayout", {
+			CellSize = UDim2.new(0, TILE_WIDTH, 0, TILE_HEIGHT),
+			CellPadding = UDim2.new(0, 4, 0, 4),
 			SortOrder = Enum.SortOrder.LayoutOrder,
-			Padding = UDim.new(0, 4),
+			HorizontalAlignment = Enum.HorizontalAlignment.Left,
+			FillDirection = Enum.FillDirection.Horizontal,
+			FillDirectionMaxCells = 0, -- auto-wrap to as many columns as fit the row width
 		}),
 	}
 	local tileIndex = 0
@@ -156,14 +159,14 @@ local function RoadLibraryPanel(props: {
 		end
 	end
 
-	local stripScrollProps = Components.ScrollBar()
-	stripScrollProps.Size = UDim2.new(1, 0, 0, TILE_HEIGHT + 12)
-	stripScrollProps.BackgroundTransparency = 1
-	stripScrollProps.BorderSizePixel = 0
-	stripScrollProps.CanvasSize = UDim2.new(0, 0, 0, 0)
-	stripScrollProps.AutomaticCanvasSize = Enum.AutomaticSize.X
-	stripScrollProps.ScrollingDirection = Enum.ScrollingDirection.X -- Deliberate exception: this strip scrolls horizontally
-	stripScrollProps.LayoutOrder = 2
+	local gridScrollProps = Components.ScrollBar()
+	gridScrollProps.Size = UDim2.new(1, 0, 0, TILE_HEIGHT * 2 + 4) -- 2 rows tall; more scroll into view
+	gridScrollProps.BackgroundTransparency = 1
+	gridScrollProps.BorderSizePixel = 0
+	gridScrollProps.CanvasSize = UDim2.new(0, 0, 0, 0)
+	gridScrollProps.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	gridScrollProps.ScrollingDirection = Enum.ScrollingDirection.Y
+	gridScrollProps.LayoutOrder = 2
 
 	local children: { [string]: any } = {}
 	children.Corner = e("UICorner", { CornerRadius = UDim.new(0, Theme.CORNER_RADIUS) })
@@ -185,7 +188,7 @@ local function RoadLibraryPanel(props: {
 	})
 	children.Header = e(Components.Section, { Text = "Road Library", First = true, LayoutOrder = 1 })
 	children.CategoryTabs = e(Components.Row, { LayoutOrder = 2 }, categoryTabs)
-	children.Tiles = e("ScrollingFrame", stripScrollProps, tiles)
+	children.Tiles = e("ScrollingFrame", gridScrollProps, tiles)
 
 	return e("Frame", {
 		Size = UDim2.fromScale(1, 1),

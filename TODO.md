@@ -6,18 +6,10 @@ what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
 ## Next up — needs a decision or real design work
 
-**CS2-style road-tool UI polish - queued by the user, not yet started.**
-The two-panel split (`BuildBar.lua` = Tool Mode, `UI/RoadLibraryPanel.lua`
-= Road Library) itself shipped and its placement-swallowing regression is
-now fixed (see `SHIPPED.md`), but the user explicitly asked for this
-follow-up polish pass once the placement bug and in-progress bay work were
-done:
-- **Left-align Tool Mode** (with padding) instead of the current
-  bottom-center-of-shared-wrapper position - Studio has much less usable
-  screen width than a dedicated game window, so the CS2 bottom-center
-  layout doesn't translate directly.
-- **Road Library as a real grid** (multiple rows/columns), not a single
-  horizontal scrolling row, matching CS2's own library layout.
+**CS2-style road-tool UI polish, part 2 - icon-based category tabs, still
+queued.** Left-aligning Tool Mode and turning Road Library into a real grid
+both shipped this round (see `SHIPPED.md`); still outstanding from the same
+queued request:
 - **Category tabs (Streets/Avenues/Highways/Paths/Custom) currently
   text-truncate** ("Aven...", "Highw...", "Custo..." per the user's
   screenshot) - replace the text labels with icons, using the same
