@@ -189,8 +189,17 @@ local function createRoadEditSession(
 		local frameA = curve:FrameAt(s0)
 		local frameB = curve:FrameAt(s1)
 		local centerOffset = (kerbOffset + outerOffset) / 2
-		local pA = (frameA * CFrame.new(centerOffset, 0.1, 0)).Position
-		local pB = (frameB * CFrame.new(centerOffset, 0.1, 0)).Position
+		-- Sits exactly at the road's own highest surface (a raised
+		-- sidewalk/median's top is always exactly `curbHeight` above the
+		-- frame - see RoadBuilder.Build's raised-component centerY/height
+		-- math) plus a small margin, instead of a flat 0.1 studs - a flat
+		-- offset used to sit *below* the sidewalk whenever curbHeight was
+		-- taller than that, so the (opaque, solid) sidewalk visually hid
+		-- the ghost anywhere they overlapped instead of the ghost reading
+		-- as an indicator on top of the road.
+		local ghostY = style.CurbHeightM * scale + 0.15
+		local pA = (frameA * CFrame.new(centerOffset, ghostY, 0)).Position
+		local pB = (frameB * CFrame.new(centerOffset, ghostY, 0)).Position
 		local segLength = (pB - pA).Magnitude
 		if segLength < 1e-3 then
 			return

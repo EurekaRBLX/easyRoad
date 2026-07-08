@@ -43,6 +43,15 @@ local PREVIEW_CHORD_TOLERANCE = 0.35
 local MIN_STEP = 0.75
 local MAX_TURN_PER_STEP = 0.3 -- Radians of heading change allowed per strip
 local RUNOFF_LENGTH_STUDS = 40 -- Superelevation smoothing window
+-- Extra width for diagonally-oriented (transitioning) strips: each one is
+-- rotated to follow its own local slope, but the slope itself keeps
+-- changing along a taper, so consecutive strips' width-direction edges
+-- are perpendicular to slightly different angles - even though their
+-- centerline endpoints connect exactly, the width edges fan apart a
+-- little at every seam, leaving a sliver gap. Worse the longer/fewer the
+-- strips (most visible on an exaggerated-size taper). Flat safety margin,
+-- same philosophy as the +0.08 length padding just below.
+local WEDGE_WIDTH_PAD = 0.15
 
 local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
 	Drive = Enum.Material.Asphalt,
@@ -390,7 +399,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				local diagonal = p1 - p0
 				local segLength = diagonal.Magnitude
 				if segLength > 1e-4 then
-					part.Size = Vector3.new(width, partHeight, segLength + padding)
+					part.Size = Vector3.new(width + WEDGE_WIDTH_PAD, partHeight, segLength + padding)
 					part.CFrame = CFrame.lookAt((p0 + p1) / 2, p1, midFrame.UpVector)
 				else
 					part.Size = Vector3.new(width, partHeight, nominalLength + padding)
@@ -799,7 +808,8 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 				local diagonal = p1 - p0
 				local segLength = diagonal.Magnitude
 				if segLength > 1e-4 then
-					part.Size = Vector3.new(nearsideWidthStuds, nearsidePartHeight, segLength + padding)
+					part.Size =
+						Vector3.new(nearsideWidthStuds + WEDGE_WIDTH_PAD, nearsidePartHeight, segLength + padding)
 					part.CFrame = CFrame.lookAt((p0 + p1) / 2, p1, midFrame.UpVector)
 				else
 					part.Size = Vector3.new(nearsideWidthStuds, nearsidePartHeight, nominalLength + padding)

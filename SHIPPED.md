@@ -4,6 +4,42 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Gaps at diagonal-strip seams (the "wedge, not blocks" fix's own residual gap)
+
+- **Fixed sliver gaps at the seams between diagonally-oriented strips**,
+  visible on an exaggerated-size bay a user built specifically to make the
+  defect easier to see. Each transitioning strip is rotated to follow its
+  own local slope (see the earlier "wedge, not blocks" round in
+  `SHIPPED.md`), but the slope keeps changing along a taper - consecutive
+  strips' width-direction edges are perpendicular to slightly different
+  angles even though their centerline endpoints connect exactly, fanning
+  apart a little at every seam. Added a flat `WEDGE_WIDTH_PAD` (0.15 studs)
+  to diagonally-oriented strips' width, same "flat safety margin" approach
+  already used for the existing length padding - applies to both the
+  general `RoadBuilder.Build` transition loop and `BuildWithBay`'s
+  pavement-shift overlay.
+- Not verified in a live Studio session (this environment can't render
+  Studio) - a flat pad should cover the normal case (adaptive station
+  stepping already bounds the per-interval angle change), but an
+  extremely exaggerated taper might still show a hairline residual gap.
+
+## Bay ghost preview no longer hidden behind the road's own sidewalk
+
+- **Fixed the bay drag ghost rendering underneath (and getting visually
+  hidden by) the road's own sidewalk.** It was positioned a flat 0.1 studs
+  above the frame's base level - fine for a flat drive lane, but raised
+  components (sidewalk/median) sit `curbHeight` above that, and regions
+  with any real curb height had the ghost sitting *below* the opaque
+  sidewalk surface, which then visually occluded it wherever they
+  overlapped. Since `RoadBuilder.Build`'s raised-component math places a
+  sidewalk's top surface at exactly `curbHeight` above the frame (not an
+  approximation - `centerY + partHeight/2` reduces to exactly that), the
+  ghost now sits at `style.CurbHeightM * scale + 0.15` instead of a flat
+  `0.1`, guaranteed above every part of the road regardless of the
+  region's curb height.
+- Not verified in a live Studio session (this environment can't render
+  Studio).
+
 ## Keybinds rebuilt on PluginAction - the real fix, not another patch
 
 - **Replaced the custom "click + Add binding, press a key" capture UI with

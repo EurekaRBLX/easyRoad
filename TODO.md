@@ -4,6 +4,39 @@ Planned/requested work not yet built, roughly ordered by how developed the
 plan is. Not user-facing; internal planning only. See `SHIPPED.md` for
 what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Keybinds - user wants an in-plugin UI to change them, not just Studio's
+
+User feedback after the `PluginAction` rework (see `SHIPPED.md`): "now it is
+hardcoded but i want it to be changable on a ui." `UI/KeybindsGui.lua` is
+currently read-only (lists the 3 hardcoded defaults + points at Studio's own
+Customize Shortcuts dialog for rebinding) - that rebuild fixed a real,
+repeatedly-broken bug (capturing a keypress from inside a docked panel isn't
+reliable, a documented Studio platform limitation), but the resulting UX
+regresses from "click + Add binding, press a key, done in this same panel"
+to "leave the plugin, go find Studio's own dialog, search for the right
+action name." Worth a follow-up design pass on how to get BOTH reliability
+and an in-plugin experience:
+- Simplest real option: keep everything as-is, but add a button in
+  `KeybindsGui.lua` that does the equivalent of clicking into the 3D
+  viewport first (or a `PluginGui`/`PluginMenu` bridge, if one exists) to
+  make the SUBSEQUENT native Studio Customize Shortcuts dialog opening feel
+  more like "one click away" rather than requiring the user to know where
+  it lives - needs research into whether Studio exposes a way to
+  programmatically open that dialog scoped to our plugin's actions (no
+  known API for this as of the last research pass; would need re-checking).
+- Alternative: since `plugin:GetMouse()` events (used successfully for
+  actual road/bay placement) demonstrably work while the 3D viewport has
+  focus, a capture flow that explicitly waits for the user to click INTO
+  the 3D viewport (not the docked panel) before listening might sidestep
+  the docked-widget-focus limitation - e.g. "click + Add binding, then
+  click or press your key anywhere in the 3D viewport" instead of pressing
+  it immediately while still hovering the settings panel. Worth prototyping
+  carefully given three previous rounds already failed on variations of
+  "capture from inside the docked panel" - the key difference here is
+  requiring the capture moment to happen in the viewport specifically, not
+  the panel, which is the actual root cause the PluginAction rework
+  sidestepped rather than solved.
+
 ## Performance
 
 **Disable CanTouch and CanQuery on generated road Parts** (user: "disabling
