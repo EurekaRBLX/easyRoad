@@ -4,6 +4,29 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Icon-based category tabs
+
+- **Category tabs (Streets/Avenues/Highways/Paths/Custom) are now live 3D
+  icons instead of text**, fixing the truncation the user's screenshot
+  showed ("Aven...", "Highw...", "Custo..."). New `Mesh/CategoryThumbnail.lua`
+  reuses `ProfileThumbnail`'s existing 3/4 top-down camera technique against
+  a fixed representative built-in profile per category (there's no single
+  "shape" for a category itself) - Streets from the two-lane street, Avenues
+  from the boulevard, Paths from the pedestrian path, Custom from the same
+  generic template `main.lua`'s "+ New" starts from (no built-in exists for
+  a user-only category). Highways additionally get a simple two-post
+  overhead gantry overlay purely for the icon - EasyRoad has no real
+  gantry/sign-structure feature to build from, so this is decorative only.
+  `ProfileThumbnail.Build`'s camera-framing math is now exposed separately
+  (`FrameCamera`) so the gantry overlay can re-frame after adding its own
+  geometry instead of duplicating that math.
+- A generated roundabout icon was part of the same request but deliberately
+  **not** built this round - roundabouts aren't an implemented feature and
+  there's no UI slot that would use a roundabout icon yet, so it would be
+  orphaned geometry with no consumer. Left as a `TODO.md` note instead.
+- Not verified in a live Studio session (this environment can't render
+  Studio).
+
 ## Road Tools left-aligned, Road Library grid
 
 - **Tool Mode is now left-aligned with padding** instead of sitting bottom-

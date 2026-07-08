@@ -6,22 +6,14 @@ what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
 ## Next up — needs a decision or real design work
 
-**CS2-style road-tool UI polish, part 2 - icon-based category tabs, still
-queued.** Left-aligning Tool Mode and turning Road Library into a real grid
-both shipped this round (see `SHIPPED.md`); still outstanding from the same
-queued request:
-- **Category tabs (Streets/Avenues/Highways/Paths/Custom) currently
-  text-truncate** ("Aven...", "Highw...", "Custo..." per the user's
-  screenshot) - replace the text labels with icons, using the same
-  45°-tilted `ViewportFrame` camera technique already used for
-  `RoadThumbnail`/`ProfileThumbnail`.
-- **Needs a small "icon library" of purpose-built profiles/scenes purely
-  for generating good category icons**, not real placeable roads: a 2-lane
-  street with a dashed centerline, a 2-lane avenue (collector/arterial
-  style), a highway with a gantry (gantries aren't modeled anywhere yet -
-  new geometry), and a roundabout icon similar to CS2's (roundabouts
-  aren't an implemented feature at all yet, so this would be purely
-  cosmetic icon geometry, not real roundabout support).
+**Roundabout icon - deliberately not built.** The queued CS2-style UI polish
+request (left-align Tool Mode, grid Road Library, icon-based category tabs)
+is now fully shipped except for a "generate a roundabout icon similar to
+CS2's" item - skipped because roundabouts aren't an implemented feature and
+there's currently no UI slot that would display a roundabout icon, so
+building one now would be orphaned geometry with no consumer. Revisit once
+roundabouts (see Intersections & roundabouts below) or some other roundabout-
+adjacent UI actually exists to use it.
 
 **Marking "stretch" interaction — still not built (the one piece of "Edit
 Road Segment" deliberately left out of that round).** Dragging a lane

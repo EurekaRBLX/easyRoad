@@ -19,10 +19,24 @@ local THUMBNAIL_LENGTH_STUDS = 14
 
 local ProfileThumbnail = {}
 
--- Returns the extruded Model plus a Camera CFrame that frames it in a 3/4
--- top-down view (matches the angle strategy-game road palette icons use -
--- wide enough to read lane colours/markings across the cross-section, with
--- a hint of the length receding for depth).
+-- Frames a model's current bounding box in the same 3/4 top-down angle used
+-- throughout the plugin's live-3D icons (matches the angle strategy-game
+-- road palette icons use - wide enough to read lane colours/markings
+-- across the cross-section, with a hint of the length receding for
+-- depth). Exposed separately so callers that add their own geometry on top
+-- of a base extrusion (e.g. CategoryThumbnail's gantry overlay) can
+-- re-frame after the fact instead of duplicating this math.
+function ProfileThumbnail.FrameCamera(model: Model): CFrame
+	local boundingCFrame, boundingSize = model:GetBoundingBox()
+	local center = boundingCFrame.Position
+	local horizontalExtent = math.max(boundingSize.X, boundingSize.Z, 1)
+	local distance = horizontalExtent * 1.05 + 6 + boundingSize.Y * 0.5
+	local eye = center + Vector3.new(0, distance * 0.85, distance * 0.9)
+	return CFrame.lookAt(eye, center)
+end
+
+-- Returns the extruded Model plus a Camera CFrame that frames it via
+-- FrameCamera above.
 function ProfileThumbnail.Build(
 	profile: RoadProfile.RoadProfile,
 	style: RegionStyles.RegionStyle,
@@ -39,14 +53,7 @@ function ProfileThumbnail.Build(
 	})
 	model.Name = "RoadThumbnail"
 
-	local boundingCFrame, boundingSize = model:GetBoundingBox()
-	local center = boundingCFrame.Position
-	local horizontalExtent = math.max(boundingSize.X, boundingSize.Z, 1)
-	local distance = horizontalExtent * 1.05 + 6
-	local eye = center + Vector3.new(0, distance * 0.85, distance * 0.9)
-	local cameraCFrame = CFrame.lookAt(eye, center)
-
-	return model, cameraCFrame
+	return model, ProfileThumbnail.FrameCamera(model)
 end
 
 return ProfileThumbnail
