@@ -11,6 +11,7 @@
 local Selection = game:GetService("Selection")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local HttpService = game:GetService("HttpService")
+local UserInputService = game:GetService("UserInputService")
 
 local Packages = script.Parent.Parent.Packages
 local Signal = require(Packages.Signal)
@@ -20,6 +21,18 @@ local RoadBuilder = require("./Mesh/RoadBuilder")
 local RoadProfile = require("./RoadProfile")
 local RegionStyles = require("./RegionStyles")
 local Settings = require("./Settings")
+local Keybinds = require("./Keybinds")
+local BusStops = require("./BusStops")
+
+-- Pie-menu state machine for a selected road:
+--   Menu         - top-level pills (Edit on Road Builder / Place More / ...)
+--   SegmentMenu  - "Edit Road Segment" submenu (Add Bus Bay / Edit Lane
+--                  Markings / Back)
+--   PlacingBusBay - click-to-place mode: click a Sidewalk/Parking part on
+--                  the selected road to add a stop, click an existing stop
+--                  to remove it, cancel-placement key returns to SegmentMenu
+--   Designer     - the full RoadInspector designer
+type Mode = "Menu" | "SegmentMenu" | "PlacingBusBay" | "Designer"
 
 -- Seed data for continuing a build session from this road's end (the
 -- "Place More" pie-menu action) - the exact same shape createRoadSession's
@@ -48,20 +61,67 @@ export type RoadEditSession = {
 	OpenEditor: () -> (),
 	GetAnchorWorldPosition: () -> Vector3?,
 	GetContinuation: () -> Continuation?,
+	-- "Edit Road Segment" second-level submenu (Add Bus Bay / Edit Lane
+	-- Markings / Back) and the bus-bay click-to-place mode it opens into.
+	IsShowingSegmentMenu: () -> boolean,
+	OpenSegmentMenu: () -> (),
+	CloseSegmentMenu: () -> (),
+	IsPlacingBusBay: () -> boolean,
+	StartBusBayPlacement: () -> (),
+	StopBusBayPlacement: () -> (),
 	Destroy: () -> (),
 }
 
 local function createRoadEditSession(
 	plugin: Plugin,
 	settings: Settings.EasyRoadSettings,
-	getStyle: () -> RegionStyles.RegionStyle
+	getStyle: () -> RegionStyles.RegionStyle,
+	uiState: { Hovered: boolean }
 ): RoadEditSession
 	local changeSignal = Signal.new()
 
 	local selectedRoad: Model? = nil
 	local originalData: RoadInstance.RoadData? = nil
 	local editingProfile: RoadProfile.RoadProfile? = nil -- Local staged clone of ProfileStart
-	local showingMenu = false -- true = pie menu, false = full designer
+	local mode: Mode = "Menu"
+	local mouse = plugin:GetMouse()
+	local busBayConnections: { RBXScriptConnection } = {}
+
+	local function stopBusBayPlacement()
+		if mode ~= "PlacingBusBay" then
+			return
+		end
+		mode = "SegmentMenu"
+		plugin:Deactivate()
+		for _, connection in busBayConnections do
+			connection:Disconnect()
+		end
+		table.clear(busBayConnections)
+		changeSignal:Fire()
+	end
+
+	local function onBusBayClick()
+		if mode ~= "PlacingBusBay" or not selectedRoad then
+			return
+		end
+		-- Clicks on the pie menu's own "Done" pill must not also place/
+		-- remove a stop underneath it (same guard createRoadSession uses
+		-- for its HUD).
+		if uiState.Hovered then
+			return
+		end
+		local target = mouse.Target
+		if not target or not target:IsDescendantOf(selectedRoad) then
+			return
+		end
+		if BusStops.IsMarker(target) then
+			BusStops.RemoveNear(selectedRoad, mouse.Hit.Position, 3)
+			changeSignal:Fire()
+		elseif BusStops.IsEligibleTarget(target) then
+			BusStops.Add(selectedRoad, mouse.Hit.Position)
+			changeSignal:Fire()
+		end
+	end
 
 	local function loadSelection()
 		local road: Model? = nil
@@ -74,15 +134,29 @@ local function createRoadEditSession(
 		if road == selectedRoad then
 			return
 		end
+		if mode == "PlacingBusBay" then
+			stopBusBayPlacement()
+		end
 		selectedRoad = road
 		originalData = if road then RoadInstance.Read(road) else nil
 		editingProfile = if originalData then RoadProfile.Clone(originalData.ProfileStart) else nil
-		showingMenu = road ~= nil
+		mode = "Menu"
 		changeSignal:Fire()
 	end
 
 	local connections: { RBXScriptConnection } = {}
 	table.insert(connections, Selection.SelectionChanged:Connect(loadSelection))
+	table.insert(
+		connections,
+		UserInputService.InputBegan:Connect(function(input, gameProcessed)
+			if gameProcessed then
+				return
+			end
+			if mode == "PlacingBusBay" and Keybinds.Matches(settings.Keybinds.CancelPlacement, input) then
+				stopBusBayPlacement()
+			end
+		end)
+	)
 	loadSelection()
 
 	local session = {} :: RoadEditSession
@@ -132,6 +206,10 @@ local function createRoadEditSession(
 			Settings = settings,
 			Preview = false,
 		})
+		-- Bus stop markers are stored as an attribute (survives the rebuild)
+		-- but rendered as children of the model, so they'd otherwise be
+		-- wiped along with the old geometry - re-render them from the
+		-- attribute once the new geometry is in place.
 		for _, child in selectedRoad:GetChildren() do
 			child:Destroy()
 		end
@@ -140,6 +218,7 @@ local function createRoadEditSession(
 		end
 		built:Destroy()
 		RoadInstance.StampModel(selectedRoad, originalData.Curve.Segments[1], editingProfile, originalData.ProfileEnd)
+		BusStops.Render(selectedRoad)
 		originalData = {
 			Curve = originalData.Curve,
 			ProfileStart = RoadProfile.Clone(editingProfile),
@@ -161,13 +240,47 @@ local function createRoadEditSession(
 	end
 
 	function session.IsShowingMenu(): boolean
-		return showingMenu
+		return mode == "Menu"
 	end
 
 	function session.OpenEditor()
-		showingMenu = false
+		mode = "Designer"
 		changeSignal:Fire()
 	end
+
+	function session.IsShowingSegmentMenu(): boolean
+		return mode == "SegmentMenu"
+	end
+
+	function session.OpenSegmentMenu()
+		if mode == "Menu" then
+			mode = "SegmentMenu"
+			changeSignal:Fire()
+		end
+	end
+
+	function session.CloseSegmentMenu()
+		if mode == "SegmentMenu" then
+			mode = "Menu"
+			changeSignal:Fire()
+		end
+	end
+
+	function session.IsPlacingBusBay(): boolean
+		return mode == "PlacingBusBay"
+	end
+
+	function session.StartBusBayPlacement()
+		if mode ~= "SegmentMenu" or not selectedRoad then
+			return
+		end
+		mode = "PlacingBusBay"
+		plugin:Activate(true)
+		table.insert(busBayConnections, mouse.Button1Down:Connect(onBusBayClick))
+		changeSignal:Fire()
+	end
+
+	session.StopBusBayPlacement = stopBusBayPlacement
 
 	function session.GetAnchorWorldPosition(): Vector3?
 		if not originalData then
@@ -191,6 +304,13 @@ local function createRoadEditSession(
 	end
 
 	function session.Destroy()
+		if mode == "PlacingBusBay" then
+			plugin:Deactivate()
+		end
+		for _, connection in busBayConnections do
+			connection:Disconnect()
+		end
+		table.clear(busBayConnections)
 		for _, connection in connections do
 			connection:Disconnect()
 		end

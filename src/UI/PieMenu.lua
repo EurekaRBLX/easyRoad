@@ -77,6 +77,7 @@ end
 -- cancel/dismiss action below.
 local OFFSETS = {
 	Top = Vector2.new(0, -70),
+	TopLeft = Vector2.new(-90, -40),
 	Left = Vector2.new(-110, 6),
 	Right = Vector2.new(110, 6),
 	Bottom = Vector2.new(0, 78),
@@ -85,6 +86,7 @@ local OFFSETS = {
 local function PieMenu(props: {
 	WorldPosition: Vector3,
 	Top: PieMenuAction?,
+	TopLeft: PieMenuAction?,
 	Left: PieMenuAction?,
 	Right: PieMenuAction?,
 	Bottom: PieMenuAction?,
@@ -115,6 +117,10 @@ local function PieMenu(props: {
 	local children: { [string]: any } = {}
 	if props.Top then
 		children.Top = e(PillButton, { Action = props.Top :: PieMenuAction, Primary = true, Offset = OFFSETS.Top })
+	end
+	if props.TopLeft then
+		children.TopLeft =
+			e(PillButton, { Action = props.TopLeft :: PieMenuAction, Primary = false, Offset = OFFSETS.TopLeft })
 	end
 	if props.Left then
 		children.Left = e(PillButton, { Action = props.Left :: PieMenuAction, Primary = false, Offset = OFFSETS.Left })

@@ -18,11 +18,13 @@ local RoadDesigner = require("./RoadDesigner")
 local RoadProfile = require("../RoadProfile")
 local RegionStyles = require("../RegionStyles")
 local RoadEditSession = require("../RoadEditSession")
+local Settings = require("../Settings")
 
 local function RoadInspector(props: {
 	PluginObj: Plugin,
 	Session: RoadEditSession.RoadEditSession,
 	RegionStyle: RegionStyles.RegionStyle,
+	Settings: Settings.EasyRoadSettings,
 })
 	local session = props.Session
 	local profile = session.GetProfile()
@@ -88,6 +90,7 @@ local function RoadInspector(props: {
 	return e(RoadDesigner.Panel, {
 		PluginObj = props.PluginObj,
 		Profile = profile,
+		Settings = props.Settings,
 		RegionStyle = props.RegionStyle,
 		Subtitle = if isTransition
 			then "Transition road: lane editing is disabled, but kerb / colour / dash options apply to the whole road."

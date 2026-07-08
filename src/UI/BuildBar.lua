@@ -18,6 +18,7 @@ local Theme = require("./Theme")
 local Components = require("./Components")
 local RoadDesigner = require("./RoadDesigner")
 local RoadLibraryModule = require("../RoadLibrary")
+local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
 
 type RoadLibrary = RoadLibraryModule.RoadLibrary
@@ -101,9 +102,9 @@ local function BuildBar(props: {
 	AdjustElevation: (delta: number) -> (),
 	OnStop: () -> (),
 })
-	local profileOptions: { Components.DropdownOption } = {}
+	local profileOptions: { RoadDesigner.LibraryOption } = {}
 	for _, libraryProfile in props.Library.GetAll() do
-		table.insert(profileOptions, { Id = libraryProfile.Id, Text = libraryProfile.Name })
+		table.insert(profileOptions, { Id = libraryProfile.Id, Text = libraryProfile.Name, Profile = libraryProfile })
 	end
 	local endProfileOptions: { Components.DropdownOption } = {
 		{ Id = "__none", Text = "None (constant width)" },
@@ -149,6 +150,8 @@ local function BuildBar(props: {
 		Options = profileOptions,
 		SelectedId = props.ProfileId,
 		OnPick = props.SetProfileId,
+		RegionStyle = RegionStyles.Get(props.Settings.RegionId),
+		Settings = props.Settings,
 		Height = 90,
 		LayoutOrder = 4,
 	})

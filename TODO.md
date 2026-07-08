@@ -23,33 +23,17 @@ Not user-facing; internal planning only.
 
 ## Next up — needs a decision or real design work
 
-**"Edit Road Segment" — a genuinely new feature, not yet built.** The pie
-menu's "Edit on Road Builder" (renamed this round, was "Edit Road Segment")
-opens today's full designer. The user's *actual* "Edit Road Segment" ask is
-a different, deeper thing entirely - shown by a second-level hover menu with
-its own options:
-- **Add Bus Bay**: pick it, then click directly on a Sidewalk/Parking part
-  in the 3D viewport to designate that spot as a bus stop - a real in-world
-  point-and-click placement flow, not a UI-only toggle.
-- **Edit Lane Markings**: pick a marking and change its type via numpad/
-  number keys (1/2/3/4) instead of a dropdown; a **"stretch" interaction**
-  where dragging a marking's end (Studio-resize-handle style) extends it
-  and its sibling lanes' markings together in that segment, i.e. lengthens
-  the marking for a run of lanes at once.
-- Both of the above are meant to be reachable through their own small
-  hover-circle-style menu (same "pills around a point" pattern as the pie
-  menu, not a literal circle).
-
-This needs its own design pass before writing code: the marking "stretch"
-in particular means real drag-resize handles in the 3D viewport (adorner-
-style, like Studio's own resize handles) plus a rule for how "siblings in
-that segment" is defined and how the extended length is stored/rendered -
-none of which exists in `Mesh/Markings.lua` today (markings are computed
-per-segment as one continuous run already, so "stretching" would mean
-something like a *partial-length* override on top of that, a new concept).
-Attempting this alongside everything else already in this round risked
-shipping something as unreliable as the first drag-and-drop attempt was;
-it's called out here specifically so it isn't quietly dropped.
+**Marking "stretch" interaction — still not built (the one piece of "Edit
+Road Segment" deliberately left out this round).** Dragging a lane
+marking's end (Studio-resize-handle style) to extend it and its sibling
+lanes' markings together across a run, i.e. a *partial-length* override on
+top of `Mesh/Markings.lua`'s per-segment-continuous-run computation. This
+needs real drag-resize handles in the 3D viewport (adorner-style, like
+Studio's own resize handles) plus a rule for how "siblings in that segment"
+is defined and how the extended length is stored/rendered - none of which
+exists today. The rest of "Edit Road Segment" (bus bay click-placement,
+numpad marking shortcut, the hover submenu itself) shipped this round; see
+below. Flagging this specifically so it isn't quietly dropped.
 
 **Custom region profiles.** The user wants to create their own region
 presets (not just pick from UK/HK/SG/EU/US/JP/AU). `RegionStyles.RegionStyle`
@@ -66,18 +50,44 @@ fields instead of lane components). Reasonable to tackle as its own round;
 flagging rather than shipping a partial version that only exposes a few of
 the ~25 fields.
 
-**Road library icons — CS2-style thumbnails ARE feasible, not ruled out.**
-The user asked whether matching CS2's per-road rendered cross-section
-thumbnails needs "a render algorithm." It doesn't need an external one:
-Roblox's `ViewportFrame` renders a live 3D scene into a 2D UI panel, so each
-`RoadLibraryList` row could hold a small `ViewportFrame` with a simplified,
-flat (non-curved) extrusion of that road's cross-section and its own
-`Camera`, built via a cut-down version of `Mesh/RoadBuilder.lua`'s
-extrusion logic. Not started - the current library rows are plain text -
-but confirmed buildable rather than needing a "render algorithm" problem
-solved first. Main cost is per-row `ViewportFrame` + model instance
-overhead if the library grows long (would want to reuse/pool instances
-rather than one permanently-live `ViewportFrame` per row).
+## Recently shipped: road library thumbnails + "Edit Road Segment" (scoped)
+
+- **Road library rows now render a live 3D cross-section thumbnail**
+  instead of plain text, CS2-style. `Mesh/ProfileThumbnail.lua` calls the
+  real `RoadBuilder.Build` with a short straight `PolyCurve` (no new
+  extrusion algorithm needed, confirmed feasible per the earlier note) and
+  returns a framing camera CFrame; `UI/RoadThumbnail.lua` renders that into
+  a `ViewportFrame` (its own `WorldModel` + `Camera`, built/torn down in a
+  `useEffect` keyed on the profile's serialized content + region style id).
+  `RoadDesigner.RoadLibraryList`'s `Options` now carry the full
+  `RoadProfile` (`LibraryOption` type) instead of just `{Id, Text}`, and
+  every call site (`RoadDesigner.Panel`'s Created Roads tab, `BuildBar`'s
+  road picker) threads `RegionStyle`/`Settings` down so the thumbnail can
+  build. No pooling yet - acceptable for the current library sizes; flag if
+  a long user library makes per-row live `ViewportFrame`s a real cost.
+- **"Edit Road Segment" pie-menu submenu**, scoped down from the full
+  original ask (see "Next up" above for what's still deferred). The pie
+  menu's top level gained a fifth pill (`PieMenu.lua`'s new `TopLeft`
+  slot) - "Edit Road Segment" - opening a second-level submenu at the same
+  world anchor: **Add Bus Bay** / **Edit Lane Markings** / **Back**.
+  `RoadEditSession.lua`'s pie-menu state is now a 4-state machine (`Menu` /
+  `SegmentMenu` / `PlacingBusBay` / `Designer`) instead of a boolean.
+  - **Add Bus Bay** starts a click-to-place mode (`plugin:Activate` +
+    `plugin:GetMouse()`, matching the established mouse-tracking
+    convention): click a `Sidewalk`/`Parking` part on the selected road to
+    drop a stop marker, click an existing marker to remove it, cancel-
+    placement key returns to the submenu. New `BusStops.lua` module stores
+    stops as a JSON attribute (`RW_BusStops`, mirroring the
+    `RW_ProfileStartJson` pattern) and renders them as a billboard-icon
+    marker folder under the road model; `RoadEditSession.Apply` re-renders
+    them after a geometry rebuild since they'd otherwise be destroyed along
+    with the old parts. This is a marker/decoration, not a cross-section
+    change - the full "designate part of the roadway as a bus lane"
+    geometry feature remains the existing `Bay` component kind, unchanged.
+  - **Edit Lane Markings** opens the existing full designer (same as "Edit
+    on Road Builder"), where a selected lane's marking can now also be set
+    directly with number keys 1-4 (`RoadDesigner.lua`'s
+    `NUMBER_KEY_TO_BOUNDARY`), alongside the existing dropdown.
 
 ## Recently shipped: keybinds, docked settings split, drag-and-drop take 3
 

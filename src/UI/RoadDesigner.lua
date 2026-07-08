@@ -7,8 +7,9 @@
 --                                  (module icon, direction arrow, width;
 --                                  click to select, then edit width /
 --                                  direction / marking, reorder, remove)
---   RoadDesigner.RoadLibraryList - scrollable road picker (name + category)
---                                  used instead of a plain dropdown
+--   RoadDesigner.RoadLibraryList - scrollable road picker (rendered
+--                                  cross-section thumbnail + name) used
+--                                  instead of a plain dropdown
 --   RoadDesigner.Panel           - Road Properties (left, full height) and
 --                                  a right card (right, full height) as two
 --                                  tall columns, with the lane strip pinned
@@ -26,6 +27,7 @@
 -- (clone-and-transform), with the caller supplying action buttons.
 
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -37,8 +39,10 @@ local Theme = require("./Theme")
 local Components = require("./Components")
 local ProfileFields = require("./ProfileFields")
 local Icons = require("./Icons")
+local RoadThumbnail = require("./RoadThumbnail")
 local RoadProfile = require("../RoadProfile")
 local RegionStyles = require("../RegionStyles")
+local Settings = require("../Settings")
 
 export type DesignerAction = {
 	Text: string,
@@ -79,6 +83,16 @@ local BOUNDARY_OPTIONS: { Components.DropdownOption } = {
 	{ Id = "DoubleSolid", Text = "Double solid - no lane change" },
 	{ Id = "SolidDash", Text = "Solid | Dash - right may merge left" },
 	{ Id = "DashSolid", Text = "Dash | Solid - left may merge right" },
+}
+
+-- Number-key shortcuts for the selected lane's marking, so it can be set
+-- without reaching for the dropdown (per the "Edit Lane Markings" ask -
+-- Auto has no key since it's a fallback, not a marking to jump to).
+local NUMBER_KEY_TO_BOUNDARY: { [Enum.KeyCode]: RoadProfile.BoundaryRule } = {
+	[Enum.KeyCode.One] = "Solid" :: RoadProfile.BoundaryRule,
+	[Enum.KeyCode.Two] = "DoubleSolid" :: RoadProfile.BoundaryRule,
+	[Enum.KeyCode.Three] = "SolidDash" :: RoadProfile.BoundaryRule,
+	[Enum.KeyCode.Four] = "DashSolid" :: RoadProfile.BoundaryRule,
 }
 
 local function defaultWidthFor(kind: RoadProfile.ComponentKind, style: RegionStyles.RegionStyle): number
@@ -153,24 +167,39 @@ local function scrollColumn(width: number, layoutOrder: number, children: { [str
 end
 
 -- Road library list ----------------------------------------------------------------
--- A scrollable road picker (name + click to select) used instead of a plain
--- dropdown, closer to CS2's "Created Roads" library list.
+-- A scrollable road picker (rendered cross-section thumbnail + name, click
+-- to select) used instead of a plain dropdown, closer to CS2's "Created
+-- Roads" library list.
+
+export type LibraryOption = {
+	Id: string,
+	Text: string,
+	Profile: RoadProfile.RoadProfile,
+}
+
+local THUMBNAIL_ROW_HEIGHT = 44
 
 local function RoadLibraryRow(props: {
 	Text: string,
 	Selected: boolean,
 	OnClick: () -> (),
+	Thumbnail: {
+		Profile: RoadProfile.RoadProfile,
+		RegionStyle: RegionStyles.RegionStyle,
+		Settings: Settings.EasyRoadSettings,
+	}?,
 	LayoutOrder: number,
 })
 	local hovered, setHovered = React.useState(false)
+	local thumb = props.Thumbnail
 	return e("TextButton", {
-		Text = "  " .. props.Text,
+		Text = if thumb then "" else "  " .. props.Text,
 		TextColor3 = Theme.WHITE,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		BackgroundColor3 = if props.Selected then Theme.SELECTED elseif hovered then Theme.BUTTON_HOVER else Theme.FIELD,
 		BackgroundTransparency = if props.Selected then 0.1 else Theme.GLASS_ELEMENT_TRANSPARENCY,
-		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
+		Size = UDim2.new(1, 0, 0, if thumb then THUMBNAIL_ROW_HEIGHT else Theme.ROW_HEIGHT),
 		Font = Theme.FONT,
 		TextSize = Theme.TEXT_SIZE,
 		LayoutOrder = props.LayoutOrder,
@@ -183,14 +212,44 @@ local function RoadLibraryRow(props: {
 		end,
 	}, {
 		Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+		Layout = thumb and e("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			VerticalAlignment = Enum.VerticalAlignment.Center,
+			Padding = UDim.new(0, 6),
+		}),
+		Padding = thumb and e("UIPadding", {
+			PaddingLeft = UDim.new(0, 4),
+			PaddingRight = UDim.new(0, 4),
+		}),
+		Thumb = thumb and e(RoadThumbnail, {
+			Profile = thumb.Profile,
+			RegionStyle = thumb.RegionStyle,
+			Settings = thumb.Settings,
+			Size = UDim2.fromOffset(56, THUMBNAIL_ROW_HEIGHT - 8),
+			LayoutOrder = 1,
+		}),
+		Label = thumb and e("TextLabel", {
+			Text = props.Text,
+			TextColor3 = Theme.WHITE,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -62, 1, 0),
+			Font = Theme.FONT,
+			TextSize = Theme.TEXT_SIZE,
+			LayoutOrder = 2,
+		}),
 	})
 end
 
 local function RoadLibraryList(props: {
-	Options: { Components.DropdownOption },
+	Options: { LibraryOption },
 	SelectedId: string?,
 	OnPick: (id: string) -> (),
 	OnNew: (() -> ())?,
+	RegionStyle: RegionStyles.RegionStyle?,
+	Settings: Settings.EasyRoadSettings?,
 	Height: number?,
 	LayoutOrder: number?,
 })
@@ -207,6 +266,13 @@ local function RoadLibraryList(props: {
 			OnClick = function()
 				props.OnPick(option.Id)
 			end,
+			Thumbnail = if props.RegionStyle and props.Settings
+				then {
+					Profile = option.Profile,
+					RegionStyle = props.RegionStyle :: RegionStyles.RegionStyle,
+					Settings = props.Settings :: Settings.EasyRoadSettings,
+				}
+				else nil,
 			LayoutOrder = index,
 		})
 	end
@@ -355,6 +421,34 @@ local function LaneStripCard(props: {
 			end
 		end)
 	end
+
+	-- Number keys 1-4 set the selected lane's right-side marking directly,
+	-- matching the dropdown's options minus Auto - only live while a lane
+	-- with a marking to set (not the last one) is selected.
+	React.useEffect(function()
+		if readOnly or not sel or (sel :: number) >= count then
+			return nil
+		end
+		local cn = UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+			if gameProcessed then
+				return
+			end
+			local rule = NUMBER_KEY_TO_BOUNDARY[input.KeyCode]
+			if rule then
+				changeSelected(function(component)
+					return {
+						Kind = component.Kind,
+						WidthM = component.WidthM,
+						Direction = component.Direction,
+						RightBoundary = rule,
+					}
+				end)
+			end
+		end)
+		return function()
+			cn:Disconnect()
+		end
+	end, { sel, readOnly, count } :: { any })
 
 	local children: { [string]: any } = {}
 	decorateCard(children)
@@ -676,7 +770,7 @@ end
 -- Full designer panel ---------------------------------------------------------------
 
 export type PanelPicker = {
-	Options: { Components.DropdownOption },
+	Options: { LibraryOption },
 	SelectedId: string?,
 	OnPick: (id: string) -> (),
 	OnNew: (() -> ())?,
@@ -688,6 +782,8 @@ export type PanelPicker = {
 -- living inside the Properties card.
 local function PaletteOrLibraryCard(props: {
 	Picker: PanelPicker?,
+	RegionStyle: RegionStyles.RegionStyle,
+	Settings: Settings.EasyRoadSettings,
 	OnInsert: (kind: RoadProfile.ComponentKind) -> (),
 	OnDragStart: ((kind: RoadProfile.ComponentKind, label: string) -> ())?,
 	Width: number?,
@@ -731,6 +827,8 @@ local function PaletteOrLibraryCard(props: {
 			SelectedId = picker.SelectedId,
 			OnPick = picker.OnPick,
 			OnNew = picker.OnNew,
+			RegionStyle = props.RegionStyle,
+			Settings = props.Settings,
 			Height = 170,
 			LayoutOrder = 2,
 		})
@@ -778,6 +876,7 @@ local function Panel(props: {
 	PluginObj: Plugin,
 	Profile: RoadProfile.RoadProfile,
 	RegionStyle: RegionStyles.RegionStyle,
+	Settings: Settings.EasyRoadSettings,
 	OnChange: (transform: (profile: RoadProfile.RoadProfile) -> ()) -> (),
 	OnRename: ((name: string) -> ())?,
 	Subtitle: string?,
@@ -911,6 +1010,8 @@ local function Panel(props: {
 			Properties = scrollColumn(240, 1, propertiesChildren),
 			Palette = not readOnly and e(PaletteOrLibraryCard, {
 				Picker = props.Picker,
+				RegionStyle = props.RegionStyle,
+				Settings = props.Settings,
 				Width = 220,
 				AlignRight = true,
 				OnInsert = function(kind: RoadProfile.ComponentKind)

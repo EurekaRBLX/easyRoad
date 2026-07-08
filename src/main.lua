@@ -82,7 +82,7 @@ return function(
 	-- Selection-based road editing: always listening (independent of the
 	-- build session) so clicking an already-placed road with Studio's
 	-- ordinary selection shows the designer, no tool activation required.
-	local editSession = createRoadEditSession(plugin, settings, getStyle)
+	local editSession = createRoadEditSession(plugin, settings, getStyle, uiState)
 	local editSessionChangedCn = editSession.ChangeSignal:Connect(function()
 		updateUI()
 	end)
@@ -273,11 +273,12 @@ return function(
 				OnClick = closeEditor,
 			})
 
-			local pickerOptions: { Components.DropdownOption } = {}
+			local pickerOptions: { RoadDesigner.LibraryOption } = {}
 			for _, libraryProfile in library.GetAll() do
 				table.insert(pickerOptions, {
 					Id = libraryProfile.Id,
 					Text = libraryProfile.Name .. (if libraryProfile.BuiltIn then " (built-in)" else ""),
+					Profile = libraryProfile,
 				})
 			end
 
@@ -285,6 +286,7 @@ return function(
 				PluginObj = plugin,
 				Profile = editing,
 				RegionStyle = getStyle(),
+				Settings = settings,
 				Subtitle = if editing.BuiltIn
 					then "Built-in template — saving creates an editable copy."
 					else nil,
@@ -367,11 +369,17 @@ return function(
 				Position = UDim2.new(0, 12, 1, -12),
 				Size = UDim2.new(0, 300, 0, 400),
 			}
-		elseif editSession.GetSelectedRoad() and not editSession.IsShowingMenu() then
+		elseif
+			editSession.GetSelectedRoad()
+			and not editSession.IsShowingMenu()
+			and not editSession.IsShowingSegmentMenu()
+			and not editSession.IsPlacingBusBay()
+		then
 			bottomContent = React.createElement(RoadInspector, {
 				PluginObj = plugin,
 				Session = editSession,
 				RegionStyle = getStyle(),
+				Settings = settings,
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
@@ -414,13 +422,20 @@ return function(
 
 		-- Pie menu -------------------------------------------------------------
 		-- Shown the moment a placed road is selected, before the full
-		-- designer: Edit on Road Builder / Place More / Use as Template /
-		-- Cancel, CS2-style. Rendered in its own ScreenGui WITHOUT
-		-- IgnoreGuiInset, matching WorldToViewportPoint's coordinate space
-		-- (the bottom HUD's ScreenGui ignores the inset instead, for the
-		-- drag-ghost math - the two need different conventions).
+		-- designer: Edit on Road Builder / Edit Road Segment / Place More /
+		-- Use as Template / Cancel, CS2-style. "Edit Road Segment" opens a
+		-- second-level submenu (Add Bus Bay / Edit Lane Markings / Back) at
+		-- the same anchor, and "Add Bus Bay" opens a click-to-place mode.
+		-- Rendered in its own ScreenGui WITHOUT IgnoreGuiInset, matching
+		-- WorldToViewportPoint's coordinate space (the bottom HUD's
+		-- ScreenGui ignores the inset instead, for the drag-ghost math -
+		-- the two need different conventions).
 		local menuRoad = editSession.GetSelectedRoad()
-		if menuRoad and editSession.IsShowingMenu() and not session and not designProfile then
+		local showPieMenu = menuRoad ~= nil
+			and not session
+			and not designProfile
+			and (editSession.IsShowingMenu() or editSession.IsShowingSegmentMenu() or editSession.IsPlacingBusBay())
+		if showPieMenu then
 			local anchor = editSession.GetAnchorWorldPosition()
 			if anchor then
 				if not pieMenuRoot then
@@ -432,48 +447,105 @@ return function(
 					pieMenuScreenGui = screen
 					pieMenuRoot = ReactRoblox.createRoot(screen)
 				end
-				assert(pieMenuRoot):render(React.createElement(PieMenu, {
-					WorldPosition = anchor,
-					Top = {
-						Text = "Edit on Road Builder",
-						OnClick = function()
-							editSession.OpenEditor()
-						end,
-					},
-					Left = {
-						Text = "Place More",
-						OnClick = function()
-							local continuation = editSession.GetContinuation()
-							editSession.Deselect()
-							if continuation then
-								startSession({
-									Position = continuation.Position,
-									Tangent = continuation.Tangent,
-								}, continuation.Profile)
-							end
-						end,
-					},
-					Right = {
-						Text = "Use as Template",
-						OnClick = function()
-							local profile = editSession.GetProfile()
-							editSession.Deselect()
-							if profile then
-								local clone = RoadProfile.Clone(profile)
-								clone.Id = "user_" .. tostring(os.time())
-								clone.Name = clone.Name .. " (Custom)"
-								clone.Category = "Custom"
-								clone.BuiltIn = false
-								openEditor(clone)
-							end
-						end,
-					},
-					Bottom = {
-						Text = "Cancel",
-						OnClick = function()
-							editSession.Deselect()
-						end,
-					},
+
+				local pieMenuElement: any
+				if editSession.IsShowingMenu() then
+					pieMenuElement = React.createElement(PieMenu, {
+						WorldPosition = anchor,
+						Top = {
+							Text = "Edit on Road Builder",
+							OnClick = function()
+								editSession.OpenEditor()
+							end,
+						},
+						TopLeft = {
+							Text = "Edit Road Segment",
+							OnClick = function()
+								editSession.OpenSegmentMenu()
+							end,
+						},
+						Left = {
+							Text = "Place More",
+							OnClick = function()
+								local continuation = editSession.GetContinuation()
+								editSession.Deselect()
+								if continuation then
+									startSession({
+										Position = continuation.Position,
+										Tangent = continuation.Tangent,
+									}, continuation.Profile)
+								end
+							end,
+						},
+						Right = {
+							Text = "Use as Template",
+							OnClick = function()
+								local profile = editSession.GetProfile()
+								editSession.Deselect()
+								if profile then
+									local clone = RoadProfile.Clone(profile)
+									clone.Id = "user_" .. tostring(os.time())
+									clone.Name = clone.Name .. " (Custom)"
+									clone.Category = "Custom"
+									clone.BuiltIn = false
+									openEditor(clone)
+								end
+							end,
+						},
+						Bottom = {
+							Text = "Cancel",
+							OnClick = function()
+								editSession.Deselect()
+							end,
+						},
+					})
+				elseif editSession.IsShowingSegmentMenu() then
+					pieMenuElement = React.createElement(PieMenu, {
+						WorldPosition = anchor,
+						Top = {
+							Text = "Add Bus Bay",
+							OnClick = function()
+								editSession.StartBusBayPlacement()
+							end,
+						},
+						Left = {
+							Text = "Edit Lane Markings",
+							OnClick = function()
+								-- Number keys 1-4 set a selected lane's marking
+								-- directly once inside the designer.
+								editSession.OpenEditor()
+							end,
+						},
+						Bottom = {
+							Text = "Back",
+							OnClick = function()
+								editSession.CloseSegmentMenu()
+							end,
+						},
+					})
+				else -- PlacingBusBay
+					pieMenuElement = React.createElement(PieMenu, {
+						WorldPosition = anchor,
+						Bottom = {
+							Text = "Done (click a sidewalk/parking part to add, an existing stop to remove)",
+							OnClick = function()
+								editSession.StopBusBayPlacement()
+							end,
+						},
+					})
+				end
+
+				assert(pieMenuRoot):render(React.createElement("Frame", {
+					Size = UDim2.fromScale(1, 1),
+					BackgroundTransparency = 1,
+					[React.Event.MouseEnter] = function()
+						uiState.Hovered = true
+					end,
+					[React.Event.MouseLeave] = function()
+						uiState.Hovered = false
+					end,
+				}, {
+					Gui = pieMenuElement,
 				}))
 			end
 		else
