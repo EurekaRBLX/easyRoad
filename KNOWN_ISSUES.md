@@ -14,10 +14,21 @@ internal planning only. See `TODO.md` for planned new features and
   and can't drift by construction, but has not been checked in a live
   Studio session (this environment can't render Studio) - leaving this
   entry open until a user confirms curves render cleanly (no gaps, no
-  sawtooth, no drift) with real testing. If gaps are still visible, the
-  likely next step is the fully exact wedge-trapezoid taper already
-  specified in `TODO.md`, since each transition strip is still a
-  constant-width rectangle for its own length.
+  sawtooth, no drift) with real testing.
+- **Superelevation (banking) on curves may look worse at the final build's
+  finer station spacing than in the coarser placement preview - reported,
+  not yet root-caused.** A user compared a live placement preview against
+  the same road placed for real and said the preview looked smoother; a
+  follow-up screenshot of the *actual* final geometry (not just another
+  preview frame) was requested to confirm before diagnosing further, but
+  the conversation moved on to other bugs before one was shared. Leading
+  hypothesis: each deck strip is rolled (banked) using only its own
+  midpoint's roll angle, with no accommodation for the roll *changing*
+  between adjacent stations - on a superelevated curve this could show up
+  as a small seam at every station boundary, and finer final-build spacing
+  would mean *more* boundaries (more visible seams) rather than fewer, even
+  though each individual seam should be smaller. Unconfirmed - revisit with
+  a real "after placement" screenshot.
 - **Road placement click-swallowing - fixed this round, but this is the
   second time a variant of this exact bug has shipped** (see the pie-menu
   full-screen hover trap, and now the two-panel Road Tools HUD's oversized

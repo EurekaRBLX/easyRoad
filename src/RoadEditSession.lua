@@ -42,6 +42,7 @@ type Mode = "Menu" | "SegmentMenu" | "PlacingBay" | "ConfirmingBay" | "Designer"
 export type BayDraft = {
 	LengthStuds: number,
 	WidthM: number,
+	Side: "Left" | "Right",
 }
 
 -- Seed data for continuing a build session from this road's end (the
@@ -137,31 +138,11 @@ local function createRoadEditSession(
 	end
 
 	-- Default width is a lane's width (the road's own first Drive component
-	-- if it has one, else the region's default) - only used as a fallback
-	-- if a click without dragging skips straight to confirming (Enter
-	-- immediately accepts it, per the "press Enter to skip" ask).
-	local function defaultBayDraft(): BayDraft
-		local scale = settings.MetersToStuds
-		local laneWidthM = getStyle().DefaultLaneWidthM
-		if editingProfile then
-			for _, component in editingProfile.Components do
-				if component.Kind == "Drive" then
-					laneWidthM = component.WidthM
-					break
-				end
-			end
-		end
-		return {
-			LengthStuds = 20 * scale,
-			WidthM = laneWidthM,
-		}
-	end
-
 	-- Turns a drag from (startStation, startHit) to the current mouse hit
 	-- into a length (along the road) / width (perpendicular, away from the
-	-- start point - the user drags outward from the sidewalk) pair. The
-	-- station midpoint between the drag's two ends is the bay's placement
-	-- station.
+	-- start point - the user drags outward from the sidewalk) pair, plus
+	-- which side of the road the drag went towards. The station midpoint
+	-- between the drag's two ends is the bay's placement station.
 	local function bayDraftFromDrag(
 		startStation: number,
 		startHit: Vector3,
@@ -170,15 +151,20 @@ local function createRoadEditSession(
 	): BayDraft
 		local lengthStuds = math.abs(currentStation - startStation)
 		local frame = (originalData :: RoadInstance.RoadData).Curve:FrameAt(startStation)
-		local widthStuds = math.abs((currentHit - startHit):Dot(frame.RightVector))
+		-- Signed, not absolute: positive = dragged toward the frame's right
+		-- (RoadProfile's positive-offset side), negative = left - this is
+		-- what actually determines which side the bay ends up on, not the
+		-- region's DriveOnLeft setting (a bay can go on either side).
+		local signedWidthStuds = (currentHit - startHit):Dot(frame.RightVector)
 		local scale = settings.MetersToStuds
 		return {
 			LengthStuds = math.max(lengthStuds, 1),
-			WidthM = math.max(widthStuds / scale, 0.5),
+			WidthM = math.max(math.abs(signedWidthStuds) / scale, 0.5),
+			Side = if signedWidthStuds < 0 then "Left" else "Right",
 		}
 	end
 
-	local function updateBayGhost(startStation: number, currentStation: number, widthM: number)
+	local function updateBayGhost(startStation: number, currentStation: number, widthM: number, side: "Left" | "Right")
 		if not selectedRoad or not originalData then
 			return
 		end
@@ -194,9 +180,9 @@ local function createRoadEditSession(
 		local scale = settings.MetersToStuds
 		local widthStuds = math.max(widthM * scale, 0.1)
 		local style = getStyle()
-		local outward = if style.DriveOnLeft then -1 else 1
+		local outward = if side == "Left" then -1 else 1
 		local offsets = RoadProfile.ComponentOffsetsM(editingProfile or originalData.ProfileStart)
-		local kerbOffsetM = if style.DriveOnLeft
+		local kerbOffsetM = if side == "Left"
 			then (if offsets[1] then offsets[1].Right else 0)
 			else (if offsets[#offsets] then offsets[#offsets].Left else 0)
 		local kerbOffset = kerbOffsetM * scale
@@ -262,7 +248,7 @@ local function createRoadEditSession(
 		end
 		local currentStation = originalData.Curve:ClosestS(mouse.Hit.Position)
 		local draft = bayDraftFromDrag(bayDragStartStation, bayDragStartHit, currentStation, mouse.Hit.Position)
-		updateBayGhost(bayDragStartStation, currentStation, draft.WidthM)
+		updateBayGhost(bayDragStartStation, currentStation, draft.WidthM, draft.Side)
 	end
 
 	local function onBayDragEnd()
@@ -384,6 +370,7 @@ local function createRoadEditSession(
 				StationStuds = originalData.Bay.StationStuds,
 				LengthStuds = originalData.Bay.LengthStuds,
 				WidthM = originalData.Bay.WidthM,
+				Side = originalData.Bay.Side,
 			})
 			else RoadBuilder.Build(buildOptions)
 		-- Bus stop markers are stored as an attribute (survives the rebuild)
@@ -497,6 +484,7 @@ local function createRoadEditSession(
 			StationStuds = bayStation,
 			LengthStuds = bayDraft.LengthStuds,
 			WidthM = bayDraft.WidthM,
+			Side = bayDraft.Side,
 		}
 		local built = RoadBuilder.BuildWithBay({
 			Curve = originalData.Curve,

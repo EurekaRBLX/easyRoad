@@ -345,7 +345,9 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			if width < 0.05 then
 				continue
 			end
-			local centerOffset = (stationOffsets[i][c] + w0 / 2 + stationOffsets[i + 1][c] + w1 / 2) / 2
+			local centerOffset0 = stationOffsets[i][c] + w0 / 2
+			local centerOffset1 = stationOffsets[i + 1][c] + w1 / 2
+			local centerOffset = (centerOffset0 + centerOffset1) / 2
 
 			local kind = componentsStart[c].Kind
 			local raised = RoadProfile.IsRaised(kind)
@@ -363,14 +365,41 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			-- can't reproduce the curvature-scaled sawtooth the old
 			-- far-edge pad caused; just a little extra overlap insurance
 			-- against any remaining sliver of a gap.
-			local partLength = nominalLength + miter + 0.08
+			local padding = miter + 0.08
 
 			local part = makePart(preview)
 			part.Name = kind
 			part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
 			part.Color = colorForKind(kind, style)
-			part.Size = Vector3.new(width, partHeight, partLength)
-			part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
+
+			-- Wedge, not a block: when this component's own center offset
+			-- moves between the two stations (a widen/narrow transition, or
+			-- an offset shift caused by a neighboring component changing
+			-- width), orient the strip along the true diagonal between its
+			-- two exact endpoint positions instead of flat-and-square to
+			-- the curve tangent - a chain of axis-aligned strips each
+			-- holding a constant offset until the next one steps to a new
+			-- one reads as a visible staircase; angling each strip to
+			-- follow its own true endpoints removes that step. Strips that
+			-- aren't transitioning (centerOffset0 == centerOffset1, the
+			-- ordinary case for most of any road) are completely unaffected
+			-- - same construction as before.
+			if math.abs(centerOffset1 - centerOffset0) > 1e-4 then
+				local p0 = (frames[i] * CFrame.new(centerOffset0, centerY, 0)).Position
+				local p1 = (frames[i + 1] * CFrame.new(centerOffset1, centerY, 0)).Position
+				local diagonal = p1 - p0
+				local segLength = diagonal.Magnitude
+				if segLength > 1e-4 then
+					part.Size = Vector3.new(width, partHeight, segLength + padding)
+					part.CFrame = CFrame.lookAt((p0 + p1) / 2, p1, midFrame.UpVector)
+				else
+					part.Size = Vector3.new(width, partHeight, nominalLength + padding)
+					part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
+				end
+			else
+				part.Size = Vector3.new(width, partHeight, nominalLength + padding)
+				part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
+			end
 			part.Parent = model
 		end
 	end
@@ -524,6 +553,7 @@ export type BayPlacement = {
 	StationStuds: number, -- Center of the bay along the curve
 	LengthStuds: number, -- Length of the flat "dwell" section (excludes tapers)
 	WidthM: number, -- Bay lane width in meters
+	Side: "Left" | "Right", -- Which side of the road the bay was dragged toward
 }
 
 -- Builds the road with a bus/taxi bay carved into its nearside pavement:
@@ -556,17 +586,18 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		return RoadBuilder.Build(options)
 	end
 
-	-- Nearside kerb offset (studs from centerline): the edge a bus pulls
-	-- towards - left for LHT (UK-style), right for RHT (US-style). The bay
-	-- widens outward from here, away from the roadway. The nearside
-	-- component itself (usually the sidewalk) is whichever one sits at
-	-- that same edge.
+	-- Nearside kerb offset (studs from centerline): the edge the bay was
+	-- actually dragged towards (bay.Side - see RoadEditSession's
+	-- bayDraftFromDrag), not assumed from the region's driving side - a bay
+	-- can be drawn on either side of the road regardless of which side
+	-- traffic normally drives on. The nearside component itself (usually
+	-- the sidewalk) is whichever one sits at that same edge.
 	local componentOffsetsM = RoadProfile.ComponentOffsetsM(baseProfile)
 	local totalWidthStuds = RoadProfile.TotalWidthM(baseProfile) * scale
 	local outward: number
 	local kerbOffset: number
 	local nearsideIndex: number
-	if style.DriveOnLeft then
+	if bay.Side == "Left" then
 		outward = -1
 		kerbOffset = if componentOffsetsM[1] then componentOffsetsM[1].Right * scale else -totalWidthStuds / 2
 		nearsideIndex = 1
@@ -697,12 +728,14 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 	-- inner edge follows the exact same straight-line ramp (0 at
 	-- taperInStart/taperOutEnd, full bayWidthStuds through the dwell) as
 	-- the bay's own FillTriangle taper edge above, so the two boundaries
-	-- are literally the same line - no gap, no overlap. Built as a chain
-	-- of small strips across adaptive stations (the same technique the
-	-- main deck-strip loop uses for ordinary offset changes) rather than a
-	-- single Part, since a strip whose position shifts sideways along its
-	-- own length is a parallelogram in plan, which no single axis-aligned
-	-- Part can represent exactly.
+	-- are literally the same line - no gap, no overlap. Built as a chain of
+	-- small, diagonally-oriented strips across adaptive stations (the same
+	-- technique the main deck-strip loop uses for ordinary offset changes),
+	-- since a strip that shifts sideways along its own length is a
+	-- parallelogram in plan - not exactly representable by any single
+	-- rigid Part, but angling each small strip to its own true endpoints
+	-- (instead of holding flat-and-square until the next station) gets
+	-- close enough that fine adaptive stepping reads as a smooth slope.
 	local function bayAlphaAt(s: number): number
 		if s <= taperInStart then
 			return 0
@@ -735,22 +768,47 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			local s1 = taperInStart + shiftStations[i + 1]
 			local sMid = (s0 + s1) / 2
 			local midFrame = frameAt(sMid)
-			local innerOffset = kerbOffset + outward * bayWidthStuds * bayAlphaAt(sMid)
-			local centerOffset = innerOffset + outward * nearsideWidthStuds / 2
+			local centerOffset0 = kerbOffset
+				+ outward * bayWidthStuds * bayAlphaAt(s0)
+				+ outward * nearsideWidthStuds / 2
+			local centerOffset1 = kerbOffset
+				+ outward * bayWidthStuds * bayAlphaAt(s1)
+				+ outward * nearsideWidthStuds / 2
+			local centerOffset = (centerOffset0 + centerOffset1) / 2
 			local nominalLength = s1 - s0
 			local edgeDistance = math.max(
 				math.abs(centerOffset - nearsideWidthStuds / 2),
 				math.abs(centerOffset + nearsideWidthStuds / 2)
 			)
 			local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
-			local partLength = nominalLength + miter + 0.08
+			local padding = miter + 0.08
 
 			local part = makePart(preview)
 			part.Name = nearsideKind
 			part.Material = MATERIAL_BY_KIND[nearsideKind] or Enum.Material.Concrete
 			part.Color = colorForKind(nearsideKind, style)
-			part.Size = Vector3.new(nearsideWidthStuds, nearsidePartHeight, partLength)
-			part.CFrame = midFrame * CFrame.new(centerOffset, nearsideCenterY, 0)
+
+			-- Wedge, not a block - see the matching comment in the main
+			-- deck-strip loop above: orient along the true diagonal between
+			-- this strip's two exact endpoints rather than flat-and-square,
+			-- so the chain of strips reads as a smooth slope instead of a
+			-- staircase.
+			if math.abs(centerOffset1 - centerOffset0) > 1e-4 then
+				local p0 = (frameAt(s0) * CFrame.new(centerOffset0, nearsideCenterY, 0)).Position
+				local p1 = (frameAt(s1) * CFrame.new(centerOffset1, nearsideCenterY, 0)).Position
+				local diagonal = p1 - p0
+				local segLength = diagonal.Magnitude
+				if segLength > 1e-4 then
+					part.Size = Vector3.new(nearsideWidthStuds, nearsidePartHeight, segLength + padding)
+					part.CFrame = CFrame.lookAt((p0 + p1) / 2, p1, midFrame.UpVector)
+				else
+					part.Size = Vector3.new(nearsideWidthStuds, nearsidePartHeight, nominalLength + padding)
+					part.CFrame = midFrame * CFrame.new(centerOffset, nearsideCenterY, 0)
+				end
+			else
+				part.Size = Vector3.new(nearsideWidthStuds, nearsidePartHeight, nominalLength + padding)
+				part.CFrame = midFrame * CFrame.new(centerOffset, nearsideCenterY, 0)
+			end
 			part.Parent = model
 		end
 	end

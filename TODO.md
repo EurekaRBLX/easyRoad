@@ -94,21 +94,22 @@ built.
   bus-stop decoration/marking; nothing renders it yet.
 - **Parallel mode.** CS2-style "place a mirrored road alongside an existing
   one, offset by N studs" workflow. Not started.
-- **True wedge-trapezoid taper for widen/narrow transitions.** Each transition
-  strip is still a constant-width rectangular `Part` for its whole length, so
-  a lane's width change between one station and the next shows up as a small
-  step on the non-anchor edge rather than a continuous taper - a stairstep
-  made of straight segments, most visible on a short/steep taper. This round
-  smoothed the taper's alpha curve (no more sharp kink where the taper zone
-  begins) and tightened station spacing to keep each step small, which should
-  read as clean in most cases, but the fully correct fix is a real trapezoid:
-  build each transitioning strip as a rectangle (at the smaller of its two
-  end widths) plus a triangular `FillTriangle` wedge covering the width
-  delta, tapering to a point exactly at whichever station has the smaller
-  width - same machinery already built for curve joints this round, just
-  driven by a width delta between stations instead of a curvature-driven
-  lateral gap. Worth doing if the smoothed/finer-stepped version still looks
-  chunky on real in-Studio testing.
+- **Exact rectangle + FillTriangle wedge taper - still not built, if the
+  diagonal-alignment fix isn't enough.** A user screenshot showed a visible
+  staircase on a strip whose offset shifts across stations without its width
+  changing (the bus bay's displaced-pavement overlay); this round fixed both
+  that case and the general width-transition loop by orienting each small
+  per-station strip along the true diagonal between its own two endpoint
+  positions (`CFrame.lookAt`) instead of flat-and-square to the curve
+  tangent - each strip is still a `Part` (still technically a facet chain,
+  not one continuous surface), just angled to follow the true taper instead
+  of holding a constant offset until the next station steps. This should
+  read as clean with fine adaptive stepping, but isn't a mathematically
+  exact trapezoid. If it still looks chunky on real in-Studio testing, the
+  fully exact fix is: build each transitioning strip as a rectangle (at the
+  smaller of its two end widths) plus a triangular `FillTriangle` wedge
+  covering the width delta, tapering to a point exactly at whichever station
+  has the smaller width.
 - **Per-point elevation - clarify with user.** The user asked for "define
   the position and elevation of point A, then point B, like CS2." As far
   as I can tell this already works mechanically:

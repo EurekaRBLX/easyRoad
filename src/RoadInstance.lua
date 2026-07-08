@@ -19,6 +19,12 @@ export type BayData = {
 	StationStuds: number,
 	LengthStuds: number,
 	WidthM: number,
+	-- Which side of the road (looking along the direction of travel from
+	-- the curve's start) the bay was dragged toward - determines which
+	-- edge's pavement gets displaced, independent of the region's
+	-- DriveOnLeft setting (a bay can be drawn on either side regardless of
+	-- which side traffic normally drives on).
+	Side: "Left" | "Right",
 }
 
 export type RoadData = {
@@ -101,6 +107,10 @@ local function bayFromModel(model: Model): BayData?
 		StationStuds = decoded.StationStuds,
 		LengthStuds = decoded.LengthStuds,
 		WidthM = decoded.WidthM,
+		-- Bays stamped before the Side field existed default to Right -
+		-- an arbitrary but harmless fallback (they'll just need re-dragging
+		-- if that's the wrong side, same as before this fix existed at all).
+		Side = if decoded.Side == "Left" then "Left" else "Right",
 	}
 end
 

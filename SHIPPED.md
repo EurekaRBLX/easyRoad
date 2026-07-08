@@ -4,6 +4,49 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Bay side-of-drag, wedge-not-block tapers, keybind capture fix
+
+- **Fixed the bus bay always appearing on the region's default driving
+  side, ignoring which side the user actually dragged toward.**
+  `BuildWithBay`/the drag ghost derived their "nearside" purely from
+  `style.DriveOnLeft`, never from the drag itself - a user screenshot
+  showed the bay rendering on the opposite side from where they dragged.
+  `RoadInstance.BayData`/`RoadBuilder.BayPlacement`/`RoadEditSession.BayDraft`
+  all gained a `Side: "Left" | "Right"` field, computed from the *signed*
+  lateral component of the drag (`(currentHit - startHit):Dot(frame.RightVector)`)
+  instead of the region setting - a bay can go on either side of a road
+  regardless of which side traffic drives on.
+- **Replaced axis-aligned staircase strips with diagonally-oriented ones**
+  wherever a strip's offset shifts between two stations (an ordinary
+  widen/narrow transition, or the bay's displaced-pavement overlay) - a
+  user screenshot showed a visible staircase on the bay's shifted sidewalk.
+  Previously every strip was built flat-and-square to the curve tangent,
+  holding a constant offset for its whole length before the next strip
+  stepped to a new one; now, whenever a component's center offset differs
+  between its two stations, the strip is oriented via `CFrame.lookAt`
+  between its own true endpoint positions instead - not a mathematically
+  exact trapezoid (a `Part` still can't taper along its own length), but
+  angled to follow the true taper rather than holding flat until a sudden
+  step, which fine adaptive stepping should now read as smooth. Applies to
+  both the general `RoadBuilder.Build` transition loop and `BuildWithBay`'s
+  pavement-shift overlay; completely unaffected for the ordinary
+  non-transitioning case (same construction as before when a component's
+  offset doesn't change).
+- **Fixed the Keybinds capture listener treating a click on its own Close
+  button as the captured input.** `UserInputService.InputBegan` fires on
+  mouse-*down*, before a clicked button's own `Activated` (mouse-*up*)
+  runs - so clicking Close while a capture was pending had that same
+  click's mouse-down captured and bound as "MouseButton1" a moment before
+  Close's own effect (closing the dock) fired, which is what a user's "it
+  detects my left click after i press close" report was describing.
+  `KeybindsGui` now reports its own hover state up (`OnHoverChanged`,
+  mirroring the `uiState.Hovered` pattern already used for the 3D viewport
+  HUD), and `captureNextKeybind` ignores mouse-button input (but not
+  keyboard keys, which have no such ambiguity) while the pointer is over
+  the panel's own buttons.
+- Not verified in a live Studio session (this environment can't render
+  Studio).
+
 ## Bus bay overlap, drag reliability, bus stop consolidation
 
 - **Fixed the bus bay overlapping the nearside pavement.** `BuildWithBay`

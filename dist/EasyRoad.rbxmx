@@ -1691,7 +1691,9 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			if width &lt; 0.05 then
 				continue
 			end
-			local centerOffset = (stationOffsets[i][c] + w0 / 2 + stationOffsets[i + 1][c] + w1 / 2) / 2
+			local centerOffset0 = stationOffsets[i][c] + w0 / 2
+			local centerOffset1 = stationOffsets[i + 1][c] + w1 / 2
+			local centerOffset = (centerOffset0 + centerOffset1) / 2
 
 			local kind = componentsStart[c].Kind
 			local raised = RoadProfile.IsRaised(kind)
@@ -1709,14 +1711,41 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			-- can't reproduce the curvature-scaled sawtooth the old
 			-- far-edge pad caused; just a little extra overlap insurance
 			-- against any remaining sliver of a gap.
-			local partLength = nominalLength + miter + 0.08
+			local padding = miter + 0.08
 
 			local part = makePart(preview)
 			part.Name = kind
 			part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
 			part.Color = colorForKind(kind, style)
-			part.Size = Vector3.new(width, partHeight, partLength)
-			part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
+
+			-- Wedge, not a block: when this component's own center offset
+			-- moves between the two stations (a widen/narrow transition, or
+			-- an offset shift caused by a neighboring component changing
+			-- width), orient the strip along the true diagonal between its
+			-- two exact endpoint positions instead of flat-and-square to
+			-- the curve tangent - a chain of axis-aligned strips each
+			-- holding a constant offset until the next one steps to a new
+			-- one reads as a visible staircase; angling each strip to
+			-- follow its own true endpoints removes that step. Strips that
+			-- aren't transitioning (centerOffset0 == centerOffset1, the
+			-- ordinary case for most of any road) are completely unaffected
+			-- - same construction as before.
+			if math.abs(centerOffset1 - centerOffset0) &gt; 1e-4 then
+				local p0 = (frames[i] * CFrame.new(centerOffset0, centerY, 0)).Position
+				local p1 = (frames[i + 1] * CFrame.new(centerOffset1, centerY, 0)).Position
+				local diagonal = p1 - p0
+				local segLength = diagonal.Magnitude
+				if segLength &gt; 1e-4 then
+					part.Size = Vector3.new(width, partHeight, segLength + padding)
+					part.CFrame = CFrame.lookAt((p0 + p1) / 2, p1, midFrame.UpVector)
+				else
+					part.Size = Vector3.new(width, partHeight, nominalLength + padding)
+					part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
+				end
+			else
+				part.Size = Vector3.new(width, partHeight, nominalLength + padding)
+				part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
+			end
 			part.Parent = model
 		end
 	end
@@ -1870,6 +1899,7 @@ export type BayPlacement = {
 	StationStuds: number, -- Center of the bay along the curve
 	LengthStuds: number, -- Length of the flat "dwell" section (excludes tapers)
 	WidthM: number, -- Bay lane width in meters
+	Side: "Left" | "Right", -- Which side of the road the bay was dragged toward
 }
 
 -- Builds the road with a bus/taxi bay carved into its nearside pavement:
@@ -1902,17 +1932,18 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		return RoadBuilder.Build(options)
 	end
 
-	-- Nearside kerb offset (studs from centerline): the edge a bus pulls
-	-- towards - left for LHT (UK-style), right for RHT (US-style). The bay
-	-- widens outward from here, away from the roadway. The nearside
-	-- component itself (usually the sidewalk) is whichever one sits at
-	-- that same edge.
+	-- Nearside kerb offset (studs from centerline): the edge the bay was
+	-- actually dragged towards (bay.Side - see RoadEditSession's
+	-- bayDraftFromDrag), not assumed from the region's driving side - a bay
+	-- can be drawn on either side of the road regardless of which side
+	-- traffic normally drives on. The nearside component itself (usually
+	-- the sidewalk) is whichever one sits at that same edge.
 	local componentOffsetsM = RoadProfile.ComponentOffsetsM(baseProfile)
 	local totalWidthStuds = RoadProfile.TotalWidthM(baseProfile) * scale
 	local outward: number
 	local kerbOffset: number
 	local nearsideIndex: number
-	if style.DriveOnLeft then
+	if bay.Side == "Left" then
 		outward = -1
 		kerbOffset = if componentOffsetsM[1] then componentOffsetsM[1].Right * scale else -totalWidthStuds / 2
 		nearsideIndex = 1
@@ -2043,12 +2074,14 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 	-- inner edge follows the exact same straight-line ramp (0 at
 	-- taperInStart/taperOutEnd, full bayWidthStuds through the dwell) as
 	-- the bay's own FillTriangle taper edge above, so the two boundaries
-	-- are literally the same line - no gap, no overlap. Built as a chain
-	-- of small strips across adaptive stations (the same technique the
-	-- main deck-strip loop uses for ordinary offset changes) rather than a
-	-- single Part, since a strip whose position shifts sideways along its
-	-- own length is a parallelogram in plan, which no single axis-aligned
-	-- Part can represent exactly.
+	-- are literally the same line - no gap, no overlap. Built as a chain of
+	-- small, diagonally-oriented strips across adaptive stations (the same
+	-- technique the main deck-strip loop uses for ordinary offset changes),
+	-- since a strip that shifts sideways along its own length is a
+	-- parallelogram in plan - not exactly representable by any single
+	-- rigid Part, but angling each small strip to its own true endpoints
+	-- (instead of holding flat-and-square until the next station) gets
+	-- close enough that fine adaptive stepping reads as a smooth slope.
 	local function bayAlphaAt(s: number): number
 		if s &lt;= taperInStart then
 			return 0
@@ -2081,22 +2114,47 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			local s1 = taperInStart + shiftStations[i + 1]
 			local sMid = (s0 + s1) / 2
 			local midFrame = frameAt(sMid)
-			local innerOffset = kerbOffset + outward * bayWidthStuds * bayAlphaAt(sMid)
-			local centerOffset = innerOffset + outward * nearsideWidthStuds / 2
+			local centerOffset0 = kerbOffset
+				+ outward * bayWidthStuds * bayAlphaAt(s0)
+				+ outward * nearsideWidthStuds / 2
+			local centerOffset1 = kerbOffset
+				+ outward * bayWidthStuds * bayAlphaAt(s1)
+				+ outward * nearsideWidthStuds / 2
+			local centerOffset = (centerOffset0 + centerOffset1) / 2
 			local nominalLength = s1 - s0
 			local edgeDistance = math.max(
 				math.abs(centerOffset - nearsideWidthStuds / 2),
 				math.abs(centerOffset + nearsideWidthStuds / 2)
 			)
 			local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
-			local partLength = nominalLength + miter + 0.08
+			local padding = miter + 0.08
 
 			local part = makePart(preview)
 			part.Name = nearsideKind
 			part.Material = MATERIAL_BY_KIND[nearsideKind] or Enum.Material.Concrete
 			part.Color = colorForKind(nearsideKind, style)
-			part.Size = Vector3.new(nearsideWidthStuds, nearsidePartHeight, partLength)
-			part.CFrame = midFrame * CFrame.new(centerOffset, nearsideCenterY, 0)
+
+			-- Wedge, not a block - see the matching comment in the main
+			-- deck-strip loop above: orient along the true diagonal between
+			-- this strip's two exact endpoints rather than flat-and-square,
+			-- so the chain of strips reads as a smooth slope instead of a
+			-- staircase.
+			if math.abs(centerOffset1 - centerOffset0) &gt; 1e-4 then
+				local p0 = (frameAt(s0) * CFrame.new(centerOffset0, nearsideCenterY, 0)).Position
+				local p1 = (frameAt(s1) * CFrame.new(centerOffset1, nearsideCenterY, 0)).Position
+				local diagonal = p1 - p0
+				local segLength = diagonal.Magnitude
+				if segLength &gt; 1e-4 then
+					part.Size = Vector3.new(nearsideWidthStuds, nearsidePartHeight, segLength + padding)
+					part.CFrame = CFrame.lookAt((p0 + p1) / 2, p1, midFrame.UpVector)
+				else
+					part.Size = Vector3.new(nearsideWidthStuds, nearsidePartHeight, nominalLength + padding)
+					part.CFrame = midFrame * CFrame.new(centerOffset, nearsideCenterY, 0)
+				end
+			else
+				part.Size = Vector3.new(nearsideWidthStuds, nearsidePartHeight, nominalLength + padding)
+				part.CFrame = midFrame * CFrame.new(centerOffset, nearsideCenterY, 0)
+			end
 			part.Parent = model
 		end
 	end
@@ -2731,6 +2789,7 @@ type Mode = "Menu" | "SegmentMenu" | "PlacingBay" | "ConfirmingBay" | "Designer"
 export type BayDraft = {
 	LengthStuds: number,
 	WidthM: number,
+	Side: "Left" | "Right",
 }
 
 -- Seed data for continuing a build session from this road's end (the
@@ -2826,31 +2885,11 @@ local function createRoadEditSession(
 	end
 
 	-- Default width is a lane's width (the road's own first Drive component
-	-- if it has one, else the region's default) - only used as a fallback
-	-- if a click without dragging skips straight to confirming (Enter
-	-- immediately accepts it, per the "press Enter to skip" ask).
-	local function defaultBayDraft(): BayDraft
-		local scale = settings.MetersToStuds
-		local laneWidthM = getStyle().DefaultLaneWidthM
-		if editingProfile then
-			for _, component in editingProfile.Components do
-				if component.Kind == "Drive" then
-					laneWidthM = component.WidthM
-					break
-				end
-			end
-		end
-		return {
-			LengthStuds = 20 * scale,
-			WidthM = laneWidthM,
-		}
-	end
-
 	-- Turns a drag from (startStation, startHit) to the current mouse hit
 	-- into a length (along the road) / width (perpendicular, away from the
-	-- start point - the user drags outward from the sidewalk) pair. The
-	-- station midpoint between the drag's two ends is the bay's placement
-	-- station.
+	-- start point - the user drags outward from the sidewalk) pair, plus
+	-- which side of the road the drag went towards. The station midpoint
+	-- between the drag's two ends is the bay's placement station.
 	local function bayDraftFromDrag(
 		startStation: number,
 		startHit: Vector3,
@@ -2859,15 +2898,20 @@ local function createRoadEditSession(
 	): BayDraft
 		local lengthStuds = math.abs(currentStation - startStation)
 		local frame = (originalData :: RoadInstance.RoadData).Curve:FrameAt(startStation)
-		local widthStuds = math.abs((currentHit - startHit):Dot(frame.RightVector))
+		-- Signed, not absolute: positive = dragged toward the frame's right
+		-- (RoadProfile's positive-offset side), negative = left - this is
+		-- what actually determines which side the bay ends up on, not the
+		-- region's DriveOnLeft setting (a bay can go on either side).
+		local signedWidthStuds = (currentHit - startHit):Dot(frame.RightVector)
 		local scale = settings.MetersToStuds
 		return {
 			LengthStuds = math.max(lengthStuds, 1),
-			WidthM = math.max(widthStuds / scale, 0.5),
+			WidthM = math.max(math.abs(signedWidthStuds) / scale, 0.5),
+			Side = if signedWidthStuds &lt; 0 then "Left" else "Right",
 		}
 	end
 
-	local function updateBayGhost(startStation: number, currentStation: number, widthM: number)
+	local function updateBayGhost(startStation: number, currentStation: number, widthM: number, side: "Left" | "Right")
 		if not selectedRoad or not originalData then
 			return
 		end
@@ -2883,9 +2927,9 @@ local function createRoadEditSession(
 		local scale = settings.MetersToStuds
 		local widthStuds = math.max(widthM * scale, 0.1)
 		local style = getStyle()
-		local outward = if style.DriveOnLeft then -1 else 1
+		local outward = if side == "Left" then -1 else 1
 		local offsets = RoadProfile.ComponentOffsetsM(editingProfile or originalData.ProfileStart)
-		local kerbOffsetM = if style.DriveOnLeft
+		local kerbOffsetM = if side == "Left"
 			then (if offsets[1] then offsets[1].Right else 0)
 			else (if offsets[#offsets] then offsets[#offsets].Left else 0)
 		local kerbOffset = kerbOffsetM * scale
@@ -2951,7 +2995,7 @@ local function createRoadEditSession(
 		end
 		local currentStation = originalData.Curve:ClosestS(mouse.Hit.Position)
 		local draft = bayDraftFromDrag(bayDragStartStation, bayDragStartHit, currentStation, mouse.Hit.Position)
-		updateBayGhost(bayDragStartStation, currentStation, draft.WidthM)
+		updateBayGhost(bayDragStartStation, currentStation, draft.WidthM, draft.Side)
 	end
 
 	local function onBayDragEnd()
@@ -3073,6 +3117,7 @@ local function createRoadEditSession(
 				StationStuds = originalData.Bay.StationStuds,
 				LengthStuds = originalData.Bay.LengthStuds,
 				WidthM = originalData.Bay.WidthM,
+				Side = originalData.Bay.Side,
 			})
 			else RoadBuilder.Build(buildOptions)
 		-- Bus stop markers are stored as an attribute (survives the rebuild)
@@ -3186,6 +3231,7 @@ local function createRoadEditSession(
 			StationStuds = bayStation,
 			LengthStuds = bayDraft.LengthStuds,
 			WidthM = bayDraft.WidthM,
+			Side = bayDraft.Side,
 		}
 		local built = RoadBuilder.BuildWithBay({
 			Curve = originalData.Curve,
@@ -3285,6 +3331,12 @@ export type BayData = {
 	StationStuds: number,
 	LengthStuds: number,
 	WidthM: number,
+	-- Which side of the road (looking along the direction of travel from
+	-- the curve's start) the bay was dragged toward - determines which
+	-- edge's pavement gets displaced, independent of the region's
+	-- DriveOnLeft setting (a bay can be drawn on either side regardless of
+	-- which side traffic normally drives on).
+	Side: "Left" | "Right",
 }
 
 export type RoadData = {
@@ -3367,6 +3419,10 @@ local function bayFromModel(model: Model): BayData?
 		StationStuds = decoded.StationStuds,
 		LengthStuds = decoded.LengthStuds,
 		WidthM = decoded.WidthM,
+		-- Bays stamped before the Side field existed default to Right -
+		-- an arbitrary but harmless fallback (they'll just need re-dragging
+		-- if that's the wrong side, same as before this fix existed at all).
+		Side = if decoded.Side == "Left" then "Left" else "Right",
 	}
 end
 
@@ -5233,6 +5289,7 @@ local function KeybindsGui(props: {
 	OnSettingsChanged: () -&gt; (),
 	OnCapture: (actionId: string, onCaptured: (label: string) -&gt; ()) -&gt; (),
 	OnClose: () -&gt; (),
+	OnHoverChanged: ((hovered: boolean) -&gt; ())?,
 })
 	local capturingAction, setCapturingAction = React.useState(nil :: string?)
 
@@ -5298,6 +5355,20 @@ local function KeybindsGui(props: {
 	scrollProps.CanvasSize = UDim2.new(0, 0, 0, 0)
 	scrollProps.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	scrollProps.ScrollingDirection = Enum.ScrollingDirection.Y
+	-- Lets the capture listener (main.lua) tell a click on this panel's own
+	-- buttons (Close, another action's + Add binding, a binding's -) apart
+	-- from a genuine capture click elsewhere (the 3D viewport) - without
+	-- it, clicking Close while a capture was pending got itself captured
+	-- and bound, since UserInputService.InputBegan fires on mouse-down,
+	-- before Close's own Activated (mouse-up) runs.
+	if props.OnHoverChanged then
+		scrollProps[React.Event.MouseEnter] = function()
+			(props.OnHoverChanged :: (boolean) -&gt; ())(true)
+		end
+		scrollProps[React.Event.MouseLeave] = function()
+			(props.OnHoverChanged :: (boolean) -&gt; ())(false)
+		end
+	end
 
 	children.Layout = e("UIListLayout", {
 		SortOrder = Enum.SortOrder.LayoutOrder,
@@ -8862,6 +8933,8 @@ return function(
 	-- viewport clicks meant for road placement.
 	local toolModeHovered = false
 	local roadLibraryHovered = false
+	-- Gates captureNextKeybind below - see its own comment.
+	local keybindsPanelHovered = false
 
 	local regionalRoot: ReactRoblox.RootType? = nil
 	local keybindsRoot: ReactRoblox.RootType? = nil
@@ -8902,9 +8975,22 @@ return function(
 	-- just pressed IS the input we want, regardless of what else has
 	-- focus. Skipping this check was the reason capturing silently never
 	-- registered anything.
+	--
+	-- Mouse-button input is additionally ignored while the pointer is over
+	-- the Keybinds panel itself (keybindsPanelHovered): InputBegan fires on
+	-- mouse-DOWN, before a clicked button's own Activated (mouse-UP) runs -
+	-- so without this, clicking Close (or another action's own + Add
+	-- binding, or a binding's -) while a capture was pending got that same
+	-- click's mouse-down captured and bound as "MouseButton1" a moment
+	-- before the button's own click effect (closing the dock, etc.) fired.
+	-- Keyboard keys aren't gated by this, since a key press has no
+	-- "landed on our own button" ambiguity the way a click does.
 	local function captureNextKeybind(onCaptured: (label: string) -&gt; ())
 		local connection: RBXScriptConnection? = nil
 		connection = UserInputService.InputBegan:Connect(function(input)
+			if keybindsPanelHovered and input.UserInputType ~= Enum.UserInputType.Keyboard then
+				return
+			end
 			local label = KeybindsModule.CaptureLabel(input)
 			if label then
 				if connection then
@@ -9535,10 +9621,14 @@ return function(
 				OnClose = function()
 					keybindsDock.Enabled = false
 				end,
+				OnHoverChanged = function(hovered: boolean)
+					keybindsPanelHovered = hovered
+				end,
 			}))
 		elseif keybindsRoot then
 			keybindsRoot:unmount()
 			keybindsRoot = nil
+			keybindsPanelHovered = false
 		end
 	end
 

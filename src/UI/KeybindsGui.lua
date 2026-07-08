@@ -75,6 +75,7 @@ local function KeybindsGui(props: {
 	OnSettingsChanged: () -> (),
 	OnCapture: (actionId: string, onCaptured: (label: string) -> ()) -> (),
 	OnClose: () -> (),
+	OnHoverChanged: ((hovered: boolean) -> ())?,
 })
 	local capturingAction, setCapturingAction = React.useState(nil :: string?)
 
@@ -140,6 +141,20 @@ local function KeybindsGui(props: {
 	scrollProps.CanvasSize = UDim2.new(0, 0, 0, 0)
 	scrollProps.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	scrollProps.ScrollingDirection = Enum.ScrollingDirection.Y
+	-- Lets the capture listener (main.lua) tell a click on this panel's own
+	-- buttons (Close, another action's + Add binding, a binding's -) apart
+	-- from a genuine capture click elsewhere (the 3D viewport) - without
+	-- it, clicking Close while a capture was pending got itself captured
+	-- and bound, since UserInputService.InputBegan fires on mouse-down,
+	-- before Close's own Activated (mouse-up) runs.
+	if props.OnHoverChanged then
+		scrollProps[React.Event.MouseEnter] = function()
+			(props.OnHoverChanged :: (boolean) -> ())(true)
+		end
+		scrollProps[React.Event.MouseLeave] = function()
+			(props.OnHoverChanged :: (boolean) -> ())(false)
+		end
+	end
 
 	children.Layout = e("UIListLayout", {
 		SortOrder = Enum.SortOrder.LayoutOrder,

@@ -75,6 +75,8 @@ return function(
 	-- viewport clicks meant for road placement.
 	local toolModeHovered = false
 	local roadLibraryHovered = false
+	-- Gates captureNextKeybind below - see its own comment.
+	local keybindsPanelHovered = false
 
 	local regionalRoot: ReactRoblox.RootType? = nil
 	local keybindsRoot: ReactRoblox.RootType? = nil
@@ -115,9 +117,22 @@ return function(
 	-- just pressed IS the input we want, regardless of what else has
 	-- focus. Skipping this check was the reason capturing silently never
 	-- registered anything.
+	--
+	-- Mouse-button input is additionally ignored while the pointer is over
+	-- the Keybinds panel itself (keybindsPanelHovered): InputBegan fires on
+	-- mouse-DOWN, before a clicked button's own Activated (mouse-UP) runs -
+	-- so without this, clicking Close (or another action's own + Add
+	-- binding, or a binding's -) while a capture was pending got that same
+	-- click's mouse-down captured and bound as "MouseButton1" a moment
+	-- before the button's own click effect (closing the dock, etc.) fired.
+	-- Keyboard keys aren't gated by this, since a key press has no
+	-- "landed on our own button" ambiguity the way a click does.
 	local function captureNextKeybind(onCaptured: (label: string) -> ())
 		local connection: RBXScriptConnection? = nil
 		connection = UserInputService.InputBegan:Connect(function(input)
+			if keybindsPanelHovered and input.UserInputType ~= Enum.UserInputType.Keyboard then
+				return
+			end
 			local label = KeybindsModule.CaptureLabel(input)
 			if label then
 				if connection then
@@ -748,10 +763,14 @@ return function(
 				OnClose = function()
 					keybindsDock.Enabled = false
 				end,
+				OnHoverChanged = function(hovered: boolean)
+					keybindsPanelHovered = hovered
+				end,
 			}))
 		elseif keybindsRoot then
 			keybindsRoot:unmount()
 			keybindsRoot = nil
+			keybindsPanelHovered = false
 		end
 	end
 
