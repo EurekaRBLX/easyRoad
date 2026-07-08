@@ -1374,6 +1374,12 @@ export type BuildOptions = {
 	Style: RegionStyles.RegionStyle,
 	Settings: Settings.EasyRoadSettings,
 	Preview: boolean?,
+	-- Skips deck-strip Parts for these 1-based component indices (offsets/
+	-- widths are still computed normally, so nothing else shifts) - used by
+	-- BuildWithBay to omit the nearside pavement over a bay's footprint so
+	-- its own shifted-outward replacement can be overlaid without doubling
+	-- geometry or overlapping the bay's own pull-in lane.
+	ExcludeComponentIndices: { number }?,
 }
 
 local MARKING_THICKNESS = 0.05
@@ -1507,6 +1513,13 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		componentsEnd = options.ProfileStart.Components
 	end
 	local componentCount = #componentsStart
+
+	local excludedComponents: { [number]: boolean } = {}
+	if options.ExcludeComponentIndices then
+		for _, index in options.ExcludeComponentIndices :: { number } do
+			excludedComponents[index] = true
+		end
+	end
 
 	local model = Instance.new("Model")
 	model.Name = if preview then "RoadPreview" else "Road"
@@ -1669,6 +1682,9 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		local nominalLength = s1 - s0
 
 		for c = 1, componentCount do
+			if excludedComponents[c] then
+				continue
+			end
 			local w0 = stationWidths[i][c]
 			local w1 = stationWidths[i + 1][c]
 			local width = (w0 + w1) / 2
@@ -1856,19 +1872,21 @@ export type BayPlacement = {
 	WidthM: number, -- Bay lane width in meters
 }
 
--- Builds the normal road, then adds a bus/taxi bay alongside it as extra
--- geometry: a flat "dwell" rectangle at full bay width, and two exact
--- trapezoid tapers (each really a triangle, since a taper's narrow end has
--- zero width - one true pinch point) built with FillTriangle, closing the
--- nearside kerb line from its normal offset out to the bay's offset and
--- back. Deliberately NOT built by feeding a Bay-widened profile through
--- the general widen/narrow transition machinery (RoadBuilder.Build): that
--- chains many small constant-width rectangles together, which approximates
--- a taper as a staircase rather than a single clean diagonal edge - fine
--- for an ordinary lane width change, but a real bus bay is meant to read as
--- an actual trapezoid. Since nothing about the rest of the cross-section
--- changes width over the bay's range, the base road doesn't need slicing
--- or re-profiling at all - only the bay's own strip needs new geometry.
+-- Builds the road with a bus/taxi bay carved into its nearside pavement:
+-- the roadway (drive lanes, median, ...) is built for the full length
+-- unchanged, the bay's own pull-in lane is an exact trapezoid (a flat
+-- "dwell" rectangle plus two triangle tapers - each really a single
+-- triangle, since a taper's narrow end has zero width - via FillTriangle,
+-- not the general widen/narrow machinery's staircase-of-rectangles), and
+-- the nearside pavement (sidewalk/verge) is genuinely displaced outward
+-- over the bay's footprint rather than left in place: left in place, it
+-- would sit raised directly over the new low bay asphalt, which is exactly
+-- the overlap a bay reported. The nearside component is excluded from the
+-- base build across the bay's footprint (RoadBuilder.Build's new
+-- ExcludeComponentIndices) and rebuilt shifted outward as its own chain of
+-- small strips, its inner edge following the exact same linear ramp as the
+-- bay's own FillTriangle taper edge - the two share one boundary line by
+-- construction, so there is no gap and no overlap between them.
 function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Model
 	local curve = options.Curve
 	local settings = options.Settings
@@ -1876,29 +1894,35 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 	local baseProfile = options.ProfileStart
 	local scale = settings.MetersToStuds
 	local thickness = settings.RoadThicknessStuds
+	local curbHeight = style.CurbHeightM * scale
 	local preview = options.Preview == true
 	local length = curve.Length
 
-	local model = RoadBuilder.Build(options)
 	if length &lt; 1e-3 then
-		return model
+		return RoadBuilder.Build(options)
 	end
 
 	-- Nearside kerb offset (studs from centerline): the edge a bus pulls
 	-- towards - left for LHT (UK-style), right for RHT (US-style). The bay
-	-- widens outward from here, away from the roadway.
+	-- widens outward from here, away from the roadway. The nearside
+	-- component itself (usually the sidewalk) is whichever one sits at
+	-- that same edge.
 	local componentOffsetsM = RoadProfile.ComponentOffsetsM(baseProfile)
 	local totalWidthStuds = RoadProfile.TotalWidthM(baseProfile) * scale
 	local outward: number
 	local kerbOffset: number
+	local nearsideIndex: number
 	if style.DriveOnLeft then
 		outward = -1
 		kerbOffset = if componentOffsetsM[1] then componentOffsetsM[1].Right * scale else -totalWidthStuds / 2
+		nearsideIndex = 1
 	else
 		outward = 1
 		local n = #componentOffsetsM
 		kerbOffset = if componentOffsetsM[n] then componentOffsetsM[n].Left * scale else totalWidthStuds / 2
+		nearsideIndex = n
 	end
+	local nearsideComponent = baseProfile.Components[nearsideIndex]
 	local bayWidthStuds = bay.WidthM * scale
 	local bayOffset = kerbOffset + outward * bayWidthStuds
 
@@ -1913,8 +1937,48 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 	local taperInStart = math.clamp(dwellStart - taperLength, 0, dwellStart)
 	local taperOutEnd = math.clamp(dwellEnd + taperLength, dwellEnd, length)
 
-	if taperOutEnd - taperInStart &lt; 1e-3 then
-		return model
+	if taperOutEnd - taperInStart &lt; 1e-3 or not nearsideComponent then
+		return RoadBuilder.Build(options)
+	end
+
+	-- Base road: the unaffected zones build normally; the bay's footprint
+	-- excludes the nearside component (rebuilt below, shifted outward) so
+	-- its original position doesn't coexist with the new one.
+	local model = Instance.new("Model")
+	model.Name = if preview then "RoadPreview" else "Road"
+	local function mergeIn(built: Model)
+		for _, child in built:GetChildren() do
+			child.Parent = model
+		end
+		built:Destroy()
+	end
+	if taperInStart &gt; 1e-3 then
+		mergeIn(RoadBuilder.Build({
+			Curve = curve:Slice(0, taperInStart),
+			ProfileStart = baseProfile,
+			ProfileEnd = options.ProfileEnd,
+			Style = style,
+			Settings = settings,
+			Preview = preview,
+		}))
+	end
+	mergeIn(RoadBuilder.Build({
+		Curve = curve:Slice(taperInStart, taperOutEnd),
+		ProfileStart = baseProfile,
+		Style = style,
+		Settings = settings,
+		Preview = preview,
+		ExcludeComponentIndices = { nearsideIndex },
+	}))
+	if length - taperOutEnd &gt; 1e-3 then
+		mergeIn(RoadBuilder.Build({
+			Curve = curve:Slice(taperOutEnd, length),
+			ProfileStart = baseProfile,
+			ProfileEnd = options.ProfileEnd,
+			Style = style,
+			Settings = settings,
+			Preview = preview,
+		}))
 	end
 
 	local partHeight = thickness
@@ -1973,6 +2037,68 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		local innerAtDwell = posAt(dwellEnd, kerbOffset)
 		local outerAtDwell = posAt(dwellEnd, bayOffset)
 		FillTriangle(innerAtDwell, outerAtDwell, pinch, partHeight, -frameAt(dwellEnd).UpVector, makeBayPart, model)
+	end
+
+	-- Nearside pavement, displaced outward over the bay's footprint: its
+	-- inner edge follows the exact same straight-line ramp (0 at
+	-- taperInStart/taperOutEnd, full bayWidthStuds through the dwell) as
+	-- the bay's own FillTriangle taper edge above, so the two boundaries
+	-- are literally the same line - no gap, no overlap. Built as a chain
+	-- of small strips across adaptive stations (the same technique the
+	-- main deck-strip loop uses for ordinary offset changes) rather than a
+	-- single Part, since a strip whose position shifts sideways along its
+	-- own length is a parallelogram in plan, which no single axis-aligned
+	-- Part can represent exactly.
+	local function bayAlphaAt(s: number): number
+		if s &lt;= taperInStart then
+			return 0
+		elseif s &lt; dwellStart then
+			local span = dwellStart - taperInStart
+			return if span &gt; 1e-6 then (s - taperInStart) / span else 1
+		elseif s &lt;= dwellEnd then
+			return 1
+		elseif s &lt; taperOutEnd then
+			local span = taperOutEnd - dwellEnd
+			return if span &gt; 1e-6 then 1 - (s - dwellEnd) / span else 0
+		end
+		return 0
+	end
+
+	local nearsideWidthStuds = nearsideComponent.WidthM * scale
+	local nearsideKind = nearsideComponent.Kind
+	local nearsideRaised = RoadProfile.IsRaised(nearsideKind)
+	local nearsidePartHeight = if nearsideRaised then thickness + curbHeight else thickness
+	local nearsideCenterY = if nearsideRaised then (curbHeight - thickness) / 2 else -thickness / 2
+
+	local shiftSlice = curve:Slice(taperInStart, taperOutEnd)
+	if shiftSlice.Length &gt; 1e-3 then
+		local changeRate = bayWidthStuds / math.max(taperLength, 1e-3)
+		local maxStepForTaper = if changeRate &gt; 1e-3 then 0.4 / changeRate else 4
+		local maxStep = math.min(settings.MaxSegmentLengthStuds, 4, math.max(maxStepForTaper, MIN_STEP))
+		local shiftStations = buildStations(shiftSlice, maxStep, CHORD_TOLERANCE)
+		for i = 1, #shiftStations - 1 do
+			local s0 = taperInStart + shiftStations[i]
+			local s1 = taperInStart + shiftStations[i + 1]
+			local sMid = (s0 + s1) / 2
+			local midFrame = frameAt(sMid)
+			local innerOffset = kerbOffset + outward * bayWidthStuds * bayAlphaAt(sMid)
+			local centerOffset = innerOffset + outward * nearsideWidthStuds / 2
+			local nominalLength = s1 - s0
+			local edgeDistance = math.max(
+				math.abs(centerOffset - nearsideWidthStuds / 2),
+				math.abs(centerOffset + nearsideWidthStuds / 2)
+			)
+			local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
+			local partLength = nominalLength + miter + 0.08
+
+			local part = makePart(preview)
+			part.Name = nearsideKind
+			part.Material = MATERIAL_BY_KIND[nearsideKind] or Enum.Material.Concrete
+			part.Color = colorForKind(nearsideKind, style)
+			part.Size = Vector3.new(nearsideWidthStuds, nearsidePartHeight, partLength)
+			part.CFrame = midFrame * CFrame.new(centerOffset, nearsideCenterY, 0)
+			part.Parent = model
+		end
 	end
 
 	return model
@@ -2589,20 +2715,18 @@ local BusStops = require("./BusStops")
 
 -- Pie-menu state machine for a selected road:
 --   Menu         - top-level pills (Edit on Road Builder / Place More / ...)
---   SegmentMenu  - "Edit Road Segment" submenu (Add Bus Stop / Add Bus Bay /
---                  Edit Lane Markings / Back)
---   PlacingBusStop - click-to-place mode for a bus STOP marker (a decal/sign,
---                  no cross-section change): click a Sidewalk/Parking part
---                  on the selected road to add one, click an existing one to
---                  remove it, cancel-placement key returns to SegmentMenu.
---   PlacingBay   - click-to-place mode for a real bus BAY (a physical
---                  pull-in carved into the road's cross-section): click a
---                  point on the selected road to choose where.
---   ConfirmingBay - after a bay point is chosen, adjust its length/width
---                  (defaults: a standard dwell length, one lane's width)
---                  before committing the geometry rebuild.
+--   SegmentMenu  - "Edit Road Segment" submenu (Add Bus Bay / Edit Lane
+--                  Markings / Back). A standalone marker-only "Add Bus
+--                  Stop" mode used to live here too - removed since a real
+--                  bus bay already serves as a stop; BusStops.Render below
+--                  still re-renders any markers stamped before that change
+--                  so existing roads aren't affected.
+--   PlacingBay   - click-drag-to-draw mode for a real bus BAY (a physical
+--                  pull-in carved into the road's cross-section).
+--   ConfirmingBay - after a bay's drawn, adjust its length/width (defaults:
+--                  the dragged size) before committing the geometry rebuild.
 --   Designer     - the full RoadInspector designer
-type Mode = "Menu" | "SegmentMenu" | "PlacingBusStop" | "PlacingBay" | "ConfirmingBay" | "Designer"
+type Mode = "Menu" | "SegmentMenu" | "PlacingBay" | "ConfirmingBay" | "Designer"
 
 export type BayDraft = {
 	LengthStuds: number,
@@ -2636,15 +2760,11 @@ export type RoadEditSession = {
 	OpenEditor: () -&gt; (),
 	GetAnchorWorldPosition: () -&gt; Vector3?,
 	GetContinuation: () -&gt; Continuation?,
-	-- "Edit Road Segment" second-level submenu (Add Bus Stop / Add Bus Bay /
-	-- Edit Lane Markings / Back).
+	-- "Edit Road Segment" second-level submenu (Add Bus Bay / Edit Lane
+	-- Markings / Back).
 	IsShowingSegmentMenu: () -&gt; boolean,
 	OpenSegmentMenu: () -&gt; (),
 	CloseSegmentMenu: () -&gt; (),
-	-- Bus stop marker click-to-place mode.
-	IsPlacingBusStop: () -&gt; boolean,
-	StartBusStopPlacement: () -&gt; (),
-	StopBusStopPlacement: () -&gt; (),
 	-- Real bus bay: click a point on the road, then adjust length/width.
 	IsPlacingBay: () -&gt; boolean,
 	StartBayPlacement: () -&gt; (),
@@ -2670,7 +2790,6 @@ local function createRoadEditSession(
 	local editingProfile: RoadProfile.RoadProfile? = nil -- Local staged clone of ProfileStart
 	local mode: Mode = "Menu"
 	local mouse = plugin:GetMouse()
-	local busStopConnections: { RBXScriptConnection } = {}
 	local bayConnections: { RBXScriptConnection } = {}
 	local bayStation: number? = nil -- Chosen placement station, set once the drag finishes
 	local bayDraft: BayDraft? = nil
@@ -2679,42 +2798,6 @@ local function createRoadEditSession(
 	local bayDragStartStation: number? = nil
 	local bayDragStartHit: Vector3? = nil
 	local bayGhost: Part? = nil
-
-	local function stopBusStopPlacement()
-		if mode ~= "PlacingBusStop" then
-			return
-		end
-		mode = "SegmentMenu"
-		plugin:Deactivate()
-		for _, connection in busStopConnections do
-			connection:Disconnect()
-		end
-		table.clear(busStopConnections)
-		changeSignal:Fire()
-	end
-
-	local function onBusStopClick()
-		if mode ~= "PlacingBusStop" or not selectedRoad then
-			return
-		end
-		-- Clicks on the pie menu's own "Done" pill must not also place/
-		-- remove a stop underneath it (same guard createRoadSession uses
-		-- for its HUD).
-		if uiState.Hovered then
-			return
-		end
-		local target = mouse.Target
-		if not target or not target:IsDescendantOf(selectedRoad) then
-			return
-		end
-		if BusStops.IsMarker(target) then
-			BusStops.RemoveNear(selectedRoad, mouse.Hit.Position, 3)
-			changeSignal:Fire()
-		elseif BusStops.IsEligibleTarget(target) then
-			BusStops.Add(selectedRoad, mouse.Hit.Position)
-			changeSignal:Fire()
-		end
-	end
 
 	-- Cancels either step of bay placement: before a drag is drawn
 	-- (PlacingBay, still listening for a click-drag) or after
@@ -2849,10 +2932,15 @@ local function createRoadEditSession(
 		if uiState.Hovered then
 			return
 		end
-		local target = mouse.Target
-		if not target or not target:IsDescendantOf(selectedRoad) then
-			return
-		end
+		-- Deliberately not requiring mouse.Target to land on the road itself -
+		-- the user is drawing a rectangle that starts on the road but is
+		-- dragged outward past its edge, and
+		-- a drag that starts a pixel off the road (baseplate showing
+		-- through a thin gap, camera angle grazing the edge, ...) used to
+		-- silently drop the whole gesture, since onBayDragMove/End already
+		-- only need bayDragStartStation to be set. ClosestS always finds
+		-- the nearest station on the curve regardless of what was actually
+		-- hit, so a click anywhere in the viewport near the road registers.
 		bayDragStartStation = originalData.Curve:ClosestS(mouse.Hit.Position)
 		bayDragStartHit = mouse.Hit.Position
 	end
@@ -2900,9 +2988,7 @@ local function createRoadEditSession(
 		if road == selectedRoad then
 			return
 		end
-		if mode == "PlacingBusStop" then
-			stopBusStopPlacement()
-		elseif mode == "PlacingBay" then
+		if mode == "PlacingBay" then
 			stopBayPlacement()
 		end
 		selectedRoad = road
@@ -2922,9 +3008,7 @@ local function createRoadEditSession(
 			if gameProcessed then
 				return
 			end
-			if mode == "PlacingBusStop" and Keybinds.Matches(settings.Keybinds.CancelPlacement, input) then
-				stopBusStopPlacement()
-			elseif
+			if
 				(mode == "PlacingBay" or mode == "ConfirmingBay")
 				and Keybinds.Matches(settings.Keybinds.CancelPlacement, input)
 			then
@@ -3053,22 +3137,6 @@ local function createRoadEditSession(
 		end
 	end
 
-	function session.IsPlacingBusStop(): boolean
-		return mode == "PlacingBusStop"
-	end
-
-	function session.StartBusStopPlacement()
-		if mode ~= "SegmentMenu" or not selectedRoad then
-			return
-		end
-		mode = "PlacingBusStop"
-		plugin:Activate(true)
-		table.insert(busStopConnections, mouse.Button1Down:Connect(onBusStopClick))
-		changeSignal:Fire()
-	end
-
-	session.StopBusStopPlacement = stopBusStopPlacement
-
 	function session.IsPlacingBay(): boolean
 		return mode == "PlacingBay"
 	end
@@ -3174,13 +3242,9 @@ local function createRoadEditSession(
 	end
 
 	function session.Destroy()
-		if mode == "PlacingBusStop" or mode == "PlacingBay" then
+		if mode == "PlacingBay" then
 			plugin:Deactivate()
 		end
-		for _, connection in busStopConnections do
-			connection:Disconnect()
-		end
-		table.clear(busStopConnections)
 		for _, connection in bayConnections do
 			connection:Disconnect()
 		end
@@ -9196,7 +9260,6 @@ return function(
 			editSession.GetSelectedRoad()
 			and not editSession.IsShowingMenu()
 			and not editSession.IsShowingSegmentMenu()
-			and not editSession.IsPlacingBusStop()
 			and not editSession.IsPlacingBay()
 			and not editSession.IsConfirmingBay()
 		then
@@ -9251,12 +9314,14 @@ return function(
 		-- Shown the moment a placed road is selected, before the full
 		-- designer: Edit on Road Builder / Edit Road Segment / Place More /
 		-- Use as Template / Cancel, CS2-style. "Edit Road Segment" opens a
-		-- second-level submenu (Add Bus Stop / Add Bus Bay / Edit Lane
-		-- Markings / Back) at the same anchor. "Add Bus Stop" opens a
-		-- click-to-place mode for a marker; "Add Bus Bay" opens a
-		-- click-to-place mode for a point on the road, then a length/width
-		-- panel (see the ConfirmingBay branch below) before committing the
-		-- real carved-out geometry.
+		-- second-level submenu (Add Bus Bay / Edit Lane Markings / Back) at
+		-- the same anchor - a standalone marker-only "Add Bus Stop" used to
+		-- live here too, removed since a real bus bay already serves as a
+		-- stop (see SHIPPED.md). "Add Bus Bay" opens a click-drag-to-place
+		-- mode for a point on the road, then a length/width panel (see the
+		-- ConfirmingBay branch below) before committing the real
+		-- carved-out geometry. Hidden entirely for Highway-category roads,
+		-- which don't have bus bays in real life.
 		-- Rendered in its own ScreenGui WITHOUT IgnoreGuiInset, matching
 		-- WorldToViewportPoint's coordinate space (the bottom HUD's
 		-- ScreenGui ignores the inset instead, for the drag-ghost math -
@@ -9268,7 +9333,6 @@ return function(
 			and (
 				editSession.IsShowingMenu()
 				or editSession.IsShowingSegmentMenu()
-				or editSession.IsPlacingBusStop()
 				or editSession.IsPlacingBay()
 				or editSession.IsConfirmingBay()
 			)
@@ -9342,21 +9406,20 @@ return function(
 						},
 					})
 				elseif editSession.IsShowingSegmentMenu() then
+					local profile = editSession.GetProfile()
+					-- Highways don't have bus bays in real life.
+					local canAddBay = profile == nil or profile.Category ~= "Highways"
 					pieMenuElement = React.createElement(PieMenu, {
 						WorldPosition = anchor,
 						SetGlobalHover = setGlobalHover,
-						Top = {
-							Text = "Add Bus Stop",
-							OnClick = function()
-								editSession.StartBusStopPlacement()
-							end,
-						},
-						TopLeft = {
-							Text = "Add Bus Bay",
-							OnClick = function()
-								editSession.StartBayPlacement()
-							end,
-						},
+						Top = if canAddBay
+							then {
+								Text = "Add Bus Bay",
+								OnClick = function()
+									editSession.StartBayPlacement()
+								end,
+							}
+							else nil,
 						Left = {
 							Text = "Edit Lane Markings",
 							OnClick = function()
@@ -9369,17 +9432,6 @@ return function(
 							Text = "Back",
 							OnClick = function()
 								editSession.CloseSegmentMenu()
-							end,
-						},
-					})
-				elseif editSession.IsPlacingBusStop() then
-					pieMenuElement = React.createElement(PieMenu, {
-						WorldPosition = anchor,
-						SetGlobalHover = setGlobalHover,
-						Bottom = {
-							Text = "Done (click a sidewalk/parking part to add, an existing stop to remove)",
-							OnClick = function()
-								editSession.StopBusStopPlacement()
 							end,
 						},
 					})
@@ -9417,12 +9469,12 @@ return function(
 				-- spans the whole screen (needed so the anchored pie menu
 				-- can be positioned anywhere within it), so a MouseEnter
 				-- here would fire almost immediately and latch
-				-- uiState.Hovered permanently - which used to make
-				-- onBusStopClick's "don't place through the HUD" guard
-				-- swallow every viewport click while any pie menu was
-				-- showing (i.e. whenever a road was selected). Each
-				-- PillButton reports its own (correctly small) hover area
-				-- via SetGlobalHover instead.
+				-- uiState.Hovered permanently - which used to make the
+				-- viewport's "don't place through the HUD" guard swallow
+				-- every click while any pie menu was showing (i.e.
+				-- whenever a road was selected). Each PillButton reports
+				-- its own (correctly small) hover area via SetGlobalHover
+				-- instead.
 				assert(pieMenuRoot):render(React.createElement("Frame", {
 					Size = UDim2.fromScale(1, 1),
 					BackgroundTransparency = 1,

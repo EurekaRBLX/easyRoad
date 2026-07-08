@@ -28,6 +28,12 @@ export type BuildOptions = {
 	Style: RegionStyles.RegionStyle,
 	Settings: Settings.EasyRoadSettings,
 	Preview: boolean?,
+	-- Skips deck-strip Parts for these 1-based component indices (offsets/
+	-- widths are still computed normally, so nothing else shifts) - used by
+	-- BuildWithBay to omit the nearside pavement over a bay's footprint so
+	-- its own shifted-outward replacement can be overlaid without doubling
+	-- geometry or overlapping the bay's own pull-in lane.
+	ExcludeComponentIndices: { number }?,
 }
 
 local MARKING_THICKNESS = 0.05
@@ -161,6 +167,13 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		componentsEnd = options.ProfileStart.Components
 	end
 	local componentCount = #componentsStart
+
+	local excludedComponents: { [number]: boolean } = {}
+	if options.ExcludeComponentIndices then
+		for _, index in options.ExcludeComponentIndices :: { number } do
+			excludedComponents[index] = true
+		end
+	end
 
 	local model = Instance.new("Model")
 	model.Name = if preview then "RoadPreview" else "Road"
@@ -323,6 +336,9 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		local nominalLength = s1 - s0
 
 		for c = 1, componentCount do
+			if excludedComponents[c] then
+				continue
+			end
 			local w0 = stationWidths[i][c]
 			local w1 = stationWidths[i + 1][c]
 			local width = (w0 + w1) / 2
@@ -510,19 +526,21 @@ export type BayPlacement = {
 	WidthM: number, -- Bay lane width in meters
 }
 
--- Builds the normal road, then adds a bus/taxi bay alongside it as extra
--- geometry: a flat "dwell" rectangle at full bay width, and two exact
--- trapezoid tapers (each really a triangle, since a taper's narrow end has
--- zero width - one true pinch point) built with FillTriangle, closing the
--- nearside kerb line from its normal offset out to the bay's offset and
--- back. Deliberately NOT built by feeding a Bay-widened profile through
--- the general widen/narrow transition machinery (RoadBuilder.Build): that
--- chains many small constant-width rectangles together, which approximates
--- a taper as a staircase rather than a single clean diagonal edge - fine
--- for an ordinary lane width change, but a real bus bay is meant to read as
--- an actual trapezoid. Since nothing about the rest of the cross-section
--- changes width over the bay's range, the base road doesn't need slicing
--- or re-profiling at all - only the bay's own strip needs new geometry.
+-- Builds the road with a bus/taxi bay carved into its nearside pavement:
+-- the roadway (drive lanes, median, ...) is built for the full length
+-- unchanged, the bay's own pull-in lane is an exact trapezoid (a flat
+-- "dwell" rectangle plus two triangle tapers - each really a single
+-- triangle, since a taper's narrow end has zero width - via FillTriangle,
+-- not the general widen/narrow machinery's staircase-of-rectangles), and
+-- the nearside pavement (sidewalk/verge) is genuinely displaced outward
+-- over the bay's footprint rather than left in place: left in place, it
+-- would sit raised directly over the new low bay asphalt, which is exactly
+-- the overlap a bay reported. The nearside component is excluded from the
+-- base build across the bay's footprint (RoadBuilder.Build's new
+-- ExcludeComponentIndices) and rebuilt shifted outward as its own chain of
+-- small strips, its inner edge following the exact same linear ramp as the
+-- bay's own FillTriangle taper edge - the two share one boundary line by
+-- construction, so there is no gap and no overlap between them.
 function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Model
 	local curve = options.Curve
 	local settings = options.Settings
@@ -530,29 +548,35 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 	local baseProfile = options.ProfileStart
 	local scale = settings.MetersToStuds
 	local thickness = settings.RoadThicknessStuds
+	local curbHeight = style.CurbHeightM * scale
 	local preview = options.Preview == true
 	local length = curve.Length
 
-	local model = RoadBuilder.Build(options)
 	if length < 1e-3 then
-		return model
+		return RoadBuilder.Build(options)
 	end
 
 	-- Nearside kerb offset (studs from centerline): the edge a bus pulls
 	-- towards - left for LHT (UK-style), right for RHT (US-style). The bay
-	-- widens outward from here, away from the roadway.
+	-- widens outward from here, away from the roadway. The nearside
+	-- component itself (usually the sidewalk) is whichever one sits at
+	-- that same edge.
 	local componentOffsetsM = RoadProfile.ComponentOffsetsM(baseProfile)
 	local totalWidthStuds = RoadProfile.TotalWidthM(baseProfile) * scale
 	local outward: number
 	local kerbOffset: number
+	local nearsideIndex: number
 	if style.DriveOnLeft then
 		outward = -1
 		kerbOffset = if componentOffsetsM[1] then componentOffsetsM[1].Right * scale else -totalWidthStuds / 2
+		nearsideIndex = 1
 	else
 		outward = 1
 		local n = #componentOffsetsM
 		kerbOffset = if componentOffsetsM[n] then componentOffsetsM[n].Left * scale else totalWidthStuds / 2
+		nearsideIndex = n
 	end
+	local nearsideComponent = baseProfile.Components[nearsideIndex]
 	local bayWidthStuds = bay.WidthM * scale
 	local bayOffset = kerbOffset + outward * bayWidthStuds
 
@@ -567,8 +591,48 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 	local taperInStart = math.clamp(dwellStart - taperLength, 0, dwellStart)
 	local taperOutEnd = math.clamp(dwellEnd + taperLength, dwellEnd, length)
 
-	if taperOutEnd - taperInStart < 1e-3 then
-		return model
+	if taperOutEnd - taperInStart < 1e-3 or not nearsideComponent then
+		return RoadBuilder.Build(options)
+	end
+
+	-- Base road: the unaffected zones build normally; the bay's footprint
+	-- excludes the nearside component (rebuilt below, shifted outward) so
+	-- its original position doesn't coexist with the new one.
+	local model = Instance.new("Model")
+	model.Name = if preview then "RoadPreview" else "Road"
+	local function mergeIn(built: Model)
+		for _, child in built:GetChildren() do
+			child.Parent = model
+		end
+		built:Destroy()
+	end
+	if taperInStart > 1e-3 then
+		mergeIn(RoadBuilder.Build({
+			Curve = curve:Slice(0, taperInStart),
+			ProfileStart = baseProfile,
+			ProfileEnd = options.ProfileEnd,
+			Style = style,
+			Settings = settings,
+			Preview = preview,
+		}))
+	end
+	mergeIn(RoadBuilder.Build({
+		Curve = curve:Slice(taperInStart, taperOutEnd),
+		ProfileStart = baseProfile,
+		Style = style,
+		Settings = settings,
+		Preview = preview,
+		ExcludeComponentIndices = { nearsideIndex },
+	}))
+	if length - taperOutEnd > 1e-3 then
+		mergeIn(RoadBuilder.Build({
+			Curve = curve:Slice(taperOutEnd, length),
+			ProfileStart = baseProfile,
+			ProfileEnd = options.ProfileEnd,
+			Style = style,
+			Settings = settings,
+			Preview = preview,
+		}))
 	end
 
 	local partHeight = thickness
@@ -627,6 +691,68 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		local innerAtDwell = posAt(dwellEnd, kerbOffset)
 		local outerAtDwell = posAt(dwellEnd, bayOffset)
 		FillTriangle(innerAtDwell, outerAtDwell, pinch, partHeight, -frameAt(dwellEnd).UpVector, makeBayPart, model)
+	end
+
+	-- Nearside pavement, displaced outward over the bay's footprint: its
+	-- inner edge follows the exact same straight-line ramp (0 at
+	-- taperInStart/taperOutEnd, full bayWidthStuds through the dwell) as
+	-- the bay's own FillTriangle taper edge above, so the two boundaries
+	-- are literally the same line - no gap, no overlap. Built as a chain
+	-- of small strips across adaptive stations (the same technique the
+	-- main deck-strip loop uses for ordinary offset changes) rather than a
+	-- single Part, since a strip whose position shifts sideways along its
+	-- own length is a parallelogram in plan, which no single axis-aligned
+	-- Part can represent exactly.
+	local function bayAlphaAt(s: number): number
+		if s <= taperInStart then
+			return 0
+		elseif s < dwellStart then
+			local span = dwellStart - taperInStart
+			return if span > 1e-6 then (s - taperInStart) / span else 1
+		elseif s <= dwellEnd then
+			return 1
+		elseif s < taperOutEnd then
+			local span = taperOutEnd - dwellEnd
+			return if span > 1e-6 then 1 - (s - dwellEnd) / span else 0
+		end
+		return 0
+	end
+
+	local nearsideWidthStuds = nearsideComponent.WidthM * scale
+	local nearsideKind = nearsideComponent.Kind
+	local nearsideRaised = RoadProfile.IsRaised(nearsideKind)
+	local nearsidePartHeight = if nearsideRaised then thickness + curbHeight else thickness
+	local nearsideCenterY = if nearsideRaised then (curbHeight - thickness) / 2 else -thickness / 2
+
+	local shiftSlice = curve:Slice(taperInStart, taperOutEnd)
+	if shiftSlice.Length > 1e-3 then
+		local changeRate = bayWidthStuds / math.max(taperLength, 1e-3)
+		local maxStepForTaper = if changeRate > 1e-3 then 0.4 / changeRate else 4
+		local maxStep = math.min(settings.MaxSegmentLengthStuds, 4, math.max(maxStepForTaper, MIN_STEP))
+		local shiftStations = buildStations(shiftSlice, maxStep, CHORD_TOLERANCE)
+		for i = 1, #shiftStations - 1 do
+			local s0 = taperInStart + shiftStations[i]
+			local s1 = taperInStart + shiftStations[i + 1]
+			local sMid = (s0 + s1) / 2
+			local midFrame = frameAt(sMid)
+			local innerOffset = kerbOffset + outward * bayWidthStuds * bayAlphaAt(sMid)
+			local centerOffset = innerOffset + outward * nearsideWidthStuds / 2
+			local nominalLength = s1 - s0
+			local edgeDistance = math.max(
+				math.abs(centerOffset - nearsideWidthStuds / 2),
+				math.abs(centerOffset + nearsideWidthStuds / 2)
+			)
+			local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
+			local partLength = nominalLength + miter + 0.08
+
+			local part = makePart(preview)
+			part.Name = nearsideKind
+			part.Material = MATERIAL_BY_KIND[nearsideKind] or Enum.Material.Concrete
+			part.Color = colorForKind(nearsideKind, style)
+			part.Size = Vector3.new(nearsideWidthStuds, nearsidePartHeight, partLength)
+			part.CFrame = midFrame * CFrame.new(centerOffset, nearsideCenterY, 0)
+			part.Parent = model
+		end
 	end
 
 	return model

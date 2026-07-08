@@ -26,20 +26,18 @@ local BusStops = require("./BusStops")
 
 -- Pie-menu state machine for a selected road:
 --   Menu         - top-level pills (Edit on Road Builder / Place More / ...)
---   SegmentMenu  - "Edit Road Segment" submenu (Add Bus Stop / Add Bus Bay /
---                  Edit Lane Markings / Back)
---   PlacingBusStop - click-to-place mode for a bus STOP marker (a decal/sign,
---                  no cross-section change): click a Sidewalk/Parking part
---                  on the selected road to add one, click an existing one to
---                  remove it, cancel-placement key returns to SegmentMenu.
---   PlacingBay   - click-to-place mode for a real bus BAY (a physical
---                  pull-in carved into the road's cross-section): click a
---                  point on the selected road to choose where.
---   ConfirmingBay - after a bay point is chosen, adjust its length/width
---                  (defaults: a standard dwell length, one lane's width)
---                  before committing the geometry rebuild.
+--   SegmentMenu  - "Edit Road Segment" submenu (Add Bus Bay / Edit Lane
+--                  Markings / Back). A standalone marker-only "Add Bus
+--                  Stop" mode used to live here too - removed since a real
+--                  bus bay already serves as a stop; BusStops.Render below
+--                  still re-renders any markers stamped before that change
+--                  so existing roads aren't affected.
+--   PlacingBay   - click-drag-to-draw mode for a real bus BAY (a physical
+--                  pull-in carved into the road's cross-section).
+--   ConfirmingBay - after a bay's drawn, adjust its length/width (defaults:
+--                  the dragged size) before committing the geometry rebuild.
 --   Designer     - the full RoadInspector designer
-type Mode = "Menu" | "SegmentMenu" | "PlacingBusStop" | "PlacingBay" | "ConfirmingBay" | "Designer"
+type Mode = "Menu" | "SegmentMenu" | "PlacingBay" | "ConfirmingBay" | "Designer"
 
 export type BayDraft = {
 	LengthStuds: number,
@@ -73,15 +71,11 @@ export type RoadEditSession = {
 	OpenEditor: () -> (),
 	GetAnchorWorldPosition: () -> Vector3?,
 	GetContinuation: () -> Continuation?,
-	-- "Edit Road Segment" second-level submenu (Add Bus Stop / Add Bus Bay /
-	-- Edit Lane Markings / Back).
+	-- "Edit Road Segment" second-level submenu (Add Bus Bay / Edit Lane
+	-- Markings / Back).
 	IsShowingSegmentMenu: () -> boolean,
 	OpenSegmentMenu: () -> (),
 	CloseSegmentMenu: () -> (),
-	-- Bus stop marker click-to-place mode.
-	IsPlacingBusStop: () -> boolean,
-	StartBusStopPlacement: () -> (),
-	StopBusStopPlacement: () -> (),
 	-- Real bus bay: click a point on the road, then adjust length/width.
 	IsPlacingBay: () -> boolean,
 	StartBayPlacement: () -> (),
@@ -107,7 +101,6 @@ local function createRoadEditSession(
 	local editingProfile: RoadProfile.RoadProfile? = nil -- Local staged clone of ProfileStart
 	local mode: Mode = "Menu"
 	local mouse = plugin:GetMouse()
-	local busStopConnections: { RBXScriptConnection } = {}
 	local bayConnections: { RBXScriptConnection } = {}
 	local bayStation: number? = nil -- Chosen placement station, set once the drag finishes
 	local bayDraft: BayDraft? = nil
@@ -116,42 +109,6 @@ local function createRoadEditSession(
 	local bayDragStartStation: number? = nil
 	local bayDragStartHit: Vector3? = nil
 	local bayGhost: Part? = nil
-
-	local function stopBusStopPlacement()
-		if mode ~= "PlacingBusStop" then
-			return
-		end
-		mode = "SegmentMenu"
-		plugin:Deactivate()
-		for _, connection in busStopConnections do
-			connection:Disconnect()
-		end
-		table.clear(busStopConnections)
-		changeSignal:Fire()
-	end
-
-	local function onBusStopClick()
-		if mode ~= "PlacingBusStop" or not selectedRoad then
-			return
-		end
-		-- Clicks on the pie menu's own "Done" pill must not also place/
-		-- remove a stop underneath it (same guard createRoadSession uses
-		-- for its HUD).
-		if uiState.Hovered then
-			return
-		end
-		local target = mouse.Target
-		if not target or not target:IsDescendantOf(selectedRoad) then
-			return
-		end
-		if BusStops.IsMarker(target) then
-			BusStops.RemoveNear(selectedRoad, mouse.Hit.Position, 3)
-			changeSignal:Fire()
-		elseif BusStops.IsEligibleTarget(target) then
-			BusStops.Add(selectedRoad, mouse.Hit.Position)
-			changeSignal:Fire()
-		end
-	end
 
 	-- Cancels either step of bay placement: before a drag is drawn
 	-- (PlacingBay, still listening for a click-drag) or after
@@ -286,10 +243,15 @@ local function createRoadEditSession(
 		if uiState.Hovered then
 			return
 		end
-		local target = mouse.Target
-		if not target or not target:IsDescendantOf(selectedRoad) then
-			return
-		end
+		-- Deliberately not requiring mouse.Target to land on the road itself -
+		-- the user is drawing a rectangle that starts on the road but is
+		-- dragged outward past its edge, and
+		-- a drag that starts a pixel off the road (baseplate showing
+		-- through a thin gap, camera angle grazing the edge, ...) used to
+		-- silently drop the whole gesture, since onBayDragMove/End already
+		-- only need bayDragStartStation to be set. ClosestS always finds
+		-- the nearest station on the curve regardless of what was actually
+		-- hit, so a click anywhere in the viewport near the road registers.
 		bayDragStartStation = originalData.Curve:ClosestS(mouse.Hit.Position)
 		bayDragStartHit = mouse.Hit.Position
 	end
@@ -337,9 +299,7 @@ local function createRoadEditSession(
 		if road == selectedRoad then
 			return
 		end
-		if mode == "PlacingBusStop" then
-			stopBusStopPlacement()
-		elseif mode == "PlacingBay" then
+		if mode == "PlacingBay" then
 			stopBayPlacement()
 		end
 		selectedRoad = road
@@ -359,9 +319,7 @@ local function createRoadEditSession(
 			if gameProcessed then
 				return
 			end
-			if mode == "PlacingBusStop" and Keybinds.Matches(settings.Keybinds.CancelPlacement, input) then
-				stopBusStopPlacement()
-			elseif
+			if
 				(mode == "PlacingBay" or mode == "ConfirmingBay")
 				and Keybinds.Matches(settings.Keybinds.CancelPlacement, input)
 			then
@@ -490,22 +448,6 @@ local function createRoadEditSession(
 		end
 	end
 
-	function session.IsPlacingBusStop(): boolean
-		return mode == "PlacingBusStop"
-	end
-
-	function session.StartBusStopPlacement()
-		if mode ~= "SegmentMenu" or not selectedRoad then
-			return
-		end
-		mode = "PlacingBusStop"
-		plugin:Activate(true)
-		table.insert(busStopConnections, mouse.Button1Down:Connect(onBusStopClick))
-		changeSignal:Fire()
-	end
-
-	session.StopBusStopPlacement = stopBusStopPlacement
-
 	function session.IsPlacingBay(): boolean
 		return mode == "PlacingBay"
 	end
@@ -611,13 +553,9 @@ local function createRoadEditSession(
 	end
 
 	function session.Destroy()
-		if mode == "PlacingBusStop" or mode == "PlacingBay" then
+		if mode == "PlacingBay" then
 			plugin:Deactivate()
 		end
-		for _, connection in busStopConnections do
-			connection:Disconnect()
-		end
-		table.clear(busStopConnections)
 		for _, connection in bayConnections do
 			connection:Disconnect()
 		end

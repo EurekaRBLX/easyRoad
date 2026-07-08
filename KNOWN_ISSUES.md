@@ -26,3 +26,16 @@ internal planning only. See `TODO.md` for planned new features and
   footprint of each panel, not the bounding box of a Frame that merely
   contains them - the two aren't always the same, especially once a layout
   has panels of different heights/widths grouped under one wrapper.
+- **Bus bay's displaced pavement doesn't drag its own kerb-restriction line
+  marking along with it.** `BuildWithBay`'s nearside-pavement overlay (see
+  `SHIPPED.md`) correctly moves the physical sidewalk/verge Parts outward
+  over the bay's footprint, but `Markings.Compute` (called once per
+  RoadBuilder.Build slice) still computes any kerb-restriction line
+  (single/double yellow no-stopping line) from the *unmodified* profile's
+  component offsets, since the exclusion only affects which Parts get
+  built, not the marking pass. If a road's `KerbRestriction` is set, its
+  line will stay at the original kerb position through the bay's range
+  instead of following the bulge outward. Scoped out of this round's fix
+  (which focused on eliminating the pavement overlap and the drag
+  reliability bug) - would need the marking pass to accept the same
+  per-station offset override the pavement overlay uses.

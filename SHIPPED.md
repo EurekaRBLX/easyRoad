@@ -4,6 +4,45 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Bus bay overlap, drag reliability, bus stop consolidation
+
+- **Fixed the bus bay overlapping the nearside pavement.** `BuildWithBay`
+  previously overlaid the bay's asphalt outward of the kerb but never
+  moved the sidewalk, which the base build still rendered at its original
+  (raised) position - the two occupied the same footprint, so the raised
+  sidewalk visibly floated above/through the new low bay asphalt.
+  `RoadBuilder.Build` gained `ExcludeComponentIndices` (skips deck-strip
+  Parts for specific component indices without touching anything else);
+  `BuildWithBay` now builds the road in three pieces (normal / bay-
+  affected with the nearside component excluded / normal) and overlays a
+  new chain of small strips for the displaced pavement, its inner edge
+  following the exact same straight-line ramp as the bay's own
+  `FillTriangle` taper edge - the two boundaries are the same line by
+  construction, so there's no gap and no overlap. See `KNOWN_ISSUES.md`
+  for a remaining gap (kerb-restriction line markings don't follow the
+  bulge yet).
+- **Fixed bay drag placement registering unreliably** ("sometimes it just
+  doesn't do anything"). `onBayDragBegin` required `mouse.Target` to land
+  on the road itself to start the drag, but `onBayDragMove`/`onBayDragEnd`
+  never had that requirement - a drag that started a pixel off the road's
+  edge (baseplate showing through a thin gap, a grazing camera angle)
+  silently failed to register at all, with no ghost, no feedback, nothing.
+  Removed the requirement; the drag now always registers off
+  `ClosestS(mouse.Hit.Position)` regardless of what was actually hit,
+  matching how the rest of the gesture already worked.
+- **Removed the standalone "Add Bus Stop" marker feature.** Per user
+  feedback, a real bus bay already serves as a stop, so a separate
+  marker-only mode was redundant. Removed the button, `PlacingBusStop`
+  mode, and its click handler from `RoadEditSession`/`main.lua`; kept
+  `BusStops.Render` in the Apply/ConfirmBay rebuild paths so any markers
+  placed before this change keep rendering correctly - no data loss for
+  existing roads, just no way to add new ones.
+- **Hid "Add Bus Bay" for Highway-category roads** - real highways don't
+  have bus bays, per user feedback ("not up to code").
+- Not verified in a live Studio session (this environment can't render
+  Studio) - the bay/pavement geometry fix in particular is substantial new
+  slicing logic and warrants real testing.
+
 ## Icon-based category tabs
 
 - **Category tabs (Streets/Avenues/Highways/Paths/Custom) are now live 3D
