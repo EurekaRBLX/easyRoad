@@ -4,6 +4,63 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Fixed road placement, centerline-anchored curves, trapezoid bay, drag-to-draw bay
+
+- **Critical: road placement was completely broken by last round's two-panel
+  split.** `bottomFrameProps` for the Road Tools HUD wraps both new panels
+  in one shared 612x430 box, and the generic hover-tracking `MouseEnter`/
+  `MouseLeave` handlers were attached to that *whole* box - but the two
+  actual panels only fill small corners of it (Road Library is 170px tall
+  inside a 430px-tall column), leaving a large transparent dead zone in the
+  lower-center of the screen that still counted as "hovering the HUD". That
+  dead zone sits right where placement clicks land, so `uiState.Hovered`
+  stayed `true` and `createRoadSession.onClick`'s "don't place through the
+  HUD" guard silently swallowed essentially every placement click - the
+  same class of bug as the earlier pie-menu full-screen hover trap, just
+  reintroduced in a new spot. Fixed by tracking hover on the two inner
+  panels (`ToolMode`/`RoadLibrary` frames) independently and OR-ing them
+  into `uiState.Hovered`, instead of on their shared outer wrapper.
+- **Reverted curve deck strips to centerline-anchored, removed
+  `Settings.CurveAlignment` (Center/Inside/Outside) entirely.** The
+  Inside/Outside anchored-edge construction (built two rounds ago) anchored
+  one edge of each strip exactly to the curve while approximating the
+  other - which turned out to be the actual cause of a reported "drift"
+  where the road's visual centerline wandered off the originally-clicked
+  path on sustained curves, since only one edge (never the centerline)
+  tracked the true path. Combined with continuing wedge artifacts and holes
+  under that scheme, reverted entirely rather than patched further: every
+  deck strip is now always centered on the curve's true midpoint frame for
+  its own interval (`curve:FrameAt(sMid, rollMid)`), both edges padded via
+  the existing `curveMiterPad` formula. This can't drift, by construction -
+  the strip's center is always an exact point on the curve. Also removed
+  `WEDGE_GAP_THRESHOLD_STUDS` and the conditional wedge-fill path that went
+  with the anchored-edge scheme.
+- **Bus bay is now an actual trapezoid**, not a taper built from the general
+  widen/narrow staircase-of-rectangles machinery. `RoadBuilder.BuildWithBay`
+  no longer slices the curve into 5 sub-builds and threads a `Bay` profile
+  component through the transition system (removed `RoadProfile.WithBay`
+  entirely) - it now builds the base road normally with one plain `Build()`
+  call, then overlays the bay as its own exact geometry: a flat rectangular
+  "dwell" section at full bay width, plus one `FillTriangle` call at each
+  end for the taper. Each taper is provably a single triangle, not a full
+  quadrilateral - the narrow end of any taper has zero width by definition,
+  so there's exactly one "pinch point", fillable exactly instead of
+  approximated.
+- **Bay placement is click-and-drag, not click-then-type.** Previously,
+  clicking a single point on the road immediately committed a
+  default-sized bay, with no way to see or adjust it before it existed.
+  Now `RoadEditSession` tracks a `Button1Down` → `Move` → `Button1Up` drag:
+  a live translucent ghost part shows the bay's footprint (length along the
+  road, width from the kerb) while dragging, sized/positioned exactly like
+  `BuildWithBay`'s own geometry, and releasing the drag hands off to the
+  existing length/width fine-tune panel (`BayDraftPanel.lua`) before
+  Add Bay commits it - matching how the user actually wants to draw a real
+  bay's footprint by hand.
+- Not verified in a live Studio session (this environment can't render
+  Studio) - all four changes above are logic/geometry fixes that need real
+  in-Studio testing, especially the placement-click fix given how critical
+  it is.
+
 ## Two separate CS2-style boxes: Tool Mode + Road Library
 
 - **Split into two independent floating panels side by side**, not one

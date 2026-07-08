@@ -109,8 +109,13 @@ local function createRoadEditSession(
 	local mouse = plugin:GetMouse()
 	local busStopConnections: { RBXScriptConnection } = {}
 	local bayConnections: { RBXScriptConnection } = {}
-	local bayStation: number? = nil -- Chosen point along the curve, set by StartBayPlacement's click
+	local bayStation: number? = nil -- Chosen placement station, set once the drag finishes
 	local bayDraft: BayDraft? = nil
+	-- Click-drag-to-draw state: set on mouse down, cleared once the drag
+	-- finishes (mouse up) or is cancelled.
+	local bayDragStartStation: number? = nil
+	local bayDragStartHit: Vector3? = nil
+	local bayGhost: Part? = nil
 
 	local function stopBusStopPlacement()
 		if mode ~= "PlacingBusStop" then
@@ -148,10 +153,10 @@ local function createRoadEditSession(
 		end
 	end
 
-	-- Cancels either step of bay placement: before a point is chosen
-	-- (PlacingBay, still listening for a click) or after (ConfirmingBay,
-	-- adjusting length/width) - both just return to SegmentMenu with
-	-- nothing committed.
+	-- Cancels either step of bay placement: before a drag is drawn
+	-- (PlacingBay, still listening for a click-drag) or after
+	-- (ConfirmingBay, adjusting length/width) - both just return to
+	-- SegmentMenu with nothing committed.
 	local function stopBayPlacement()
 		if mode ~= "PlacingBay" and mode ~= "ConfirmingBay" then
 			return
@@ -163,6 +168,11 @@ local function createRoadEditSession(
 			connection:Disconnect()
 		end
 		table.clear(bayConnections)
+		if bayGhost then
+			bayGhost:Destroy()
+			bayGhost = nil
+		end
+		bayDragStartStation = nil
 		bayStation = nil
 		bayDraft = nil
 		mode = "SegmentMenu"
@@ -170,9 +180,9 @@ local function createRoadEditSession(
 	end
 
 	-- Default width is a lane's width (the road's own first Drive component
-	-- if it has one, else the region's default), default length is a
-	-- standard dwell length - both adjustable in the ConfirmingBay step,
-	-- and pressing Enter/confirming immediately accepts these as-is.
+	-- if it has one, else the region's default) - only used as a fallback
+	-- if a click without dragging skips straight to confirming (Enter
+	-- immediately accepts it, per the "press Enter to skip" ask).
 	local function defaultBayDraft(): BayDraft
 		local scale = settings.MetersToStuds
 		local laneWidthM = getStyle().DefaultLaneWidthM
@@ -190,7 +200,86 @@ local function createRoadEditSession(
 		}
 	end
 
-	local function onBayPointClick()
+	-- Turns a drag from (startStation, startHit) to the current mouse hit
+	-- into a length (along the road) / width (perpendicular, away from the
+	-- start point - the user drags outward from the sidewalk) pair. The
+	-- station midpoint between the drag's two ends is the bay's placement
+	-- station.
+	local function bayDraftFromDrag(
+		startStation: number,
+		startHit: Vector3,
+		currentStation: number,
+		currentHit: Vector3
+	): BayDraft
+		local lengthStuds = math.abs(currentStation - startStation)
+		local frame = (originalData :: RoadInstance.RoadData).Curve:FrameAt(startStation)
+		local widthStuds = math.abs((currentHit - startHit):Dot(frame.RightVector))
+		local scale = settings.MetersToStuds
+		return {
+			LengthStuds = math.max(lengthStuds, 1),
+			WidthM = math.max(widthStuds / scale, 0.5),
+		}
+	end
+
+	local function updateBayGhost(startStation: number, currentStation: number, widthM: number)
+		if not selectedRoad or not originalData then
+			return
+		end
+		local curve = originalData.Curve
+		local s0 = math.min(startStation, currentStation)
+		local s1 = math.max(startStation, currentStation)
+		if s1 - s0 < 1e-3 then
+			if bayGhost then
+				bayGhost.Size = Vector3.new(0, 0, 0)
+			end
+			return
+		end
+		local scale = settings.MetersToStuds
+		local widthStuds = math.max(widthM * scale, 0.1)
+		local style = getStyle()
+		local outward = if style.DriveOnLeft then -1 else 1
+		local offsets = RoadProfile.ComponentOffsetsM(editingProfile or originalData.ProfileStart)
+		local kerbOffsetM = if style.DriveOnLeft
+			then (if offsets[1] then offsets[1].Right else 0)
+			else (if offsets[#offsets] then offsets[#offsets].Left else 0)
+		local kerbOffset = kerbOffsetM * scale
+		local outerOffset = kerbOffset + outward * widthStuds
+		local frameA = curve:FrameAt(s0)
+		local frameB = curve:FrameAt(s1)
+		local centerOffset = (kerbOffset + outerOffset) / 2
+		local pA = (frameA * CFrame.new(centerOffset, 0.1, 0)).Position
+		local pB = (frameB * CFrame.new(centerOffset, 0.1, 0)).Position
+		local segLength = (pB - pA).Magnitude
+		if segLength < 1e-3 then
+			return
+		end
+		if not bayGhost then
+			local ghost = Instance.new("Part")
+			ghost.Name = "EasyRoadBayGhost"
+			ghost.Anchored = true
+			ghost.CanCollide = false
+			ghost.CanQuery = false
+			ghost.CanTouch = false
+			ghost.CastShadow = false
+			ghost.Material = Enum.Material.Neon
+			ghost.Color = style.BayColor
+			ghost.Transparency = 0.4
+			ghost.Parent = workspace
+			bayGhost = ghost
+		end
+		local ghost = bayGhost :: Part
+		ghost.Color = style.BayColor
+		ghost.Size = Vector3.new(widthStuds, 0.2, segLength)
+		ghost.CFrame = CFrame.lookAt((pA + pB) / 2, pB, frameA.UpVector)
+	end
+
+	-- Click-drag-to-draw: mouse down on the road starts the drag (recording
+	-- where along the curve and how far laterally); moving the mouse while
+	-- held updates a live ghost indicator; releasing finishes the drag and
+	-- moves to ConfirmingBay with the dragged length/width as the initial
+	-- draft (still adjustable there, and pressing Enter/Add Bay immediately
+	-- accepts it as-is).
+	local function onBayDragBegin()
 		if mode ~= "PlacingBay" or not selectedRoad or not originalData then
 			return
 		end
@@ -201,8 +290,33 @@ local function createRoadEditSession(
 		if not target or not target:IsDescendantOf(selectedRoad) then
 			return
 		end
-		bayStation = originalData.Curve:ClosestS(mouse.Hit.Position)
-		bayDraft = defaultBayDraft()
+		bayDragStartStation = originalData.Curve:ClosestS(mouse.Hit.Position)
+		bayDragStartHit = mouse.Hit.Position
+	end
+
+	local function onBayDragMove()
+		if mode ~= "PlacingBay" or not bayDragStartStation or not bayDragStartHit or not originalData then
+			return
+		end
+		local currentStation = originalData.Curve:ClosestS(mouse.Hit.Position)
+		local draft = bayDraftFromDrag(bayDragStartStation, bayDragStartHit, currentStation, mouse.Hit.Position)
+		updateBayGhost(bayDragStartStation, currentStation, draft.WidthM)
+	end
+
+	local function onBayDragEnd()
+		if mode ~= "PlacingBay" or not bayDragStartStation or not bayDragStartHit or not originalData then
+			return
+		end
+		local currentStation = originalData.Curve:ClosestS(mouse.Hit.Position)
+		local draft = bayDraftFromDrag(bayDragStartStation, bayDragStartHit, currentStation, mouse.Hit.Position)
+		bayStation = (bayDragStartStation + currentStation) / 2
+		bayDraft = draft
+		bayDragStartStation = nil
+		bayDragStartHit = nil
+		if bayGhost then
+			bayGhost:Destroy()
+			bayGhost = nil
+		end
 		for _, connection in bayConnections do
 			connection:Disconnect()
 		end
@@ -402,7 +516,9 @@ local function createRoadEditSession(
 		end
 		mode = "PlacingBay"
 		plugin:Activate(true)
-		table.insert(bayConnections, mouse.Button1Down:Connect(onBayPointClick))
+		table.insert(bayConnections, mouse.Button1Down:Connect(onBayDragBegin))
+		table.insert(bayConnections, mouse.Move:Connect(onBayDragMove))
+		table.insert(bayConnections, mouse.Button1Up:Connect(onBayDragEnd))
 		changeSignal:Fire()
 	end
 
@@ -506,6 +622,10 @@ local function createRoadEditSession(
 			connection:Disconnect()
 		end
 		table.clear(bayConnections)
+		if bayGhost then
+			bayGhost:Destroy()
+			bayGhost = nil
+		end
 		for _, connection in connections do
 			connection:Disconnect()
 		end

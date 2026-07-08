@@ -4,23 +4,25 @@ Confirmed bugs that are logged but not yet fixed. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `SHIPPED.md` for what's already been fixed/built.
 
-- **Narrowing (transition) lane algorithm - re-check after two rounds of
-  fixes now.** User-reported (with screenshots, twice) that a widen/narrow
-  transition looked wrong. Round 1 fixed a real slope discontinuity in
-  `transitionAlpha` (flat-then-linear-ramp kink) and tightened station
-  spacing on steep tapers. Round 2 found a second, likely bigger cause:
-  `farEdgePad` (a same-round addition meant to widen deck strips on their
-  far edge to avoid needing curve-joint wedges) reused the `curveMiterPad`
-  length-defect formula reinterpreted as a *width* pad - a formula derived
-  specifically for length padding, not width, and it visibly over-widened
-  strips into a sawtooth/serrated edge instead of fixing anything ("with
-  the new road generation algorithm we are probably worse off" - the
-  user's words). `farEdgePad` has been removed entirely; strips are back to
-  their plain exact anchored width, with wedges only at joints whose real
-  residual gap exceeds `WEDGE_GAP_THRESHOLD_STUDS` (unaffected by the
-  removal, since it measures the raw gap, not the padding). Not verified
-  in a live Studio session (this environment can't render Studio) - leaving
-  this entry open until confirmed. If gaps (as opposed to serration) are
-  still visible after this fix, the likely next step is the fully exact
-  wedge-trapezoid taper already specified in `TODO.md`, since each transition
-  strip is still a constant-width rectangle for its own length.
+- **Curve rendering - deck strips reverted to centerline-anchored, still
+  unverified live.** After `farEdgePad` was removed (previous round) and
+  the Inside/Outside anchored-edge scheme was removed (this round, see
+  `SHIPPED.md`), curved deck strips are back to the original
+  centerline-symmetric construction: every strip is centered on the curve's
+  true midpoint frame for its own interval, both edges padded via
+  `curveMiterPad`. This is the simplest scheme in the codebase's history
+  and can't drift by construction, but has not been checked in a live
+  Studio session (this environment can't render Studio) - leaving this
+  entry open until a user confirms curves render cleanly (no gaps, no
+  sawtooth, no drift) with real testing. If gaps are still visible, the
+  likely next step is the fully exact wedge-trapezoid taper already
+  specified in `TODO.md`, since each transition strip is still a
+  constant-width rectangle for its own length.
+- **Road placement click-swallowing - fixed this round, but this is the
+  second time a variant of this exact bug has shipped** (see the pie-menu
+  full-screen hover trap, and now the two-panel Road Tools HUD's oversized
+  shared wrapper - both in `SHIPPED.md`). Any future HUD layout change
+  needs its hover-tracking scope checked explicitly against the *visible*
+  footprint of each panel, not the bounding box of a Frame that merely
+  contains them - the two aren't always the same, especially once a layout
+  has panels of different heights/widths grouped under one wrapper.

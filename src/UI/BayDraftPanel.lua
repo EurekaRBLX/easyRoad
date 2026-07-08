@@ -44,7 +44,7 @@ local function BayDraftPanel(props: {
 		Unit = e(Components.Label, { Text = "meters", Dim = true, LayoutOrder = 3 }),
 	})
 	children.Hint = e(Components.Label, {
-		Text = "Defaults to a lane's width - press Enter to accept, or Add Bay above.",
+		Text = "From your drag - fine-tune here, or Add Bay above to accept as-is.",
 		Dim = true,
 		LayoutOrder = 4,
 	})

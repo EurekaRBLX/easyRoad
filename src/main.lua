@@ -67,6 +67,14 @@ return function(
 
 	-- Shared with the session so HUD clicks don't also place road points
 	local uiState: createRoadSession.UiState = { Hovered = false }
+	-- The Road Tools bottom HUD is two separate small panels (see the
+	-- "session" branch below), not one panel filling its whole shared
+	-- wrapper - hover is tracked per-panel and OR'd together so that the
+	-- large transparent dead space around them (e.g. above the shorter
+	-- Road Library box) doesn't count as "hovering the HUD" and swallow
+	-- viewport clicks meant for road placement.
+	local toolModeHovered = false
+	local roadLibraryHovered = false
 
 	local regionalRoot: ReactRoblox.RootType? = nil
 	local keybindsRoot: ReactRoblox.RootType? = nil
@@ -130,6 +138,8 @@ return function(
 			sessionChangedCn = nil
 		end
 		uiState.Hovered = false
+		toolModeHovered = false
+		roadLibraryHovered = false
 	end
 
 	-- profileOverride/seed power the pie menu's "Place More" action: continue
@@ -250,6 +260,10 @@ return function(
 		-- panel, or the placed-road designer for the current selection.
 		local bottomContent: any = nil
 		local bottomFrameProps: { [string]: any } = nil :: any
+		-- Set true by the "session" branch, whose bottomContent is two
+		-- separately-hover-tracked panels instead of one Frame filling the
+		-- whole wrapper - see toolModeHovered/roadLibraryHovered above.
+		local skipGenericHover = false
 		if designProfile then
 			local editing = designProfile :: RoadProfile.RoadProfile
 			local actions: { RoadDesigner.DesignerAction } = {
@@ -302,9 +316,7 @@ return function(
 				Profile = editing,
 				RegionStyle = getStyle(),
 				Settings = settings,
-				Subtitle = if editing.BuiltIn
-					then "Built-in template — saving creates an editable copy."
-					else nil,
+				Subtitle = if editing.BuiltIn then "Built-in template — saving creates an editable copy." else nil,
 				Picker = {
 					Options = pickerOptions,
 					SelectedId = if library.Get(editing.Id) then editing.Id else nil,
@@ -358,12 +370,21 @@ return function(
 			-- bottom-aligned within a shared invisible wrapper so
 			-- hover-tracking (below) stays scoped to roughly their combined
 			-- visible footprint instead of the whole screen.
+			skipGenericHover = true
 			bottomContent = React.createElement(React.Fragment, nil, {
 				ToolMode = React.createElement("Frame", {
 					AnchorPoint = Vector2.new(0, 1),
 					Position = UDim2.new(0, 0, 1, 0),
 					Size = UDim2.new(0, 260, 0, 430),
 					BackgroundTransparency = 1,
+					[React.Event.MouseEnter] = function()
+						toolModeHovered = true
+						uiState.Hovered = true
+					end,
+					[React.Event.MouseLeave] = function()
+						toolModeHovered = false
+						uiState.Hovered = roadLibraryHovered
+					end,
 				}, {
 					Inner = React.createElement(BuildBar, {
 						ToolMode = currentSession.GetToolMode(),
@@ -402,6 +423,14 @@ return function(
 					Position = UDim2.new(1, 0, 1, 0),
 					Size = UDim2.new(0, 340, 0, 170),
 					BackgroundTransparency = 1,
+					[React.Event.MouseEnter] = function()
+						roadLibraryHovered = true
+						uiState.Hovered = true
+					end,
+					[React.Event.MouseLeave] = function()
+						roadLibraryHovered = false
+						uiState.Hovered = toolModeHovered
+					end,
 				}, {
 					Inner = React.createElement(RoadLibraryPanel, {
 						Library = library,
@@ -465,11 +494,13 @@ return function(
 				bottomRoot = ReactRoblox.createRoot(screen)
 			end
 			bottomFrameProps.BackgroundTransparency = 1
-			bottomFrameProps[React.Event.MouseEnter] = function()
-				uiState.Hovered = true
-			end
-			bottomFrameProps[React.Event.MouseLeave] = function()
-				uiState.Hovered = false
+			if not skipGenericHover then
+				bottomFrameProps[React.Event.MouseEnter] = function()
+					uiState.Hovered = true
+				end
+				bottomFrameProps[React.Event.MouseLeave] = function()
+					uiState.Hovered = false
+				end
 			end
 			assert(bottomRoot):render(React.createElement("Frame", bottomFrameProps, {
 				Gui = bottomContent,
@@ -626,7 +657,7 @@ return function(
 						WorldPosition = anchor,
 						SetGlobalHover = setGlobalHover,
 						Bottom = {
-							Text = "Click a point on the road for the bus bay (Esc to cancel)",
+							Text = "Click and drag along the road to draw the bus bay (Esc to cancel)",
 							OnClick = function()
 								editSession.CancelBayPlacement()
 							end,

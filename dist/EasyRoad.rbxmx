@@ -1264,11 +1264,6 @@ local PREVIEW_CHORD_TOLERANCE = 0.35
 local MIN_STEP = 0.75
 local MAX_TURN_PER_STEP = 0.3 -- Radians of heading change allowed per strip
 local RUNOFF_LENGTH_STUDS = 40 -- Superelevation smoothing window
--- A joint's residual (non-anchor) gap only gets an actual wedge part when it's
--- bigger than this - below it, simply widening the strips on their far side
--- (see farEdgePad below) already hides the defect, so most curves need no
--- wedge at all, only genuinely sharp turns / high-superelevation joints do.
-local WEDGE_GAP_THRESHOLD_STUDS = 0.5
 
 local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
 	Drive = Enum.Material.Asphalt,
@@ -1318,7 +1313,12 @@ end
 -- they anchor both of their own endpoints directly to true curve
 -- positions instead (see placeMarkingSpan), which closes joints exactly
 -- rather than approximating.
-local function curveMiterPad(curve: PolyCurve.PolyCurve, sMid: number, lateralOffset: number, nominalLength: number): number
+local function curveMiterPad(
+	curve: PolyCurve.PolyCurve,
+	sMid: number,
+	lateralOffset: number,
+	nominalLength: number
+): number
 	local k = math.abs(curve:CurvatureAt(sMid))
 	if k &lt; 1e-6 then
 		return 0
@@ -1343,11 +1343,7 @@ end
 
 -- Build the list of sample stations (distances along the curve). Adaptive:
 -- steps shrink where curvature is high so strips follow the curve closely.
-local function buildStations(
-	curve: PolyCurve.PolyCurve,
-	maxStep: number,
-	tolerance: number
-): { number }
+local function buildStations(curve: PolyCurve.PolyCurve, maxStep: number, tolerance: number): { number }
 	local stations = { 0 }
 	local s = 0
 	local length = curve.Length
@@ -1386,8 +1382,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	local componentsStart: { RoadProfile.ProfileComponent }
 	local componentsEnd: { RoadProfile.ProfileComponent }
 	if options.ProfileEnd and options.ProfileEnd.Id ~= options.ProfileStart.Id then
-		componentsStart, componentsEnd = RoadProfile.MatchForTransition(
-			options.ProfileStart, options.ProfileEnd)
+		componentsStart, componentsEnd = RoadProfile.MatchForTransition(options.ProfileStart, options.ProfileEnd)
 	else
 		componentsStart = options.ProfileStart.Components
 		componentsEnd = options.ProfileStart.Components
@@ -1445,7 +1440,8 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		-- small enough to read as a smooth line instead of a staircase even
 		-- on a short, steep taper.
 		local widthDeltaStuds = math.abs(
-			RoadProfile.TotalWidthM(options.ProfileStart) - RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
+			RoadProfile.TotalWidthM(options.ProfileStart)
+				- RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
 		) * scale
 		local changeRate = if taperLength &gt; 1e-3 then widthDeltaStuds / taperLength else 0
 		local maxStepForTaper = if changeRate &gt; 1e-3 then 0.4 / changeRate else 4
@@ -1511,231 +1507,82 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	end
 
 	-- Deck strips ---------------------------------------------------------------
-	-- CurveAlignment picks which reference each strip is built from, same
-	-- concept as the Archimedes plugin's Center/Inside/Outside path
-	-- alignment:
-	--   Center (anchorSign = 0)  - today's original approach: each strip is
-	--     centered on the tangent frame at its own interval midpoint, both
-	--     edges are approximate, padded via curveMiterPad to mostly close
-	--     the gap on either side.
-	--   Inside/Outside (anchorSign = -1 / +1) - each strip's anchor edge
-	--     (left for Inside, right for Outside) is built directly from the
-	--     TRUE curve position at both of its station endpoints - since
-	--     adjacent intervals share the exact same station point (the same
-	--     cached `frames[i]` entry, not recomputed), that edge is gap-free
-	--     by construction, no padding approximation needed. Only the
-	--     opposite (residual) edge can still show a gap, closed exactly
-	--     with FillTriangle.lua instead of approximated.
-	local anchorSign = if settings.CurveAlignment == "Inside" then -1
-		elseif settings.CurveAlignment == "Outside" then 1
-		else 0
+	-- Always centerline-symmetric: each strip is centered on the tangent
+	-- frame at its own interval's true midpoint (an exact point on the
+	-- curve, not an approximation), both edges padded via curveMiterPad to
+	-- close the resulting curve gap. This was previously an "Inside"/
+	-- "Outside" anchored-edge alternative (deliberately keeping one lane
+	-- edge exact via a shared station point, closing the other edge's
+	-- residual gap with an exact FillTriangle wedge) - removed after this
+	-- didn't hold up in practice: the far/residual edge's fixes
+	-- (width-padding, then a curvature-gated wedge) kept trading one
+	-- visible defect for another (sawtooth, then still-visible gaps), and
+	-- anchoring a single edge instead of the centerline is what made the
+	-- whole road visually drift off the clicked path on a sustained curve
+	-- - by definition, only one edge tracked the true path exactly, so a
+	-- wide cross-section's centerline (what the user actually clicked)
+	-- could wander from it. Centerline-anchoring avoids that entirely:
+	-- every strip's own center is placed directly on the curve, so the
+	-- road can never drift from the path regardless of curve length or
+	-- cross-section width. No FillTriangle wedges are used for curve
+	-- joints any more - see BuildWithBay below for where wedges are still
+	-- useful (an actually-abrupt shape, not a curve-following one).
+	for i = 1, stationCount - 1 do
+		local s0 = stations[i]
+		local s1 = stations[i + 1]
+		local sMid = (s0 + s1) / 2
+		local rollMid = (rolls[i] + rolls[i + 1]) / 2
+		local midFrame = curve:FrameAt(sMid, rollMid)
 
-	if anchorSign == 0 then
-		for i = 1, stationCount - 1 do
-			local s0 = stations[i]
-			local s1 = stations[i + 1]
-			local sMid = (s0 + s1) / 2
-			local rollMid = (rolls[i] + rolls[i + 1]) / 2
-			local midFrame = curve:FrameAt(sMid, rollMid)
-
-			-- Guard against degenerate geometry (folded curves / cusps):
-			-- skip intervals where the heading reverses or the frame went
-			-- non-finite rather than emitting strips fanned across the fold.
-			local headingDot = frames[i].LookVector:Dot(frames[i + 1].LookVector)
-			local midPos = midFrame.Position
-			if headingDot &lt; 0 or midPos.X ~= midPos.X or midPos.Y ~= midPos.Y or midPos.Z ~= midPos.Z then
-				continue
-			end
-
-			-- The nominal span is the arc length (s1 - s0), not the
-			-- straight chord between frame positions - chord is always
-			-- &lt;= arc length on a curve, so sizing off it alone under-covers
-			-- even the centerline before any lateral miter padding.
-			local nominalLength = s1 - s0
-
-			for c = 1, componentCount do
-				local w0 = stationWidths[i][c]
-				local w1 = stationWidths[i + 1][c]
-				local width = (w0 + w1) / 2
-				if width &lt; 0.05 then
-					continue
-				end
-				local centerOffset = (
-					stationOffsets[i][c] + w0 / 2 +
-					stationOffsets[i + 1][c] + w1 / 2
-				) / 2
-
-				local kind = componentsStart[c].Kind
-				local raised = RoadProfile.IsRaised(kind)
-				local partHeight = if raised then thickness + curbHeight else thickness
-				-- Deck (roadway) top surface sits at frame level; raised
-				-- components (sidewalk/median) stand a curb height above
-				-- it. Alternating strips drop by a sub-visible epsilon so
-				-- overlapping neighbor strips never z-fight.
-				local centerY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2)
-					- (i % 2) * 0.004
-
-				local edgeDistance = math.max(math.abs(centerOffset - width / 2), math.abs(centerOffset + width / 2))
-				local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
-				local partLength = nominalLength + miter + 0.02
-
-				local part = makePart(preview)
-				part.Name = kind
-				part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
-				part.Color = colorForKind(kind, style)
-				part.Size = Vector3.new(width, partHeight, partLength)
-				part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
-				part.Parent = model
-			end
-		end
-	else
-		-- Builds the CFrame for a strip spanning stationA to stationB,
-		-- anchored so that its anchorSign edge sits exactly on the true
-		-- curve position (offsetA/offsetB) at both ends - no padding, no
-		-- approximation. Returns nil if the span is degenerate.
-		local function anchoredStripCFrame(
-			stationA: number,
-			stationB: number,
-			offsetA: number,
-			offsetB: number,
-			topY: number,
-			width: number,
-			partHeight: number
-		): (CFrame?, number)
-			local p0 = (frames[stationA] * CFrame.new(offsetA, topY, 0)).Position
-			local p1 = (frames[stationB] * CFrame.new(offsetB, topY, 0)).Position
-			local segLength = (p1 - p0).Magnitude
-			if segLength &lt; 1e-4 then
-				return nil, 0
-			end
-			local forward = (p1 - p0).Unit
-			local up = frames[stationA].UpVector
-			local mid = (p0 + p1) / 2
-			local lookCF = CFrame.lookAt(mid, mid + forward, up)
-			local stripCF = lookCF * CFrame.new(-anchorSign * width / 2, -partHeight / 2, 0)
-			return stripCF, segLength
+		-- Guard against degenerate geometry (folded curves / cusps):
+		-- skip intervals where the heading reverses or the frame went
+		-- non-finite rather than emitting strips fanned across the fold.
+		local headingDot = frames[i].LookVector:Dot(frames[i + 1].LookVector)
+		local midPos = midFrame.Position
+		if headingDot &lt; 0 or midPos.X ~= midPos.X or midPos.Y ~= midPos.Y or midPos.Z ~= midPos.Z then
+			continue
 		end
 
-		local function anchorOffsetAt(stationIndex: number, c: number): number
-			if anchorSign &gt; 0 then
-				return stationOffsets[stationIndex][c] + stationWidths[stationIndex][c]
-			end
-			return stationOffsets[stationIndex][c]
-		end
+		-- The nominal span is the arc length (s1 - s0), not the
+		-- straight chord between frame positions - chord is always
+		-- &lt;= arc length on a curve, so sizing off it alone under-covers
+		-- even the centerline before any lateral miter padding.
+		local nominalLength = s1 - s0
 
-		-- NOTE: strips are built at their plain, exact anchored width, no
-		-- far-edge padding. An earlier version widened the far (non-anchor)
-		-- edge using curveMiterPad's r*k*L formula reinterpreted as a width
-		-- pad instead of a length pad - that formula was derived for length
-		-- padding specifically and doesn't carry over to width correctly,
-		-- and visibly over-widened strips into a sawtooth/serrated edge on
-		-- curves instead of fixing anything. Removed; the far edge's small
-		-- residual gap on gentle curves is left alone (imperceptible), and
-		-- only genuinely sharp joints get an exact FillTriangle wedge below.
-		for i = 1, stationCount - 1 do
-			local headingDot = frames[i].LookVector:Dot(frames[i + 1].LookVector)
-			if headingDot &lt; 0 then
+		for c = 1, componentCount do
+			local w0 = stationWidths[i][c]
+			local w1 = stationWidths[i + 1][c]
+			local width = (w0 + w1) / 2
+			if width &lt; 0.05 then
 				continue
 			end
+			local centerOffset = (stationOffsets[i][c] + w0 / 2 + stationOffsets[i + 1][c] + w1 / 2) / 2
 
-			for c = 1, componentCount do
-				local width = (stationWidths[i][c] + stationWidths[i + 1][c]) / 2
-				if width &lt; 0.05 then
-					continue
-				end
-				local kind = componentsStart[c].Kind
-				local raised = RoadProfile.IsRaised(kind)
-				local partHeight = if raised then thickness + curbHeight else thickness
-				local topY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2) + partHeight / 2
+			local kind = componentsStart[c].Kind
+			local raised = RoadProfile.IsRaised(kind)
+			local partHeight = if raised then thickness + curbHeight else thickness
+			-- Deck (roadway) top surface sits at frame level; raised
+			-- components (sidewalk/median) stand a curb height above
+			-- it. Alternating strips drop by a sub-visible epsilon so
+			-- overlapping neighbor strips never z-fight.
+			local centerY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2) - (i % 2) * 0.004
 
-				local stripCF, segLength =
-					anchoredStripCFrame(i, i + 1, anchorOffsetAt(i, c), anchorOffsetAt(i + 1, c), topY, width, partHeight)
-				if not stripCF then
-					continue
-				end
+			local edgeDistance = math.max(math.abs(centerOffset - width / 2), math.abs(centerOffset + width / 2))
+			local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
+			-- A slightly larger flat safety margin than before (was 0.02) -
+			-- uniform across every strip regardless of curvature, so it
+			-- can't reproduce the curvature-scaled sawtooth the old
+			-- far-edge pad caused; just a little extra overlap insurance
+			-- against any remaining sliver of a gap.
+			local partLength = nominalLength + miter + 0.08
 
-				local part = makePart(preview)
-				part.Name = kind
-				part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
-				part.Color = colorForKind(kind, style)
-				part.Size = Vector3.new(width, partHeight, segLength)
-				part.CFrame = stripCF
-				part.Parent = model
-			end
-		end
-
-		-- Curve joint fills: with the far edge now padded above, only
-		-- genuinely sharp turns or high-superelevation joints still leave a
-		-- gap big enough to need an actual wedge - everything gentler is
-		-- already covered by the widened strips, so most joints add no
-		-- extra part at all. Since the anchor edge is an exact shared point
-		-- at this joint (not two independent approximations like Center
-		-- mode has on both sides), any remaining gap is a single triangle,
-		-- not a quad.
-		for i = 2, stationCount - 1 do
-			local k = math.abs(curve:CurvatureAt(stations[i]))
-			if k &lt; 1e-6 then
-				continue
-			end
-			-- Same fold/cusp guard the strip-building loop uses - skip a
-			-- joint if either neighboring interval's heading reversed
-			-- (matches that interval having been skipped as a strip too).
-			if
-				frames[i - 1].LookVector:Dot(frames[i].LookVector) &lt; 0
-				or frames[i].LookVector:Dot(frames[i + 1].LookVector) &lt; 0
-			then
-				continue
-			end
-			local downVector = -frames[i].UpVector
-
-			for c = 1, componentCount do
-				local widthA = (stationWidths[i - 1][c] + stationWidths[i][c]) / 2
-				local widthB = (stationWidths[i][c] + stationWidths[i + 1][c]) / 2
-				if widthA &lt; 0.05 or widthB &lt; 0.05 then
-					continue
-				end
-				local kind = componentsStart[c].Kind
-				local raised = RoadProfile.IsRaised(kind)
-				local partHeight = if raised then thickness + curbHeight else thickness
-				local topY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2) + partHeight / 2
-
-				local anchorOffsetI = anchorOffsetAt(i, c)
-				local stripCFA, segLengthA = anchoredStripCFrame(
-					i - 1, i, anchorOffsetAt(i - 1, c), anchorOffsetI, topY, widthA, partHeight
-				)
-				local stripCFB, segLengthB = anchoredStripCFrame(
-					i, i + 1, anchorOffsetI, anchorOffsetAt(i + 1, c), topY, widthB, partHeight
-				)
-				if not stripCFA or not stripCFB then
-					continue
-				end
-
-				local anchorPoint = (frames[i] * CFrame.new(anchorOffsetI, topY, 0)).Position
-				local residualFarA =
-					(stripCFA * CFrame.new(-anchorSign * widthA / 2, partHeight / 2, segLengthA / 2)).Position
-				local residualNearB =
-					(stripCFB * CFrame.new(-anchorSign * widthB / 2, partHeight / 2, -segLengthB / 2)).Position
-
-				-- The far-side pad above already widens both strips towards
-				-- each other, so the true remaining defect is smaller than
-				-- the raw corner distance - only worth an actual wedge part
-				-- once it's still bigger than the padding could plausibly
-				-- absorb.
-				local gapDistance = (residualFarA - residualNearB).Magnitude
-				if gapDistance &lt; WEDGE_GAP_THRESHOLD_STUDS then
-					continue
-				end
-
-				local function makeWedgePart(): Part
-					local part = makePart(preview)
-					part.Name = kind
-					part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
-					part.Color = colorForKind(kind, style)
-					return part
-				end
-
-				FillTriangle(anchorPoint, residualFarA, residualNearB, partHeight, downVector, makeWedgePart, model)
-			end
+			local part = makePart(preview)
+			part.Name = kind
+			part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
+			part.Color = colorForKind(kind, style)
+			part.Size = Vector3.new(width, partHeight, partLength)
+			part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
+			part.Parent = model
 		end
 	end
 
@@ -1875,8 +1722,10 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		model:SetAttribute("RW_StartTan", curve:TangentAt(0))
 		model:SetAttribute("RW_EndTan", curve:TangentAt(length))
 		model:SetAttribute("RW_ProfileStartId", options.ProfileStart.Id)
-		model:SetAttribute("RW_ProfileEndId",
-			if options.ProfileEnd then options.ProfileEnd.Id else options.ProfileStart.Id)
+		model:SetAttribute(
+			"RW_ProfileEndId",
+			if options.ProfileEnd then options.ProfileEnd.Id else options.ProfileStart.Id
+		)
 	end
 
 	return model
@@ -1888,65 +1737,123 @@ export type BayPlacement = {
 	WidthM: number, -- Bay lane width in meters
 }
 
--- Builds a road with a bus/taxi bay carved into it at one point: a taper
--- in (normal profile -&gt; normal+Bay), a flat dwell at full bay width, and a
--- taper back out, stitched from 5 separate RoadBuilder.Build calls on
--- Curve:Slice() sub-ranges of the same curve - reusing the existing
--- widen/narrow taper machinery for the two tapers rather than inventing a
--- new one, since a bay taper and a widen/narrow taper are the same shape.
--- The bay doesn't combine with an options.ProfileEnd transition in this
--- version (bays are placed on already-built, non-transitioning roads).
+-- Builds the normal road, then adds a bus/taxi bay alongside it as extra
+-- geometry: a flat "dwell" rectangle at full bay width, and two exact
+-- trapezoid tapers (each really a triangle, since a taper's narrow end has
+-- zero width - one true pinch point) built with FillTriangle, closing the
+-- nearside kerb line from its normal offset out to the bay's offset and
+-- back. Deliberately NOT built by feeding a Bay-widened profile through
+-- the general widen/narrow transition machinery (RoadBuilder.Build): that
+-- chains many small constant-width rectangles together, which approximates
+-- a taper as a staircase rather than a single clean diagonal edge - fine
+-- for an ordinary lane width change, but a real bus bay is meant to read as
+-- an actual trapezoid. Since nothing about the rest of the cross-section
+-- changes width over the bay's range, the base road doesn't need slicing
+-- or re-profiling at all - only the bay's own strip needs new geometry.
 function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Model
 	local curve = options.Curve
 	local settings = options.Settings
+	local style = options.Style
 	local baseProfile = options.ProfileStart
+	local scale = settings.MetersToStuds
+	local thickness = settings.RoadThicknessStuds
+	local preview = options.Preview == true
 	local length = curve.Length
 
-	local model = Instance.new("Model")
-	model.Name = if options.Preview then "RoadPreview" else "Road"
+	local model = RoadBuilder.Build(options)
 	if length &lt; 1e-3 then
 		return model
 	end
 
-	local bayProfile = RoadProfile.WithBay(baseProfile, options.Style.DriveOnLeft, bay.WidthM)
-	local widthDeltaStuds = bay.WidthM * settings.MetersToStuds
-	local taperLength = math.clamp(widthDeltaStuds * 15, 20, math.max(bay.LengthStuds, 20))
+	-- Nearside kerb offset (studs from centerline): the edge a bus pulls
+	-- towards - left for LHT (UK-style), right for RHT (US-style). The bay
+	-- widens outward from here, away from the roadway.
+	local componentOffsetsM = RoadProfile.ComponentOffsetsM(baseProfile)
+	local totalWidthStuds = RoadProfile.TotalWidthM(baseProfile) * scale
+	local outward: number
+	local kerbOffset: number
+	if style.DriveOnLeft then
+		outward = -1
+		kerbOffset = if componentOffsetsM[1] then componentOffsetsM[1].Right * scale else -totalWidthStuds / 2
+	else
+		outward = 1
+		local n = #componentOffsetsM
+		kerbOffset = if componentOffsetsM[n] then componentOffsetsM[n].Left * scale else totalWidthStuds / 2
+	end
+	local bayWidthStuds = bay.WidthM * scale
+	local bayOffset = kerbOffset + outward * bayWidthStuds
 
 	local half = math.max(bay.LengthStuds, 0) / 2
 	local dwellStart = math.clamp(bay.StationStuds - half, 0, length)
 	local dwellEnd = math.clamp(bay.StationStuds + half, 0, length)
+	-- Taper length scales with how much width is being added, same
+	-- underlying idea as a widen/narrow taper, just a much shorter/steeper
+	-- default rate since a bay is a small local feature, not a highway-wide
+	-- lane change.
+	local taperLength = math.clamp(bayWidthStuds * 3, 8, math.max(bay.LengthStuds, 8))
 	local taperInStart = math.clamp(dwellStart - taperLength, 0, dwellStart)
 	local taperOutEnd = math.clamp(dwellEnd + taperLength, dwellEnd, length)
 
-	local function appendPiece(piece: Model)
-		for _, child in piece:GetChildren() do
-			child.Parent = model
-		end
-		piece:Destroy()
+	if taperOutEnd - taperInStart &lt; 1e-3 then
+		return model
 	end
 
-	local function buildRange(s0: number, s1: number, profileStart: RoadProfile.RoadProfile, profileEnd: RoadProfile.RoadProfile?)
-		if s1 - s0 &lt; 1e-3 then
-			return
-		end
-		appendPiece(RoadBuilder.Build({
-			Curve = curve:Slice(s0, s1),
-			ProfileStart = profileStart,
-			ProfileEnd = profileEnd,
-			Style = options.Style,
-			Settings = settings,
-			Preview = options.Preview,
-		}))
+	local partHeight = thickness
+
+	local function frameAt(s: number): CFrame
+		return curve:FrameAt(s, Superelevation.RollAt(curve:CurvatureAt(s), settings, style))
 	end
 
-	buildRange(0, taperInStart, baseProfile, nil)
-	buildRange(taperInStart, dwellStart, baseProfile, bayProfile)
-	buildRange(dwellStart, dwellEnd, bayProfile, nil)
-	buildRange(dwellEnd, taperOutEnd, bayProfile, baseProfile)
-	buildRange(taperOutEnd, length, baseProfile, nil)
+	-- Deck top surface (Y=0 in frame-local terms, matching every other
+	-- deck strip's convention) - FillTriangle expects top-surface points
+	-- and extrudes `partHeight` downward itself; the plain dwell rectangle
+	-- below shifts its own center down by partHeight/2 after using this.
+	local function posAt(s: number, offset: number): Vector3
+		return (frameAt(s) * CFrame.new(offset, 0, 0)).Position
+	end
 
-	if #curve.Segments == 1 then
-		RoadInstance.StampModel(model, curve.Segments[1], baseProfile, options.ProfileEnd)
+	local function makeBayPart(): Part
+		local part = makePart(preview)
+		part.Name = "Bay"
+		part.Material = Enum.Material.Asphalt
+		part.Color = style.BayColor
+		return part
+	end
+
+	-- Dwell: a plain flat strip at full bay width, anchored to true curve
+	-- positions at both ends exactly like the deck's other strips.
+	if dwellEnd - dwellStart &gt; 1e-3 then
+		local innerStart = posAt(dwellStart, kerbOffset)
+		local outerStart = posAt(dwellStart, bayOffset)
+		local innerEnd = posAt(dwellEnd, kerbOffset)
+		local outerEnd = posAt(dwellEnd, bayOffset)
+		local mid = (innerStart + outerStart + innerEnd + outerEnd) / 4
+		local forwardVec = (innerEnd + outerEnd) / 2 - (innerStart + outerStart) / 2
+		local segLength = forwardVec.Magnitude
+		if segLength &gt; 1e-3 then
+			local part = makeBayPart()
+			part.Size = Vector3.new(bayWidthStuds, partHeight, segLength)
+			part.CFrame = CFrame.lookAt(mid, mid + forwardVec.Unit, frameAt(dwellStart).UpVector)
+				* CFrame.new(0, -partHeight / 2, 0)
+			part.Parent = model
+		end
+	end
+
+	-- Tapers: each is a single triangle (the pinch point where bay width
+	-- is exactly zero, plus the two dwell-side corners) - the one place
+	-- FillTriangle's wedges are still used, since a taper here is a real
+	-- abrupt trapezoid shape to build exactly, not a curve to approximate.
+	if dwellStart - taperInStart &gt; 1e-3 then
+		local pinch = posAt(taperInStart, kerbOffset)
+		local innerAtDwell = posAt(dwellStart, kerbOffset)
+		local outerAtDwell = posAt(dwellStart, bayOffset)
+		FillTriangle(pinch, innerAtDwell, outerAtDwell, partHeight, -frameAt(dwellStart).UpVector, makeBayPart, model)
+	end
+	if taperOutEnd - dwellEnd &gt; 1e-3 then
+		local pinch = posAt(taperOutEnd, kerbOffset)
+		local innerAtDwell = posAt(dwellEnd, kerbOffset)
+		local outerAtDwell = posAt(dwellEnd, bayOffset)
+		FillTriangle(innerAtDwell, outerAtDwell, pinch, partHeight, -frameAt(dwellEnd).UpVector, makeBayPart, model)
 	end
 
 	return model
@@ -2646,8 +2553,13 @@ local function createRoadEditSession(
 	local mouse = plugin:GetMouse()
 	local busStopConnections: { RBXScriptConnection } = {}
 	local bayConnections: { RBXScriptConnection } = {}
-	local bayStation: number? = nil -- Chosen point along the curve, set by StartBayPlacement's click
+	local bayStation: number? = nil -- Chosen placement station, set once the drag finishes
 	local bayDraft: BayDraft? = nil
+	-- Click-drag-to-draw state: set on mouse down, cleared once the drag
+	-- finishes (mouse up) or is cancelled.
+	local bayDragStartStation: number? = nil
+	local bayDragStartHit: Vector3? = nil
+	local bayGhost: Part? = nil
 
 	local function stopBusStopPlacement()
 		if mode ~= "PlacingBusStop" then
@@ -2685,10 +2597,10 @@ local function createRoadEditSession(
 		end
 	end
 
-	-- Cancels either step of bay placement: before a point is chosen
-	-- (PlacingBay, still listening for a click) or after (ConfirmingBay,
-	-- adjusting length/width) - both just return to SegmentMenu with
-	-- nothing committed.
+	-- Cancels either step of bay placement: before a drag is drawn
+	-- (PlacingBay, still listening for a click-drag) or after
+	-- (ConfirmingBay, adjusting length/width) - both just return to
+	-- SegmentMenu with nothing committed.
 	local function stopBayPlacement()
 		if mode ~= "PlacingBay" and mode ~= "ConfirmingBay" then
 			return
@@ -2700,6 +2612,11 @@ local function createRoadEditSession(
 			connection:Disconnect()
 		end
 		table.clear(bayConnections)
+		if bayGhost then
+			bayGhost:Destroy()
+			bayGhost = nil
+		end
+		bayDragStartStation = nil
 		bayStation = nil
 		bayDraft = nil
 		mode = "SegmentMenu"
@@ -2707,9 +2624,9 @@ local function createRoadEditSession(
 	end
 
 	-- Default width is a lane's width (the road's own first Drive component
-	-- if it has one, else the region's default), default length is a
-	-- standard dwell length - both adjustable in the ConfirmingBay step,
-	-- and pressing Enter/confirming immediately accepts these as-is.
+	-- if it has one, else the region's default) - only used as a fallback
+	-- if a click without dragging skips straight to confirming (Enter
+	-- immediately accepts it, per the "press Enter to skip" ask).
 	local function defaultBayDraft(): BayDraft
 		local scale = settings.MetersToStuds
 		local laneWidthM = getStyle().DefaultLaneWidthM
@@ -2727,7 +2644,86 @@ local function createRoadEditSession(
 		}
 	end
 
-	local function onBayPointClick()
+	-- Turns a drag from (startStation, startHit) to the current mouse hit
+	-- into a length (along the road) / width (perpendicular, away from the
+	-- start point - the user drags outward from the sidewalk) pair. The
+	-- station midpoint between the drag's two ends is the bay's placement
+	-- station.
+	local function bayDraftFromDrag(
+		startStation: number,
+		startHit: Vector3,
+		currentStation: number,
+		currentHit: Vector3
+	): BayDraft
+		local lengthStuds = math.abs(currentStation - startStation)
+		local frame = (originalData :: RoadInstance.RoadData).Curve:FrameAt(startStation)
+		local widthStuds = math.abs((currentHit - startHit):Dot(frame.RightVector))
+		local scale = settings.MetersToStuds
+		return {
+			LengthStuds = math.max(lengthStuds, 1),
+			WidthM = math.max(widthStuds / scale, 0.5),
+		}
+	end
+
+	local function updateBayGhost(startStation: number, currentStation: number, widthM: number)
+		if not selectedRoad or not originalData then
+			return
+		end
+		local curve = originalData.Curve
+		local s0 = math.min(startStation, currentStation)
+		local s1 = math.max(startStation, currentStation)
+		if s1 - s0 &lt; 1e-3 then
+			if bayGhost then
+				bayGhost.Size = Vector3.new(0, 0, 0)
+			end
+			return
+		end
+		local scale = settings.MetersToStuds
+		local widthStuds = math.max(widthM * scale, 0.1)
+		local style = getStyle()
+		local outward = if style.DriveOnLeft then -1 else 1
+		local offsets = RoadProfile.ComponentOffsetsM(editingProfile or originalData.ProfileStart)
+		local kerbOffsetM = if style.DriveOnLeft
+			then (if offsets[1] then offsets[1].Right else 0)
+			else (if offsets[#offsets] then offsets[#offsets].Left else 0)
+		local kerbOffset = kerbOffsetM * scale
+		local outerOffset = kerbOffset + outward * widthStuds
+		local frameA = curve:FrameAt(s0)
+		local frameB = curve:FrameAt(s1)
+		local centerOffset = (kerbOffset + outerOffset) / 2
+		local pA = (frameA * CFrame.new(centerOffset, 0.1, 0)).Position
+		local pB = (frameB * CFrame.new(centerOffset, 0.1, 0)).Position
+		local segLength = (pB - pA).Magnitude
+		if segLength &lt; 1e-3 then
+			return
+		end
+		if not bayGhost then
+			local ghost = Instance.new("Part")
+			ghost.Name = "EasyRoadBayGhost"
+			ghost.Anchored = true
+			ghost.CanCollide = false
+			ghost.CanQuery = false
+			ghost.CanTouch = false
+			ghost.CastShadow = false
+			ghost.Material = Enum.Material.Neon
+			ghost.Color = style.BayColor
+			ghost.Transparency = 0.4
+			ghost.Parent = workspace
+			bayGhost = ghost
+		end
+		local ghost = bayGhost :: Part
+		ghost.Color = style.BayColor
+		ghost.Size = Vector3.new(widthStuds, 0.2, segLength)
+		ghost.CFrame = CFrame.lookAt((pA + pB) / 2, pB, frameA.UpVector)
+	end
+
+	-- Click-drag-to-draw: mouse down on the road starts the drag (recording
+	-- where along the curve and how far laterally); moving the mouse while
+	-- held updates a live ghost indicator; releasing finishes the drag and
+	-- moves to ConfirmingBay with the dragged length/width as the initial
+	-- draft (still adjustable there, and pressing Enter/Add Bay immediately
+	-- accepts it as-is).
+	local function onBayDragBegin()
 		if mode ~= "PlacingBay" or not selectedRoad or not originalData then
 			return
 		end
@@ -2738,8 +2734,33 @@ local function createRoadEditSession(
 		if not target or not target:IsDescendantOf(selectedRoad) then
 			return
 		end
-		bayStation = originalData.Curve:ClosestS(mouse.Hit.Position)
-		bayDraft = defaultBayDraft()
+		bayDragStartStation = originalData.Curve:ClosestS(mouse.Hit.Position)
+		bayDragStartHit = mouse.Hit.Position
+	end
+
+	local function onBayDragMove()
+		if mode ~= "PlacingBay" or not bayDragStartStation or not bayDragStartHit or not originalData then
+			return
+		end
+		local currentStation = originalData.Curve:ClosestS(mouse.Hit.Position)
+		local draft = bayDraftFromDrag(bayDragStartStation, bayDragStartHit, currentStation, mouse.Hit.Position)
+		updateBayGhost(bayDragStartStation, currentStation, draft.WidthM)
+	end
+
+	local function onBayDragEnd()
+		if mode ~= "PlacingBay" or not bayDragStartStation or not bayDragStartHit or not originalData then
+			return
+		end
+		local currentStation = originalData.Curve:ClosestS(mouse.Hit.Position)
+		local draft = bayDraftFromDrag(bayDragStartStation, bayDragStartHit, currentStation, mouse.Hit.Position)
+		bayStation = (bayDragStartStation + currentStation) / 2
+		bayDraft = draft
+		bayDragStartStation = nil
+		bayDragStartHit = nil
+		if bayGhost then
+			bayGhost:Destroy()
+			bayGhost = nil
+		end
 		for _, connection in bayConnections do
 			connection:Disconnect()
 		end
@@ -2939,7 +2960,9 @@ local function createRoadEditSession(
 		end
 		mode = "PlacingBay"
 		plugin:Activate(true)
-		table.insert(bayConnections, mouse.Button1Down:Connect(onBayPointClick))
+		table.insert(bayConnections, mouse.Button1Down:Connect(onBayDragBegin))
+		table.insert(bayConnections, mouse.Move:Connect(onBayDragMove))
+		table.insert(bayConnections, mouse.Button1Up:Connect(onBayDragEnd))
 		changeSignal:Fire()
 	end
 
@@ -3043,6 +3066,10 @@ local function createRoadEditSession(
 			connection:Disconnect()
 		end
 		table.clear(bayConnections)
+		if bayGhost then
+			bayGhost:Destroy()
+			bayGhost = nil
+		end
 		for _, connection in connections do
 			connection:Disconnect()
 		end
@@ -3445,28 +3472,6 @@ function RoadProfile.ComponentOffsetsM(profile: RoadProfile): { { Left: number, 
 	return offsets
 end
 
--- Returns a clone with a Bay (bus/taxi pull-in) component inserted just
--- inside the nearside kerb - the edge a bus would actually pull over
--- towards, which is the LEFT edge of the profile array when traffic drives
--- on the left (UK-style) and the RIGHT edge when it drives on the right
--- (US-style). Assumes (as most built-in profiles do) that the outermost
--- component on that side is a Sidewalk/edge component the Bay slots in
--- next to; falls back to inserting at the very edge if there's nothing
--- there to slot inside of.
-function RoadProfile.WithBay(profile: RoadProfile, driveOnLeft: boolean, widthM: number): RoadProfile
-	local clone = RoadProfile.Clone(profile)
-	local bay: ProfileComponent = { Kind = "Bay" :: ComponentKind, WidthM = widthM, Direction = 0 }
-	if driveOnLeft then
-		local insertAt = if #clone.Components &gt; 0 and RoadProfile.IsRaised(clone.Components[1].Kind) then 2 else 1
-		table.insert(clone.Components, insertAt, bay)
-	else
-		local n = #clone.Components
-		local insertAt = if n &gt; 0 and RoadProfile.IsRaised(clone.Components[n].Kind) then n else n + 1
-		table.insert(clone.Components, insertAt, bay)
-	end
-	return clone
-end
-
 function RoadProfile.Clone(profile: RoadProfile): RoadProfile
 	local components = {}
 	for _, component in profile.Components do
@@ -3499,10 +3504,7 @@ end
 -- transition. Components are matched greedily from both outer edges inward
 -- (the natural case: adding/dropping lanes happens in the middle of the
 -- roadway, sidewalks and shoulders stay put at the edges).
-function RoadProfile.MatchForTransition(
-	a: RoadProfile,
-	b: RoadProfile
-): ({ ProfileComponent }, { ProfileComponent })
+function RoadProfile.MatchForTransition(a: RoadProfile, b: RoadProfile): ({ ProfileComponent }, { ProfileComponent })
 	local ca = a.Components
 	local cb = b.Components
 	local na, nb = #ca, #cb
@@ -3514,8 +3516,7 @@ function RoadProfile.MatchForTransition(
 	end
 	-- Match from the right edge (without overlapping the left match)
 	local right = 0
-	while right &lt; (na - left) and right &lt; (nb - left)
-		and ca[na - right].Kind == cb[nb - right].Kind do
+	while right &lt; (na - left) and right &lt; (nb - left) and ca[na - right].Kind == cb[nb - right].Kind do
 		right += 1
 	end
 
@@ -3596,8 +3597,7 @@ function RoadProfile.Deserialize(raw: { [string]: any }): RoadProfile?
 			return nil
 		end
 		local rightBoundary: BoundaryRule? = nil
-		if typeof(rawComponent.RightBoundary) == "string"
-			and table.find(BoundaryRules, rawComponent.RightBoundary) then
+		if typeof(rawComponent.RightBoundary) == "string" and table.find(BoundaryRules, rawComponent.RightBoundary) then
 			rightBoundary = rawComponent.RightBoundary :: BoundaryRule
 		end
 		table.insert(components, {
@@ -3651,7 +3651,11 @@ function RoadProfile.BuiltInProfiles(style: RegionStyles.RegionStyle): { RoadPro
 	local fwd = 1
 	local back = -1
 
-	local function twoWay(componentsLeftHalf: { ProfileComponent }, middle: { ProfileComponent }, mirror: boolean): { ProfileComponent }
+	local function twoWay(
+		componentsLeftHalf: { ProfileComponent },
+		middle: { ProfileComponent },
+		mirror: boolean
+	): { ProfileComponent }
 		-- componentsLeftHalf is specified for right-hand traffic (oncoming on
 		-- the left). For left-hand traffic regions, flip the direction signs.
 		local result: { ProfileComponent } = {}
@@ -3685,11 +3689,7 @@ function RoadProfile.BuiltInProfiles(style: RegionStyles.RegionStyle): { RoadPro
 			Name = "Two-Lane Street",
 			Category = "Streets",
 			BuiltIn = true,
-			Components = twoWay(
-				{ sidewalk(style.SidewalkWidthM), drive(lane, back) },
-				{},
-				true
-			),
+			Components = twoWay({ sidewalk(style.SidewalkWidthM), drive(lane, back) }, {}, true),
 		},
 		{
 			Id = "builtin_one_way",
@@ -3720,11 +3720,12 @@ function RoadProfile.BuiltInProfiles(style: RegionStyles.RegionStyle): { RoadPro
 			Name = "Boulevard + Bike Lanes",
 			Category = "Avenues",
 			BuiltIn = true,
-			Components = twoWay(
-				{ sidewalk(style.SidewalkWidthM), bike(style.BikeLaneWidthM, back), drive(lane, back), drive(lane, back) },
-				{ median(style.MedianWidthM) },
-				true
-			),
+			Components = twoWay({
+				sidewalk(style.SidewalkWidthM),
+				bike(style.BikeLaneWidthM, back),
+				drive(lane, back),
+				drive(lane, back),
+			}, { median(style.MedianWidthM) }, true),
 		},
 		{
 			Id = "builtin_highway",
@@ -3773,7 +3774,6 @@ local Keybinds = require("./Keybinds")
 
 local kSettingsKey = "easyRoadState"
 
-local CURVE_ALIGNMENTS = { "Center", "Inside", "Outside" }
 local LANGUAGE_VARIANTS = { "British", "American" }
 
 export type SuperelevationMode = "Auto" | "Manual" | "Off"
@@ -3784,16 +3784,6 @@ export type SuperelevationMode = "Auto" | "Manual" | "Off"
 -- "Sidewalk" component kind, etc.) don't change with this setting.
 export type LanguageVariant = "British" | "American"
 
--- How a curved road's deck strips are built relative to the path, matching
--- the Archimedes plugin's alignment concept: "Center" is symmetric on the
--- path (today's original behavior - each strip approximates both edges,
--- padded to mostly close the resulting curve gap); "Inside"/"Outside"
--- anchor one specific edge (left for Inside, right for Outside) exactly to
--- the true curve points at each station - gap-free by construction on
--- that edge, no padding approximation needed there - while the opposite
--- edge's residual gap is closed exactly with Mesh/FillTriangle.lua.
-export type CurveAlignment = "Center" | "Inside" | "Outside"
-
 export type EasyRoadSettings = {
 	-- Grand style settings
 	RegionId: string,
@@ -3803,7 +3793,6 @@ export type EasyRoadSettings = {
 	ManualBankDeg: number, -- Used when SuperelevationMode == "Manual"
 	AutoMarkings: boolean,
 	DriveSideOverride: string, -- "Region" | "Left" | "Right"
-	CurveAlignment: CurveAlignment,
 	LanguageVariant: LanguageVariant,
 
 	-- Default road
@@ -3844,9 +3833,6 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		ManualBankDeg = raw.ManualBankDeg or 4,
 		AutoMarkings = if raw.AutoMarkings == nil then true else raw.AutoMarkings,
 		DriveSideOverride = raw.DriveSideOverride or "Region",
-		CurveAlignment = if typeof(raw.CurveAlignment) == "string" and table.find(CURVE_ALIGNMENTS, raw.CurveAlignment)
-			then raw.CurveAlignment :: CurveAlignment
-			else "Inside" :: CurveAlignment,
 		LanguageVariant = if typeof(raw.LanguageVariant) == "string"
 				and table.find(LANGUAGE_VARIANTS, raw.LanguageVariant)
 			then raw.LanguageVariant :: LanguageVariant
@@ -3875,7 +3861,6 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		ManualBankDeg = settings.ManualBankDeg,
 		AutoMarkings = settings.AutoMarkings,
 		DriveSideOverride = settings.DriveSideOverride,
-		CurveAlignment = settings.CurveAlignment,
 		LanguageVariant = settings.LanguageVariant,
 		DefaultProfileId = settings.DefaultProfileId,
 		SnapRadiusStuds = settings.SnapRadiusStuds,
@@ -3942,7 +3927,7 @@ local function BayDraftPanel(props: {
 		Unit = e(Components.Label, { Text = "meters", Dim = true, LayoutOrder = 3 }),
 	})
 	children.Hint = e(Components.Label, {
-		Text = "Defaults to a lane's width - press Enter to accept, or Add Bay above.",
+		Text = "From your drag - fine-tune here, or Add Bay above to accept as-is.",
 		Dim = true,
 		LayoutOrder = 4,
 	})
@@ -5958,12 +5943,6 @@ local Settings = require("../Settings")
 
 type RegionLibrary = RegionLibraryModule.RegionLibrary
 
-local CURVE_ALIGNMENT_OPTIONS: { Components.DropdownOption } = {
-	{ Id = "Center", Text = "Center (symmetric, approximate)" },
-	{ Id = "Inside", Text = "Inside (left edge exact)" },
-	{ Id = "Outside", Text = "Outside (right edge exact)" },
-}
-
 local function LabeledRow(props: {
 	Label: string,
 	LayoutOrder: number,
@@ -6320,29 +6299,6 @@ local function RegionalPreferenceGui(props: {
 				}),
 			},
 		}),
-		CurveAlignment = e(LabeledRow, {
-			Label = "Curve alignment",
-			LayoutOrder = 33,
-			children = {
-				Dropdown = e(Components.Dropdown, {
-					Options = CURVE_ALIGNMENT_OPTIONS,
-					SelectedId = settings.CurveAlignment,
-					OnSelected = function(id: string)
-						settings.CurveAlignment = id :: Settings.CurveAlignment
-						props.OnSettingsChanged()
-					end,
-					LayoutOrder = 2,
-					Grow = true,
-				}),
-			},
-		}),
-		CurveAlignmentInfo = e(Components.Label, {
-			Text = "Which edge of a curved road stays exactly on the path - "
-				.. "the other edge closes any gap exactly instead of approximating it.",
-			Dim = true,
-			LayoutOrder = 34,
-		}),
-
 		Close = e(Components.Button, {
 			Text = "Close",
 			OnClick = props.OnClose,
@@ -8621,6 +8577,14 @@ return function(
 
 	-- Shared with the session so HUD clicks don't also place road points
 	local uiState: createRoadSession.UiState = { Hovered = false }
+	-- The Road Tools bottom HUD is two separate small panels (see the
+	-- "session" branch below), not one panel filling its whole shared
+	-- wrapper - hover is tracked per-panel and OR'd together so that the
+	-- large transparent dead space around them (e.g. above the shorter
+	-- Road Library box) doesn't count as "hovering the HUD" and swallow
+	-- viewport clicks meant for road placement.
+	local toolModeHovered = false
+	local roadLibraryHovered = false
 
 	local regionalRoot: ReactRoblox.RootType? = nil
 	local keybindsRoot: ReactRoblox.RootType? = nil
@@ -8684,6 +8648,8 @@ return function(
 			sessionChangedCn = nil
 		end
 		uiState.Hovered = false
+		toolModeHovered = false
+		roadLibraryHovered = false
 	end
 
 	-- profileOverride/seed power the pie menu's "Place More" action: continue
@@ -8804,6 +8770,10 @@ return function(
 		-- panel, or the placed-road designer for the current selection.
 		local bottomContent: any = nil
 		local bottomFrameProps: { [string]: any } = nil :: any
+		-- Set true by the "session" branch, whose bottomContent is two
+		-- separately-hover-tracked panels instead of one Frame filling the
+		-- whole wrapper - see toolModeHovered/roadLibraryHovered above.
+		local skipGenericHover = false
 		if designProfile then
 			local editing = designProfile :: RoadProfile.RoadProfile
 			local actions: { RoadDesigner.DesignerAction } = {
@@ -8856,9 +8826,7 @@ return function(
 				Profile = editing,
 				RegionStyle = getStyle(),
 				Settings = settings,
-				Subtitle = if editing.BuiltIn
-					then "Built-in template — saving creates an editable copy."
-					else nil,
+				Subtitle = if editing.BuiltIn then "Built-in template — saving creates an editable copy." else nil,
 				Picker = {
 					Options = pickerOptions,
 					SelectedId = if library.Get(editing.Id) then editing.Id else nil,
@@ -8912,12 +8880,21 @@ return function(
 			-- bottom-aligned within a shared invisible wrapper so
 			-- hover-tracking (below) stays scoped to roughly their combined
 			-- visible footprint instead of the whole screen.
+			skipGenericHover = true
 			bottomContent = React.createElement(React.Fragment, nil, {
 				ToolMode = React.createElement("Frame", {
 					AnchorPoint = Vector2.new(0, 1),
 					Position = UDim2.new(0, 0, 1, 0),
 					Size = UDim2.new(0, 260, 0, 430),
 					BackgroundTransparency = 1,
+					[React.Event.MouseEnter] = function()
+						toolModeHovered = true
+						uiState.Hovered = true
+					end,
+					[React.Event.MouseLeave] = function()
+						toolModeHovered = false
+						uiState.Hovered = roadLibraryHovered
+					end,
 				}, {
 					Inner = React.createElement(BuildBar, {
 						ToolMode = currentSession.GetToolMode(),
@@ -8956,6 +8933,14 @@ return function(
 					Position = UDim2.new(1, 0, 1, 0),
 					Size = UDim2.new(0, 340, 0, 170),
 					BackgroundTransparency = 1,
+					[React.Event.MouseEnter] = function()
+						roadLibraryHovered = true
+						uiState.Hovered = true
+					end,
+					[React.Event.MouseLeave] = function()
+						roadLibraryHovered = false
+						uiState.Hovered = toolModeHovered
+					end,
 				}, {
 					Inner = React.createElement(RoadLibraryPanel, {
 						Library = library,
@@ -9019,11 +9004,13 @@ return function(
 				bottomRoot = ReactRoblox.createRoot(screen)
 			end
 			bottomFrameProps.BackgroundTransparency = 1
-			bottomFrameProps[React.Event.MouseEnter] = function()
-				uiState.Hovered = true
-			end
-			bottomFrameProps[React.Event.MouseLeave] = function()
-				uiState.Hovered = false
+			if not skipGenericHover then
+				bottomFrameProps[React.Event.MouseEnter] = function()
+					uiState.Hovered = true
+				end
+				bottomFrameProps[React.Event.MouseLeave] = function()
+					uiState.Hovered = false
+				end
 			end
 			assert(bottomRoot):render(React.createElement("Frame", bottomFrameProps, {
 				Gui = bottomContent,
@@ -9180,7 +9167,7 @@ return function(
 						WorldPosition = anchor,
 						SetGlobalHover = setGlobalHover,
 						Bottom = {
-							Text = "Click a point on the road for the bus bay (Esc to cancel)",
+							Text = "Click and drag along the road to draw the bus bay (Esc to cancel)",
 							OnClick = function()
 								editSession.CancelBayPlacement()
 							end,

@@ -115,28 +115,6 @@ function RoadProfile.ComponentOffsetsM(profile: RoadProfile): { { Left: number, 
 	return offsets
 end
 
--- Returns a clone with a Bay (bus/taxi pull-in) component inserted just
--- inside the nearside kerb - the edge a bus would actually pull over
--- towards, which is the LEFT edge of the profile array when traffic drives
--- on the left (UK-style) and the RIGHT edge when it drives on the right
--- (US-style). Assumes (as most built-in profiles do) that the outermost
--- component on that side is a Sidewalk/edge component the Bay slots in
--- next to; falls back to inserting at the very edge if there's nothing
--- there to slot inside of.
-function RoadProfile.WithBay(profile: RoadProfile, driveOnLeft: boolean, widthM: number): RoadProfile
-	local clone = RoadProfile.Clone(profile)
-	local bay: ProfileComponent = { Kind = "Bay" :: ComponentKind, WidthM = widthM, Direction = 0 }
-	if driveOnLeft then
-		local insertAt = if #clone.Components > 0 and RoadProfile.IsRaised(clone.Components[1].Kind) then 2 else 1
-		table.insert(clone.Components, insertAt, bay)
-	else
-		local n = #clone.Components
-		local insertAt = if n > 0 and RoadProfile.IsRaised(clone.Components[n].Kind) then n else n + 1
-		table.insert(clone.Components, insertAt, bay)
-	end
-	return clone
-end
-
 function RoadProfile.Clone(profile: RoadProfile): RoadProfile
 	local components = {}
 	for _, component in profile.Components do
@@ -169,10 +147,7 @@ end
 -- transition. Components are matched greedily from both outer edges inward
 -- (the natural case: adding/dropping lanes happens in the middle of the
 -- roadway, sidewalks and shoulders stay put at the edges).
-function RoadProfile.MatchForTransition(
-	a: RoadProfile,
-	b: RoadProfile
-): ({ ProfileComponent }, { ProfileComponent })
+function RoadProfile.MatchForTransition(a: RoadProfile, b: RoadProfile): ({ ProfileComponent }, { ProfileComponent })
 	local ca = a.Components
 	local cb = b.Components
 	local na, nb = #ca, #cb
@@ -184,8 +159,7 @@ function RoadProfile.MatchForTransition(
 	end
 	-- Match from the right edge (without overlapping the left match)
 	local right = 0
-	while right < (na - left) and right < (nb - left)
-		and ca[na - right].Kind == cb[nb - right].Kind do
+	while right < (na - left) and right < (nb - left) and ca[na - right].Kind == cb[nb - right].Kind do
 		right += 1
 	end
 
@@ -266,8 +240,7 @@ function RoadProfile.Deserialize(raw: { [string]: any }): RoadProfile?
 			return nil
 		end
 		local rightBoundary: BoundaryRule? = nil
-		if typeof(rawComponent.RightBoundary) == "string"
-			and table.find(BoundaryRules, rawComponent.RightBoundary) then
+		if typeof(rawComponent.RightBoundary) == "string" and table.find(BoundaryRules, rawComponent.RightBoundary) then
 			rightBoundary = rawComponent.RightBoundary :: BoundaryRule
 		end
 		table.insert(components, {
@@ -321,7 +294,11 @@ function RoadProfile.BuiltInProfiles(style: RegionStyles.RegionStyle): { RoadPro
 	local fwd = 1
 	local back = -1
 
-	local function twoWay(componentsLeftHalf: { ProfileComponent }, middle: { ProfileComponent }, mirror: boolean): { ProfileComponent }
+	local function twoWay(
+		componentsLeftHalf: { ProfileComponent },
+		middle: { ProfileComponent },
+		mirror: boolean
+	): { ProfileComponent }
 		-- componentsLeftHalf is specified for right-hand traffic (oncoming on
 		-- the left). For left-hand traffic regions, flip the direction signs.
 		local result: { ProfileComponent } = {}
@@ -355,11 +332,7 @@ function RoadProfile.BuiltInProfiles(style: RegionStyles.RegionStyle): { RoadPro
 			Name = "Two-Lane Street",
 			Category = "Streets",
 			BuiltIn = true,
-			Components = twoWay(
-				{ sidewalk(style.SidewalkWidthM), drive(lane, back) },
-				{},
-				true
-			),
+			Components = twoWay({ sidewalk(style.SidewalkWidthM), drive(lane, back) }, {}, true),
 		},
 		{
 			Id = "builtin_one_way",
@@ -390,11 +363,12 @@ function RoadProfile.BuiltInProfiles(style: RegionStyles.RegionStyle): { RoadPro
 			Name = "Boulevard + Bike Lanes",
 			Category = "Avenues",
 			BuiltIn = true,
-			Components = twoWay(
-				{ sidewalk(style.SidewalkWidthM), bike(style.BikeLaneWidthM, back), drive(lane, back), drive(lane, back) },
-				{ median(style.MedianWidthM) },
-				true
-			),
+			Components = twoWay({
+				sidewalk(style.SidewalkWidthM),
+				bike(style.BikeLaneWidthM, back),
+				drive(lane, back),
+				drive(lane, back),
+			}, { median(style.MedianWidthM) }, true),
 		},
 		{
 			Id = "builtin_highway",

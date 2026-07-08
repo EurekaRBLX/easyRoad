@@ -6,17 +6,30 @@ what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
 ## Next up — needs a decision or real design work
 
-**CS2-style road-tool UI - now split into two panels + horizontal tiles, not
-verified live.** Two rounds of misses before this: first a divider inside
-one panel, then one wider panel with an internal "Road Library" section -
-a user screenshot showed CS2 is genuinely two separate boxes side by side,
-which this round's split (`BuildBar.lua` = Tool Mode, new
-`UI/RoadLibraryPanel.lua` = category tabs + horizontal road tile strip)
-should now match structurally. Not verified in a live Studio session (this
-environment can't render Studio) - the two panels' exact sizes/positions
-(260x430 Tool Mode, 340x170 Road Library, 12px gap, bottom-aligned) were
-picked to roughly match the reference screenshot's proportions but haven't
-been checked against the real thing.
+**CS2-style road-tool UI polish - queued by the user, not yet started.**
+The two-panel split (`BuildBar.lua` = Tool Mode, `UI/RoadLibraryPanel.lua`
+= Road Library) itself shipped and its placement-swallowing regression is
+now fixed (see `SHIPPED.md`), but the user explicitly asked for this
+follow-up polish pass once the placement bug and in-progress bay work were
+done:
+- **Left-align Tool Mode** (with padding) instead of the current
+  bottom-center-of-shared-wrapper position - Studio has much less usable
+  screen width than a dedicated game window, so the CS2 bottom-center
+  layout doesn't translate directly.
+- **Road Library as a real grid** (multiple rows/columns), not a single
+  horizontal scrolling row, matching CS2's own library layout.
+- **Category tabs (Streets/Avenues/Highways/Paths/Custom) currently
+  text-truncate** ("Aven...", "Highw...", "Custo..." per the user's
+  screenshot) - replace the text labels with icons, using the same
+  45°-tilted `ViewportFrame` camera technique already used for
+  `RoadThumbnail`/`ProfileThumbnail`.
+- **Needs a small "icon library" of purpose-built profiles/scenes purely
+  for generating good category icons**, not real placeable roads: a 2-lane
+  street with a dashed centerline, a 2-lane avenue (collector/arterial
+  style), a highway with a gantry (gantries aren't modeled anywhere yet -
+  new geometry), and a roundabout icon similar to CS2's (roundabouts
+  aren't an implemented feature at all yet, so this would be purely
+  cosmetic icon geometry, not real roundabout support).
 
 **Marking "stretch" interaction — still not built (the one piece of "Edit
 Road Segment" deliberately left out of that round).** Dragging a lane

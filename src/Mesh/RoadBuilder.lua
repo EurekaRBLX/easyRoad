@@ -37,11 +37,6 @@ local PREVIEW_CHORD_TOLERANCE = 0.35
 local MIN_STEP = 0.75
 local MAX_TURN_PER_STEP = 0.3 -- Radians of heading change allowed per strip
 local RUNOFF_LENGTH_STUDS = 40 -- Superelevation smoothing window
--- A joint's residual (non-anchor) gap only gets an actual wedge part when it's
--- bigger than this - below it, simply widening the strips on their far side
--- (see farEdgePad below) already hides the defect, so most curves need no
--- wedge at all, only genuinely sharp turns / high-superelevation joints do.
-local WEDGE_GAP_THRESHOLD_STUDS = 0.5
 
 local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
 	Drive = Enum.Material.Asphalt,
@@ -91,7 +86,12 @@ end
 -- they anchor both of their own endpoints directly to true curve
 -- positions instead (see placeMarkingSpan), which closes joints exactly
 -- rather than approximating.
-local function curveMiterPad(curve: PolyCurve.PolyCurve, sMid: number, lateralOffset: number, nominalLength: number): number
+local function curveMiterPad(
+	curve: PolyCurve.PolyCurve,
+	sMid: number,
+	lateralOffset: number,
+	nominalLength: number
+): number
 	local k = math.abs(curve:CurvatureAt(sMid))
 	if k < 1e-6 then
 		return 0
@@ -116,11 +116,7 @@ end
 
 -- Build the list of sample stations (distances along the curve). Adaptive:
 -- steps shrink where curvature is high so strips follow the curve closely.
-local function buildStations(
-	curve: PolyCurve.PolyCurve,
-	maxStep: number,
-	tolerance: number
-): { number }
+local function buildStations(curve: PolyCurve.PolyCurve, maxStep: number, tolerance: number): { number }
 	local stations = { 0 }
 	local s = 0
 	local length = curve.Length
@@ -159,8 +155,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	local componentsStart: { RoadProfile.ProfileComponent }
 	local componentsEnd: { RoadProfile.ProfileComponent }
 	if options.ProfileEnd and options.ProfileEnd.Id ~= options.ProfileStart.Id then
-		componentsStart, componentsEnd = RoadProfile.MatchForTransition(
-			options.ProfileStart, options.ProfileEnd)
+		componentsStart, componentsEnd = RoadProfile.MatchForTransition(options.ProfileStart, options.ProfileEnd)
 	else
 		componentsStart = options.ProfileStart.Components
 		componentsEnd = options.ProfileStart.Components
@@ -218,7 +213,8 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		-- small enough to read as a smooth line instead of a staircase even
 		-- on a short, steep taper.
 		local widthDeltaStuds = math.abs(
-			RoadProfile.TotalWidthM(options.ProfileStart) - RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
+			RoadProfile.TotalWidthM(options.ProfileStart)
+				- RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
 		) * scale
 		local changeRate = if taperLength > 1e-3 then widthDeltaStuds / taperLength else 0
 		local maxStepForTaper = if changeRate > 1e-3 then 0.4 / changeRate else 4
@@ -284,231 +280,82 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	end
 
 	-- Deck strips ---------------------------------------------------------------
-	-- CurveAlignment picks which reference each strip is built from, same
-	-- concept as the Archimedes plugin's Center/Inside/Outside path
-	-- alignment:
-	--   Center (anchorSign = 0)  - today's original approach: each strip is
-	--     centered on the tangent frame at its own interval midpoint, both
-	--     edges are approximate, padded via curveMiterPad to mostly close
-	--     the gap on either side.
-	--   Inside/Outside (anchorSign = -1 / +1) - each strip's anchor edge
-	--     (left for Inside, right for Outside) is built directly from the
-	--     TRUE curve position at both of its station endpoints - since
-	--     adjacent intervals share the exact same station point (the same
-	--     cached `frames[i]` entry, not recomputed), that edge is gap-free
-	--     by construction, no padding approximation needed. Only the
-	--     opposite (residual) edge can still show a gap, closed exactly
-	--     with FillTriangle.lua instead of approximated.
-	local anchorSign = if settings.CurveAlignment == "Inside" then -1
-		elseif settings.CurveAlignment == "Outside" then 1
-		else 0
+	-- Always centerline-symmetric: each strip is centered on the tangent
+	-- frame at its own interval's true midpoint (an exact point on the
+	-- curve, not an approximation), both edges padded via curveMiterPad to
+	-- close the resulting curve gap. This was previously an "Inside"/
+	-- "Outside" anchored-edge alternative (deliberately keeping one lane
+	-- edge exact via a shared station point, closing the other edge's
+	-- residual gap with an exact FillTriangle wedge) - removed after this
+	-- didn't hold up in practice: the far/residual edge's fixes
+	-- (width-padding, then a curvature-gated wedge) kept trading one
+	-- visible defect for another (sawtooth, then still-visible gaps), and
+	-- anchoring a single edge instead of the centerline is what made the
+	-- whole road visually drift off the clicked path on a sustained curve
+	-- - by definition, only one edge tracked the true path exactly, so a
+	-- wide cross-section's centerline (what the user actually clicked)
+	-- could wander from it. Centerline-anchoring avoids that entirely:
+	-- every strip's own center is placed directly on the curve, so the
+	-- road can never drift from the path regardless of curve length or
+	-- cross-section width. No FillTriangle wedges are used for curve
+	-- joints any more - see BuildWithBay below for where wedges are still
+	-- useful (an actually-abrupt shape, not a curve-following one).
+	for i = 1, stationCount - 1 do
+		local s0 = stations[i]
+		local s1 = stations[i + 1]
+		local sMid = (s0 + s1) / 2
+		local rollMid = (rolls[i] + rolls[i + 1]) / 2
+		local midFrame = curve:FrameAt(sMid, rollMid)
 
-	if anchorSign == 0 then
-		for i = 1, stationCount - 1 do
-			local s0 = stations[i]
-			local s1 = stations[i + 1]
-			local sMid = (s0 + s1) / 2
-			local rollMid = (rolls[i] + rolls[i + 1]) / 2
-			local midFrame = curve:FrameAt(sMid, rollMid)
-
-			-- Guard against degenerate geometry (folded curves / cusps):
-			-- skip intervals where the heading reverses or the frame went
-			-- non-finite rather than emitting strips fanned across the fold.
-			local headingDot = frames[i].LookVector:Dot(frames[i + 1].LookVector)
-			local midPos = midFrame.Position
-			if headingDot < 0 or midPos.X ~= midPos.X or midPos.Y ~= midPos.Y or midPos.Z ~= midPos.Z then
-				continue
-			end
-
-			-- The nominal span is the arc length (s1 - s0), not the
-			-- straight chord between frame positions - chord is always
-			-- <= arc length on a curve, so sizing off it alone under-covers
-			-- even the centerline before any lateral miter padding.
-			local nominalLength = s1 - s0
-
-			for c = 1, componentCount do
-				local w0 = stationWidths[i][c]
-				local w1 = stationWidths[i + 1][c]
-				local width = (w0 + w1) / 2
-				if width < 0.05 then
-					continue
-				end
-				local centerOffset = (
-					stationOffsets[i][c] + w0 / 2 +
-					stationOffsets[i + 1][c] + w1 / 2
-				) / 2
-
-				local kind = componentsStart[c].Kind
-				local raised = RoadProfile.IsRaised(kind)
-				local partHeight = if raised then thickness + curbHeight else thickness
-				-- Deck (roadway) top surface sits at frame level; raised
-				-- components (sidewalk/median) stand a curb height above
-				-- it. Alternating strips drop by a sub-visible epsilon so
-				-- overlapping neighbor strips never z-fight.
-				local centerY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2)
-					- (i % 2) * 0.004
-
-				local edgeDistance = math.max(math.abs(centerOffset - width / 2), math.abs(centerOffset + width / 2))
-				local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
-				local partLength = nominalLength + miter + 0.02
-
-				local part = makePart(preview)
-				part.Name = kind
-				part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
-				part.Color = colorForKind(kind, style)
-				part.Size = Vector3.new(width, partHeight, partLength)
-				part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
-				part.Parent = model
-			end
-		end
-	else
-		-- Builds the CFrame for a strip spanning stationA to stationB,
-		-- anchored so that its anchorSign edge sits exactly on the true
-		-- curve position (offsetA/offsetB) at both ends - no padding, no
-		-- approximation. Returns nil if the span is degenerate.
-		local function anchoredStripCFrame(
-			stationA: number,
-			stationB: number,
-			offsetA: number,
-			offsetB: number,
-			topY: number,
-			width: number,
-			partHeight: number
-		): (CFrame?, number)
-			local p0 = (frames[stationA] * CFrame.new(offsetA, topY, 0)).Position
-			local p1 = (frames[stationB] * CFrame.new(offsetB, topY, 0)).Position
-			local segLength = (p1 - p0).Magnitude
-			if segLength < 1e-4 then
-				return nil, 0
-			end
-			local forward = (p1 - p0).Unit
-			local up = frames[stationA].UpVector
-			local mid = (p0 + p1) / 2
-			local lookCF = CFrame.lookAt(mid, mid + forward, up)
-			local stripCF = lookCF * CFrame.new(-anchorSign * width / 2, -partHeight / 2, 0)
-			return stripCF, segLength
+		-- Guard against degenerate geometry (folded curves / cusps):
+		-- skip intervals where the heading reverses or the frame went
+		-- non-finite rather than emitting strips fanned across the fold.
+		local headingDot = frames[i].LookVector:Dot(frames[i + 1].LookVector)
+		local midPos = midFrame.Position
+		if headingDot < 0 or midPos.X ~= midPos.X or midPos.Y ~= midPos.Y or midPos.Z ~= midPos.Z then
+			continue
 		end
 
-		local function anchorOffsetAt(stationIndex: number, c: number): number
-			if anchorSign > 0 then
-				return stationOffsets[stationIndex][c] + stationWidths[stationIndex][c]
-			end
-			return stationOffsets[stationIndex][c]
-		end
+		-- The nominal span is the arc length (s1 - s0), not the
+		-- straight chord between frame positions - chord is always
+		-- <= arc length on a curve, so sizing off it alone under-covers
+		-- even the centerline before any lateral miter padding.
+		local nominalLength = s1 - s0
 
-		-- NOTE: strips are built at their plain, exact anchored width, no
-		-- far-edge padding. An earlier version widened the far (non-anchor)
-		-- edge using curveMiterPad's r*k*L formula reinterpreted as a width
-		-- pad instead of a length pad - that formula was derived for length
-		-- padding specifically and doesn't carry over to width correctly,
-		-- and visibly over-widened strips into a sawtooth/serrated edge on
-		-- curves instead of fixing anything. Removed; the far edge's small
-		-- residual gap on gentle curves is left alone (imperceptible), and
-		-- only genuinely sharp joints get an exact FillTriangle wedge below.
-		for i = 1, stationCount - 1 do
-			local headingDot = frames[i].LookVector:Dot(frames[i + 1].LookVector)
-			if headingDot < 0 then
+		for c = 1, componentCount do
+			local w0 = stationWidths[i][c]
+			local w1 = stationWidths[i + 1][c]
+			local width = (w0 + w1) / 2
+			if width < 0.05 then
 				continue
 			end
+			local centerOffset = (stationOffsets[i][c] + w0 / 2 + stationOffsets[i + 1][c] + w1 / 2) / 2
 
-			for c = 1, componentCount do
-				local width = (stationWidths[i][c] + stationWidths[i + 1][c]) / 2
-				if width < 0.05 then
-					continue
-				end
-				local kind = componentsStart[c].Kind
-				local raised = RoadProfile.IsRaised(kind)
-				local partHeight = if raised then thickness + curbHeight else thickness
-				local topY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2) + partHeight / 2
+			local kind = componentsStart[c].Kind
+			local raised = RoadProfile.IsRaised(kind)
+			local partHeight = if raised then thickness + curbHeight else thickness
+			-- Deck (roadway) top surface sits at frame level; raised
+			-- components (sidewalk/median) stand a curb height above
+			-- it. Alternating strips drop by a sub-visible epsilon so
+			-- overlapping neighbor strips never z-fight.
+			local centerY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2) - (i % 2) * 0.004
 
-				local stripCF, segLength =
-					anchoredStripCFrame(i, i + 1, anchorOffsetAt(i, c), anchorOffsetAt(i + 1, c), topY, width, partHeight)
-				if not stripCF then
-					continue
-				end
+			local edgeDistance = math.max(math.abs(centerOffset - width / 2), math.abs(centerOffset + width / 2))
+			local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
+			-- A slightly larger flat safety margin than before (was 0.02) -
+			-- uniform across every strip regardless of curvature, so it
+			-- can't reproduce the curvature-scaled sawtooth the old
+			-- far-edge pad caused; just a little extra overlap insurance
+			-- against any remaining sliver of a gap.
+			local partLength = nominalLength + miter + 0.08
 
-				local part = makePart(preview)
-				part.Name = kind
-				part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
-				part.Color = colorForKind(kind, style)
-				part.Size = Vector3.new(width, partHeight, segLength)
-				part.CFrame = stripCF
-				part.Parent = model
-			end
-		end
-
-		-- Curve joint fills: with the far edge now padded above, only
-		-- genuinely sharp turns or high-superelevation joints still leave a
-		-- gap big enough to need an actual wedge - everything gentler is
-		-- already covered by the widened strips, so most joints add no
-		-- extra part at all. Since the anchor edge is an exact shared point
-		-- at this joint (not two independent approximations like Center
-		-- mode has on both sides), any remaining gap is a single triangle,
-		-- not a quad.
-		for i = 2, stationCount - 1 do
-			local k = math.abs(curve:CurvatureAt(stations[i]))
-			if k < 1e-6 then
-				continue
-			end
-			-- Same fold/cusp guard the strip-building loop uses - skip a
-			-- joint if either neighboring interval's heading reversed
-			-- (matches that interval having been skipped as a strip too).
-			if
-				frames[i - 1].LookVector:Dot(frames[i].LookVector) < 0
-				or frames[i].LookVector:Dot(frames[i + 1].LookVector) < 0
-			then
-				continue
-			end
-			local downVector = -frames[i].UpVector
-
-			for c = 1, componentCount do
-				local widthA = (stationWidths[i - 1][c] + stationWidths[i][c]) / 2
-				local widthB = (stationWidths[i][c] + stationWidths[i + 1][c]) / 2
-				if widthA < 0.05 or widthB < 0.05 then
-					continue
-				end
-				local kind = componentsStart[c].Kind
-				local raised = RoadProfile.IsRaised(kind)
-				local partHeight = if raised then thickness + curbHeight else thickness
-				local topY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2) + partHeight / 2
-
-				local anchorOffsetI = anchorOffsetAt(i, c)
-				local stripCFA, segLengthA = anchoredStripCFrame(
-					i - 1, i, anchorOffsetAt(i - 1, c), anchorOffsetI, topY, widthA, partHeight
-				)
-				local stripCFB, segLengthB = anchoredStripCFrame(
-					i, i + 1, anchorOffsetI, anchorOffsetAt(i + 1, c), topY, widthB, partHeight
-				)
-				if not stripCFA or not stripCFB then
-					continue
-				end
-
-				local anchorPoint = (frames[i] * CFrame.new(anchorOffsetI, topY, 0)).Position
-				local residualFarA =
-					(stripCFA * CFrame.new(-anchorSign * widthA / 2, partHeight / 2, segLengthA / 2)).Position
-				local residualNearB =
-					(stripCFB * CFrame.new(-anchorSign * widthB / 2, partHeight / 2, -segLengthB / 2)).Position
-
-				-- The far-side pad above already widens both strips towards
-				-- each other, so the true remaining defect is smaller than
-				-- the raw corner distance - only worth an actual wedge part
-				-- once it's still bigger than the padding could plausibly
-				-- absorb.
-				local gapDistance = (residualFarA - residualNearB).Magnitude
-				if gapDistance < WEDGE_GAP_THRESHOLD_STUDS then
-					continue
-				end
-
-				local function makeWedgePart(): Part
-					local part = makePart(preview)
-					part.Name = kind
-					part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
-					part.Color = colorForKind(kind, style)
-					return part
-				end
-
-				FillTriangle(anchorPoint, residualFarA, residualNearB, partHeight, downVector, makeWedgePart, model)
-			end
+			local part = makePart(preview)
+			part.Name = kind
+			part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
+			part.Color = colorForKind(kind, style)
+			part.Size = Vector3.new(width, partHeight, partLength)
+			part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
+			part.Parent = model
 		end
 	end
 
@@ -648,8 +495,10 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		model:SetAttribute("RW_StartTan", curve:TangentAt(0))
 		model:SetAttribute("RW_EndTan", curve:TangentAt(length))
 		model:SetAttribute("RW_ProfileStartId", options.ProfileStart.Id)
-		model:SetAttribute("RW_ProfileEndId",
-			if options.ProfileEnd then options.ProfileEnd.Id else options.ProfileStart.Id)
+		model:SetAttribute(
+			"RW_ProfileEndId",
+			if options.ProfileEnd then options.ProfileEnd.Id else options.ProfileStart.Id
+		)
 	end
 
 	return model
@@ -661,65 +510,123 @@ export type BayPlacement = {
 	WidthM: number, -- Bay lane width in meters
 }
 
--- Builds a road with a bus/taxi bay carved into it at one point: a taper
--- in (normal profile -> normal+Bay), a flat dwell at full bay width, and a
--- taper back out, stitched from 5 separate RoadBuilder.Build calls on
--- Curve:Slice() sub-ranges of the same curve - reusing the existing
--- widen/narrow taper machinery for the two tapers rather than inventing a
--- new one, since a bay taper and a widen/narrow taper are the same shape.
--- The bay doesn't combine with an options.ProfileEnd transition in this
--- version (bays are placed on already-built, non-transitioning roads).
+-- Builds the normal road, then adds a bus/taxi bay alongside it as extra
+-- geometry: a flat "dwell" rectangle at full bay width, and two exact
+-- trapezoid tapers (each really a triangle, since a taper's narrow end has
+-- zero width - one true pinch point) built with FillTriangle, closing the
+-- nearside kerb line from its normal offset out to the bay's offset and
+-- back. Deliberately NOT built by feeding a Bay-widened profile through
+-- the general widen/narrow transition machinery (RoadBuilder.Build): that
+-- chains many small constant-width rectangles together, which approximates
+-- a taper as a staircase rather than a single clean diagonal edge - fine
+-- for an ordinary lane width change, but a real bus bay is meant to read as
+-- an actual trapezoid. Since nothing about the rest of the cross-section
+-- changes width over the bay's range, the base road doesn't need slicing
+-- or re-profiling at all - only the bay's own strip needs new geometry.
 function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Model
 	local curve = options.Curve
 	local settings = options.Settings
+	local style = options.Style
 	local baseProfile = options.ProfileStart
+	local scale = settings.MetersToStuds
+	local thickness = settings.RoadThicknessStuds
+	local preview = options.Preview == true
 	local length = curve.Length
 
-	local model = Instance.new("Model")
-	model.Name = if options.Preview then "RoadPreview" else "Road"
+	local model = RoadBuilder.Build(options)
 	if length < 1e-3 then
 		return model
 	end
 
-	local bayProfile = RoadProfile.WithBay(baseProfile, options.Style.DriveOnLeft, bay.WidthM)
-	local widthDeltaStuds = bay.WidthM * settings.MetersToStuds
-	local taperLength = math.clamp(widthDeltaStuds * 15, 20, math.max(bay.LengthStuds, 20))
+	-- Nearside kerb offset (studs from centerline): the edge a bus pulls
+	-- towards - left for LHT (UK-style), right for RHT (US-style). The bay
+	-- widens outward from here, away from the roadway.
+	local componentOffsetsM = RoadProfile.ComponentOffsetsM(baseProfile)
+	local totalWidthStuds = RoadProfile.TotalWidthM(baseProfile) * scale
+	local outward: number
+	local kerbOffset: number
+	if style.DriveOnLeft then
+		outward = -1
+		kerbOffset = if componentOffsetsM[1] then componentOffsetsM[1].Right * scale else -totalWidthStuds / 2
+	else
+		outward = 1
+		local n = #componentOffsetsM
+		kerbOffset = if componentOffsetsM[n] then componentOffsetsM[n].Left * scale else totalWidthStuds / 2
+	end
+	local bayWidthStuds = bay.WidthM * scale
+	local bayOffset = kerbOffset + outward * bayWidthStuds
 
 	local half = math.max(bay.LengthStuds, 0) / 2
 	local dwellStart = math.clamp(bay.StationStuds - half, 0, length)
 	local dwellEnd = math.clamp(bay.StationStuds + half, 0, length)
+	-- Taper length scales with how much width is being added, same
+	-- underlying idea as a widen/narrow taper, just a much shorter/steeper
+	-- default rate since a bay is a small local feature, not a highway-wide
+	-- lane change.
+	local taperLength = math.clamp(bayWidthStuds * 3, 8, math.max(bay.LengthStuds, 8))
 	local taperInStart = math.clamp(dwellStart - taperLength, 0, dwellStart)
 	local taperOutEnd = math.clamp(dwellEnd + taperLength, dwellEnd, length)
 
-	local function appendPiece(piece: Model)
-		for _, child in piece:GetChildren() do
-			child.Parent = model
-		end
-		piece:Destroy()
+	if taperOutEnd - taperInStart < 1e-3 then
+		return model
 	end
 
-	local function buildRange(s0: number, s1: number, profileStart: RoadProfile.RoadProfile, profileEnd: RoadProfile.RoadProfile?)
-		if s1 - s0 < 1e-3 then
-			return
-		end
-		appendPiece(RoadBuilder.Build({
-			Curve = curve:Slice(s0, s1),
-			ProfileStart = profileStart,
-			ProfileEnd = profileEnd,
-			Style = options.Style,
-			Settings = settings,
-			Preview = options.Preview,
-		}))
+	local partHeight = thickness
+
+	local function frameAt(s: number): CFrame
+		return curve:FrameAt(s, Superelevation.RollAt(curve:CurvatureAt(s), settings, style))
 	end
 
-	buildRange(0, taperInStart, baseProfile, nil)
-	buildRange(taperInStart, dwellStart, baseProfile, bayProfile)
-	buildRange(dwellStart, dwellEnd, bayProfile, nil)
-	buildRange(dwellEnd, taperOutEnd, bayProfile, baseProfile)
-	buildRange(taperOutEnd, length, baseProfile, nil)
+	-- Deck top surface (Y=0 in frame-local terms, matching every other
+	-- deck strip's convention) - FillTriangle expects top-surface points
+	-- and extrudes `partHeight` downward itself; the plain dwell rectangle
+	-- below shifts its own center down by partHeight/2 after using this.
+	local function posAt(s: number, offset: number): Vector3
+		return (frameAt(s) * CFrame.new(offset, 0, 0)).Position
+	end
 
-	if #curve.Segments == 1 then
-		RoadInstance.StampModel(model, curve.Segments[1], baseProfile, options.ProfileEnd)
+	local function makeBayPart(): Part
+		local part = makePart(preview)
+		part.Name = "Bay"
+		part.Material = Enum.Material.Asphalt
+		part.Color = style.BayColor
+		return part
+	end
+
+	-- Dwell: a plain flat strip at full bay width, anchored to true curve
+	-- positions at both ends exactly like the deck's other strips.
+	if dwellEnd - dwellStart > 1e-3 then
+		local innerStart = posAt(dwellStart, kerbOffset)
+		local outerStart = posAt(dwellStart, bayOffset)
+		local innerEnd = posAt(dwellEnd, kerbOffset)
+		local outerEnd = posAt(dwellEnd, bayOffset)
+		local mid = (innerStart + outerStart + innerEnd + outerEnd) / 4
+		local forwardVec = (innerEnd + outerEnd) / 2 - (innerStart + outerStart) / 2
+		local segLength = forwardVec.Magnitude
+		if segLength > 1e-3 then
+			local part = makeBayPart()
+			part.Size = Vector3.new(bayWidthStuds, partHeight, segLength)
+			part.CFrame = CFrame.lookAt(mid, mid + forwardVec.Unit, frameAt(dwellStart).UpVector)
+				* CFrame.new(0, -partHeight / 2, 0)
+			part.Parent = model
+		end
+	end
+
+	-- Tapers: each is a single triangle (the pinch point where bay width
+	-- is exactly zero, plus the two dwell-side corners) - the one place
+	-- FillTriangle's wedges are still used, since a taper here is a real
+	-- abrupt trapezoid shape to build exactly, not a curve to approximate.
+	if dwellStart - taperInStart > 1e-3 then
+		local pinch = posAt(taperInStart, kerbOffset)
+		local innerAtDwell = posAt(dwellStart, kerbOffset)
+		local outerAtDwell = posAt(dwellStart, bayOffset)
+		FillTriangle(pinch, innerAtDwell, outerAtDwell, partHeight, -frameAt(dwellStart).UpVector, makeBayPart, model)
+	end
+	if taperOutEnd - dwellEnd > 1e-3 then
+		local pinch = posAt(taperOutEnd, kerbOffset)
+		local innerAtDwell = posAt(dwellEnd, kerbOffset)
+		local outerAtDwell = posAt(dwellEnd, bayOffset)
+		FillTriangle(innerAtDwell, outerAtDwell, pinch, partHeight, -frameAt(dwellEnd).UpVector, makeBayPart, model)
 	end
 
 	return model

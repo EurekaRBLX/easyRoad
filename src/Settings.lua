@@ -10,7 +10,6 @@ local Keybinds = require("./Keybinds")
 
 local kSettingsKey = "easyRoadState"
 
-local CURVE_ALIGNMENTS = { "Center", "Inside", "Outside" }
 local LANGUAGE_VARIANTS = { "British", "American" }
 
 export type SuperelevationMode = "Auto" | "Manual" | "Off"
@@ -21,16 +20,6 @@ export type SuperelevationMode = "Auto" | "Manual" | "Off"
 -- "Sidewalk" component kind, etc.) don't change with this setting.
 export type LanguageVariant = "British" | "American"
 
--- How a curved road's deck strips are built relative to the path, matching
--- the Archimedes plugin's alignment concept: "Center" is symmetric on the
--- path (today's original behavior - each strip approximates both edges,
--- padded to mostly close the resulting curve gap); "Inside"/"Outside"
--- anchor one specific edge (left for Inside, right for Outside) exactly to
--- the true curve points at each station - gap-free by construction on
--- that edge, no padding approximation needed there - while the opposite
--- edge's residual gap is closed exactly with Mesh/FillTriangle.lua.
-export type CurveAlignment = "Center" | "Inside" | "Outside"
-
 export type EasyRoadSettings = {
 	-- Grand style settings
 	RegionId: string,
@@ -40,7 +29,6 @@ export type EasyRoadSettings = {
 	ManualBankDeg: number, -- Used when SuperelevationMode == "Manual"
 	AutoMarkings: boolean,
 	DriveSideOverride: string, -- "Region" | "Left" | "Right"
-	CurveAlignment: CurveAlignment,
 	LanguageVariant: LanguageVariant,
 
 	-- Default road
@@ -81,9 +69,6 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		ManualBankDeg = raw.ManualBankDeg or 4,
 		AutoMarkings = if raw.AutoMarkings == nil then true else raw.AutoMarkings,
 		DriveSideOverride = raw.DriveSideOverride or "Region",
-		CurveAlignment = if typeof(raw.CurveAlignment) == "string" and table.find(CURVE_ALIGNMENTS, raw.CurveAlignment)
-			then raw.CurveAlignment :: CurveAlignment
-			else "Inside" :: CurveAlignment,
 		LanguageVariant = if typeof(raw.LanguageVariant) == "string"
 				and table.find(LANGUAGE_VARIANTS, raw.LanguageVariant)
 			then raw.LanguageVariant :: LanguageVariant
@@ -112,7 +97,6 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		ManualBankDeg = settings.ManualBankDeg,
 		AutoMarkings = settings.AutoMarkings,
 		DriveSideOverride = settings.DriveSideOverride,
-		CurveAlignment = settings.CurveAlignment,
 		LanguageVariant = settings.LanguageVariant,
 		DefaultProfileId = settings.DefaultProfileId,
 		SnapRadiusStuds = settings.SnapRadiusStuds,
