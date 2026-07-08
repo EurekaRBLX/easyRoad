@@ -1297,6 +1297,54 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		end
 	end
 
+	-- Curve joint patches --------------------------------------------------------
+	-- The miter padding above closes the vast majority of a curved strip's
+	-- gap (verified: &lt;0.1 stud residual even at a 17-degree turn with a
+	-- 15-stud lateral offset), but it works by extending each strip along
+	-- its own straight tangent, which tracks the true curve closely but not
+	-- exactly - a small residual can remain. Rather than trying to close
+	-- that residual with an even bigger approximation, drop a small
+	-- generously-sized patch built directly from the curve's own frame at
+	-- each interior joint (no directional approximation of its own, unlike
+	-- the padded strips) - the same "insert connecting geometry to bridge a
+	-- gap" idea stravant's roblox-gapfill plugin uses generally, simplified
+	-- here since our gaps are always flat/horizontal and the exact
+	-- patch shape doesn't matter as long as it's generous enough to cover
+	-- the residual.
+	for i = 2, stationCount - 1 do
+		local s = stations[i]
+		local k = math.abs(curve:CurvatureAt(s))
+		if k &lt; 1e-6 then
+			continue
+		end
+		local jointFrame = frames[i]
+		for c = 1, componentCount do
+			local width = stationWidths[i][c]
+			if width &lt; 0.05 then
+				continue
+			end
+			local centerOffset = stationOffsets[i][c] + width / 2
+			local edgeDistance = math.max(math.abs(centerOffset - width / 2), math.abs(centerOffset + width / 2))
+			-- Generous relative to the validated worst-case residual, still
+			-- small enough to be an invisible overlap rather than a visible
+			-- bump.
+			local patchLength = math.max(0.3, edgeDistance * k * 6)
+
+			local kind = componentsStart[c].Kind
+			local raised = RoadProfile.IsRaised(kind)
+			local partHeight = if raised then thickness + curbHeight else thickness
+			local centerY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2) - (i % 2) * 0.004
+
+			local part = makePart(preview)
+			part.Name = kind
+			part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
+			part.Color = colorForKind(kind, style)
+			part.Size = Vector3.new(width, partHeight, patchLength)
+			part.CFrame = jointFrame * CFrame.new(centerOffset, centerY, 0)
+			part.Parent = model
+		end
+	end
+
 	-- Markings -------------------------------------------------------------------
 	if settings.AutoMarkings then
 		local lines = Markings.Compute(componentsStart, componentsEnd, style, {
@@ -1361,6 +1409,22 @@ function RoadBuilder.Build(options: BuildOptions): Model
 					local nominalLength = s1 - s0
 					local miter = curveMiterPad(curve, sMid, offset, nominalLength)
 					placeMarkingPart(sMid, nominalLength + miter + 0.05, offset, color, i)
+				end
+				-- Same small joint patches as the deck strips, at each
+				-- interior station - a solid line is meant to read as
+				-- continuous, so its residual gap (thin + high-contrast
+				-- against the asphalt) is worth the extra bit of insurance.
+				-- Dashes are deliberately discontinuous, so they don't get
+				-- this treatment.
+				for i = 2, stationCount - 1 do
+					local s = stations[i]
+					local k = math.abs(curve:CurvatureAt(s))
+					if k &lt; 1e-6 then
+						continue
+					end
+					local offset = offsetAt(s) + lateral
+					local patchLength = math.max(0.15, math.abs(offset) * k * 6)
+					placeMarkingPart(s, patchLength, offset, color, i)
 				end
 			end
 

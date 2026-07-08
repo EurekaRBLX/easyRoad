@@ -49,6 +49,34 @@ Both `Mesh/RoadBuilder.lua` bugs identified and fixed:
   previously got a flat `0.05` stud pad with zero curvature awareness at
   all - markings are thin and high-contrast against the asphalt, so an
   un-mitered gap there was arguably the most visible instance of this bug.
+- **Follow-up: verified the miter fix numerically, then added a second,
+  independent layer of insurance.** The user pointed at
+  [stravant/roblox-gapfill](https://github.com/stravant/roblox-gapfill) (a
+  real Studio plugin for closing gaps between arbitrary geometry, using
+  `fillTriangle`-style wedge parts oriented via `CFrame.fromMatrix`) and
+  [stravant/roblox-redupe](https://github.com/stravant/roblox-redupe) (an
+  array-duplication tool - read for completeness, not directly applicable
+  here) as reference. Before changing anything further, worked out the
+  exact 2D geometry by hand for a circular-arc test case (17° turn per
+  strip, 15-stud lateral offset - deliberately aggressive) to check whether
+  the miter padding actually closes the gap or just approximates it:
+  confirmed it closes it to within ~0.03-0.06 studs even in that
+  extreme case (the padding extends each strip along its own straight
+  tangent, which tracks the true curve closely but not exactly, since it
+  isn't literally curving). That residual is almost certainly sub-visible,
+  but rather than trust that blind, or attempt to port GapFill's general
+  triangle-to-wedge `CFrame.fromMatrix` orientation logic (correct for
+  their fully general 3D case, but real risk to get subtly wrong here with
+  no way to visually verify orientation from this environment), added a
+  second, independent, low-risk fix: a small "joint patch" part at every
+  interior station joint (deck strips and solid markings, not dashes -
+  those are deliberately discontinuous), built directly from the curve's
+  own true frame at that exact point rather than extrapolated from a
+  neighboring strip, sized generously (`edgeDistance * curvature * 6`,
+  floor of 0.15-0.3 studs) to comfortably bridge whatever residual the
+  padding leaves. Same "insert connecting geometry to close a gap" idea as
+  GapFill, but reusing this file's own already-proven `frame * CFrame.new`
+  construction instead of new, unverifiable orientation math.
 
 ## Next up — needs a decision or real design work
 
