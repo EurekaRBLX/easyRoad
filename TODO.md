@@ -90,10 +90,7 @@ built.
   *after* it's placed without restarting the whole placement, or a visible
   ramp preview UI - that's not implemented and would need new work. Flagged
   here rather than guessed at and possibly built wrong.
-- **"ProductIon" (settings page ask, unclear).** The request included "in
-  the settings page we just add ProductIon" with no further context - not
-  acted on since I couldn't confidently tell what was meant. Please clarify
-  and it'll go in next round.
+- 
 
 ## Housekeeping
 
