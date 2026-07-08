@@ -3,6 +3,31 @@
 Working notes on what's shipped, what's known-broken, and what's next.
 Not user-facing; internal planning only.
 
+## Recently shipped: keybind capture bug + elevation hint + cancel default
+
+- **Fixed: adding a new keybind silently did nothing.** Root cause:
+  `main.lua`'s `captureNextKeybind` listened via
+  `UserInputService.InputBegan` but bailed whenever `gameProcessed` was
+  true - and Studio marks essentially all input as game-processed while a
+  docked plugin panel has focus (so it doesn't also trigger 3D-viewport
+  shortcuts), meaning the listener's callback returned immediately on
+  every keypress/click during capture and nothing ever got added. Fixed
+  by not checking `gameProcessed` for this specific listener - during an
+  explicit "press a key or click..." capture, whatever the user just
+  pressed IS the input we want, regardless of what else has focus. (Live
+  R/F/Escape handling elsewhere, e.g. `createRoadSession.lua`, still
+  checks `gameProcessed` correctly - that's a different, correct use of
+  the same guard, for a different listener.)
+- **Elevation hint now shows the user's actual configured keys**, not a
+  hardcoded "(or R / F keys)" - `BuildBar.lua` reads
+  `settings.Keybinds.ElevationUp`/`ElevationDown` through
+  `Keybinds.Describe` so it updates automatically after a rebind.
+- **Right-click is no longer a default for Cancel Placement.** It still
+  works as Studio's own camera-orbit gesture and can still be added back
+  manually via "+", but the shipped default is now just Escape and
+  middle-click (the scroll-wheel button) - avoids a right-click meant to
+  nudge the camera accidentally cancelling a placement.
+
 ## Known bugs (logged, not top priority right now)
 
 - **Narrowing (transition) lane algorithm still produces bad geometry.**

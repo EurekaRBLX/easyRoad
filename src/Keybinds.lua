@@ -1,6 +1,7 @@
 --!strict
 -- Rebindable keybinds: each action can have multiple bound inputs (e.g.
--- Cancel Placement defaults to Escape, right-click, AND middle-click).
+-- Cancel Placement defaults to Escape AND middle-click; right-click can be
+-- added manually but isn't a default since it also orbits the camera).
 --
 -- Bindings are stored as plain strings (KeyCode names like "R", or the
 -- sentinels "MouseButton1"/"MouseButton2"/"MouseButton3") rather than Enum
@@ -23,7 +24,11 @@ local ACTIONS: { { Id: ActionId, Label: string } } = {
 local DEFAULTS: KeybindMap = {
 	ElevationUp = { "R" },
 	ElevationDown = { "F" },
-	CancelPlacement = { "Escape", "MouseButton2", "MouseButton3" },
+	-- Right-click is deliberately NOT a default: it also orbits the camera
+	-- in Studio, so a quick right-click meant to nudge the camera could
+	-- cancel a placement unintentionally. Middle-click (the scroll wheel
+	-- button) doesn't have that conflict. Still addable manually via "+".
+	CancelPlacement = { "Escape", "MouseButton3" },
 }
 
 Keybinds.Actions = ACTIONS

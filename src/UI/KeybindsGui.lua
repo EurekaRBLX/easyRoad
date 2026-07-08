@@ -121,7 +121,8 @@ local function KeybindsGui(props: {
 		order = nextOrder
 	end
 	children.Note = e(Components.Label, {
-		Text = "Right-click also orbits the camera in Studio - middle-click cancels without that conflict.",
+		Text = "Right-click isn't a Cancel Placement default since it also orbits the camera in Studio - add it "
+			.. "manually with + if you'd still like it.",
 		Dim = true,
 		LayoutOrder = order,
 	})

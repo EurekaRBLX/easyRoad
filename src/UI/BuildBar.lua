@@ -20,6 +20,15 @@ local RoadDesigner = require("./RoadDesigner")
 local RoadLibraryModule = require("../RoadLibrary")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
+local Keybinds = require("../Keybinds")
+
+local function keyHint(bindings: { string }): string
+	local labels = {}
+	for _, bound in bindings do
+		table.insert(labels, Keybinds.Describe(bound))
+	end
+	return table.concat(labels, "/")
+end
 
 type RoadLibrary = RoadLibraryModule.RoadLibrary
 
@@ -218,7 +227,11 @@ local function BuildBar(props: {
 		}),
 	})
 	children.ElevationHint = e(Components.Label, {
-		Text = "(or R / F keys)",
+		Text = string.format(
+			"(or %s / %s keys)",
+			keyHint(props.Settings.Keybinds.ElevationUp),
+			keyHint(props.Settings.Keybinds.ElevationDown)
+		),
 		Dim = true,
 		LayoutOrder = 9,
 	})

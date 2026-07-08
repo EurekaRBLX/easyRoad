@@ -629,7 +629,8 @@ end
 return Superelevation
 </ProtectedString></Properties></Item></Item><Item class="ModuleScript" referent="RBX7"><Properties><string name="Name">Keybinds</string><ProtectedString name="Source">--!strict
 -- Rebindable keybinds: each action can have multiple bound inputs (e.g.
--- Cancel Placement defaults to Escape, right-click, AND middle-click).
+-- Cancel Placement defaults to Escape AND middle-click; right-click can be
+-- added manually but isn't a default since it also orbits the camera).
 --
 -- Bindings are stored as plain strings (KeyCode names like "R", or the
 -- sentinels "MouseButton1"/"MouseButton2"/"MouseButton3") rather than Enum
@@ -652,7 +653,11 @@ local ACTIONS: { { Id: ActionId, Label: string } } = {
 local DEFAULTS: KeybindMap = {
 	ElevationUp = { "R" },
 	ElevationDown = { "F" },
-	CancelPlacement = { "Escape", "MouseButton2", "MouseButton3" },
+	-- Right-click is deliberately NOT a default: it also orbits the camera
+	-- in Studio, so a quick right-click meant to nudge the camera could
+	-- cancel a placement unintentionally. Middle-click (the scroll wheel
+	-- button) doesn't have that conflict. Still addable manually via "+".
+	CancelPlacement = { "Escape", "MouseButton3" },
 }
 
 Keybinds.Actions = ACTIONS
@@ -3398,6 +3403,15 @@ local RoadDesigner = require("./RoadDesigner")
 local RoadLibraryModule = require("../RoadLibrary")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
+local Keybinds = require("../Keybinds")
+
+local function keyHint(bindings: { string }): string
+	local labels = {}
+	for _, bound in bindings do
+		table.insert(labels, Keybinds.Describe(bound))
+	end
+	return table.concat(labels, "/")
+end
 
 type RoadLibrary = RoadLibraryModule.RoadLibrary
 
@@ -3596,7 +3610,11 @@ local function BuildBar(props: {
 		}),
 	})
 	children.ElevationHint = e(Components.Label, {
-		Text = "(or R / F keys)",
+		Text = string.format(
+			"(or %s / %s keys)",
+			keyHint(props.Settings.Keybinds.ElevationUp),
+			keyHint(props.Settings.Keybinds.ElevationDown)
+		),
 		Dim = true,
 		LayoutOrder = 9,
 	})
@@ -4251,7 +4269,8 @@ local function KeybindsGui(props: {
 		order = nextOrder
 	end
 	children.Note = e(Components.Label, {
-		Text = "Right-click also orbits the camera in Studio - middle-click cancels without that conflict.",
+		Text = "Right-click isn't a Cancel Placement default since it also orbits the camera in Studio - add it "
+			.. "manually with + if you'd still like it.",
 		Dim = true,
 		LayoutOrder = order,
 	})
@@ -6808,8 +6827,9 @@ return TopBar
 -- guide click. After committing a road, placement chains: the next road
 -- starts at the end of the one just placed with its tangent locked.
 --
--- Keyboard: R / F raise and lower the placement elevation, Escape or
--- right-click cancels the current placement (and then the chain).
+-- Keyboard: R / F raise and lower the placement elevation (rebindable),
+-- Escape or middle-click cancels the current placement (and then the
+-- chain) - also rebindable, see Keybinds.lua.
 
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local RunService = game:GetService("RunService")
@@ -7214,9 +7234,9 @@ local function createRoadSession(
 
 	-- Rebindable via the Keybinds settings dock (src/Keybinds.lua); each
 	-- action can have multiple bound inputs (Cancel Placement defaults to
-	-- Escape, right-click, AND middle-click - right-click alone doubles as
-	-- Studio's camera-orbit gesture, so a plain right-click cancelling a
-	-- placement the user only meant to pan around was worth a second option).
+	-- Escape and middle-click - right-click is deliberately not a default
+	-- since it also doubles as Studio's camera-orbit gesture, but can be
+	-- added manually).
 	table.insert(connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		if gameProcessed then
 			return
@@ -7436,12 +7456,17 @@ return function(
 
 	-- Keybinds settings dock: listens for the next key/click and reports it
 	-- back, so "+  Add binding" can capture whatever the user presses.
+	-- Deliberately does NOT check gameProcessed - Studio marks essentially
+	-- all input as "game processed" while a docked plugin panel has focus
+	-- (so it doesn't also trigger 3D-viewport shortcuts), which is exactly
+	-- why R/F/Escape's own live listener (createRoadSession.lua) checks it
+	-- but this one must not: during an explicit capture, whatever the user
+	-- just pressed IS the input we want, regardless of what else has
+	-- focus. Skipping this check was the reason capturing silently never
+	-- registered anything.
 	local function captureNextKeybind(onCaptured: (label: string) -&gt; ())
 		local connection: RBXScriptConnection? = nil
-		connection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
-			if gameProcessed then
-				return
-			end
+		connection = UserInputService.InputBegan:Connect(function(input)
 			local label = KeybindsModule.CaptureLabel(input)
 			if label then
 				if connection then

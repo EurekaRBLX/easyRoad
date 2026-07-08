@@ -97,12 +97,17 @@ return function(
 
 	-- Keybinds settings dock: listens for the next key/click and reports it
 	-- back, so "+  Add binding" can capture whatever the user presses.
+	-- Deliberately does NOT check gameProcessed - Studio marks essentially
+	-- all input as "game processed" while a docked plugin panel has focus
+	-- (so it doesn't also trigger 3D-viewport shortcuts), which is exactly
+	-- why R/F/Escape's own live listener (createRoadSession.lua) checks it
+	-- but this one must not: during an explicit capture, whatever the user
+	-- just pressed IS the input we want, regardless of what else has
+	-- focus. Skipping this check was the reason capturing silently never
+	-- registered anything.
 	local function captureNextKeybind(onCaptured: (label: string) -> ())
 		local connection: RBXScriptConnection? = nil
-		connection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
-			if gameProcessed then
-				return
-			end
+		connection = UserInputService.InputBegan:Connect(function(input)
 			local label = KeybindsModule.CaptureLabel(input)
 			if label then
 				if connection then

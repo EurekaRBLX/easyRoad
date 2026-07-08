@@ -11,8 +11,9 @@
 -- guide click. After committing a road, placement chains: the next road
 -- starts at the end of the one just placed with its tangent locked.
 --
--- Keyboard: R / F raise and lower the placement elevation, Escape or
--- right-click cancels the current placement (and then the chain).
+-- Keyboard: R / F raise and lower the placement elevation (rebindable),
+-- Escape or middle-click cancels the current placement (and then the
+-- chain) - also rebindable, see Keybinds.lua.
 
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local RunService = game:GetService("RunService")
@@ -417,9 +418,9 @@ local function createRoadSession(
 
 	-- Rebindable via the Keybinds settings dock (src/Keybinds.lua); each
 	-- action can have multiple bound inputs (Cancel Placement defaults to
-	-- Escape, right-click, AND middle-click - right-click alone doubles as
-	-- Studio's camera-orbit gesture, so a plain right-click cancelling a
-	-- placement the user only meant to pan around was worth a second option).
+	-- Escape and middle-click - right-click is deliberately not a default
+	-- since it also doubles as Studio's camera-orbit gesture, but can be
+	-- added manually).
 	table.insert(connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
 		if gameProcessed then
 			return
