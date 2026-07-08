@@ -35,6 +35,7 @@ local createRoadEditSession = require("./RoadEditSession")
 local RoadDesigner = require("./UI/RoadDesigner")
 local RoadInspector = require("./UI/RoadInspector")
 local BuildBar = require("./UI/BuildBar")
+local RoadLibraryPanel = require("./UI/RoadLibraryPanel")
 local TopBar = require("./UI/TopBar")
 local RegionalPreferenceGui = require("./UI/RegionalPreferenceGui")
 local KeybindsGui = require("./UI/KeybindsGui")
@@ -340,56 +341,81 @@ return function(
 			}
 		elseif session then
 			local currentSession = session :: createRoadSession.RoadSession
-			bottomContent = React.createElement(BuildBar, {
-				ToolMode = currentSession.GetToolMode(),
-				SetToolMode = function(mode: string)
-					currentSession.SetToolMode(mode :: createRoadSession.ToolMode)
-				end,
-				Library = library,
-				RegionStyle = getStyle(),
-				ProfileId = currentSession.GetProfile().Id,
-				SetProfileId = function(id: string)
-					local profile = library.Get(id)
-					if profile then
-						settings.DefaultProfileId = id
-						currentSession.SetProfile(profile)
-						persist()
-						updateUI()
-					end
-				end,
-				EndProfileId = if currentSession.GetEndProfile()
-					then (currentSession.GetEndProfile() :: RoadProfile.RoadProfile).Id
-					else nil,
-				SetEndProfileId = function(id: string?)
-					currentSession.SetEndProfile(if id then library.Get(id) else nil)
-				end,
-				Settings = settings,
-				OnSettingsChanged = function()
-					library.SetStyle(getStyle())
+			local function setProfileId(id: string)
+				local profile = library.Get(id)
+				if profile then
+					settings.DefaultProfileId = id
+					currentSession.SetProfile(profile)
 					persist()
 					updateUI()
-				end,
-				Hint = currentSession.GetHint(),
-				Elevation = currentSession.GetElevation(),
-				AdjustElevation = function(delta: number)
-					currentSession.AdjustElevation(delta)
-				end,
-				SetElevation = function(value: number)
-					currentSession.SetElevation(value)
-				end,
-				OnStop = function()
-					stopSession()
-					plugin:Deactivate()
-				end,
+				end
+			end
+			-- Two separate floating boxes side by side, CS2-style, not one
+			-- box with everything stacked on top of itself: Tool Mode
+			-- (bottom-left) and Road Library (bottom-right), each wrapped
+			-- in its own positioning Frame (BuildBar/RoadLibraryPanel both
+			-- fill whatever parent they're given via fromScale(1,1)), both
+			-- bottom-aligned within a shared invisible wrapper so
+			-- hover-tracking (below) stays scoped to roughly their combined
+			-- visible footprint instead of the whole screen.
+			bottomContent = React.createElement(React.Fragment, nil, {
+				ToolMode = React.createElement("Frame", {
+					AnchorPoint = Vector2.new(0, 1),
+					Position = UDim2.new(0, 0, 1, 0),
+					Size = UDim2.new(0, 260, 0, 430),
+					BackgroundTransparency = 1,
+				}, {
+					Inner = React.createElement(BuildBar, {
+						ToolMode = currentSession.GetToolMode(),
+						SetToolMode = function(mode: string)
+							currentSession.SetToolMode(mode :: createRoadSession.ToolMode)
+						end,
+						Library = library,
+						EndProfileId = if currentSession.GetEndProfile()
+							then (currentSession.GetEndProfile() :: RoadProfile.RoadProfile).Id
+							else nil,
+						SetEndProfileId = function(id: string?)
+							currentSession.SetEndProfile(if id then library.Get(id) else nil)
+						end,
+						Settings = settings,
+						OnSettingsChanged = function()
+							library.SetStyle(getStyle())
+							persist()
+							updateUI()
+						end,
+						Hint = currentSession.GetHint(),
+						Elevation = currentSession.GetElevation(),
+						AdjustElevation = function(delta: number)
+							currentSession.AdjustElevation(delta)
+						end,
+						SetElevation = function(value: number)
+							currentSession.SetElevation(value)
+						end,
+						OnStop = function()
+							stopSession()
+							plugin:Deactivate()
+						end,
+					}),
+				}),
+				RoadLibrary = React.createElement("Frame", {
+					AnchorPoint = Vector2.new(1, 1),
+					Position = UDim2.new(1, 0, 1, 0),
+					Size = UDim2.new(0, 340, 0, 170),
+					BackgroundTransparency = 1,
+				}, {
+					Inner = React.createElement(RoadLibraryPanel, {
+						Library = library,
+						RegionStyle = getStyle(),
+						Settings = settings,
+						ProfileId = currentSession.GetProfile().Id,
+						SetProfileId = setProfileId,
+					}),
+				}),
 			})
-			-- Bottom-docked and centered (CS2-style bottom toolbar), not a
-			-- bottom-left floating card - wider too, to fit the category
-			-- tabs (Streets/Avenues/Highways/Paths/Custom) above the road
-			-- library list.
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0.5, 1),
 				Position = UDim2.new(0.5, 0, 1, -12),
-				Size = UDim2.new(0, 420, 0, 460),
+				Size = UDim2.new(0, 612, 0, 430),
 			}
 		elseif editSession.GetSelectedRoad() and editSession.IsConfirmingBay() then
 			local draft = editSession.GetBayDraft()

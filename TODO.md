@@ -6,18 +6,17 @@ what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
 ## Next up — needs a decision or real design work
 
-**CS2-style road-tool UI - partial delivery, may still need another pass.**
-Confirmed with the user this round: bottom-docked + centered (was a
-bottom-left floating card) and Streets/Avenues/Highways/Paths/Custom
-category tabs filtering the road library, both now in `BuildBar.lua`/
-`main.lua`. Not done: the CS2 reference's road library is a horizontal
-strip of larger square tiles (thumbnail-over-label); this round kept the
-existing vertical-scrolling `RoadLibraryList` (thumbnail-beside-label rows)
-underneath the new category tabs rather than rebuilding it as a horizontal
-tile browser, since that's a separate, larger component rewrite
-(`RoadDesigner.RoadLibraryList`/`RoadLibraryRow`) - revisit if the tabs
-alone don't read as "CS2-style" enough once seen live in Studio (this
-environment can't render Studio to check).
+**CS2-style road-tool UI - now split into two panels + horizontal tiles, not
+verified live.** Two rounds of misses before this: first a divider inside
+one panel, then one wider panel with an internal "Road Library" section -
+a user screenshot showed CS2 is genuinely two separate boxes side by side,
+which this round's split (`BuildBar.lua` = Tool Mode, new
+`UI/RoadLibraryPanel.lua` = category tabs + horizontal road tile strip)
+should now match structurally. Not verified in a live Studio session (this
+environment can't render Studio) - the two panels' exact sizes/positions
+(260x430 Tool Mode, 340x170 Road Library, 12px gap, bottom-aligned) were
+picked to roughly match the reference screenshot's proportions but haven't
+been checked against the real thing.
 
 **Marking "stretch" interaction — still not built (the one piece of "Edit
 Road Segment" deliberately left out of that round).** Dragging a lane
