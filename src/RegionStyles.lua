@@ -25,6 +25,7 @@ export type MarkingSpec = {
 export type RegionStyle = {
 	Id: string,
 	Name: string,
+	BuiltIn: boolean,
 
 	-- Traffic layout
 	DriveOnLeft: boolean,
@@ -92,8 +93,9 @@ local function doubleSolid(color: Color3): MarkingSpec
 	return { Line = "DoubleSolid" :: LineType, Color = color }
 end
 
-local function makeStyle(partial: RegionStyle): RegionStyle
-	return partial
+local function makeStyle(partial: any): RegionStyle
+	partial.BuiltIn = true
+	return partial :: RegionStyle
 end
 
 local Styles: { RegionStyle } = {
@@ -321,6 +323,174 @@ function RegionStyles.Ids(): { string }
 		table.insert(ids, style.Id)
 	end
 	return ids
+end
+
+-- Cloning + serialization (for custom user-created region presets) ------------
+-- Plain, JSON-safe data only in the serialized form - Color3 becomes a
+-- {R, G, B} (0-255) table, matching this codebase's rule of never putting
+-- raw Roblox types into plugin settings storage (see Keybinds/RoadProfile).
+
+local LineTypes: { LineType } = {
+	"None" :: LineType,
+	"Solid" :: LineType,
+	"Dashed" :: LineType,
+	"DoubleSolid" :: LineType,
+	"DoubleDashed" :: LineType,
+	"SolidDash" :: LineType,
+	"DashSolid" :: LineType,
+}
+
+local function cloneMarking(spec: MarkingSpec): MarkingSpec
+	return {
+		Line = spec.Line,
+		Color = spec.Color,
+		DashLengthM = spec.DashLengthM,
+		DashGapM = spec.DashGapM,
+	}
+end
+
+function RegionStyles.Clone(style: RegionStyle): RegionStyle
+	return {
+		Id = style.Id,
+		Name = style.Name,
+		BuiltIn = style.BuiltIn,
+		DriveOnLeft = style.DriveOnLeft,
+		DefaultLaneWidthM = style.DefaultLaneWidthM,
+		SidewalkWidthM = style.SidewalkWidthM,
+		ShoulderWidthM = style.ShoulderWidthM,
+		MedianWidthM = style.MedianWidthM,
+		BikeLaneWidthM = style.BikeLaneWidthM,
+		ParkingLaneWidthM = style.ParkingLaneWidthM,
+		CurbHeightM = style.CurbHeightM,
+		CenterLine = cloneMarking(style.CenterLine),
+		LaneLine = cloneMarking(style.LaneLine),
+		EdgeLine = cloneMarking(style.EdgeLine),
+		MarkingWidthM = style.MarkingWidthM,
+		DashLengthM = style.DashLengthM,
+		DashGapM = style.DashGapM,
+		WhiteMarking = style.WhiteMarking,
+		YellowMarking = style.YellowMarking,
+		MaxSuperelevation = style.MaxSuperelevation,
+		DesignSpeedKph = style.DesignSpeedKph,
+		AsphaltColor = style.AsphaltColor,
+		ShoulderColor = style.ShoulderColor,
+		SidewalkColor = style.SidewalkColor,
+		CurbColor = style.CurbColor,
+		MedianColor = style.MedianColor,
+		BikeLaneColor = style.BikeLaneColor,
+		BayColor = style.BayColor,
+	}
+end
+
+local function serializeColor(color: Color3): { [string]: number }
+	return {
+		R = math.round(color.R * 255),
+		G = math.round(color.G * 255),
+		B = math.round(color.B * 255),
+	}
+end
+
+local function deserializeColor(raw: any, fallback: Color3): Color3
+	if typeof(raw) ~= "table" or typeof(raw.R) ~= "number" or typeof(raw.G) ~= "number" or typeof(raw.B) ~= "number" then
+		return fallback
+	end
+	return Color3.fromRGB(math.clamp(raw.R, 0, 255), math.clamp(raw.G, 0, 255), math.clamp(raw.B, 0, 255))
+end
+
+local function serializeMarking(spec: MarkingSpec): { [string]: any }
+	return {
+		Line = spec.Line,
+		Color = serializeColor(spec.Color),
+		DashLengthM = spec.DashLengthM,
+		DashGapM = spec.DashGapM,
+	}
+end
+
+local function deserializeMarking(raw: any, fallback: MarkingSpec): MarkingSpec
+	if typeof(raw) ~= "table" then
+		return cloneMarking(fallback)
+	end
+	local line = if typeof(raw.Line) == "string" and table.find(LineTypes, raw.Line)
+		then raw.Line :: LineType
+		else fallback.Line
+	return {
+		Line = line,
+		Color = deserializeColor(raw.Color, fallback.Color),
+		DashLengthM = if typeof(raw.DashLengthM) == "number" then raw.DashLengthM else fallback.DashLengthM,
+		DashGapM = if typeof(raw.DashGapM) == "number" then raw.DashGapM else fallback.DashGapM,
+	}
+end
+
+function RegionStyles.Serialize(style: RegionStyle): { [string]: any }
+	return {
+		Id = style.Id,
+		Name = style.Name,
+		DriveOnLeft = style.DriveOnLeft,
+		DefaultLaneWidthM = style.DefaultLaneWidthM,
+		SidewalkWidthM = style.SidewalkWidthM,
+		ShoulderWidthM = style.ShoulderWidthM,
+		MedianWidthM = style.MedianWidthM,
+		BikeLaneWidthM = style.BikeLaneWidthM,
+		ParkingLaneWidthM = style.ParkingLaneWidthM,
+		CurbHeightM = style.CurbHeightM,
+		CenterLine = serializeMarking(style.CenterLine),
+		LaneLine = serializeMarking(style.LaneLine),
+		EdgeLine = serializeMarking(style.EdgeLine),
+		MarkingWidthM = style.MarkingWidthM,
+		DashLengthM = style.DashLengthM,
+		DashGapM = style.DashGapM,
+		WhiteMarking = serializeColor(style.WhiteMarking),
+		YellowMarking = serializeColor(style.YellowMarking),
+		MaxSuperelevation = style.MaxSuperelevation,
+		DesignSpeedKph = style.DesignSpeedKph,
+		AsphaltColor = serializeColor(style.AsphaltColor),
+		ShoulderColor = serializeColor(style.ShoulderColor),
+		SidewalkColor = serializeColor(style.SidewalkColor),
+		CurbColor = serializeColor(style.CurbColor),
+		MedianColor = serializeColor(style.MedianColor),
+		BikeLaneColor = serializeColor(style.BikeLaneColor),
+		BayColor = serializeColor(style.BayColor),
+	}
+end
+
+function RegionStyles.Deserialize(raw: any): RegionStyle?
+	if typeof(raw) ~= "table" or typeof(raw.Id) ~= "string" then
+		return nil
+	end
+	local fallback = RegionStyles.Get("UK")
+	local function num(value: any, default: number): number
+		return if typeof(value) == "number" then value else default
+	end
+	return {
+		Id = raw.Id,
+		Name = if typeof(raw.Name) == "string" then raw.Name else raw.Id,
+		BuiltIn = false,
+		DriveOnLeft = if typeof(raw.DriveOnLeft) == "boolean" then raw.DriveOnLeft else fallback.DriveOnLeft,
+		DefaultLaneWidthM = num(raw.DefaultLaneWidthM, fallback.DefaultLaneWidthM),
+		SidewalkWidthM = num(raw.SidewalkWidthM, fallback.SidewalkWidthM),
+		ShoulderWidthM = num(raw.ShoulderWidthM, fallback.ShoulderWidthM),
+		MedianWidthM = num(raw.MedianWidthM, fallback.MedianWidthM),
+		BikeLaneWidthM = num(raw.BikeLaneWidthM, fallback.BikeLaneWidthM),
+		ParkingLaneWidthM = num(raw.ParkingLaneWidthM, fallback.ParkingLaneWidthM),
+		CurbHeightM = num(raw.CurbHeightM, fallback.CurbHeightM),
+		CenterLine = deserializeMarking(raw.CenterLine, fallback.CenterLine),
+		LaneLine = deserializeMarking(raw.LaneLine, fallback.LaneLine),
+		EdgeLine = deserializeMarking(raw.EdgeLine, fallback.EdgeLine),
+		MarkingWidthM = num(raw.MarkingWidthM, fallback.MarkingWidthM),
+		DashLengthM = num(raw.DashLengthM, fallback.DashLengthM),
+		DashGapM = num(raw.DashGapM, fallback.DashGapM),
+		WhiteMarking = deserializeColor(raw.WhiteMarking, fallback.WhiteMarking),
+		YellowMarking = deserializeColor(raw.YellowMarking, fallback.YellowMarking),
+		MaxSuperelevation = num(raw.MaxSuperelevation, fallback.MaxSuperelevation),
+		DesignSpeedKph = num(raw.DesignSpeedKph, fallback.DesignSpeedKph),
+		AsphaltColor = deserializeColor(raw.AsphaltColor, fallback.AsphaltColor),
+		ShoulderColor = deserializeColor(raw.ShoulderColor, fallback.ShoulderColor),
+		SidewalkColor = deserializeColor(raw.SidewalkColor, fallback.SidewalkColor),
+		CurbColor = deserializeColor(raw.CurbColor, fallback.CurbColor),
+		MedianColor = deserializeColor(raw.MedianColor, fallback.MedianColor),
+		BikeLaneColor = deserializeColor(raw.BikeLaneColor, fallback.BikeLaneColor),
+		BayColor = deserializeColor(raw.BayColor, fallback.BayColor),
+	}
 end
 
 return RegionStyles

@@ -29,6 +29,7 @@ local RegionStyles = require("./RegionStyles")
 local RoadProfile = require("./RoadProfile")
 local KeybindsModule = require("./Keybinds")
 local createRoadLibrary = require("./RoadLibrary")
+local createRegionLibrary = require("./RegionLibrary")
 local createRoadSession = require("./createRoadSession")
 local createRoadEditSession = require("./RoadEditSession")
 local RoadDesigner = require("./UI/RoadDesigner")
@@ -48,7 +49,8 @@ return function(
 	setButtonActive: (active: boolean) -> ()
 )
 	local settings = Settings.Load(plugin)
-	local library = createRoadLibrary(RegionStyles.Get(settings.RegionId), settings.UserProfiles)
+	local regionLibrary = createRegionLibrary(settings.UserRegions)
+	local library = createRoadLibrary(regionLibrary.Get(settings.RegionId), settings.UserProfiles)
 
 	-- Whether the plugin UI (top bar) is shown at all; toggled by the
 	-- toolbar button.
@@ -76,7 +78,7 @@ return function(
 	local updateUI: () -> () = nil :: any
 
 	local function getStyle(): RegionStyles.RegionStyle
-		return RegionStyles.Get(settings.RegionId)
+		return regionLibrary.Get(settings.RegionId)
 	end
 
 	-- Selection-based road editing: always listening (independent of the
@@ -89,6 +91,7 @@ return function(
 
 	local function persist()
 		settings.UserProfiles = library.SerializeUserProfiles()
+		settings.UserRegions = regionLibrary.SerializeUserRegions()
 		Settings.Save(plugin, settings)
 	end
 
@@ -332,6 +335,7 @@ return function(
 					currentSession.SetToolMode(mode :: createRoadSession.ToolMode)
 				end,
 				Library = library,
+				RegionStyle = getStyle(),
 				ProfileId = currentSession.GetProfile().Id,
 				SetProfileId = function(id: string)
 					local profile = library.Get(id)
@@ -574,6 +578,7 @@ return function(
 			end
 			assert(regionalRoot):render(React.createElement(RegionalPreferenceGui, {
 				Settings = settings,
+				RegionLibrary = regionLibrary,
 				OnSettingsChanged = onSettingsChanged,
 				OnClose = function()
 					regionalDock.Enabled = false

@@ -45,6 +45,9 @@ export type EasyRoadSettings = {
 
 	-- Serialized user-created road profiles (managed by RoadLibrary)
 	UserProfiles: { { [string]: any } },
+
+	-- Serialized user-created region presets (managed by RegionLibrary)
+	UserRegions: { { [string]: any } },
 }
 
 local function loadSettings(plugin: Plugin): EasyRoadSettings
@@ -68,6 +71,7 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		PreviewMaxSegmentLengthStuds = raw.PreviewMaxSegmentLengthStuds or 16,
 		Keybinds = Keybinds.Sanitize(raw.Keybinds),
 		UserProfiles = raw.UserProfiles or {},
+		UserRegions = raw.UserRegions or {},
 	}
 end
 
@@ -91,6 +95,7 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		PreviewMaxSegmentLengthStuds = settings.PreviewMaxSegmentLengthStuds,
 		Keybinds = settings.Keybinds,
 		UserProfiles = settings.UserProfiles,
+		UserRegions = settings.UserRegions,
 	})
 end
 

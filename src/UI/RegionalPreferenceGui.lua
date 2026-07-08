@@ -11,8 +11,12 @@ local e = React.createElement
 
 local Theme = require("./Theme")
 local Components = require("./Components")
+local RegionEditor = require("./RegionEditor")
 local RegionStyles = require("../RegionStyles")
+local RegionLibraryModule = require("../RegionLibrary")
 local Settings = require("../Settings")
+
+type RegionLibrary = RegionLibraryModule.RegionLibrary
 
 local function LabeledRow(props: {
 	Label: string,
@@ -36,14 +40,59 @@ end
 
 local function RegionalPreferenceGui(props: {
 	Settings: Settings.EasyRoadSettings,
+	RegionLibrary: RegionLibrary,
 	OnSettingsChanged: () -> (),
 	OnClose: () -> (),
 })
 	local settings = props.Settings
+	local regionLibrary = props.RegionLibrary
+	local editingRegion, setEditingRegion = React.useState(nil :: RegionStyles.RegionStyle?)
+
+	local activeStyle = regionLibrary.Get(settings.RegionId)
+
+	if editingRegion then
+		local editing = editingRegion :: RegionStyles.RegionStyle
+		return e(RegionEditor, {
+			Style = editing,
+			OnChange = function(transform: (style: RegionStyles.RegionStyle) -> ())
+				local copy = RegionStyles.Clone(editing)
+				transform(copy)
+				setEditingRegion(copy)
+			end,
+			OnSave = function()
+				local toSave = RegionStyles.Clone(editing)
+				if toSave.BuiltIn then
+					-- Editing a built-in preset in place isn't possible - Save
+					-- always creates a copy, matching the Road Editor's
+					-- "editing a built-in road creates a copy" convention.
+					toSave.Id = "user_region_" .. tostring(os.time())
+					toSave.Name = toSave.Name .. " (Custom)"
+				end
+				toSave.BuiltIn = false
+				regionLibrary.SaveUserRegion(toSave)
+				settings.RegionId = toSave.Id
+				setEditingRegion(nil)
+				props.OnSettingsChanged()
+			end,
+			OnDelete = if not editing.BuiltIn
+				then function()
+					regionLibrary.DeleteUserRegion(editing.Id)
+					if settings.RegionId == editing.Id then
+						settings.RegionId = "UK"
+					end
+					setEditingRegion(nil)
+					props.OnSettingsChanged()
+				end
+				else nil,
+			OnCancel = function()
+				setEditingRegion(nil)
+			end,
+		})
+	end
 
 	local regionOptions: { Components.DropdownOption } = {}
-	for _, style in RegionStyles.All do
-		table.insert(regionOptions, { Id = style.Id, Text = style.Name })
+	for _, style in regionLibrary.GetAll() do
+		table.insert(regionOptions, { Id = style.Id, Text = style.Name .. (if style.BuiltIn then "" else " (custom)") })
 	end
 
 	local superelevationOptions: { Components.DropdownOption } = {
@@ -51,8 +100,6 @@ local function RegionalPreferenceGui(props: {
 		{ Id = "Manual", Text = "Manual angle" },
 		{ Id = "Off", Text = "Off (flat roads)" },
 	}
-
-	local activeStyle = RegionStyles.Get(settings.RegionId)
 
 	local scrollProps = Components.ScrollBar()
 	scrollProps.Size = UDim2.fromScale(1, 1)
@@ -107,9 +154,31 @@ local function RegionalPreferenceGui(props: {
 			Dim = true,
 			LayoutOrder = 3,
 		}),
+		RegionActions = e(Components.Row, { LayoutOrder = 4 }, {
+			Edit = e(Components.Button, {
+				Text = if activeStyle.BuiltIn then "Customize This Region" else "Edit This Region",
+				OnClick = function()
+					setEditingRegion(RegionStyles.Clone(activeStyle))
+				end,
+				LayoutOrder = 1,
+				Grow = true,
+			}),
+			New = e(Components.Button, {
+				Text = "+ New Region",
+				OnClick = function()
+					local draft = RegionStyles.Clone(activeStyle)
+					draft.Id = "user_region_" .. tostring(os.time())
+					draft.Name = "New Region"
+					draft.BuiltIn = false
+					setEditingRegion(draft)
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		}),
 		Scale = e(LabeledRow, {
 			Label = "Studs per meter",
-			LayoutOrder = 4,
+			LayoutOrder = 5,
 			children = {
 				Field = e(Components.NumberField, {
 					Value = settings.MetersToStuds,
@@ -130,7 +199,7 @@ local function RegionalPreferenceGui(props: {
 				settings.AutoMarkings = checked
 				props.OnSettingsChanged()
 			end,
-			LayoutOrder = 5,
+			LayoutOrder = 6,
 		}),
 
 		BankSection = e(Components.Section, {

@@ -35,20 +35,39 @@ exists today. The rest of "Edit Road Segment" (bus bay click-placement,
 numpad marking shortcut, the hover submenu itself) shipped this round; see
 below. Flagging this specifically so it isn't quietly dropped.
 
-**Custom region profiles.** The user wants to create their own region
-presets (not just pick from UK/HK/SG/EU/US/JP/AU). `RegionStyles.RegionStyle`
-has ~25 fields (drive side, six component widths, curb height, three
-marking specs, marking width/dash length/gap, white/yellow colours, max
-superelevation + design speed, six material colours, `BayColor`) - building
-a full editor for it is comparable in size to the `RoadProfile` editor
-(`RoadDesigner.lua`) that took a full round on its own. The shape of the
-work: a `RegionStyles.Serialize`/`Deserialize` pair (mirroring
-`RoadProfile.lua`'s), a `Settings.UserRegions` slot (mirroring
-`UserProfiles`), a small library layer (mirroring `RoadLibrary.lua`), and
-an editor UI (mirroring `RoadDesigner`/`ProfileFields`, but for region
-fields instead of lane components). Reasonable to tackle as its own round;
-flagging rather than shipping a partial version that only exposes a few of
-the ~25 fields.
+## Recently shipped: custom region profiles
+
+- **Users can now create and edit their own region presets**, not just pick
+  from the seven built-ins. Shipped exactly the shape scoped in the prior
+  round's note (kept below in spirit, now done):
+  - `RegionStyles.lua` gained `BuiltIn: boolean` on the type (all seven
+    built-ins flagged `true` via `makeStyle`), plus `Clone`/`Serialize`/
+    `Deserialize` mirroring `RoadProfile.lua`'s pattern exactly - Color3
+    fields serialize to a plain `{R, G, B}` (0-255) table, never a raw
+    `Color3`, matching this codebase's settings-storage rule.
+  - `Settings.UserRegions` (serialized user presets) mirrors `UserProfiles`;
+    new `RegionLibrary.lua` mirrors `RoadLibrary.lua` exactly
+    (`GetAll`/`Get`/`SaveUserRegion`/`DeleteUserRegion`/
+    `SerializeUserRegions`). `main.lua`'s `getStyle()` now resolves through
+    `regionLibrary.Get` instead of `RegionStyles.Get` directly, so every
+    consumer (road building, previews, the designer, thumbnails) picks up
+    custom regions with no other code aware anything changed.
+  - New `UI/RegionEditor.lua` covers all ~25 fields grouped into sections
+    (identity, traffic layout, dimensions, superelevation limits, the three
+    marking specs with conditional dash length/gap, marking width/colours,
+    seven surface colours) using the same clone-and-transform `OnChange`
+    convention as `RoadDesigner`/`ProfileFields`. Two new shared inputs
+    support it: `Components.TextField` and `Components.ColorField` (a
+    swatch + R/G/B number fields - no gesture-based hue/saturation picker,
+    just reliable typed input).
+  - Wired into `RegionalPreferenceGui.lua`: "Customize This Region" (built-
+    in - Save always creates a copy, same convention as editing a built-in
+    road) / "Edit This Region" (already custom - edits in place) / "+ New
+    Region" (clones the active style as a starting point) buttons above the
+    region dropdown, which now lists user regions too (suffixed
+    "(custom)"). The editor replaces the normal settings view while active
+    (Save/Delete/Cancel), matching the Road Editor's designProfile-swap
+    pattern.
 
 ## Recently shipped: road library thumbnails + "Edit Road Segment" (scoped)
 

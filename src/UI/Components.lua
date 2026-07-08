@@ -210,6 +210,97 @@ function Components.NumberField(props: {
 	})
 end
 
+-- Text field -----------------------------------------------------------------------
+
+function Components.TextField(props: {
+	Value: string,
+	OnChanged: (value: string) -> (),
+	LayoutOrder: number?,
+	Width: number?,
+})
+	return e("TextBox", {
+		Text = props.Value,
+		TextColor3 = Theme.WHITE,
+		BackgroundColor3 = Theme.FIELD,
+		BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,
+		Size = if props.Width then UDim2.new(0, props.Width, 0, Theme.ROW_HEIGHT) else UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
+		Font = Theme.FONT,
+		TextSize = Theme.TEXT_SIZE,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		ClearTextOnFocus = false,
+		LayoutOrder = props.LayoutOrder,
+		[React.Event.FocusLost] = function(object: TextBox)
+			if object.Text ~= "" then
+				props.OnChanged(object.Text)
+			else
+				object.Text = props.Value
+			end
+		end,
+	}, {
+		Corner = e("UICorner", {
+			CornerRadius = UDim.new(0, 4),
+		}),
+	})
+end
+
+-- Colour field: a swatch preview plus R/G/B (0-255) number fields - no
+-- gesture-based hue/saturation picker, just reliable typed input.
+
+function Components.ColorField(props: {
+	Value: Color3,
+	OnChanged: (value: Color3) -> (),
+	LayoutOrder: number?,
+})
+	local r = math.round(props.Value.R * 255)
+	local g = math.round(props.Value.G * 255)
+	local b = math.round(props.Value.B * 255)
+
+	return e(Components.Row, { LayoutOrder = props.LayoutOrder }, {
+		Swatch = e("Frame", {
+			Size = UDim2.new(0, 22, 0, Theme.ROW_HEIGHT),
+			BackgroundColor3 = props.Value,
+			LayoutOrder = 1,
+		}, {
+			Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+			Stroke = e("UIStroke", {
+				Color = Theme.GLASS_STROKE,
+				Transparency = 0.6,
+				Thickness = 1,
+			}),
+		}),
+		R = e(Components.NumberField, {
+			Value = r,
+			Min = 0,
+			Max = 255,
+			Width = 44,
+			LayoutOrder = 2,
+			OnChanged = function(value: number)
+				props.OnChanged(Color3.fromRGB(math.round(value), g, b))
+			end,
+		}),
+		G = e(Components.NumberField, {
+			Value = g,
+			Min = 0,
+			Max = 255,
+			Width = 44,
+			LayoutOrder = 3,
+			OnChanged = function(value: number)
+				props.OnChanged(Color3.fromRGB(r, math.round(value), b))
+			end,
+		}),
+		B = e(Components.NumberField, {
+			Value = b,
+			Min = 0,
+			Max = 255,
+			Width = 44,
+			LayoutOrder = 4,
+			OnChanged = function(value: number)
+				props.OnChanged(Color3.fromRGB(r, g, math.round(value)))
+			end,
+		}),
+	})
+end
+
 -- Checkbox ------------------------------------------------------------------------------
 
 function Components.Checkbox(props: {
