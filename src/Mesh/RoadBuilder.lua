@@ -19,6 +19,7 @@ local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
 local Markings = require("./Markings")
 local RoadInstance = require("../RoadInstance")
+local FillTriangle = require("./FillTriangle")
 
 export type BuildOptions = {
 	Curve: PolyCurve.PolyCurve,
@@ -252,6 +253,17 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	end
 
 	-- Deck strips ---------------------------------------------------------------
+	-- Recorded per interval (MidFrame + each component's centerOffset/width)
+	-- so the curve joint fill pass below can rebuild each strip's exact
+	-- corner points afterwards without recomputing/duplicating this data.
+	type Interval = {
+		MidFrame: CFrame,
+		HalfLength: number,
+		Offsets: { number },
+		Widths: { number },
+	}
+	local intervals: { Interval? } = table.create(stationCount - 1)
+
 	for i = 1, stationCount - 1 do
 		local s0 = stations[i]
 		local s1 = stations[i + 1]
@@ -273,11 +285,14 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		-- a curve, so sizing off it alone under-covers even the centerline
 		-- before any lateral miter padding is added.
 		local nominalLength = s1 - s0
+		local interval = { MidFrame = midFrame, HalfLength = nominalLength / 2, Offsets = {}, Widths = {} }
+		intervals[i] = interval
 
 		for c = 1, componentCount do
 			local w0 = stationWidths[i][c]
 			local w1 = stationWidths[i + 1][c]
 			local width = (w0 + w1) / 2
+			interval.Widths[c] = width
 			if width < 0.05 then
 				continue
 			end
@@ -285,6 +300,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				stationOffsets[i][c] + w0 / 2 +
 				stationOffsets[i + 1][c] + w1 / 2
 			) / 2
+			interval.Offsets[c] = centerOffset
 
 			local kind = componentsStart[c].Kind
 			local raised = RoadProfile.IsRaised(kind)
@@ -310,51 +326,65 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		end
 	end
 
-	-- Curve joint patches --------------------------------------------------------
+	-- Curve joint fills -----------------------------------------------------------
 	-- The miter padding above closes the vast majority of a curved strip's
 	-- gap (verified: <0.1 stud residual even at a 17-degree turn with a
 	-- 15-stud lateral offset), but it works by extending each strip along
 	-- its own straight tangent, which tracks the true curve closely but not
-	-- exactly - a small residual can remain. Rather than trying to close
-	-- that residual with an even bigger approximation, drop a small
-	-- generously-sized patch built directly from the curve's own frame at
-	-- each interior joint (no directional approximation of its own, unlike
-	-- the padded strips) - the same "insert connecting geometry to bridge a
-	-- gap" idea stravant's roblox-gapfill plugin uses generally, simplified
-	-- here since our gaps are always flat/horizontal and the exact
-	-- patch shape doesn't matter as long as it's generous enough to cover
-	-- the residual.
+	-- exactly - a small residual wedge-shaped gap can remain. Close it
+	-- exactly (not just approximately) with FillTriangle.lua, adapted from
+	-- stravant/roblox-gapfill: each interior joint's residual gap, per
+	-- component, is the quad between that component's two (unpadded) strip
+	-- end corners on either side of the joint - split into two triangles
+	-- and filled with Wedge parts precisely, instead of approximated with
+	-- another padded box.
 	for i = 2, stationCount - 1 do
-		local s = stations[i]
-		local k = math.abs(curve:CurvatureAt(s))
+		local k = math.abs(curve:CurvatureAt(stations[i]))
 		if k < 1e-6 then
 			continue
 		end
-		local jointFrame = frames[i]
+		local intervalA = intervals[i - 1]
+		local intervalB = intervals[i]
+		if not intervalA or not intervalB then
+			continue
+		end
+		local downVector = -frames[i].UpVector
+
 		for c = 1, componentCount do
-			local width = stationWidths[i][c]
-			if width < 0.05 then
+			local widthA = intervalA.Widths[c]
+			local widthB = intervalB.Widths[c]
+			if not widthA or not widthB or widthA < 0.05 or widthB < 0.05 then
 				continue
 			end
-			local centerOffset = stationOffsets[i][c] + width / 2
-			local edgeDistance = math.max(math.abs(centerOffset - width / 2), math.abs(centerOffset + width / 2))
-			-- Generous relative to the validated worst-case residual, still
-			-- small enough to be an invisible overlap rather than a visible
-			-- bump.
-			local patchLength = math.max(0.3, edgeDistance * k * 6)
+			local offsetA = intervalA.Offsets[c]
+			local offsetB = intervalB.Offsets[c]
 
 			local kind = componentsStart[c].Kind
 			local raised = RoadProfile.IsRaised(kind)
 			local partHeight = if raised then thickness + curbHeight else thickness
-			local centerY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2) - (i % 2) * 0.004
+			local baseY = if raised then (curbHeight - thickness) / 2 else -thickness / 2
+			-- Same alternating z-fight epsilon each interval's own strip
+			-- used, so the fill's plane matches both neighbors closely; the
+			-- top surface (not the strip's vertical center) is what the
+			-- triangle should sit on, since depth extrudes downward from it.
+			local topYA = baseY - ((i - 1) % 2) * 0.004 + partHeight / 2
+			local topYB = baseY - (i % 2) * 0.004 + partHeight / 2
 
-			local part = makePart(preview)
-			part.Name = kind
-			part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
-			part.Color = colorForKind(kind, style)
-			part.Size = Vector3.new(width, partHeight, patchLength)
-			part.CFrame = jointFrame * CFrame.new(centerOffset, centerY, 0)
-			part.Parent = model
+			local al = (intervalA.MidFrame * CFrame.new(offsetA - widthA / 2, topYA, intervalA.HalfLength)).Position
+			local ar = (intervalA.MidFrame * CFrame.new(offsetA + widthA / 2, topYA, intervalA.HalfLength)).Position
+			local bl = (intervalB.MidFrame * CFrame.new(offsetB - widthB / 2, topYB, -intervalB.HalfLength)).Position
+			local br = (intervalB.MidFrame * CFrame.new(offsetB + widthB / 2, topYB, -intervalB.HalfLength)).Position
+
+			local function makeWedgePart(): Part
+				local part = makePart(preview)
+				part.Name = kind
+				part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
+				part.Color = colorForKind(kind, style)
+				return part
+			end
+
+			FillTriangle(al, ar, br, partHeight, downVector, makeWedgePart, model)
+			FillTriangle(al, br, bl, partHeight, downVector, makeWedgePart, model)
 		end
 	end
 
