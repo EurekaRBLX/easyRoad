@@ -77,6 +77,9 @@ return function(
 	local roadLibraryHovered = false
 	-- Gates captureNextKeybind below - see its own comment.
 	local keybindsPanelHovered = false
+	-- Tracks which pie-menu slot layout was last rendered (Menu/SegmentMenu/
+	-- PlacingBay/ConfirmingBay) - see the pie-menu hover-reset comment below.
+	local lastPieMenuMode: string? = nil
 
 	local regionalRoot: ReactRoblox.RootType? = nil
 	local keybindsRoot: ReactRoblox.RootType? = nil
@@ -581,6 +584,26 @@ return function(
 					uiState.Hovered = hovered
 				end
 
+				-- Each pie-menu mode swaps in a completely different set of
+				-- PillButtons at the same anchor - if the mouse is sitting on
+				-- one when its OnClick fires (e.g. "Add Bus Bay"), that pill
+				-- unmounts immediately as this mode switches, and React
+				-- destroying it never fires its own MouseLeave. Without this
+				-- reset, uiState.Hovered stayed stuck true from that pill's
+				-- MouseEnter forever after, silently blocking every viewport
+				-- click from then on - including every attempt to drag out
+				-- a bay, which is exactly what this was reported as ("i
+				-- simply cant draw the area").
+				local pieMenuMode = if editSession.IsShowingMenu()
+					then "Menu"
+					elseif editSession.IsShowingSegmentMenu() then "SegmentMenu"
+					elseif editSession.IsPlacingBay() then "PlacingBay"
+					else "ConfirmingBay"
+				if pieMenuMode ~= lastPieMenuMode then
+					lastPieMenuMode = pieMenuMode
+					uiState.Hovered = false
+				end
+
 				local pieMenuElement: any
 				if editSession.IsShowingMenu() then
 					pieMenuElement = React.createElement(PieMenu, {
@@ -719,6 +742,7 @@ return function(
 				pieMenuScreenGui:Destroy()
 				pieMenuScreenGui = nil
 			end
+			lastPieMenuMode = nil
 		end
 
 		-- Docked settings sidebars: separate docks, named by function --------

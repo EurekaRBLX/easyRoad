@@ -4,6 +4,26 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Pie-menu hover-trap breaking bay drag entirely
+
+- **Fixed the bus bay drag being completely unusable** ("i simply cant draw
+  the area"). Root cause: every pie-menu mode (Menu/SegmentMenu/PlacingBay/
+  ConfirmingBay) swaps in a totally different set of `PillButton`s at the
+  same world anchor. Clicking "Add Bus Bay" fires its `OnClick`, which
+  switches the mode and re-renders the pie menu with a *different* set of
+  pills - the "Add Bus Bay" pill itself unmounts immediately while the
+  mouse is still sitting on it, and React destroying a hovered element
+  never fires its own `MouseLeave`. `uiState.Hovered` (set by that pill's
+  `MouseEnter`) got stuck `true` forever after, and `onBayDragBegin`'s
+  "don't place through the HUD" guard silently blocked every subsequent
+  viewport click - the third occurrence of this hover-trap class of bug in
+  this codebase (see `KNOWN_ISSUES.md`). Fixed by resetting
+  `uiState.Hovered` whenever the pie menu's rendered mode actually changes
+  between renders, tracked via a `lastPieMenuMode` value in `main.lua`.
+- Not verified in a live Studio session (this environment can't render
+  Studio) - flagged as high-confidence given the mechanism is fully
+  traceable in the code, unlike some other unverified entries.
+
 ## Bay side-of-drag, wedge-not-block tapers, keybind capture fix
 
 - **Fixed the bus bay always appearing on the region's default driving

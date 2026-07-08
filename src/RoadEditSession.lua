@@ -137,7 +137,6 @@ local function createRoadEditSession(
 		changeSignal:Fire()
 	end
 
-	-- Default width is a lane's width (the road's own first Drive component
 	-- Turns a drag from (startStation, startHit) to the current mouse hit
 	-- into a length (along the road) / width (perpendicular, away from the
 	-- start point - the user drags outward from the sidewalk) pair, plus
