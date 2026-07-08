@@ -10,7 +10,19 @@ local Keybinds = require("./Keybinds")
 
 local kSettingsKey = "easyRoadState"
 
+local CURVE_ALIGNMENTS = { "Center", "Inside", "Outside" }
+
 export type SuperelevationMode = "Auto" | "Manual" | "Off"
+
+-- How a curved road's deck strips are built relative to the path, matching
+-- the Archimedes plugin's alignment concept: "Center" is symmetric on the
+-- path (today's original behavior - each strip approximates both edges,
+-- padded to mostly close the resulting curve gap); "Inside"/"Outside"
+-- anchor one specific edge (left for Inside, right for Outside) exactly to
+-- the true curve points at each station - gap-free by construction on
+-- that edge, no padding approximation needed there - while the opposite
+-- edge's residual gap is closed exactly with Mesh/FillTriangle.lua.
+export type CurveAlignment = "Center" | "Inside" | "Outside"
 
 export type EasyRoadSettings = {
 	-- Grand style settings
@@ -21,6 +33,7 @@ export type EasyRoadSettings = {
 	ManualBankDeg: number, -- Used when SuperelevationMode == "Manual"
 	AutoMarkings: boolean,
 	DriveSideOverride: string, -- "Region" | "Left" | "Right"
+	CurveAlignment: CurveAlignment,
 
 	-- Default road
 	DefaultProfileId: string,
@@ -60,6 +73,9 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		ManualBankDeg = raw.ManualBankDeg or 4,
 		AutoMarkings = if raw.AutoMarkings == nil then true else raw.AutoMarkings,
 		DriveSideOverride = raw.DriveSideOverride or "Region",
+		CurveAlignment = if typeof(raw.CurveAlignment) == "string" and table.find(CURVE_ALIGNMENTS, raw.CurveAlignment)
+			then raw.CurveAlignment :: CurveAlignment
+			else "Inside" :: CurveAlignment,
 		DefaultProfileId = raw.DefaultProfileId or "builtin_two_lane",
 		SnapRadiusStuds = raw.SnapRadiusStuds or 8,
 		GridSizeStuds = raw.GridSizeStuds or 4,
@@ -84,6 +100,7 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		ManualBankDeg = settings.ManualBankDeg,
 		AutoMarkings = settings.AutoMarkings,
 		DriveSideOverride = settings.DriveSideOverride,
+		CurveAlignment = settings.CurveAlignment,
 		DefaultProfileId = settings.DefaultProfileId,
 		SnapRadiusStuds = settings.SnapRadiusStuds,
 		GridSizeStuds = settings.GridSizeStuds,

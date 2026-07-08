@@ -83,6 +83,37 @@ Both `Mesh/RoadBuilder.lua` bugs identified and fixed:
   tiny and extending `FillTriangle` to markings/dashes would add real
   complexity for a mostly cosmetic, already-small discrepancy; revisit if
   it turns out to matter in practice.
+- **Follow-up: Curve Alignment setting (Center/Inside/Outside), replacing
+  approximation with exact construction on one edge.** The user asked
+  about [Archimedes 3](https://devforum.roblox.com/t/introducing-archimedes-3-a-building-plugin/1610366),
+  a popular Roblox building plugin with a Center/Inside/Outside path-
+  alignment concept. Looked into it: Archimedes' modes pick which
+  reference line an extruded shape follows (like choosing whether a wall
+  hugs a room's inside, outside, or center line) - its "Outside" mode
+  still leaves a gap at corners for the user to patch by hand, so it isn't
+  a fancier gap-closing algorithm than what was already here. But the idea
+  suggested a real improvement: instead of centering every strip on its
+  own interval's tangent frame and *padding* to approximate closing the
+  gap on both edges (today's `Center` mode, unchanged), a strip can be
+  built by anchoring one specific edge directly to the true curve points
+  at both of its station endpoints. Since adjacent intervals reference the
+  literal same cached station frame (not two independent approximations),
+  that edge becomes gap-free *by construction*, not by tuning a padding
+  formula - only the opposite (residual) edge can still gap, and that gets
+  closed exactly with `FillTriangle` (one triangle per joint per
+  component, not the two-triangle quad Center mode's joint fill needs,
+  since one corner of the gap collapses to the shared exact anchor point).
+  Shipped as a new `Settings.CurveAlignment` field ("Center" | "Inside" |
+  "Outside", default `Inside`), exposed as a dropdown in Regional
+  Preference → Geometry. `Mesh/RoadBuilder.lua`'s deck-strip section now
+  branches on it: `Center` is the untouched original approach; `Inside`/
+  `Outside` use a new `anchoredStripCFrame` helper (built via
+  `CFrame.lookAt` between the two true anchor-edge points, reusing Roblox's
+  own frame-construction primitive rather than re-deriving a right-vector
+  convention by hand, to sidestep a whole class of sign-error risk).
+  Markings aren't threaded through `CurveAlignment` yet - they keep the
+  existing miter-padding treatment regardless of the setting, matching the
+  `FillTriangle` scope decision above.
 
 ## Next up — needs a decision or real design work
 

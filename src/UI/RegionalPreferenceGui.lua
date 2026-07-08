@@ -18,6 +18,12 @@ local Settings = require("../Settings")
 
 type RegionLibrary = RegionLibraryModule.RegionLibrary
 
+local CURVE_ALIGNMENT_OPTIONS: { Components.DropdownOption } = {
+	{ Id = "Center", Text = "Center (symmetric, approximate)" },
+	{ Id = "Inside", Text = "Inside (left edge exact)" },
+	{ Id = "Outside", Text = "Outside (right edge exact)" },
+}
+
 local function LabeledRow(props: {
 	Label: string,
 	LayoutOrder: number,
@@ -352,6 +358,28 @@ local function RegionalPreferenceGui(props: {
 					LayoutOrder = 2,
 				}),
 			},
+		}),
+		CurveAlignment = e(LabeledRow, {
+			Label = "Curve alignment",
+			LayoutOrder = 33,
+			children = {
+				Dropdown = e(Components.Dropdown, {
+					Options = CURVE_ALIGNMENT_OPTIONS,
+					SelectedId = settings.CurveAlignment,
+					OnSelected = function(id: string)
+						settings.CurveAlignment = id :: Settings.CurveAlignment
+						props.OnSettingsChanged()
+					end,
+					LayoutOrder = 2,
+					Grow = true,
+				}),
+			},
+		}),
+		CurveAlignmentInfo = e(Components.Label, {
+			Text = "Which edge of a curved road stays exactly on the path - "
+				.. "the other edge closes any gap exactly instead of approximating it.",
+			Dim = true,
+			LayoutOrder = 34,
 		}),
 
 		Close = e(Components.Button, {

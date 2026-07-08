@@ -253,138 +253,208 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	end
 
 	-- Deck strips ---------------------------------------------------------------
-	-- Recorded per interval (MidFrame + each component's centerOffset/width)
-	-- so the curve joint fill pass below can rebuild each strip's exact
-	-- corner points afterwards without recomputing/duplicating this data.
-	type Interval = {
-		MidFrame: CFrame,
-		HalfLength: number,
-		Offsets: { number },
-		Widths: { number },
-	}
-	local intervals: { Interval? } = table.create(stationCount - 1)
+	-- CurveAlignment picks which reference each strip is built from, same
+	-- concept as the Archimedes plugin's Center/Inside/Outside path
+	-- alignment:
+	--   Center (anchorSign = 0)  - today's original approach: each strip is
+	--     centered on the tangent frame at its own interval midpoint, both
+	--     edges are approximate, padded via curveMiterPad to mostly close
+	--     the gap on either side.
+	--   Inside/Outside (anchorSign = -1 / +1) - each strip's anchor edge
+	--     (left for Inside, right for Outside) is built directly from the
+	--     TRUE curve position at both of its station endpoints - since
+	--     adjacent intervals share the exact same station point (the same
+	--     cached `frames[i]` entry, not recomputed), that edge is gap-free
+	--     by construction, no padding approximation needed. Only the
+	--     opposite (residual) edge can still show a gap, closed exactly
+	--     with FillTriangle.lua instead of approximated.
+	local anchorSign = if settings.CurveAlignment == "Inside" then -1
+		elseif settings.CurveAlignment == "Outside" then 1
+		else 0
 
-	for i = 1, stationCount - 1 do
-		local s0 = stations[i]
-		local s1 = stations[i + 1]
-		local sMid = (s0 + s1) / 2
-		local rollMid = (rolls[i] + rolls[i + 1]) / 2
-		local midFrame = curve:FrameAt(sMid, rollMid)
+	if anchorSign == 0 then
+		for i = 1, stationCount - 1 do
+			local s0 = stations[i]
+			local s1 = stations[i + 1]
+			local sMid = (s0 + s1) / 2
+			local rollMid = (rolls[i] + rolls[i + 1]) / 2
+			local midFrame = curve:FrameAt(sMid, rollMid)
 
-		-- Guard against degenerate geometry (folded curves / cusps): skip
-		-- intervals where the heading reverses or the frame went non-finite
-		-- rather than emitting strips fanned across the fold.
-		local headingDot = frames[i].LookVector:Dot(frames[i + 1].LookVector)
-		local midPos = midFrame.Position
-		if headingDot < 0 or midPos.X ~= midPos.X or midPos.Y ~= midPos.Y or midPos.Z ~= midPos.Z then
-			continue
-		end
-
-		-- The nominal span is the arc length (s1 - s0), not the straight
-		-- chord between frame positions - chord is always <= arc length on
-		-- a curve, so sizing off it alone under-covers even the centerline
-		-- before any lateral miter padding is added.
-		local nominalLength = s1 - s0
-		local interval = { MidFrame = midFrame, HalfLength = nominalLength / 2, Offsets = {}, Widths = {} }
-		intervals[i] = interval
-
-		for c = 1, componentCount do
-			local w0 = stationWidths[i][c]
-			local w1 = stationWidths[i + 1][c]
-			local width = (w0 + w1) / 2
-			interval.Widths[c] = width
-			if width < 0.05 then
+			-- Guard against degenerate geometry (folded curves / cusps):
+			-- skip intervals where the heading reverses or the frame went
+			-- non-finite rather than emitting strips fanned across the fold.
+			local headingDot = frames[i].LookVector:Dot(frames[i + 1].LookVector)
+			local midPos = midFrame.Position
+			if headingDot < 0 or midPos.X ~= midPos.X or midPos.Y ~= midPos.Y or midPos.Z ~= midPos.Z then
 				continue
 			end
-			local centerOffset = (
-				stationOffsets[i][c] + w0 / 2 +
-				stationOffsets[i + 1][c] + w1 / 2
-			) / 2
-			interval.Offsets[c] = centerOffset
 
-			local kind = componentsStart[c].Kind
-			local raised = RoadProfile.IsRaised(kind)
-			local partHeight = if raised then thickness + curbHeight else thickness
-			-- Deck (roadway) top surface sits at frame level; raised
-			-- components (sidewalk/median) stand a curb height above it.
-			-- Alternating strips drop by a sub-visible epsilon so overlapping
-			-- neighbor strips never z-fight.
-			local centerY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2)
-				- (i % 2) * 0.004
+			-- The nominal span is the arc length (s1 - s0), not the
+			-- straight chord between frame positions - chord is always
+			-- <= arc length on a curve, so sizing off it alone under-covers
+			-- even the centerline before any lateral miter padding.
+			local nominalLength = s1 - s0
 
-			local edgeDistance = math.max(math.abs(centerOffset - width / 2), math.abs(centerOffset + width / 2))
-			local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
-			local partLength = nominalLength + miter + 0.02
+			for c = 1, componentCount do
+				local w0 = stationWidths[i][c]
+				local w1 = stationWidths[i + 1][c]
+				local width = (w0 + w1) / 2
+				if width < 0.05 then
+					continue
+				end
+				local centerOffset = (
+					stationOffsets[i][c] + w0 / 2 +
+					stationOffsets[i + 1][c] + w1 / 2
+				) / 2
 
-			local part = makePart(preview)
-			part.Name = kind
-			part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
-			part.Color = colorForKind(kind, style)
-			part.Size = Vector3.new(width, partHeight, partLength)
-			part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
-			part.Parent = model
-		end
-	end
+				local kind = componentsStart[c].Kind
+				local raised = RoadProfile.IsRaised(kind)
+				local partHeight = if raised then thickness + curbHeight else thickness
+				-- Deck (roadway) top surface sits at frame level; raised
+				-- components (sidewalk/median) stand a curb height above
+				-- it. Alternating strips drop by a sub-visible epsilon so
+				-- overlapping neighbor strips never z-fight.
+				local centerY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2)
+					- (i % 2) * 0.004
 
-	-- Curve joint fills -----------------------------------------------------------
-	-- The miter padding above closes the vast majority of a curved strip's
-	-- gap (verified: <0.1 stud residual even at a 17-degree turn with a
-	-- 15-stud lateral offset), but it works by extending each strip along
-	-- its own straight tangent, which tracks the true curve closely but not
-	-- exactly - a small residual wedge-shaped gap can remain. Close it
-	-- exactly (not just approximately) with FillTriangle.lua, adapted from
-	-- stravant/roblox-gapfill: each interior joint's residual gap, per
-	-- component, is the quad between that component's two (unpadded) strip
-	-- end corners on either side of the joint - split into two triangles
-	-- and filled with Wedge parts precisely, instead of approximated with
-	-- another padded box.
-	for i = 2, stationCount - 1 do
-		local k = math.abs(curve:CurvatureAt(stations[i]))
-		if k < 1e-6 then
-			continue
-		end
-		local intervalA = intervals[i - 1]
-		local intervalB = intervals[i]
-		if not intervalA or not intervalB then
-			continue
-		end
-		local downVector = -frames[i].UpVector
+				local edgeDistance = math.max(math.abs(centerOffset - width / 2), math.abs(centerOffset + width / 2))
+				local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
+				local partLength = nominalLength + miter + 0.02
 
-		for c = 1, componentCount do
-			local widthA = intervalA.Widths[c]
-			local widthB = intervalB.Widths[c]
-			if not widthA or not widthB or widthA < 0.05 or widthB < 0.05 then
-				continue
-			end
-			local offsetA = intervalA.Offsets[c]
-			local offsetB = intervalB.Offsets[c]
-
-			local kind = componentsStart[c].Kind
-			local raised = RoadProfile.IsRaised(kind)
-			local partHeight = if raised then thickness + curbHeight else thickness
-			local baseY = if raised then (curbHeight - thickness) / 2 else -thickness / 2
-			-- Same alternating z-fight epsilon each interval's own strip
-			-- used, so the fill's plane matches both neighbors closely; the
-			-- top surface (not the strip's vertical center) is what the
-			-- triangle should sit on, since depth extrudes downward from it.
-			local topYA = baseY - ((i - 1) % 2) * 0.004 + partHeight / 2
-			local topYB = baseY - (i % 2) * 0.004 + partHeight / 2
-
-			local al = (intervalA.MidFrame * CFrame.new(offsetA - widthA / 2, topYA, intervalA.HalfLength)).Position
-			local ar = (intervalA.MidFrame * CFrame.new(offsetA + widthA / 2, topYA, intervalA.HalfLength)).Position
-			local bl = (intervalB.MidFrame * CFrame.new(offsetB - widthB / 2, topYB, -intervalB.HalfLength)).Position
-			local br = (intervalB.MidFrame * CFrame.new(offsetB + widthB / 2, topYB, -intervalB.HalfLength)).Position
-
-			local function makeWedgePart(): Part
 				local part = makePart(preview)
 				part.Name = kind
 				part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
 				part.Color = colorForKind(kind, style)
-				return part
+				part.Size = Vector3.new(width, partHeight, partLength)
+				part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
+				part.Parent = model
+			end
+		end
+	else
+		-- Builds the CFrame for a strip spanning stationA to stationB,
+		-- anchored so that its anchorSign edge sits exactly on the true
+		-- curve position (offsetA/offsetB) at both ends - no padding, no
+		-- approximation. Returns nil if the span is degenerate.
+		local function anchoredStripCFrame(
+			stationA: number,
+			stationB: number,
+			offsetA: number,
+			offsetB: number,
+			topY: number,
+			width: number,
+			partHeight: number
+		): (CFrame?, number)
+			local p0 = (frames[stationA] * CFrame.new(offsetA, topY, 0)).Position
+			local p1 = (frames[stationB] * CFrame.new(offsetB, topY, 0)).Position
+			local segLength = (p1 - p0).Magnitude
+			if segLength < 1e-4 then
+				return nil, 0
+			end
+			local forward = (p1 - p0).Unit
+			local up = frames[stationA].UpVector
+			local mid = (p0 + p1) / 2
+			local lookCF = CFrame.lookAt(mid, mid + forward, up)
+			local stripCF = lookCF * CFrame.new(-anchorSign * width / 2, -partHeight / 2, 0)
+			return stripCF, segLength
+		end
+
+		local function anchorOffsetAt(stationIndex: number, c: number): number
+			if anchorSign > 0 then
+				return stationOffsets[stationIndex][c] + stationWidths[stationIndex][c]
+			end
+			return stationOffsets[stationIndex][c]
+		end
+
+		for i = 1, stationCount - 1 do
+			local headingDot = frames[i].LookVector:Dot(frames[i + 1].LookVector)
+			if headingDot < 0 then
+				continue
 			end
 
-			FillTriangle(al, ar, br, partHeight, downVector, makeWedgePart, model)
-			FillTriangle(al, br, bl, partHeight, downVector, makeWedgePart, model)
+			for c = 1, componentCount do
+				local width = (stationWidths[i][c] + stationWidths[i + 1][c]) / 2
+				if width < 0.05 then
+					continue
+				end
+				local kind = componentsStart[c].Kind
+				local raised = RoadProfile.IsRaised(kind)
+				local partHeight = if raised then thickness + curbHeight else thickness
+				local topY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2) + partHeight / 2
+
+				local stripCF, segLength =
+					anchoredStripCFrame(i, i + 1, anchorOffsetAt(i, c), anchorOffsetAt(i + 1, c), topY, width, partHeight)
+				if not stripCF then
+					continue
+				end
+
+				local part = makePart(preview)
+				part.Name = kind
+				part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
+				part.Color = colorForKind(kind, style)
+				part.Size = Vector3.new(width, partHeight, segLength)
+				part.CFrame = stripCF
+				part.Parent = model
+			end
+		end
+
+		-- Curve joint fills: only the residual (non-anchored) edge can
+		-- still gap, and since the anchor edge is an exact shared point at
+		-- this joint (not two independent approximations like Center mode
+		-- has on both sides), the gap is a single triangle, not a quad.
+		for i = 2, stationCount - 1 do
+			local k = math.abs(curve:CurvatureAt(stations[i]))
+			if k < 1e-6 then
+				continue
+			end
+			-- Same fold/cusp guard the strip-building loop uses - skip a
+			-- joint if either neighboring interval's heading reversed
+			-- (matches that interval having been skipped as a strip too).
+			if
+				frames[i - 1].LookVector:Dot(frames[i].LookVector) < 0
+				or frames[i].LookVector:Dot(frames[i + 1].LookVector) < 0
+			then
+				continue
+			end
+			local downVector = -frames[i].UpVector
+
+			for c = 1, componentCount do
+				local widthA = (stationWidths[i - 1][c] + stationWidths[i][c]) / 2
+				local widthB = (stationWidths[i][c] + stationWidths[i + 1][c]) / 2
+				if widthA < 0.05 or widthB < 0.05 then
+					continue
+				end
+				local kind = componentsStart[c].Kind
+				local raised = RoadProfile.IsRaised(kind)
+				local partHeight = if raised then thickness + curbHeight else thickness
+				local topY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2) + partHeight / 2
+
+				local anchorOffsetI = anchorOffsetAt(i, c)
+				local stripCFA, segLengthA = anchoredStripCFrame(
+					i - 1, i, anchorOffsetAt(i - 1, c), anchorOffsetI, topY, widthA, partHeight
+				)
+				local stripCFB, segLengthB = anchoredStripCFrame(
+					i, i + 1, anchorOffsetI, anchorOffsetAt(i + 1, c), topY, widthB, partHeight
+				)
+				if not stripCFA or not stripCFB then
+					continue
+				end
+
+				local anchorPoint = (frames[i] * CFrame.new(anchorOffsetI, topY, 0)).Position
+				local residualFarA =
+					(stripCFA * CFrame.new(-anchorSign * widthA / 2, partHeight / 2, segLengthA / 2)).Position
+				local residualNearB =
+					(stripCFB * CFrame.new(-anchorSign * widthB / 2, partHeight / 2, -segLengthB / 2)).Position
+
+				local function makeWedgePart(): Part
+					local part = makePart(preview)
+					part.Name = kind
+					part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
+					part.Color = colorForKind(kind, style)
+					return part
+				end
+
+				FillTriangle(anchorPoint, residualFarA, residualNearB, partHeight, downVector, makeWedgePart, model)
+			end
 		end
 	end
 
