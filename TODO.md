@@ -90,7 +90,21 @@ built.
   *after* it's placed without restarting the whole placement, or a visible
   ramp preview UI - that's not implemented and would need new work. Flagged
   here rather than guessed at and possibly built wrong.
-- 
+
+- ### Roundabout Generation
+- [ ] **Core Roundabout Support:** Add algorithmic generation for circular intersections.
+  - [ ] **Single-Lane Roundabouts:** Standard geometry for low-capacity intersections.
+  - [ ] **Multi-Lane Roundabouts:**
+    - [ ] Concentric standard roundabout (classic multi-lane).
+    - [ ] Concentric standard with turbo markings (guided lane changes).
+    - [ ] True Turbo Roundabouts (spiral geometry with physical/marked lane dividers).
+
+### Road Library & Detailing Tools
+- [ ] **Road Detailing Function:** Implement a dedicated tool/library for placing road props and surface details along generated splines.
+  - [ ] **Surface Road Markings:** Decals/meshes for arrows, yield lines, and custom lane indicators.
+  - [ ] **Road Signage:** Placement system for standard regulatory and warning signs.
+  - [ ] **Gantry Systems:** Overhead structures for lane-specific routing.
+  - [ ] **Highway Signs:** Large-scale directional signage with dynamic text/texture mapping.
 
 ## Housekeeping
 
