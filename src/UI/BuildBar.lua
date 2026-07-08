@@ -96,6 +96,10 @@ local function ToolButton(props: {
 	})
 end
 
+-- Preferred category tab order - anything not listed here (a region-specific
+-- extra, say) is appended after in whatever order it's first seen.
+local CATEGORY_ORDER = { "Streets", "Avenues", "Highways", "Paths", "Custom" }
+
 local function BuildBar(props: {
 	ToolMode: string,
 	SetToolMode: (mode: string) -> (),
@@ -113,14 +117,45 @@ local function BuildBar(props: {
 	SetElevation: (value: number) -> (),
 	OnStop: () -> (),
 })
+	local allProfiles = props.Library.GetAll()
+
+	-- Category tabs (Streets / Avenues / Highways / Paths / Custom, CS2-
+	-- style "which network type" picker) sit above the road library list
+	-- and filter it, instead of one long undifferentiated list.
+	local categories: { string } = {}
+	local seenCategory: { [string]: boolean } = {}
+	for _, orderedCategory in CATEGORY_ORDER do
+		for _, libraryProfile in allProfiles do
+			if libraryProfile.Category == orderedCategory and not seenCategory[orderedCategory] then
+				seenCategory[orderedCategory] = true
+				table.insert(categories, orderedCategory)
+			end
+		end
+	end
+	for _, libraryProfile in allProfiles do
+		if not seenCategory[libraryProfile.Category] then
+			seenCategory[libraryProfile.Category] = true
+			table.insert(categories, libraryProfile.Category)
+		end
+	end
+
+	local activeCategory, setActiveCategory = React.useState(categories[1] or "Streets")
+	if not table.find(categories, activeCategory) and categories[1] then
+		-- Selected road's category changed out from under us (e.g. region
+		-- switch) - fall back to the first tab instead of showing nothing.
+		activeCategory = categories[1]
+	end
+
 	local profileOptions: { RoadDesigner.LibraryOption } = {}
-	for _, libraryProfile in props.Library.GetAll() do
-		table.insert(profileOptions, { Id = libraryProfile.Id, Text = libraryProfile.Name, Profile = libraryProfile })
+	for _, libraryProfile in allProfiles do
+		if libraryProfile.Category == activeCategory then
+			table.insert(profileOptions, { Id = libraryProfile.Id, Text = libraryProfile.Name, Profile = libraryProfile })
+		end
 	end
 	local endProfileOptions: { Components.DropdownOption } = {
 		{ Id = "__none", Text = "None (constant width)" },
 	}
-	for _, libraryProfile in props.Library.GetAll() do
+	for _, libraryProfile in allProfiles do
 		table.insert(endProfileOptions, { Id = libraryProfile.Id, Text = libraryProfile.Name })
 	end
 
@@ -161,6 +196,19 @@ local function BuildBar(props: {
 	-- these apart too. Components.Section's own divider (since this isn't
 	-- the first section) provides the separation.
 	children.ProfileLabel = e(Components.Section, { Text = "Road Library", LayoutOrder = 4 })
+	local categoryTabs: { [string]: any } = {}
+	for index, category in categories do
+		categoryTabs[category] = e(Components.Button, {
+			Text = category,
+			Selected = category == activeCategory,
+			OnClick = function()
+				setActiveCategory(category)
+			end,
+			LayoutOrder = index,
+			Grow = true,
+		})
+	end
+	children.CategoryTabs = e(Components.Row, { LayoutOrder = 5 }, categoryTabs)
 	children.Profile = e(RoadDesigner.RoadLibraryList, {
 		Options = profileOptions,
 		SelectedId = props.ProfileId,
@@ -168,9 +216,9 @@ local function BuildBar(props: {
 		RegionStyle = props.RegionStyle,
 		Settings = props.Settings,
 		Height = 90,
-		LayoutOrder = 5,
+		LayoutOrder = 6,
 	})
-	children.Transition = e(Components.Row, { LayoutOrder = 6 }, {
+	children.Transition = e(Components.Row, { LayoutOrder = 7 }, {
 		Label = e(Components.Label, { Text = "Widen to", LayoutOrder = 1, Width = 60 }),
 		Dropdown = e(Components.Dropdown, {
 			Options = endProfileOptions,
@@ -189,10 +237,10 @@ local function BuildBar(props: {
 			props.Settings.SuperelevationMode = if checked then "Auto" else "Off"
 			props.OnSettingsChanged()
 		end,
-		LayoutOrder = 7,
+		LayoutOrder = 8,
 	})
 	children.Speed = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 8 }, {
+		and e(Components.Row, { LayoutOrder = 9 }, {
 			Label = e(Components.Label, { Text = "Speed (km/h)", LayoutOrder = 1, Width = 90 }),
 			Field = e(Components.NumberField, {
 				Value = props.Settings.DesignSpeedKph,
@@ -205,7 +253,7 @@ local function BuildBar(props: {
 				LayoutOrder = 2,
 			}),
 		})
-	children.Elevation = e(Components.Row, { LayoutOrder = 9 }, {
+	children.Elevation = e(Components.Row, { LayoutOrder = 10 }, {
 		Label = e(Components.Label, { Text = "Elevation", LayoutOrder = 1, Width = 64 }),
 		Down = e(Components.Button, {
 			Text = "",
@@ -240,7 +288,7 @@ local function BuildBar(props: {
 	-- CS2-style step adjustment: how far each R/F press or arrow click
 	-- moves the elevation, editable right next to the elevation control
 	-- instead of buried in a separate settings dock.
-	children.ElevationStep = e(Components.Row, { LayoutOrder = 10 }, {
+	children.ElevationStep = e(Components.Row, { LayoutOrder = 11 }, {
 		Label = e(Components.Label, { Text = "Step", Dim = true, LayoutOrder = 1, Width = 64 }),
 		Field = e(Components.NumberField, {
 			Value = props.Settings.ElevationStepStuds,
@@ -261,7 +309,7 @@ local function BuildBar(props: {
 			keyHint(props.Settings.Keybinds.ElevationDown)
 		),
 		Dim = true,
-		LayoutOrder = 11,
+		LayoutOrder = 12,
 	})
 	children.Hint = e("TextLabel", {
 		Text = props.Hint,
@@ -273,13 +321,13 @@ local function BuildBar(props: {
 		TextSize = Theme.TEXT_SIZE,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = true,
-		LayoutOrder = 12,
+		LayoutOrder = 13,
 	})
 	children.Stop = e(Components.Button, {
 		Text = "Stop Building",
 		Danger = true,
 		OnClick = props.OnStop,
-		LayoutOrder = 13,
+		LayoutOrder = 14,
 	})
 
 	local scrollProps = Components.ScrollBar()

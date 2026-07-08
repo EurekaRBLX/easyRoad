@@ -382,10 +382,14 @@ return function(
 					plugin:Deactivate()
 				end,
 			})
+			-- Bottom-docked and centered (CS2-style bottom toolbar), not a
+			-- bottom-left floating card - wider too, to fit the category
+			-- tabs (Streets/Avenues/Highways/Paths/Custom) above the road
+			-- library list.
 			bottomFrameProps = {
-				AnchorPoint = Vector2.new(0, 1),
-				Position = UDim2.new(0, 12, 1, -12),
-				Size = UDim2.new(0, 300, 0, 400),
+				AnchorPoint = Vector2.new(0.5, 1),
+				Position = UDim2.new(0.5, 0, 1, -12),
+				Size = UDim2.new(0, 420, 0, 460),
 			}
 		elseif editSession.GetSelectedRoad() and editSession.IsConfirmingBay() then
 			local draft = editSession.GetBayDraft()

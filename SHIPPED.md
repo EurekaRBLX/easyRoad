@@ -4,6 +4,20 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Bottom-docked build bar with road category tabs
+
+- **`BuildBar.lua` moved from a bottom-left floating card to a bottom-
+  docked, centered, wider bar** (confirmed with the user as the right
+  direction after two previous attempts at "CS2-style" didn't land).
+- **Streets / Avenues / Highways / Paths / Custom category tabs** now sit
+  above the road library list and filter it, instead of one flat list of
+  every built-in and user road at once - categories are read straight off
+  each `RoadProfile.Category` value already in the data model, in a fixed
+  preferred order with any unrecognized category appended after.
+- See `TODO.md` for what's still a further iteration (the library list
+  itself is still the existing vertical-row picker, not CS2's horizontal
+  tile strip).
+
 ## Real bus bay geometry, gradient colour picker, drag-and-drop fix, locale toggle
 
 - **Fixed the farEdgePad regression from last round** (sawtooth/serrated

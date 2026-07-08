@@ -6,19 +6,18 @@ what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
 ## Next up — needs a decision or real design work
 
-**CS2-style road-tool UI - still not actually delivered.** Asked for twice
-now; last round's attempt (a divider + section labels inside the existing
-floating panel) didn't match what was actually wanted. The CS2 reference
-screenshot shows a bottom-docked toolbar with category TABS across the top
-(which network/road type - plain road, highway, one-way, pedestrian, ...)
-as a structurally separate region from "Tool Mode" (straight/curve/
-freeform icons) and the elevation row, not a single floating side panel
-with an internal label. This is a real layout/IA rework (probably: move
-the whole build UI to a bottom-docked bar instead of `BuildBar.lua`'s
-current bottom-left floating card, add road-category tabs above the
-existing tool-mode row) - needs to be scoped with the user rather than
-guessed at a third time, given the first two attempts (icon-only buttons,
-then a divider) both missed the mark.
+**CS2-style road-tool UI - partial delivery, may still need another pass.**
+Confirmed with the user this round: bottom-docked + centered (was a
+bottom-left floating card) and Streets/Avenues/Highways/Paths/Custom
+category tabs filtering the road library, both now in `BuildBar.lua`/
+`main.lua`. Not done: the CS2 reference's road library is a horizontal
+strip of larger square tiles (thumbnail-over-label); this round kept the
+existing vertical-scrolling `RoadLibraryList` (thumbnail-beside-label rows)
+underneath the new category tabs rather than rebuilding it as a horizontal
+tile browser, since that's a separate, larger component rewrite
+(`RoadDesigner.RoadLibraryList`/`RoadLibraryRow`) - revisit if the tabs
+alone don't read as "CS2-style" enough once seen live in Studio (this
+environment can't render Studio to check).
 
 **Marking "stretch" interaction — still not built (the one piece of "Edit
 Road Segment" deliberately left out of that round).** Dragging a lane
