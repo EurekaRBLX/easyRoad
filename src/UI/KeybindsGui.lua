@@ -1,7 +1,19 @@
 --!strict
--- Keybinds: rebindable inputs, docked on its own. Each action can have
--- multiple bound inputs; "+" starts listening for the next key/click to
--- add, each bound input has its own "-" to remove it.
+-- Keybinds: read-only reference for the plugin's few hardcoded default
+-- shortcuts, plus how to add or change one.
+--
+-- This used to be a live "click + Add binding, then press a key" capture
+-- UI, but that can't work reliably from inside a docked plugin panel:
+-- UserInputService is scoped to the main 3D viewport, and a
+-- DockWidgetPluginGui is a genuinely separate native window - once it has
+-- focus, further input doesn't reliably reach UserInputService at all
+-- (a documented Roblox Studio platform limitation, confirmed across
+-- several rounds of this exact bug recurring). The defaults below still
+-- work out of the box with zero setup (each session's own live listener
+-- matches them directly, unaffected by this since it only matters while
+-- the 3D viewport itself has focus, during active placement). Rebinding
+-- now goes through Studio's own native, reliable mechanism instead:
+-- PluginAction + Customize Shortcuts.
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -12,122 +24,64 @@ local e = React.createElement
 local Theme = require("./Theme")
 local Components = require("./Components")
 local KeybindsModule = require("../Keybinds")
-local Settings = require("../Settings")
 
-local function BindingRow(props: {
+local ACTION_NAMES: { [string]: string } = {
+	ElevationUp = "easyRoad: Raise Elevation",
+	ElevationDown = "easyRoad: Lower Elevation",
+	CancelPlacement = "easyRoad: Cancel Placement",
+}
+
+local function DefaultRow(props: {
 	Label: string,
-	OnRemove: () -> (),
+	Bindings: { string },
 	LayoutOrder: number,
 })
+	local described = {}
+	for _, bound in props.Bindings do
+		table.insert(described, KeybindsModule.Describe(bound))
+	end
 	return e(Components.Row, { LayoutOrder = props.LayoutOrder }, {
 		Label = e(Components.Label, { Text = props.Label, LayoutOrder = 1, Width = 140 }),
-		Remove = e(Components.Button, {
-			Text = "-",
-			Danger = true,
-			OnClick = props.OnRemove,
-			LayoutOrder = 2,
-			Size = UDim2.new(0, 26, 0, Theme.ROW_HEIGHT),
-		}),
+		Value = e(Components.Label, { Text = table.concat(described, " / "), Dim = true, LayoutOrder = 2 }),
 	})
 end
 
-local function ActionSection(props: {
-	Label: string,
-	Bindings: { string },
-	Capturing: boolean,
-	OnAdd: () -> (),
-	OnRemove: (label: string) -> (),
-	StartOrder: number,
+local function KeybindsGui(props: {
+	OnClose: () -> (),
 })
-	local order = props.StartOrder
 	local children: { [string]: any } = {}
+	children.Section = e(Components.Section, { Text = "Keybinds", First = true, LayoutOrder = 1 })
 
-	children["Header" .. order] = e(Components.Label, {
-		Text = props.Label,
-		LayoutOrder = order,
-	})
-	order += 1
-
-	for _, label in props.Bindings do
-		children["Bind" .. order] = e(BindingRow, {
-			Label = KeybindsModule.Describe(label),
-			OnRemove = function()
-				props.OnRemove(label)
-			end,
+	local order = 2
+	for _, action in KeybindsModule.Actions do
+		children["Row" .. order] = e(DefaultRow, {
+			Label = action.Label,
+			Bindings = KeybindsModule.Defaults[action.Id],
 			LayoutOrder = order,
 		})
 		order += 1
 	end
 
-	children["Add" .. order] = e(Components.Button, {
-		Text = if props.Capturing then "Press a key or click..." else "+ Add binding",
-		Selected = props.Capturing,
-		OnClick = props.OnAdd,
-		LayoutOrder = order,
-	})
-	order += 1
-
-	return children, order
-end
-
-local function KeybindsGui(props: {
-	Settings: Settings.EasyRoadSettings,
-	OnSettingsChanged: () -> (),
-	OnCapture: (actionId: string, onCaptured: (label: string) -> ()) -> (),
-	OnClose: () -> (),
-	OnHoverChanged: ((hovered: boolean) -> ())?,
-})
-	local capturingAction, setCapturingAction = React.useState(nil :: string?)
-
-	local function addBinding(actionId: string)
-		setCapturingAction(actionId)
-		props.OnCapture(actionId, function(label: string)
-			setCapturingAction(nil)
-			local bindings = props.Settings.Keybinds[actionId]
-			if not table.find(bindings, label) then
-				table.insert(bindings, label)
-			end
-			props.OnSettingsChanged()
-		end)
-	end
-
-	local function removeBinding(actionId: string, label: string)
-		local bindings = props.Settings.Keybinds[actionId]
-		local index = table.find(bindings, label)
-		if index then
-			table.remove(bindings, index)
-		end
-		props.OnSettingsChanged()
-	end
-
-	local children: { [string]: any } = {}
-	children.Section = e(Components.Section, { Text = "Keybinds", First = true, LayoutOrder = 1 })
-	local order = 2
-	for _, action in KeybindsModule.Actions do
-		local sectionChildren, nextOrder = ActionSection({
-			Label = action.Label,
-			Bindings = props.Settings.Keybinds[action.Id],
-			Capturing = capturingAction == action.Id,
-			OnAdd = function()
-				addBinding(action.Id)
-			end,
-			OnRemove = function(label: string)
-				removeBinding(action.Id, label)
-			end,
-			StartOrder = order,
-		})
-		for key, child in sectionChildren do
-			children[key] = child
-		end
-		order = nextOrder
-	end
-	children.Note = e(Components.Label, {
-		Text = "Right-click isn't a Cancel Placement default since it also orbits the camera in Studio - add it "
-			.. "manually with + if you'd still like it.",
+	children["Note" .. order] = e(Components.Label, {
+		Text = "These defaults always work, no setup needed. To add or change a shortcut, use Studio's own "
+			.. "Customize Shortcuts (right-click any toolbar button, or File > Advanced > Customize Shortcuts) "
+			.. "and search for one of these action names:",
 		Dim = true,
 		LayoutOrder = order,
 	})
 	order += 1
+
+	for _, action in KeybindsModule.Actions do
+		local name = ACTION_NAMES[action.Id]
+		if name then
+			children["ActionName" .. order] = e(Components.Label, {
+				Text = "\u{2022} " .. name,
+				LayoutOrder = order,
+			})
+			order += 1
+		end
+	end
+
 	children.Close = e(Components.Button, {
 		Text = "Close",
 		OnClick = props.OnClose,
@@ -141,20 +95,6 @@ local function KeybindsGui(props: {
 	scrollProps.CanvasSize = UDim2.new(0, 0, 0, 0)
 	scrollProps.AutomaticCanvasSize = Enum.AutomaticSize.Y
 	scrollProps.ScrollingDirection = Enum.ScrollingDirection.Y
-	-- Lets the capture listener (main.lua) tell a click on this panel's own
-	-- buttons (Close, another action's + Add binding, a binding's -) apart
-	-- from a genuine capture click elsewhere (the 3D viewport) - without
-	-- it, clicking Close while a capture was pending got itself captured
-	-- and bound, since UserInputService.InputBegan fires on mouse-down,
-	-- before Close's own Activated (mouse-up) runs.
-	if props.OnHoverChanged then
-		scrollProps[React.Event.MouseEnter] = function()
-			(props.OnHoverChanged :: (boolean) -> ())(true)
-		end
-		scrollProps[React.Event.MouseLeave] = function()
-			(props.OnHoverChanged :: (boolean) -> ())(false)
-		end
-	end
 
 	children.Layout = e("UIListLayout", {
 		SortOrder = Enum.SortOrder.LayoutOrder,

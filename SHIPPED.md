@@ -4,6 +4,45 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Keybinds rebuilt on PluginAction - the real fix, not another patch
+
+- **Replaced the custom "click + Add binding, press a key" capture UI with
+  Roblox's native `plugin:CreatePluginAction`.** Three rounds of patches to
+  the old capture mechanism (removing a stray `gameProcessed` check, then
+  gating mouse clicks on panel hover) never fully fixed rebinding, because
+  the root cause isn't fixable from inside a docked panel's own script at
+  all: `UserInputService` is scoped to the main 3D viewport, and a
+  `DockWidgetPluginGui` is a genuinely separate native window - once it has
+  focus, further input (keyboard especially) doesn't reliably reach
+  `UserInputService`. This is a documented Roblox Studio platform
+  limitation (confirmed via several devforum threads), not a bug specific
+  to this codebase.
+  - `main.lua` now registers three `PluginAction`s (Raise/Lower Elevation,
+    Cancel Placement) once at startup. Their `.Triggered` events route
+    directly into whichever session is active (`session.AdjustElevation`/
+    `session.CancelPlacement`, or `editSession.CancelBayPlacement` while
+    placing/confirming a bay) - Studio's own native "Customize Shortcuts"
+    dialog (right-click any toolbar, or File > Advanced > Customize
+    Shortcuts) is what assigns the actual key, and that dialog isn't built
+    on `UserInputService`, so it doesn't have this focus problem.
+  - The hardcoded R/F/Escape/middle-click defaults in
+    `createRoadSession.lua`/`RoadEditSession.lua`'s own live listeners are
+    untouched and still work with zero setup for everyone - they were never
+    actually broken (they only matter while the 3D viewport itself has
+    focus, during active placement, which was always a UserInputService-
+    friendly context). The PluginActions are purely an *additional* way to
+    trigger the same three actions, via whatever key the user assigns.
+  - `UI/KeybindsGui.lua` is now a read-only reference (the three defaults,
+    plus the exact `PluginAction` names to search for in Customize
+    Shortcuts) instead of an interactive capture UI - there's no more
+    capture code left in a docked panel at all, so this bug class can't
+    recur here again.
+- Not verified in a live Studio session (this environment can't render
+  Studio) - `CreatePluginAction`'s exact signature/behavior was confirmed
+  against Roblox's own Creator Hub documentation, but the end-to-end flow
+  (Customize Shortcuts actually finding and letting you bind these three
+  actions) hasn't been checked hands-on.
+
 ## Pie-menu hover-trap breaking bay drag entirely
 
 - **Fixed the bus bay drag being completely unusable** ("i simply cant draw

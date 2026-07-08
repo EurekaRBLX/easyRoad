@@ -17,7 +17,6 @@
 -- same designer bottom bar bound to that road, with Apply/Revert.
 
 local CoreGui = game:GetService("CoreGui")
-local UserInputService = game:GetService("UserInputService")
 
 local Packages = script.Parent.Parent.Packages
 local React = require(Packages.React)
@@ -27,7 +26,6 @@ local Signal = require(Packages.Signal)
 local Settings = require("./Settings")
 local RegionStyles = require("./RegionStyles")
 local RoadProfile = require("./RoadProfile")
-local KeybindsModule = require("./Keybinds")
 local createRoadLibrary = require("./RoadLibrary")
 local createRegionLibrary = require("./RegionLibrary")
 local createRoadSession = require("./createRoadSession")
@@ -75,8 +73,6 @@ return function(
 	-- viewport clicks meant for road placement.
 	local toolModeHovered = false
 	local roadLibraryHovered = false
-	-- Gates captureNextKeybind below - see its own comment.
-	local keybindsPanelHovered = false
 	-- Tracks which pie-menu slot layout was last rendered (Menu/SegmentMenu/
 	-- PlacingBay/ConfirmingBay) - see the pie-menu hover-reset comment below.
 	local lastPieMenuMode: string? = nil
@@ -110,41 +106,67 @@ return function(
 		Settings.Save(plugin, settings)
 	end
 
-	-- Keybinds settings dock: listens for the next key/click and reports it
-	-- back, so "+  Add binding" can capture whatever the user presses.
-	-- Deliberately does NOT check gameProcessed - Studio marks essentially
-	-- all input as "game processed" while a docked plugin panel has focus
-	-- (so it doesn't also trigger 3D-viewport shortcuts), which is exactly
-	-- why R/F/Escape's own live listener (createRoadSession.lua) checks it
-	-- but this one must not: during an explicit capture, whatever the user
-	-- just pressed IS the input we want, regardless of what else has
-	-- focus. Skipping this check was the reason capturing silently never
-	-- registered anything.
+	-- R/F/Escape/middle-click work out of the box with zero setup via each
+	-- session's own live UserInputService listener, matched against
+	-- Keybinds.Defaults (see createRoadSession.lua/RoadEditSession.lua) -
+	-- that part was never broken. What WAS broken (three rounds running)
+	-- was letting the user REBIND them: a custom "click + Add binding, then
+	-- press a key" capture UI built inside the docked Keybinds panel can't
+	-- work reliably, because UserInputService is scoped to the main 3D
+	-- viewport - a DockWidgetPluginGui is a genuinely separate native
+	-- window, and once it has focus, further keyboard input (and some
+	-- mouse input) doesn't reliably reach UserInputService at all. This is
+	-- a documented Roblox Studio platform limitation, not something fixable
+	-- from within a docked panel's own script.
 	--
-	-- Mouse-button input is additionally ignored while the pointer is over
-	-- the Keybinds panel itself (keybindsPanelHovered): InputBegan fires on
-	-- mouse-DOWN, before a clicked button's own Activated (mouse-UP) runs -
-	-- so without this, clicking Close (or another action's own + Add
-	-- binding, or a binding's -) while a capture was pending got that same
-	-- click's mouse-down captured and bound as "MouseButton1" a moment
-	-- before the button's own click effect (closing the dock, etc.) fired.
-	-- Keyboard keys aren't gated by this, since a key press has no
-	-- "landed on our own button" ambiguity the way a click does.
-	local function captureNextKeybind(onCaptured: (label: string) -> ())
-		local connection: RBXScriptConnection? = nil
-		connection = UserInputService.InputBegan:Connect(function(input)
-			if keybindsPanelHovered and input.UserInputType ~= Enum.UserInputType.Keyboard then
-				return
-			end
-			local label = KeybindsModule.CaptureLabel(input)
-			if label then
-				if connection then
-					connection:Disconnect()
-				end
-				onCaptured(label)
-			end
-		end)
-	end
+	-- The actual supported mechanism for a rebindable plugin shortcut is
+	-- PluginAction: Studio's own native "Customize Shortcuts" dialog
+	-- (File > Advanced > Customize Shortcuts, or right-click any toolbar)
+	-- assigns the key, and Triggered fires reliably regardless of what has
+	-- focus, since it's Studio's own shortcut system, not built on
+	-- UserInputService inside a plugin GUI. Registered once here as an
+	-- ADDITIONAL way to trigger these three actions - the hardcoded R/F/
+	-- Escape defaults keep working unconditionally alongside whatever the
+	-- user assigns via Customize Shortcuts, so nothing regresses for anyone
+	-- who never touches shortcut customization at all.
+	local elevationUpAction = plugin:CreatePluginAction(
+		"EasyRoadElevationUp",
+		"easyRoad: Raise Elevation",
+		"Raises the road being placed",
+		"",
+		true
+	)
+	local elevationDownAction = plugin:CreatePluginAction(
+		"EasyRoadElevationDown",
+		"easyRoad: Lower Elevation",
+		"Lowers the road being placed",
+		"",
+		true
+	)
+	local cancelPlacementAction = plugin:CreatePluginAction(
+		"EasyRoadCancelPlacement",
+		"easyRoad: Cancel Placement",
+		"Cancels the road or bus bay currently being placed",
+		"",
+		true
+	)
+	elevationUpAction.Triggered:Connect(function()
+		if session then
+			session.AdjustElevation(settings.ElevationStepStuds)
+		end
+	end)
+	elevationDownAction.Triggered:Connect(function()
+		if session then
+			session.AdjustElevation(-settings.ElevationStepStuds)
+		end
+	end)
+	cancelPlacementAction.Triggered:Connect(function()
+		if session then
+			session.CancelPlacement()
+		elseif editSession.IsPlacingBay() or editSession.IsConfirmingBay() then
+			editSession.CancelBayPlacement()
+		end
+	end)
 
 	local function destroySession()
 		if session then
@@ -776,25 +798,13 @@ return function(
 				keybindsRoot = ReactRoblox.createRoot(keybindsDock)
 			end
 			assert(keybindsRoot):render(React.createElement(KeybindsGui, {
-				Settings = settings,
-				OnSettingsChanged = function()
-					persist()
-					updateUI()
-				end,
-				OnCapture = function(_actionId: string, onCaptured: (label: string) -> ())
-					captureNextKeybind(onCaptured)
-				end,
 				OnClose = function()
 					keybindsDock.Enabled = false
-				end,
-				OnHoverChanged = function(hovered: boolean)
-					keybindsPanelHovered = hovered
 				end,
 			}))
 		elseif keybindsRoot then
 			keybindsRoot:unmount()
 			keybindsRoot = nil
-			keybindsPanelHovered = false
 		end
 	end
 
@@ -863,5 +873,8 @@ return function(
 		editSessionChangedCn:Disconnect()
 		persist()
 		clickedCn:Disconnect()
+		elevationUpAction:Destroy()
+		elevationDownAction:Destroy()
+		cancelPlacementAction:Destroy()
 	end)
 end

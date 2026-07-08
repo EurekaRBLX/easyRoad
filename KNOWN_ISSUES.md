@@ -29,14 +29,20 @@ internal planning only. See `TODO.md` for planned new features and
   would mean *more* boundaries (more visible seams) rather than fewer, even
   though each individual seam should be smaller. Unconfirmed - revisit with
   a real "after placement" screenshot.
-- **Road placement click-swallowing - fixed this round, but this is the
-  second time a variant of this exact bug has shipped** (see the pie-menu
-  full-screen hover trap, and now the two-panel Road Tools HUD's oversized
-  shared wrapper - both in `SHIPPED.md`). Any future HUD layout change
-  needs its hover-tracking scope checked explicitly against the *visible*
-  footprint of each panel, not the bounding box of a Frame that merely
-  contains them - the two aren't always the same, especially once a layout
-  has panels of different heights/widths grouped under one wrapper.
+- **Hover-trap click-swallowing keeps recurring - three separate instances
+  now, all fixed as found, but treat any future report of "clicking in the
+  viewport does nothing" as this bug family first.** (1) The pie menu's
+  original full-screen hover-tracking wrapper. (2) The two-panel Road Tools
+  HUD's oversized shared wrapper. (3) `PillButton`s that unmount mid-hover
+  when the pie menu switches modes (`MouseLeave` never fires for a
+  destroyed element) - this one specifically broke bus bay dragging
+  entirely. All three are the same root shape: `uiState.Hovered` gets set
+  `true` by something that then goes away without a matching `false`. Any
+  new hover-tracked UI needs to be checked against this specifically:
+  either its bounding box must exactly match its visible interactive
+  footprint (not a wrapper around several - #1, #2), or its hover state
+  must be reset on whatever transition could cause it to unmount while
+  still hovered (#3).
 - **Bus bay's displaced pavement doesn't drag its own kerb-restriction line
   marking along with it.** `BuildWithBay`'s nearside-pavement overlay (see
   `SHIPPED.md`) correctly moves the physical sidewalk/verge Parts outward
