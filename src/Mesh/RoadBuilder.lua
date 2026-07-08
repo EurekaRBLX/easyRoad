@@ -68,6 +68,27 @@ local function colorForKind(kind: RoadProfile.ComponentKind, style: RegionStyles
 	return style.AsphaltColor
 end
 
+-- Extra length a flat strip centered at `sMid`, offset `lateralOffset`
+-- studs from the centerline, needs so it still overlaps its neighbor
+-- through a curve instead of leaving a wedge-shaped gap on the outside of
+-- the turn (or, for markings, a visible break in the line).
+--
+-- Derived directly from arc length rather than an angle-between-frames
+-- approximation: at radius R = 1/curvature, a point offset by r traces
+-- (R+r)*angle while the centerline traces R*angle over the same turn - a
+-- difference of r*angle = r*curvature*nominalLength. Applying this equally
+-- means every part - deck strip or marking, whatever length it spans -
+-- gets the correct padding for its own lateral offset and curvature at its
+-- own position, with no dependency on how that part's span happens to
+-- align with station stepping.
+local function curveMiterPad(curve: PolyCurve.PolyCurve, sMid: number, lateralOffset: number, nominalLength: number): number
+	local k = math.abs(curve:CurvatureAt(sMid))
+	if k < 1e-6 then
+		return 0
+	end
+	return math.abs(lateralOffset) * k * nominalLength
+end
+
 local function makePart(preview: boolean): Part
 	local part = Instance.new("Part")
 	part.Anchored = true
@@ -180,14 +201,23 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	for i, s in stations do
 		rolls[i] = Superelevation.RollAt(curve:CurvatureAt(s), settings, style)
 	end
-	rolls = Superelevation.SmoothRolls(rolls, stations, RUNOFF_LENGTH_STUDS)
+	-- Both the curvature-noise smoothing window and the end-of-segment
+	-- runoff taper below scale with this segment's own length (capped at
+	-- RUNOFF_LENGTH_STUDS) instead of always using a fixed 40 studs -
+	-- otherwise a short segment gets disproportionately eaten by the taper
+	-- (or over-smoothed) compared to a long one, so two curves of the same
+	-- radius but different lengths would bank to visibly different peak
+	-- amounts. Capping at 30% of length on each end always leaves at least
+	-- a 40% flat "full bank" middle zone, so short curves scale the same
+	-- way long ones do instead of being dominated by the absolute constant.
+	local runoffLength = math.min(RUNOFF_LENGTH_STUDS, length * 0.3)
+	rolls = Superelevation.SmoothRolls(rolls, stations, runoffLength)
 	-- Superelevation is per-segment: taper the bank to zero at both ends of
 	-- the segment (runoff) so chained segments always meet flush at joints
 	-- with no height step between the two bodies.
-	local runoff = math.min(RUNOFF_LENGTH_STUDS, length / 2)
-	if runoff > 1e-3 then
+	if runoffLength > 1e-3 then
 		for i, s in stations do
-			local taper = math.min(1, s / runoff, (length - s) / runoff)
+			local taper = math.min(1, s / runoffLength, (length - s) / runoffLength)
 			rolls[i] *= math.max(taper, 0)
 		end
 	end
@@ -238,9 +268,11 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			continue
 		end
 
-		local chord = (frames[i + 1].Position - frames[i].Position).Magnitude
-		-- Extra length to miter gaps that open up on the outside of curves
-		local turnAngle = math.acos(math.clamp(headingDot, -1, 1))
+		-- The nominal span is the arc length (s1 - s0), not the straight
+		-- chord between frame positions - chord is always <= arc length on
+		-- a curve, so sizing off it alone under-covers even the centerline
+		-- before any lateral miter padding is added.
+		local nominalLength = s1 - s0
 
 		for c = 1, componentCount do
 			local w0 = stationWidths[i][c]
@@ -264,9 +296,9 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			local centerY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2)
 				- (i % 2) * 0.004
 
-			local miter = math.abs(centerOffset + width / 2) * math.sin(turnAngle)
-			miter = math.min(miter, chord * 2)
-			local partLength = chord + miter + 0.02
+			local edgeDistance = math.max(math.abs(centerOffset - width / 2), math.abs(centerOffset + width / 2))
+			local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
+			local partLength = nominalLength + miter + 0.02
 
 			local part = makePart(preview)
 			part.Name = kind
@@ -328,12 +360,20 @@ function RoadBuilder.Build(options: BuildOptions): Model
 
 			-- Each compound line type is one or two rails, each rail either
 			-- solid or dashed. lateral = rail offset from the boundary line.
+			-- Markings are thin and high-contrast against the asphalt, so an
+			-- un-mitered gap on a curve is even more visible here than on a
+			-- deck strip - same curveMiterPad helper, evaluated at each
+			-- marking segment's own position/offset regardless of whether it
+			-- lines up with station stepping (dashes rarely do).
 			local function renderSolid(lateral: number)
 				for i = 1, stationCount - 1 do
 					local s0 = stations[i]
 					local s1 = stations[i + 1]
 					local sMid = (s0 + s1) / 2
-					placeMarkingPart(sMid, (s1 - s0) + 0.05, offsetAt(sMid) + lateral, color, i)
+					local offset = offsetAt(sMid) + lateral
+					local nominalLength = s1 - s0
+					local miter = curveMiterPad(curve, sMid, offset, nominalLength)
+					placeMarkingPart(sMid, nominalLength + miter + 0.05, offset, color, i)
 				end
 			end
 
@@ -344,7 +384,9 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				local dashIndex = 0
 				while s + dashLength < length do
 					local sMid = s + dashLength / 2
-					placeMarkingPart(sMid, dashLength, offsetAt(sMid) + lateral, color, dashIndex)
+					local offset = offsetAt(sMid) + lateral
+					local miter = curveMiterPad(curve, sMid, offset, dashLength)
+					placeMarkingPart(sMid, dashLength + miter, offset, color, dashIndex)
 					dashIndex += 1
 					s += dashLength + gapLength
 				end

@@ -5,21 +5,50 @@ Not user-facing; internal planning only.
 
 ## Known bugs (logged, not top priority right now)
 
-- **Superelevation / curve algorithm inconsistency.** Reference screenshots
-  from the `easyRoad 2` environment show a banked curve and an unbanked
-  curve of otherwise-similar geometry looking inconsistent — banking
-  doesn't appear to apply uniformly across equivalent curves. Needs
-  investigation into `Geometry/Superelevation.lua` (`RollAt`, `SmoothRolls`)
-  and how `Mesh/RoadBuilder.lua` samples roll per station — likely an issue
-  in how curvature is sampled per-station vs. how the runoff taper
-  interacts with short/long segments.
 - **Narrowing (transition) lane algorithm still produces bad geometry.**
   Even after the "taper at the end of the segment" + z-fighting epsilon
   fixes, a tapering road can still show corrupted-looking shading on the
   transition zone. Needs a fresh look at `RoadBuilder.Build`'s
   `transitionAlpha` / adaptive station stepping interaction — possibly the
   taper zone's station density isn't fine enough, or strip mitering breaks
-  down when component count differs across the taper.
+  down when component count differs across the taper. The curve-miter fix
+  below (shared by every strip regardless of width interpolation) may
+  already help here since transition strips go through the same code path,
+  but wasn't specifically targeted or verified against this symptom -
+  re-check before closing this out.
+
+## Recently shipped: superelevation + curved-section gap fixes
+
+Both `Mesh/RoadBuilder.lua` bugs identified and fixed:
+
+- **Superelevation inconsistency root cause found**: the runoff/smoothing
+  window was a fixed `RUNOFF_LENGTH_STUDS` (40 studs) regardless of segment
+  length, capped only at `length / 2`. For a short segment this meant the
+  ramp-up and ramp-down taper zones could consume the *entire* road with no
+  flat "full bank" middle ever reached, while a long segment of the same
+  curve radius reached full target bank easily - so two curves that looked
+  equally sharp banked to very different peak amounts purely because of
+  their length. Fixed: both the `Superelevation.SmoothRolls` window and the
+  end-of-segment taper now use `math.min(RUNOFF_LENGTH_STUDS, length * 0.3)`
+  - proportional to the segment, always leaving at least a 40% flat middle
+  zone, so short and long curves of the same radius now shape the same way.
+- **Curved-section gaps root cause found**: the per-strip "miter" padding
+  used `math.abs(centerOffset + width/2) * math.sin(turnAngle)`, clamped to
+  `math.min(miter, chord * 2)`. That clamp silently truncated the needed
+  padding whenever a component's lateral distance from the centerline was
+  large relative to the (adaptively short) chord on a tight curve - exactly
+  the case for wide roads (multi-lane avenues/highways) on anything but
+  gentle curves, which is why gaps were visible. Replaced with a new
+  `curveMiterPad` helper derived directly from arc length (a point offset
+  `r` studs from the centerline traces `r * curvature * length` more arc
+  than the centerline over the same span - the exact deficit a flat strip
+  needs to make up) with no arbitrary clamp; applied using the larger of
+  each component's two edge distances (not just the right edge) and using
+  true arc length (`s1 - s0`) instead of the straight chord as the base
+  span. Also applied to lane markings (`renderSolid`/`renderDashed`), which
+  previously got a flat `0.05` stud pad with zero curvature awareness at
+  all - markings are thin and high-contrast against the asphalt, so an
+  un-mitered gap there was arguably the most visible instance of this bug.
 
 ## Next up — needs a decision or real design work
 
