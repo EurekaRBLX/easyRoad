@@ -37,8 +37,20 @@ built.
 ## Backlog (not yet started)
 
 - **Intersections & roundabouts.** Junction nodes where roads meet
-  mid-network, corner fillets, stop lines. Turbo and concentric roundabout
-  layouts (UK/HK). Biggest missing capability overall.
+  mid-network, corner fillets, stop lines. Biggest missing capability
+  overall. Roundabout variants to support, in roughly increasing order of
+  complexity:
+  - **Single-lane roundabouts** - standard geometry for low-capacity
+    intersections.
+  - **Multi-lane, concentric standard** - the classic multi-lane layout,
+    concentric rings with normal (non-spiral) lane markings.
+  - **Multi-lane, concentric standard with turbo markings** - same
+    concentric geometry, but with spiral/turbo-style lane-guidance
+    markings painted on top to guide lane changes on approach.
+  - **True turbo roundabouts** - spiral geometry with physical or marked
+    lane dividers between rings, not just concentric circles (the
+    Netherlands-style layout designed to prevent side-by-side lane
+    changes entirely).
 - **Lane connector (CS2-style).** Per-lane graph at junctions; drag
   connections between incoming/outgoing lanes; markings re-render from the
   connection graph.
@@ -90,21 +102,23 @@ built.
   *after* it's placed without restarting the whole placement, or a visible
   ramp preview UI - that's not implemented and would need new work. Flagged
   here rather than guessed at and possibly built wrong.
-
-- ### Roundabout Generation
-- [ ] **Core Roundabout Support:** Add algorithmic generation for circular intersections.
-  - [ ] **Single-Lane Roundabouts:** Standard geometry for low-capacity intersections.
-  - [ ] **Multi-Lane Roundabouts:**
-    - [ ] Concentric standard roundabout (classic multi-lane).
-    - [ ] Concentric standard with turbo markings (guided lane changes).
-    - [ ] True Turbo Roundabouts (spiral geometry with physical/marked lane dividers).
-
-### Road Library & Detailing Tools
-- [ ] **Road Detailing Function:** Implement a dedicated tool/library for placing road props and surface details along generated splines.
-  - [ ] **Surface Road Markings:** Decals/meshes for arrows, yield lines, and custom lane indicators.
-  - [ ] **Road Signage:** Placement system for standard regulatory and warning signs.
-  - [ ] **Gantry Systems:** Overhead structures for lane-specific routing.
-  - [ ] **Highway Signs:** Large-scale directional signage with dynamic text/texture mapping.
+- **Road furniture / signage tool.** A new tool sitting alongside the road
+  library, for placing detailing along a road independent of its
+  cross-section: surface road markings (arrows, yield/give-way lines,
+  custom lane indicators - decals or thin meshes, distinct from the lane
+  boundary lines `Mesh/Markings.lua` already generates), road signage
+  (regulatory/warning signs, placed at a point with a facing direction),
+  gantries (overhead structures spanning a road, lane-specific routing
+  signs), and highway signs (large directional signage, likely with
+  dynamic text/texture mapping for destination names). Needs its own data
+  model (a "furniture" item: kind, position/orientation relative to a road
+  or the world, and kind-specific parameters) and placement UI - probably
+  closer to `BusStops.lua`'s click-to-place pattern than a cross-section
+  component, since these are discrete placed objects, not something
+  extruded along the curve. Scope/ordering not decided yet; flagging the
+  full ask (signage + surface markings + gantries + highway signs)
+  together since they likely share the same underlying placement
+  mechanism even though visually very different.
 
 ## Housekeeping
 
