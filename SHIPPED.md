@@ -4,6 +4,64 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Real bus bay geometry, gradient colour picker, drag-and-drop fix, locale toggle
+
+- **Fixed the farEdgePad regression from last round** (sawtooth/serrated
+  curve edges on widen/narrow roads) - see `KNOWN_ISSUES.md` for the full
+  root-cause writeup. Removed entirely; deck strips are back to plain exact
+  anchored width.
+- **Real bus bay geometry**, not just marker stickers. What used to be
+  called "Add Bus Bay" only ever placed small bus-stop icon markers
+  (`BusStops.lua`) - a real bay (per the user's reference photo) is a
+  physical pull-in carved into the road, which didn't exist at all. Now:
+  - `Geometry/PolyCurve.lua` gained `Slice(s0, s1)` (a thin re-indexed view
+    over a sub-range of an existing curve - no new segment data, delegates
+    every query to the base curve plus an offset) and `ClosestS(point)` (a
+    coarse-sample-then-refine numeric search for where a 3D click lands
+    along the curve).
+  - `RoadProfile.WithBay(profile, driveOnLeft, widthM)` inserts a Bay
+    component next to the nearside kerb.
+  - `Mesh/RoadBuilder.BuildWithBay(options, bay)` stitches 5 sub-builds
+    (normal / taper-in / dwell / taper-out / normal) from `Curve:Slice()`
+    ranges into one merged model, reusing the existing widen/narrow taper
+    machinery for both tapers rather than inventing a new shape.
+  - `RoadEditSession` gained a `PlacingBay` -> `ConfirmingBay` flow: click a
+    point on the road, then adjust length/width (defaulting to a standard
+    dwell length and one lane's width) in a small HUD panel
+    (`UI/BayDraftPanel.lua`) before committing. Bay placement persists as a
+    `RW_BayJson` attribute (`RoadInstance.StampBay`/read) so later edits via
+    `RoadEditSession.Apply` rebuild through `BuildWithBay` instead of
+    silently dropping the bay.
+  - The old marker feature is renamed throughout (mode, functions, pie
+    label) from "Bus Bay" to "Bus Stop" to stop misleading users about what
+    it actually does; both now sit side by side in the segment pie menu.
+  - Not verified in a live Studio session - this is substantial new
+    geometry code and warrants real testing before being trusted.
+- **Real gradient colour picker.** There's no Studio API to open the native
+  color picker from a plugin (devforum's been asking since ~2016, never
+  shipped), so `Components.ColorField` now includes its own: a saturation/
+  value gradient square and a hue bar, built from plain Frames + UIGradient
+  (no image asset needed), drag-to-pick via each square/bar's own
+  InputBegan/InputChanged + `UserInputService:IsMouseButtonPressed` - plus
+  the existing hex/Color3-text field and R/G/B number fields for precise
+  entry.
+- **Drag-and-drop from the Modules palette, real fix attempt.** Previous
+  rounds' rewrites used `plugin:GetMouse()` polled on `RenderStepped`,
+  reasoning that `UserInputService` is unreliable for Studio plugin GUIs -
+  but that reasoning was borrowed from a different, unrelated bug
+  (`DockWidgetPluginGui` panels marking input as `gameProcessed` while
+  focused). This palette is a plain ScreenGui in CoreGui, not a docked
+  panel, and `plugin:GetMouse()`'s `Button1Up` is a 3D-viewport/tool
+  oriented event not guaranteed to fire reliably for a 2D GUI drag that
+  never activates the plugin as a tool - which would explain drops never
+  registering. Rewritten to use `UserInputService.InputChanged`/`InputEnded`
+  instead, the same proven pattern this round's colour picker drag uses.
+- **British/American English terminology toggle** (`Settings.LanguageVariant`,
+  default British). New `Locale.lua` maps display-only term pairs (Kerb/Curb,
+  Pavement/Sidewalk) - internal field/kind names are unchanged. Wired into
+  the Kerb-lines rows, Region Editor's dimension/colour labels, with a
+  dropdown in Regional Preference to switch it.
+
 ## Wedge scope-down, real click-swallowing bug, settings home, elevation editing
 
 - **Wedge joints now only appear on genuinely sharp turns/superelevation.**

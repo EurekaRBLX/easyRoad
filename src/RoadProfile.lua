@@ -115,6 +115,28 @@ function RoadProfile.ComponentOffsetsM(profile: RoadProfile): { { Left: number, 
 	return offsets
 end
 
+-- Returns a clone with a Bay (bus/taxi pull-in) component inserted just
+-- inside the nearside kerb - the edge a bus would actually pull over
+-- towards, which is the LEFT edge of the profile array when traffic drives
+-- on the left (UK-style) and the RIGHT edge when it drives on the right
+-- (US-style). Assumes (as most built-in profiles do) that the outermost
+-- component on that side is a Sidewalk/edge component the Bay slots in
+-- next to; falls back to inserting at the very edge if there's nothing
+-- there to slot inside of.
+function RoadProfile.WithBay(profile: RoadProfile, driveOnLeft: boolean, widthM: number): RoadProfile
+	local clone = RoadProfile.Clone(profile)
+	local bay: ProfileComponent = { Kind = "Bay" :: ComponentKind, WidthM = widthM, Direction = 0 }
+	if driveOnLeft then
+		local insertAt = if #clone.Components > 0 and RoadProfile.IsRaised(clone.Components[1].Kind) then 2 else 1
+		table.insert(clone.Components, insertAt, bay)
+	else
+		local n = #clone.Components
+		local insertAt = if n > 0 and RoadProfile.IsRaised(clone.Components[n].Kind) then n else n + 1
+		table.insert(clone.Components, insertAt, bay)
+	end
+	return clone
+end
+
 function RoadProfile.Clone(profile: RoadProfile): RoadProfile
 	local components = {}
 	for _, component in profile.Components do

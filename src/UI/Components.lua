@@ -2,6 +2,8 @@
 -- Small shared React widgets for the EasyRoad UI: buttons, labeled rows,
 -- number fields, checkboxes, dropdowns, and section headers.
 
+local UserInputService = game:GetService("UserInputService")
+
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
 
@@ -266,10 +268,13 @@ end
 
 -- Colour field: a swatch preview plus one compact text field that accepts
 -- either a hex code ("#RRGGBB" / "RRGGBB") or a Color3-style "r, g, b"
--- triplet (0-255 each) - replaces the old 3 separate R/G/B number fields,
+-- triplet (0-255 each) - much narrower than 3 separate R/G/B number fields,
 -- which alone were wide enough to overflow a docked panel's minimum width.
--- No gesture-based hue/saturation picker, just reliable typed input; click
--- the swatch to expand full R/G/B number fields for fine nudging.
+-- Clicking the swatch expands a real gradient hue/saturation/value picker
+-- (there's no Studio API to open the native color picker from a plugin -
+-- devforum has been asking since ~2016 and it's never shipped - so this is
+-- our own, built from Frames + UIGradient, no image asset needed) plus
+-- R/G/B number fields for precise entry.
 
 local function parseColorText(text: string): Color3?
 	local hex = text:match("^#?(%x%x%x%x%x%x)$")
@@ -301,6 +306,150 @@ local function colorToHex(color: Color3): string
 	)
 end
 
+-- Saturation/value gradient square for a fixed hue: white->this hue left to
+-- right (saturation), transparent->black top to bottom (value), stacked as
+-- two UIGradient overlays over a plain hue-coloured background - the
+-- standard way to build an HSV square out of plain Frames with no image
+-- asset. Drag-to-pick via the frame's own InputBegan/InputChanged (so it
+-- only continues tracking while the cursor stays over the square, no
+-- global mouse capture - a deliberate simplification given this plugin
+-- otherwise avoids 3D-viewport-style input capture for 2D UI).
+local function SVSquare(props: {
+	Hue: number,
+	Saturation: number,
+	Value: number,
+	OnChanged: (saturation: number, value: number) -> (),
+})
+	local function updateFromInput(rbx: Frame, input: InputObject)
+		local size = rbx.AbsoluteSize
+		if size.X <= 0 or size.Y <= 0 then
+			return
+		end
+		local pos = rbx.AbsolutePosition
+		local s = math.clamp((input.Position.X - pos.X) / size.X, 0, 1)
+		local v = 1 - math.clamp((input.Position.Y - pos.Y) / size.Y, 0, 1)
+		props.OnChanged(s, v)
+	end
+
+	return e("Frame", {
+		Size = UDim2.new(1, 0, 0, 140),
+		BackgroundColor3 = Color3.fromHSV(props.Hue, 1, 1),
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		[React.Event.InputBegan] = function(rbx: Frame, input: InputObject)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				updateFromInput(rbx, input)
+			end
+		end,
+		[React.Event.InputChanged] = function(rbx: Frame, input: InputObject)
+			if
+				input.UserInputType == Enum.UserInputType.MouseMovement
+				and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+			then
+				updateFromInput(rbx, input)
+			end
+		end,
+	}, {
+		Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+		Saturation = e("Frame", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundColor3 = Theme.WHITE,
+			BorderSizePixel = 0,
+		}, {
+			Gradient = e("UIGradient", {
+				Color = ColorSequence.new(Theme.WHITE),
+				Transparency = NumberSequence.new({
+					NumberSequenceKeypoint.new(0, 0),
+					NumberSequenceKeypoint.new(1, 1),
+				}),
+			}),
+		}),
+		Value = e("Frame", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundColor3 = Color3.new(0, 0, 0),
+			BorderSizePixel = 0,
+		}, {
+			Gradient = e("UIGradient", {
+				Color = ColorSequence.new(Color3.new(0, 0, 0)),
+				Rotation = 90,
+				Transparency = NumberSequence.new({
+					NumberSequenceKeypoint.new(0, 1),
+					NumberSequenceKeypoint.new(1, 0),
+				}),
+			}),
+		}),
+		Cursor = e("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(props.Saturation, 0, 1 - props.Value, 0),
+			Size = UDim2.new(0, 10, 0, 10),
+			BackgroundColor3 = Color3.fromHSV(props.Hue, props.Saturation, props.Value),
+			BorderSizePixel = 0,
+			ZIndex = 2,
+		}, {
+			Corner = e("UICorner", { CornerRadius = UDim.new(1, 0) }),
+			Stroke = e("UIStroke", { Color = Theme.WHITE, Thickness = 2 }),
+		}),
+	})
+end
+
+-- Rainbow hue slider, same drag-within-bounds convention as SVSquare.
+local HUE_GRADIENT = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, Color3.fromHSV(0, 1, 1)),
+	ColorSequenceKeypoint.new(1 / 6, Color3.fromHSV(1 / 6, 1, 1)),
+	ColorSequenceKeypoint.new(2 / 6, Color3.fromHSV(2 / 6, 1, 1)),
+	ColorSequenceKeypoint.new(3 / 6, Color3.fromHSV(3 / 6, 1, 1)),
+	ColorSequenceKeypoint.new(4 / 6, Color3.fromHSV(4 / 6, 1, 1)),
+	ColorSequenceKeypoint.new(5 / 6, Color3.fromHSV(5 / 6, 1, 1)),
+	ColorSequenceKeypoint.new(1, Color3.fromHSV(1, 1, 1)),
+})
+
+local function HueBar(props: {
+	Hue: number,
+	OnChanged: (hue: number) -> (),
+})
+	local function updateFromInput(rbx: Frame, input: InputObject)
+		local size = rbx.AbsoluteSize
+		if size.X <= 0 then
+			return
+		end
+		local pos = rbx.AbsolutePosition
+		props.OnChanged(math.clamp((input.Position.X - pos.X) / size.X, 0, 1))
+	end
+
+	return e("Frame", {
+		Size = UDim2.new(1, 0, 0, 18),
+		BackgroundColor3 = Theme.WHITE,
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		[React.Event.InputBegan] = function(rbx: Frame, input: InputObject)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				updateFromInput(rbx, input)
+			end
+		end,
+		[React.Event.InputChanged] = function(rbx: Frame, input: InputObject)
+			if
+				input.UserInputType == Enum.UserInputType.MouseMovement
+				and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+			then
+				updateFromInput(rbx, input)
+			end
+		end,
+	}, {
+		Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+		Gradient = e("UIGradient", { Color = HUE_GRADIENT }),
+		Cursor = e("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(props.Hue, 0, 0.5, 0),
+			Size = UDim2.new(0, 4, 1, 4),
+			BackgroundColor3 = Theme.WHITE,
+			BorderSizePixel = 0,
+			ZIndex = 2,
+		}, {
+			Stroke = e("UIStroke", { Color = Color3.new(0, 0, 0), Transparency = 0.4, Thickness = 1 }),
+		}),
+	})
+end
+
 function Components.ColorField(props: {
 	Value: Color3,
 	OnChanged: (value: Color3) -> (),
@@ -310,6 +459,7 @@ function Components.ColorField(props: {
 	local r = math.round(props.Value.R * 255)
 	local g = math.round(props.Value.G * 255)
 	local b = math.round(props.Value.B * 255)
+	local hue, sat, val = props.Value:ToHSV()
 
 	return e("Frame", {
 		Size = UDim2.new(1, 0, 0, 0),
@@ -317,7 +467,7 @@ function Components.ColorField(props: {
 		BackgroundTransparency = 1,
 		LayoutOrder = props.LayoutOrder,
 	}, {
-		Layout = e("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2) }),
+		Layout = e("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4) }),
 		Main = e(Components.Row, { LayoutOrder = 1 }, {
 			Swatch = e("TextButton", {
 				Text = "",
@@ -347,36 +497,60 @@ function Components.ColorField(props: {
 				end,
 			}),
 		}),
-		Expanded = expanded and e(Components.Row, { LayoutOrder = 2 }, {
-			R = e(Components.NumberField, {
-				Value = r,
-				Min = 0,
-				Max = 255,
-				Width = 44,
+		Expanded = expanded and e("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = 2,
+		}, {
+			Layout = e("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6) }),
+			SV = e(SVSquare, {
+				Hue = hue,
+				Saturation = sat,
+				Value = val,
 				LayoutOrder = 1,
-				OnChanged = function(value: number)
-					props.OnChanged(Color3.fromRGB(math.round(value), g, b))
+				OnChanged = function(newSat: number, newVal: number)
+					props.OnChanged(Color3.fromHSV(hue, newSat, newVal))
 				end,
 			}),
-			G = e(Components.NumberField, {
-				Value = g,
-				Min = 0,
-				Max = 255,
-				Width = 44,
+			HueBar = e(HueBar, {
+				Hue = hue,
 				LayoutOrder = 2,
-				OnChanged = function(value: number)
-					props.OnChanged(Color3.fromRGB(r, math.round(value), b))
+				OnChanged = function(newHue: number)
+					props.OnChanged(Color3.fromHSV(newHue, sat, val))
 				end,
 			}),
-			B = e(Components.NumberField, {
-				Value = b,
-				Min = 0,
-				Max = 255,
-				Width = 44,
-				LayoutOrder = 3,
-				OnChanged = function(value: number)
-					props.OnChanged(Color3.fromRGB(r, g, math.round(value)))
-				end,
+			RGB = e(Components.Row, { LayoutOrder = 3 }, {
+				R = e(Components.NumberField, {
+					Value = r,
+					Min = 0,
+					Max = 255,
+					Width = 44,
+					LayoutOrder = 1,
+					OnChanged = function(value: number)
+						props.OnChanged(Color3.fromRGB(math.round(value), g, b))
+					end,
+				}),
+				G = e(Components.NumberField, {
+					Value = g,
+					Min = 0,
+					Max = 255,
+					Width = 44,
+					LayoutOrder = 2,
+					OnChanged = function(value: number)
+						props.OnChanged(Color3.fromRGB(r, math.round(value), b))
+					end,
+				}),
+				B = e(Components.NumberField, {
+					Value = b,
+					Min = 0,
+					Max = 255,
+					Width = 44,
+					LayoutOrder = 3,
+					OnChanged = function(value: number)
+						props.OnChanged(Color3.fromRGB(r, g, math.round(value)))
+					end,
+				}),
 			}),
 		}),
 	})

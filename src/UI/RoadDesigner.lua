@@ -26,7 +26,6 @@
 -- Presentation-only: everything operates on a RoadProfile via OnChange
 -- (clone-and-transform), with the caller supplying action buttons.
 
-local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
 local Plugin = script.Parent.Parent.Parent
@@ -697,9 +696,18 @@ end
 
 type DragPayload = { Kind: RoadProfile.ComponentKind, Label: string }
 
--- Mouse tracking during drag uses plugin:GetMouse() polled on RenderStepped
--- rather than UserInputService - the latter is unreliable for tracking mouse
--- position/buttons over Studio's docked plugin GUIs in edit mode.
+-- Mouse tracking during drag uses UserInputService (InputChanged / IsMouse-
+-- ButtonPressed / InputEnded), not plugin:GetMouse() - the previous version
+-- used plugin:GetMouse() polled on RenderStepped on the theory that
+-- UserInputService is unreliable for Studio plugin GUIs, generalizing from
+-- a real but DIFFERENT bug elsewhere (DockWidgetPluginGui panels mark
+-- input as gameProcessed while focused). This palette isn't a docked
+-- panel - it's a plain ScreenGui in CoreGui, the same context the colour
+-- picker's gradient/hue drag (Components.lua) already uses
+-- UserInputService for successfully. plugin:GetMouse()'s Button1Up in
+-- particular is a 3D-viewport/tool-oriented event and isn't guaranteed to
+-- fire reliably for a plain 2D GUI drag that never activates the plugin as
+-- a tool, which would explain drops silently never registering.
 local function useLaneDrag(pluginObj: Plugin, onInsertAt: (index: number, kind: RoadProfile.ComponentKind) -> ())
 	local dragging, setDragging = React.useState(nil :: DragPayload?)
 	local dragPos, setDragPos = React.useState(Vector2.new(0, 0))
@@ -712,11 +720,13 @@ local function useLaneDrag(pluginObj: Plugin, onInsertAt: (index: number, kind: 
 			return nil
 		end
 		movedPastThreshold.current = false
-		local mouse = pluginObj:GetMouse()
-		local startPos = Vector2.new(mouse.X, mouse.Y)
+		local startPos = dragPos
 
-		local stepCn = RunService.RenderStepped:Connect(function()
-			local pos = Vector2.new(mouse.X, mouse.Y)
+		local changedCn = UserInputService.InputChanged:Connect(function(input: InputObject)
+			if input.UserInputType ~= Enum.UserInputType.MouseMovement then
+				return
+			end
+			local pos = Vector2.new(input.Position.X, input.Position.Y)
 			if (pos - startPos).Magnitude > 6 then
 				movedPastThreshold.current = true
 			end
@@ -736,11 +746,15 @@ local function useLaneDrag(pluginObj: Plugin, onInsertAt: (index: number, kind: 
 			end
 			setDragging(nil)
 		end
-		local upCn = mouse.Button1Up:Connect(finishDrag)
+		local endedCn = UserInputService.InputEnded:Connect(function(input: InputObject)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				finishDrag()
+			end
+		end)
 
 		return function()
-			stepCn:Disconnect()
-			upCn:Disconnect()
+			changedCn:Disconnect()
+			endedCn:Disconnect()
 		end
 	end, { dragging } :: { any })
 
@@ -748,8 +762,8 @@ local function useLaneDrag(pluginObj: Plugin, onInsertAt: (index: number, kind: 
 		Dragging = if movedPastThreshold.current then dragging else nil,
 		DragPos = dragPos,
 		BeginDrag = function(kind: RoadProfile.ComponentKind, label: string)
-			local mouse = pluginObj:GetMouse()
-			setDragPos(Vector2.new(mouse.X, mouse.Y))
+			local pos = UserInputService:GetMouseLocation()
+			setDragPos(pos)
 			setDragging({ Kind = kind, Label = label })
 		end,
 		OnTileHoverChanged = function(index: number, hovered: boolean)
@@ -949,7 +963,7 @@ local function Panel(props: {
 		})
 	end
 	local afterOptions =
-		ProfileFields.InsertMarkingOptions(propertiesChildren, profile, props.RegionStyle, 4, props.OnChange)
+		ProfileFields.InsertMarkingOptions(propertiesChildren, profile, props.RegionStyle, props.Settings, 4, props.OnChange)
 	local actionButtons: { [string]: any } = {}
 	for index, action in props.Actions do
 		actionButtons["Action" .. index] = e(Components.Button, {

@@ -17,6 +17,8 @@ local e = React.createElement
 local Theme = require("./Theme")
 local Components = require("./Components")
 local RegionStyles = require("../RegionStyles")
+local Settings = require("../Settings")
+local Locale = require("../Locale")
 
 local LINE_TYPE_OPTIONS: { Components.DropdownOption } = {
 	{ Id = "None", Text = "None" },
@@ -148,6 +150,7 @@ end
 
 local function RegionEditor(props: {
 	Style: RegionStyles.RegionStyle,
+	Settings: Settings.EasyRoadSettings,
 	OnChange: (transform: (style: RegionStyles.RegionStyle) -> ()) -> (),
 	OnSave: () -> (),
 	OnDelete: (() -> ())?,
@@ -197,12 +200,12 @@ local function RegionEditor(props: {
 
 	local dimensionFields: { { Label: string, Key: string, Min: number, Max: number } } = {
 		{ Label = "Lane width", Key = "DefaultLaneWidthM", Min = 1, Max = 8 },
-		{ Label = "Sidewalk width", Key = "SidewalkWidthM", Min = 0, Max = 6 },
+		{ Label = Locale.Term(props.Settings, "PavementWidth"), Key = "SidewalkWidthM", Min = 0, Max = 6 },
 		{ Label = "Shoulder width", Key = "ShoulderWidthM", Min = 0, Max = 6 },
 		{ Label = "Median width", Key = "MedianWidthM", Min = 0, Max = 10 },
 		{ Label = "Bike lane width", Key = "BikeLaneWidthM", Min = 0, Max = 4 },
 		{ Label = "Parking lane width", Key = "ParkingLaneWidthM", Min = 0, Max = 5 },
-		{ Label = "Curb height", Key = "CurbHeightM", Min = 0, Max = 0.5 },
+		{ Label = Locale.Term(props.Settings, "KerbHeight"), Key = "CurbHeightM", Min = 0, Max = 0.5 },
 	}
 	for _, field in dimensionFields do
 		children[field.Key] = e(LabeledRow, {
@@ -383,8 +386,8 @@ local function RegionEditor(props: {
 	local colorFields: { { Label: string, Key: string } } = {
 		{ Label = "Asphalt", Key = "AsphaltColor" },
 		{ Label = "Shoulder", Key = "ShoulderColor" },
-		{ Label = "Sidewalk", Key = "SidewalkColor" },
-		{ Label = "Curb", Key = "CurbColor" },
+		{ Label = Locale.Term(props.Settings, "Pavement"), Key = "SidewalkColor" },
+		{ Label = Locale.Term(props.Settings, "Kerb"), Key = "CurbColor" },
 		{ Label = "Median", Key = "MedianColor" },
 		{ Label = "Bike lane", Key = "BikeLaneColor" },
 		{ Label = "Bus/taxi bay", Key = "BayColor" },

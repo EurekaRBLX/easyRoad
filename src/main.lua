@@ -40,6 +40,7 @@ local RegionalPreferenceGui = require("./UI/RegionalPreferenceGui")
 local KeybindsGui = require("./UI/KeybindsGui")
 local Components = require("./UI/Components")
 local PieMenu = require("./UI/PieMenu")
+local BayDraftPanel = require("./UI/BayDraftPanel")
 
 return function(
 	plugin: Plugin,
@@ -386,11 +387,28 @@ return function(
 				Position = UDim2.new(0, 12, 1, -12),
 				Size = UDim2.new(0, 300, 0, 400),
 			}
+		elseif editSession.GetSelectedRoad() and editSession.IsConfirmingBay() then
+			local draft = editSession.GetBayDraft()
+			if draft then
+				bottomContent = React.createElement(BayDraftPanel, {
+					LengthStuds = draft.LengthStuds,
+					WidthM = draft.WidthM,
+					OnLengthChanged = editSession.SetBayDraftLength,
+					OnWidthChanged = editSession.SetBayDraftWidth,
+				})
+				bottomFrameProps = {
+					AnchorPoint = Vector2.new(0, 1),
+					Position = UDim2.new(0, 12, 1, -12),
+					Size = UDim2.new(0, 260, 0, 180),
+				}
+			end
 		elseif
 			editSession.GetSelectedRoad()
 			and not editSession.IsShowingMenu()
 			and not editSession.IsShowingSegmentMenu()
-			and not editSession.IsPlacingBusBay()
+			and not editSession.IsPlacingBusStop()
+			and not editSession.IsPlacingBay()
+			and not editSession.IsConfirmingBay()
 		then
 			bottomContent = React.createElement(RoadInspector, {
 				PluginObj = plugin,
@@ -441,8 +459,12 @@ return function(
 		-- Shown the moment a placed road is selected, before the full
 		-- designer: Edit on Road Builder / Edit Road Segment / Place More /
 		-- Use as Template / Cancel, CS2-style. "Edit Road Segment" opens a
-		-- second-level submenu (Add Bus Bay / Edit Lane Markings / Back) at
-		-- the same anchor, and "Add Bus Bay" opens a click-to-place mode.
+		-- second-level submenu (Add Bus Stop / Add Bus Bay / Edit Lane
+		-- Markings / Back) at the same anchor. "Add Bus Stop" opens a
+		-- click-to-place mode for a marker; "Add Bus Bay" opens a
+		-- click-to-place mode for a point on the road, then a length/width
+		-- panel (see the ConfirmingBay branch below) before committing the
+		-- real carved-out geometry.
 		-- Rendered in its own ScreenGui WITHOUT IgnoreGuiInset, matching
 		-- WorldToViewportPoint's coordinate space (the bottom HUD's
 		-- ScreenGui ignores the inset instead, for the drag-ghost math -
@@ -451,7 +473,13 @@ return function(
 		local showPieMenu = menuRoad ~= nil
 			and not session
 			and not designProfile
-			and (editSession.IsShowingMenu() or editSession.IsShowingSegmentMenu() or editSession.IsPlacingBusBay())
+			and (
+				editSession.IsShowingMenu()
+				or editSession.IsShowingSegmentMenu()
+				or editSession.IsPlacingBusStop()
+				or editSession.IsPlacingBay()
+				or editSession.IsConfirmingBay()
+			)
 		if showPieMenu then
 			local anchor = editSession.GetAnchorWorldPosition()
 			if anchor then
@@ -526,9 +554,15 @@ return function(
 						WorldPosition = anchor,
 						SetGlobalHover = setGlobalHover,
 						Top = {
+							Text = "Add Bus Stop",
+							OnClick = function()
+								editSession.StartBusStopPlacement()
+							end,
+						},
+						TopLeft = {
 							Text = "Add Bus Bay",
 							OnClick = function()
-								editSession.StartBusBayPlacement()
+								editSession.StartBayPlacement()
 							end,
 						},
 						Left = {
@@ -546,14 +580,42 @@ return function(
 							end,
 						},
 					})
-				else -- PlacingBusBay
+				elseif editSession.IsPlacingBusStop() then
 					pieMenuElement = React.createElement(PieMenu, {
 						WorldPosition = anchor,
 						SetGlobalHover = setGlobalHover,
 						Bottom = {
 							Text = "Done (click a sidewalk/parking part to add, an existing stop to remove)",
 							OnClick = function()
-								editSession.StopBusBayPlacement()
+								editSession.StopBusStopPlacement()
+							end,
+						},
+					})
+				elseif editSession.IsPlacingBay() then
+					pieMenuElement = React.createElement(PieMenu, {
+						WorldPosition = anchor,
+						SetGlobalHover = setGlobalHover,
+						Bottom = {
+							Text = "Click a point on the road for the bus bay (Esc to cancel)",
+							OnClick = function()
+								editSession.CancelBayPlacement()
+							end,
+						},
+					})
+				else -- ConfirmingBay: length/width panel is the bottom HUD below
+					pieMenuElement = React.createElement(PieMenu, {
+						WorldPosition = anchor,
+						SetGlobalHover = setGlobalHover,
+						Top = {
+							Text = "Add Bay",
+							OnClick = function()
+								editSession.ConfirmBay()
+							end,
+						},
+						Bottom = {
+							Text = "Cancel",
+							OnClick = function()
+								editSession.CancelBayPlacement()
 							end,
 						},
 					})
@@ -564,7 +626,7 @@ return function(
 				-- can be positioned anywhere within it), so a MouseEnter
 				-- here would fire almost immediately and latch
 				-- uiState.Hovered permanently - which used to make
-				-- onBusBayClick's "don't place through the HUD" guard
+				-- onBusStopClick's "don't place through the HUD" guard
 				-- swallow every viewport click while any pie menu was
 				-- showing (i.e. whenever a road was selected). Each
 				-- PillButton reports its own (correctly small) hover area

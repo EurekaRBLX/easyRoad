@@ -60,6 +60,7 @@ local function RegionalPreferenceGui(props: {
 		local editing = editingRegion :: RegionStyles.RegionStyle
 		return e(RegionEditor, {
 			Style = editing,
+			Settings = settings,
 			OnChange = function(transform: (style: RegionStyles.RegionStyle) -> ())
 				local copy = RegionStyles.Clone(editing)
 				transform(copy)
@@ -207,6 +208,25 @@ local function RegionalPreferenceGui(props: {
 				props.OnSettingsChanged()
 			end,
 			LayoutOrder = 6,
+		}),
+		Language = e(LabeledRow, {
+			Label = "Terminology",
+			LayoutOrder = 7,
+			children = {
+				Dropdown = e(Components.Dropdown, {
+					Options = {
+						{ Id = "British", Text = "British (Kerb, Pavement)" },
+						{ Id = "American", Text = "American (Curb, Sidewalk)" },
+					},
+					SelectedId = settings.LanguageVariant,
+					OnSelected = function(id: string)
+						settings.LanguageVariant = id :: Settings.LanguageVariant
+						props.OnSettingsChanged()
+					end,
+					LayoutOrder = 2,
+					Grow = true,
+				}),
+			},
 		}),
 
 		BankSection = e(Components.Section, {

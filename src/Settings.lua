@@ -11,8 +11,15 @@ local Keybinds = require("./Keybinds")
 local kSettingsKey = "easyRoadState"
 
 local CURVE_ALIGNMENTS = { "Center", "Inside", "Outside" }
+local LANGUAGE_VARIANTS = { "British", "American" }
 
 export type SuperelevationMode = "Auto" | "Manual" | "Off"
+
+-- Which English variant to use for user-facing terminology that differs
+-- between them (Kerb/Curb, Pavement/Sidewalk, ...) - see Locale.lua. Purely
+-- a display concern: internal data model field/kind names (CurbHeightM,
+-- "Sidewalk" component kind, etc.) don't change with this setting.
+export type LanguageVariant = "British" | "American"
 
 -- How a curved road's deck strips are built relative to the path, matching
 -- the Archimedes plugin's alignment concept: "Center" is symmetric on the
@@ -34,6 +41,7 @@ export type EasyRoadSettings = {
 	AutoMarkings: boolean,
 	DriveSideOverride: string, -- "Region" | "Left" | "Right"
 	CurveAlignment: CurveAlignment,
+	LanguageVariant: LanguageVariant,
 
 	-- Default road
 	DefaultProfileId: string,
@@ -76,6 +84,10 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		CurveAlignment = if typeof(raw.CurveAlignment) == "string" and table.find(CURVE_ALIGNMENTS, raw.CurveAlignment)
 			then raw.CurveAlignment :: CurveAlignment
 			else "Inside" :: CurveAlignment,
+		LanguageVariant = if typeof(raw.LanguageVariant) == "string"
+				and table.find(LANGUAGE_VARIANTS, raw.LanguageVariant)
+			then raw.LanguageVariant :: LanguageVariant
+			else "British" :: LanguageVariant,
 		DefaultProfileId = raw.DefaultProfileId or "builtin_two_lane",
 		SnapRadiusStuds = raw.SnapRadiusStuds or 8,
 		GridSizeStuds = raw.GridSizeStuds or 4,
@@ -101,6 +113,7 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		AutoMarkings = settings.AutoMarkings,
 		DriveSideOverride = settings.DriveSideOverride,
 		CurveAlignment = settings.CurveAlignment,
+		LanguageVariant = settings.LanguageVariant,
 		DefaultProfileId = settings.DefaultProfileId,
 		SnapRadiusStuds = settings.SnapRadiusStuds,
 		GridSizeStuds = settings.GridSizeStuds,

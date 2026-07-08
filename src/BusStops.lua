@@ -1,10 +1,11 @@
 --!strict
 -- Bus stop markers: point-and-click decorations on a placed road's
 -- Sidewalk/Parking parts, added via the pie menu's "Edit Road Segment" ->
--- "Add Bus Bay" flow. Purely a marker (position + icon) parented under the
+-- "Add Bus Stop" flow. Purely a marker (position + icon) parented under the
 -- road model, not a cross-section change - the road's lane layout is
--- untouched, matching the scoped-down version of the "Add Bus Bay" ask
--- (see TODO.md for the still-deferred marking "stretch" mechanic).
+-- untouched. For a real physical pull-in bay (a cross-section change), see
+-- RoadBuilder.BuildWithBay / the pie menu's separate "Add Bus Bay" flow.
+-- (See TODO.md for the still-deferred marking "stretch" mechanic.)
 
 local HttpService = game:GetService("HttpService")
 

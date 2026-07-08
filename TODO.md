@@ -6,6 +6,20 @@ what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
 ## Next up — needs a decision or real design work
 
+**CS2-style road-tool UI - still not actually delivered.** Asked for twice
+now; last round's attempt (a divider + section labels inside the existing
+floating panel) didn't match what was actually wanted. The CS2 reference
+screenshot shows a bottom-docked toolbar with category TABS across the top
+(which network/road type - plain road, highway, one-way, pedestrian, ...)
+as a structurally separate region from "Tool Mode" (straight/curve/
+freeform icons) and the elevation row, not a single floating side panel
+with an internal label. This is a real layout/IA rework (probably: move
+the whole build UI to a bottom-docked bar instead of `BuildBar.lua`'s
+current bottom-left floating card, add road-category tabs above the
+existing tool-mode row) - needs to be scoped with the user rather than
+guessed at a third time, given the first two attempts (icon-only buttons,
+then a divider) both missed the mark.
+
 **Marking "stretch" interaction — still not built (the one piece of "Edit
 Road Segment" deliberately left out of that round).** Dragging a lane
 marking's end (Studio-resize-handle style) to extend it and its sibling
@@ -14,9 +28,10 @@ top of `Mesh/Markings.lua`'s per-segment-continuous-run computation. This
 needs real drag-resize handles in the 3D viewport (adorner-style, like
 Studio's own resize handles) plus a rule for how "siblings in that segment"
 is defined and how the extended length is stored/rendered - none of which
-exists today. The rest of "Edit Road Segment" (bus bay click-placement,
-numpad marking shortcut, the hover submenu itself) already shipped - see
-`SHIPPED.md`. Flagging this specifically so it isn't quietly dropped.
+exists today. The rest of "Edit Road Segment" (bus stop / bus bay
+click-placement, numpad marking shortcut, the hover submenu itself) already
+shipped - see `SHIPPED.md`. Flagging this specifically so it isn't quietly
+dropped.
 
 **Junctions & intersections.** With placed roads now selectable and
 editable, the next structurally biggest gap is that roads can only ever

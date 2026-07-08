@@ -15,6 +15,8 @@ local e = React.createElement
 local Components = require("./Components")
 local RoadProfile = require("../RoadProfile")
 local RegionStyles = require("../RegionStyles")
+local Settings = require("../Settings")
+local Locale = require("../Locale")
 
 local ProfileFields = {}
 
@@ -27,6 +29,7 @@ function ProfileFields.InsertMarkingOptions(
 	children: { [string]: any },
 	profile: RoadProfile.RoadProfile,
 	regionStyle: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings,
 	startOrder: number,
 	onChange: (transform: (profile: RoadProfile.RoadProfile) -> ()) -> ()
 ): number
@@ -35,7 +38,7 @@ function ProfileFields.InsertMarkingOptions(
 	children["PF_KerbRow"] = e(Components.Row, {
 		LayoutOrder = order,
 	}, {
-		Label = e(Components.Label, { Text = "Kerb lines", LayoutOrder = 1, Width = 80 }),
+		Label = e(Components.Label, { Text = Locale.Term(settings, "KerbLines"), LayoutOrder = 1, Width = 80 }),
 		Dropdown = e(Components.Dropdown, {
 			Options = {
 				{ Id = "None", Text = "No restriction" },
@@ -57,7 +60,7 @@ function ProfileFields.InsertMarkingOptions(
 	children["PF_KerbIndentRow"] = e(Components.Row, {
 		LayoutOrder = order,
 	}, {
-		Label = e(Components.Label, { Text = "Kerb line offset", LayoutOrder = 1, Width = 80 }),
+		Label = e(Components.Label, { Text = Locale.Term(settings, "KerbLineOffset"), LayoutOrder = 1, Width = 80 }),
 		Dropdown = e(Components.Dropdown, {
 			Options = {
 				{ Id = "Inset", Text = "Inset (default)" },

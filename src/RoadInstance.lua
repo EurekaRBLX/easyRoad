@@ -15,10 +15,17 @@ local CurveSegment = require("./Geometry/CurveSegment")
 local PolyCurve = require("./Geometry/PolyCurve")
 local RoadProfile = require("./RoadProfile")
 
+export type BayData = {
+	StationStuds: number,
+	LengthStuds: number,
+	WidthM: number,
+}
+
 export type RoadData = {
 	Curve: PolyCurve.PolyCurve,
 	ProfileStart: RoadProfile.RoadProfile,
 	ProfileEnd: RoadProfile.RoadProfile?,
+	Bay: BayData?,
 }
 
 local RoadInstance = {}
@@ -65,6 +72,36 @@ function RoadInstance.StampModel(
 	model:SetAttribute("RW_EndPos", CurveSegment.PosAtS(segment, segment.Length))
 	model:SetAttribute("RW_StartTan", CurveSegment.TangentAtS(segment, 0))
 	model:SetAttribute("RW_EndTan", CurveSegment.TangentAtS(segment, segment.Length))
+end
+
+-- Bus bay placement is stamped separately (rather than folded into
+-- StampModel) since it's optional and only ever set/read by
+-- RoadEditSession, not by the initial placement flow.
+function RoadInstance.StampBay(model: Model, bay: BayData?)
+	model:SetAttribute("RW_BayJson", if bay then HttpService:JSONEncode(bay) else nil)
+end
+
+local function bayFromModel(model: Model): BayData?
+	local raw = model:GetAttribute("RW_BayJson")
+	if typeof(raw) ~= "string" then
+		return nil
+	end
+	local ok, decoded = pcall(HttpService.JSONDecode, HttpService, raw)
+	if not ok or typeof(decoded) ~= "table" then
+		return nil
+	end
+	if
+		typeof(decoded.StationStuds) ~= "number"
+		or typeof(decoded.LengthStuds) ~= "number"
+		or typeof(decoded.WidthM) ~= "number"
+	then
+		return nil
+	end
+	return {
+		StationStuds = decoded.StationStuds,
+		LengthStuds = decoded.LengthStuds,
+		WidthM = decoded.WidthM,
+	}
 end
 
 local function segmentFromModel(model: Model): CurveSegment.Segment?
@@ -125,6 +162,7 @@ function RoadInstance.Read(model: Model): RoadData?
 		Curve = PolyCurve.new({ segment }),
 		ProfileStart = profileStart,
 		ProfileEnd = profileEnd,
+		Bay = bayFromModel(model),
 	}
 end
 

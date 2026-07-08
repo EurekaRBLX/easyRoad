@@ -396,34 +396,20 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			return stationOffsets[stationIndex][c]
 		end
 
-		-- The far (non-anchor) edge offset - used only to size how far the
-		-- strip needs to be widened on that side to hide the residual gap.
-		local function farOffsetAt(stationIndex: number, c: number): number
-			if anchorSign > 0 then
-				return stationOffsets[stationIndex][c]
-			end
-			return stationOffsets[stationIndex][c] + stationWidths[stationIndex][c]
-		end
-
-		-- Per-strip far-side pad: the anchor edge is exact by construction,
-		-- but the far edge is a straight line between two true curve points,
-		-- which falls slightly short of the true offset arc on a turn - the
-		-- same r*k*L defect curveMiterPad already models for length padding,
-		-- just absorbed here as extra width on the far side only (so the
-		-- anchor edge doesn't move). Small enough on gentle curves that no
-		-- wedge is ever needed there; genuinely sharp joints still get one
-		-- below.
-		local function farEdgePad(sMid: number, stationA: number, stationB: number, c: number, nominalLength: number): number
-			local farDistance = (math.abs(farOffsetAt(stationA, c)) + math.abs(farOffsetAt(stationB, c))) / 2
-			return curveMiterPad(curve, sMid, farDistance, nominalLength)
-		end
-
+		-- NOTE: strips are built at their plain, exact anchored width, no
+		-- far-edge padding. An earlier version widened the far (non-anchor)
+		-- edge using curveMiterPad's r*k*L formula reinterpreted as a width
+		-- pad instead of a length pad - that formula was derived for length
+		-- padding specifically and doesn't carry over to width correctly,
+		-- and visibly over-widened strips into a sawtooth/serrated edge on
+		-- curves instead of fixing anything. Removed; the far edge's small
+		-- residual gap on gentle curves is left alone (imperceptible), and
+		-- only genuinely sharp joints get an exact FillTriangle wedge below.
 		for i = 1, stationCount - 1 do
 			local headingDot = frames[i].LookVector:Dot(frames[i + 1].LookVector)
 			if headingDot < 0 then
 				continue
 			end
-			local sMid = (stations[i] + stations[i + 1]) / 2
 
 			for c = 1, componentCount do
 				local width = (stationWidths[i][c] + stationWidths[i + 1][c]) / 2
@@ -441,16 +427,12 @@ function RoadBuilder.Build(options: BuildOptions): Model
 					continue
 				end
 
-				local pad = farEdgePad(sMid, i, i + 1, c, segLength)
 				local part = makePart(preview)
 				part.Name = kind
 				part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
 				part.Color = colorForKind(kind, style)
-				part.Size = Vector3.new(width + pad, partHeight, segLength)
-				-- Widen only away from the anchor edge: shift the center by
-				-- half the pad in the far direction so the anchor-side face
-				-- stays exactly where anchoredStripCFrame put it.
-				part.CFrame = stripCF * CFrame.new(-anchorSign * pad / 2, 0, 0)
+				part.Size = Vector3.new(width, partHeight, segLength)
+				part.CFrame = stripCF
 				part.Parent = model
 			end
 		end
@@ -668,6 +650,76 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		model:SetAttribute("RW_ProfileStartId", options.ProfileStart.Id)
 		model:SetAttribute("RW_ProfileEndId",
 			if options.ProfileEnd then options.ProfileEnd.Id else options.ProfileStart.Id)
+	end
+
+	return model
+end
+
+export type BayPlacement = {
+	StationStuds: number, -- Center of the bay along the curve
+	LengthStuds: number, -- Length of the flat "dwell" section (excludes tapers)
+	WidthM: number, -- Bay lane width in meters
+}
+
+-- Builds a road with a bus/taxi bay carved into it at one point: a taper
+-- in (normal profile -> normal+Bay), a flat dwell at full bay width, and a
+-- taper back out, stitched from 5 separate RoadBuilder.Build calls on
+-- Curve:Slice() sub-ranges of the same curve - reusing the existing
+-- widen/narrow taper machinery for the two tapers rather than inventing a
+-- new one, since a bay taper and a widen/narrow taper are the same shape.
+-- The bay doesn't combine with an options.ProfileEnd transition in this
+-- version (bays are placed on already-built, non-transitioning roads).
+function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Model
+	local curve = options.Curve
+	local settings = options.Settings
+	local baseProfile = options.ProfileStart
+	local length = curve.Length
+
+	local model = Instance.new("Model")
+	model.Name = if options.Preview then "RoadPreview" else "Road"
+	if length < 1e-3 then
+		return model
+	end
+
+	local bayProfile = RoadProfile.WithBay(baseProfile, options.Style.DriveOnLeft, bay.WidthM)
+	local widthDeltaStuds = bay.WidthM * settings.MetersToStuds
+	local taperLength = math.clamp(widthDeltaStuds * 15, 20, math.max(bay.LengthStuds, 20))
+
+	local half = math.max(bay.LengthStuds, 0) / 2
+	local dwellStart = math.clamp(bay.StationStuds - half, 0, length)
+	local dwellEnd = math.clamp(bay.StationStuds + half, 0, length)
+	local taperInStart = math.clamp(dwellStart - taperLength, 0, dwellStart)
+	local taperOutEnd = math.clamp(dwellEnd + taperLength, dwellEnd, length)
+
+	local function appendPiece(piece: Model)
+		for _, child in piece:GetChildren() do
+			child.Parent = model
+		end
+		piece:Destroy()
+	end
+
+	local function buildRange(s0: number, s1: number, profileStart: RoadProfile.RoadProfile, profileEnd: RoadProfile.RoadProfile?)
+		if s1 - s0 < 1e-3 then
+			return
+		end
+		appendPiece(RoadBuilder.Build({
+			Curve = curve:Slice(s0, s1),
+			ProfileStart = profileStart,
+			ProfileEnd = profileEnd,
+			Style = options.Style,
+			Settings = settings,
+			Preview = options.Preview,
+		}))
+	end
+
+	buildRange(0, taperInStart, baseProfile, nil)
+	buildRange(taperInStart, dwellStart, baseProfile, bayProfile)
+	buildRange(dwellStart, dwellEnd, bayProfile, nil)
+	buildRange(dwellEnd, taperOutEnd, bayProfile, baseProfile)
+	buildRange(taperOutEnd, length, baseProfile, nil)
+
+	if #curve.Segments == 1 then
+		RoadInstance.StampModel(model, curve.Segments[1], baseProfile, options.ProfileEnd)
 	end
 
 	return model
