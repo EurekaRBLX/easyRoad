@@ -43,6 +43,16 @@ internal planning only. See `TODO.md` for planned new features and
   footprint (not a wrapper around several - #1, #2), or its hover state
   must be reset on whatever transition could cause it to unmount while
   still hovered (#3).
+- **Diagonal-strip seam gaps - confirmed still present after a first
+  attempted fix; a real fix is scoped in `TODO.md`.** The `WEDGE_WIDTH_PAD`
+  flat width margin added to diagonally-oriented strips didn't fully close
+  the sliver gaps at their seams (confirmed with a second user screenshot
+  of the same exaggerated-size bay). Padding can't fully fix this since a
+  shifting-offset strip is a parallelogram no single rigid `Part` can
+  represent exactly - see `TODO.md`'s "Bay/taper seam gaps" entry for the
+  actual planned fix (exact `FillTriangle` seam-filling instead of
+  padding). User explicitly deferred further work on this to a future
+  session.
 - **Bus bay's displaced pavement doesn't drag its own kerb-restriction line
   marking along with it.** `BuildWithBay`'s nearside-pavement overlay (see
   `SHIPPED.md`) correctly moves the physical sidewalk/verge Parts outward
