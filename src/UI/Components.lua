@@ -28,20 +28,41 @@ end
 
 -- Section header --------------------------------------------------------------
 
+-- Extra breathing room above each section header (beyond the list's normal
+-- row spacing) so a long field list actually reads as separate grouped
+-- sections instead of one uninterrupted, cramped stack - plus a faint
+-- divider line, matching the same treatment BuildBar uses between its tool
+-- and library groups.
 function Components.Section(props: {
 	Text: string,
 	LayoutOrder: number?,
+	First: boolean?,
 })
-	return e("TextLabel", {
-		Text = string.upper(props.Text),
-		TextColor3 = Theme.DIM,
+	return e("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 20),
-		Font = Theme.FONT_BOLD,
-		TextSize = Theme.HEADER_TEXT_SIZE,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextTruncate = Enum.TextTruncate.AtEnd,
 		LayoutOrder = props.LayoutOrder,
+	}, {
+		Layout = e("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6) }),
+		Divider = not props.First and e("Frame", {
+			Size = UDim2.new(1, 0, 0, 1),
+			BackgroundColor3 = Theme.GLASS_STROKE,
+			BackgroundTransparency = 0.5,
+			BorderSizePixel = 0,
+			LayoutOrder = 1,
+		}),
+		Label = e("TextLabel", {
+			Text = string.upper(props.Text),
+			TextColor3 = Theme.DIM,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 20),
+			Font = Theme.FONT_BOLD,
+			TextSize = Theme.HEADER_TEXT_SIZE,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			LayoutOrder = 2,
+		}),
 	})
 end
 
@@ -243,60 +264,120 @@ function Components.TextField(props: {
 	})
 end
 
--- Colour field: a swatch preview plus R/G/B (0-255) number fields - no
--- gesture-based hue/saturation picker, just reliable typed input.
+-- Colour field: a swatch preview plus one compact text field that accepts
+-- either a hex code ("#RRGGBB" / "RRGGBB") or a Color3-style "r, g, b"
+-- triplet (0-255 each) - replaces the old 3 separate R/G/B number fields,
+-- which alone were wide enough to overflow a docked panel's minimum width.
+-- No gesture-based hue/saturation picker, just reliable typed input; click
+-- the swatch to expand full R/G/B number fields for fine nudging.
+
+local function parseColorText(text: string): Color3?
+	local hex = text:match("^#?(%x%x%x%x%x%x)$")
+	if hex then
+		local r = tonumber(hex:sub(1, 2), 16)
+		local g = tonumber(hex:sub(3, 4), 16)
+		local b = tonumber(hex:sub(5, 6), 16)
+		if r and g and b then
+			return Color3.fromRGB(r, g, b)
+		end
+	end
+	local r, g, b = text:match("^%s*(%d+)%s*,%s*(%d+)%s*,%s*(%d+)%s*$")
+	if r then
+		return Color3.fromRGB(
+			math.clamp(tonumber(r) :: number, 0, 255),
+			math.clamp(tonumber(g) :: number, 0, 255),
+			math.clamp(tonumber(b) :: number, 0, 255)
+		)
+	end
+	return nil
+end
+
+local function colorToHex(color: Color3): string
+	return string.format(
+		"#%02X%02X%02X",
+		math.round(color.R * 255),
+		math.round(color.G * 255),
+		math.round(color.B * 255)
+	)
+end
 
 function Components.ColorField(props: {
 	Value: Color3,
 	OnChanged: (value: Color3) -> (),
 	LayoutOrder: number?,
 })
+	local expanded, setExpanded = React.useState(false)
 	local r = math.round(props.Value.R * 255)
 	local g = math.round(props.Value.G * 255)
 	local b = math.round(props.Value.B * 255)
 
-	return e(Components.Row, { LayoutOrder = props.LayoutOrder }, {
-		Swatch = e("Frame", {
-			Size = UDim2.new(0, 22, 0, Theme.ROW_HEIGHT),
-			BackgroundColor3 = props.Value,
-			LayoutOrder = 1,
-		}, {
-			Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
-			Stroke = e("UIStroke", {
-				Color = Theme.GLASS_STROKE,
-				Transparency = 0.6,
-				Thickness = 1,
+	return e("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = props.LayoutOrder,
+	}, {
+		Layout = e("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2) }),
+		Main = e(Components.Row, { LayoutOrder = 1 }, {
+			Swatch = e("TextButton", {
+				Text = "",
+				Size = UDim2.new(0, 22, 0, Theme.ROW_HEIGHT),
+				BackgroundColor3 = props.Value,
+				LayoutOrder = 1,
+				[React.Event.Activated] = function()
+					setExpanded(not expanded)
+				end,
+			}, {
+				Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+				Stroke = e("UIStroke", {
+					Color = Theme.GLASS_STROKE,
+					Transparency = 0.6,
+					Thickness = 1,
+				}),
+			}),
+			Hex = e(Components.TextField, {
+				Value = colorToHex(props.Value),
+				Width = 90,
+				LayoutOrder = 2,
+				OnChanged = function(text: string)
+					local color = parseColorText(text)
+					if color then
+						props.OnChanged(color)
+					end
+				end,
 			}),
 		}),
-		R = e(Components.NumberField, {
-			Value = r,
-			Min = 0,
-			Max = 255,
-			Width = 44,
-			LayoutOrder = 2,
-			OnChanged = function(value: number)
-				props.OnChanged(Color3.fromRGB(math.round(value), g, b))
-			end,
-		}),
-		G = e(Components.NumberField, {
-			Value = g,
-			Min = 0,
-			Max = 255,
-			Width = 44,
-			LayoutOrder = 3,
-			OnChanged = function(value: number)
-				props.OnChanged(Color3.fromRGB(r, math.round(value), b))
-			end,
-		}),
-		B = e(Components.NumberField, {
-			Value = b,
-			Min = 0,
-			Max = 255,
-			Width = 44,
-			LayoutOrder = 4,
-			OnChanged = function(value: number)
-				props.OnChanged(Color3.fromRGB(r, g, math.round(value)))
-			end,
+		Expanded = expanded and e(Components.Row, { LayoutOrder = 2 }, {
+			R = e(Components.NumberField, {
+				Value = r,
+				Min = 0,
+				Max = 255,
+				Width = 44,
+				LayoutOrder = 1,
+				OnChanged = function(value: number)
+					props.OnChanged(Color3.fromRGB(math.round(value), g, b))
+				end,
+			}),
+			G = e(Components.NumberField, {
+				Value = g,
+				Min = 0,
+				Max = 255,
+				Width = 44,
+				LayoutOrder = 2,
+				OnChanged = function(value: number)
+					props.OnChanged(Color3.fromRGB(r, math.round(value), b))
+				end,
+			}),
+			B = e(Components.NumberField, {
+				Value = b,
+				Min = 0,
+				Max = 255,
+				Width = 44,
+				LayoutOrder = 3,
+				OnChanged = function(value: number)
+					props.OnChanged(Color3.fromRGB(r, g, math.round(value)))
+				end,
+			}),
 		}),
 	})
 end

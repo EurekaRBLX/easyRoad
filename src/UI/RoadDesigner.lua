@@ -454,6 +454,7 @@ local function LaneStripCard(props: {
 	decorateCard(children)
 	children.Header = e(Components.Section, {
 		Text = string.format("Road Layout - %.1f m", RoadProfile.TotalWidthM(profile)),
+		First = true,
 		LayoutOrder = 1,
 	})
 
@@ -817,7 +818,7 @@ local function PaletteOrLibraryCard(props: {
 			}),
 		})
 	else
-		children.Header = e(Components.Section, { Text = "Modules", LayoutOrder = 1 })
+		children.Header = e(Components.Section, { Text = "Modules", First = true, LayoutOrder = 1 })
 	end
 
 	if activeTab == "Library" and props.Picker then
@@ -910,7 +911,7 @@ local function Panel(props: {
 
 	-- Properties card
 	local propertiesChildren: { [string]: any } = {}
-	propertiesChildren.Header = e(Components.Section, { Text = "Road Properties", LayoutOrder = 1 })
+	propertiesChildren.Header = e(Components.Section, { Text = "Road Properties", First = true, LayoutOrder = 1 })
 	if props.OnRename then
 		propertiesChildren.NameRow = e(Components.Row, { LayoutOrder = 2 }, {
 			Label = e(Components.Label, { Text = "Name", LayoutOrder = 1, Width = 44 }),

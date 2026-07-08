@@ -4,6 +4,92 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Wedge scope-down, real click-swallowing bug, settings home, elevation editing
+
+- **Wedge joints now only appear on genuinely sharp turns/superelevation.**
+  `Mesh/RoadBuilder.lua`'s Inside/Outside curve joints used to insert a
+  `FillTriangle` wedge at every curved joint, however gentle. Deck strips now
+  widen slightly on their far (non-anchor) edge every interval (reusing the
+  existing `curveMiterPad` formula, applied to width instead of length,
+  anchor-side face held fixed so it doesn't disturb the exact anchor edge),
+  and a wedge is only added at a joint if the true remaining gap
+  (`WEDGE_GAP_THRESHOLD_STUDS = 0.5` studs) is still bigger than that padding
+  could plausibly cover - i.e. only where a flat rectangle genuinely
+  couldn't hide the defect.
+- **Lane markings now anchor to true curve position at both of their own
+  endpoints** (`placeMarkingSpan`), the same technique the deck's anchored
+  strips already used, instead of a `curveMiterPad`-padded box centered on a
+  midpoint frame plus a separate joint-patch part. Solid rails now meet
+  exactly at every interior station with no patch needed, and align with
+  whichever deck edge sits at the same lateral offset (previously the
+  approximation used by markings and the exact anchor used by
+  Inside/Outside deck strips could visibly disagree at a joint - this is
+  what showed up as a lane marking not lining up with the road edge, and the
+  patch could show up as an overlap).
+- **Root cause found for "Bus Bay doesn't work" / "can't stretch a lane
+  marking, it just opens Road Builder":** the pie menu's screen-covering
+  wrapper `Frame` in `main.lua` had `MouseEnter`/`MouseLeave` wired to
+  `uiState.Hovered` - since that frame spans the *entire* viewport (needed
+  so the anchored pie menu can appear anywhere within it), the mouse
+  "entered" it almost immediately whenever any pie menu showed (i.e.
+  whenever a road was selected), latching `Hovered` true and never really
+  clearing. `RoadEditSession.onBusBayClick`'s "don't place through the HUD"
+  guard (`if uiState.Hovered then return end`) then swallowed essentially
+  every click in the 3D viewport while a road was selected. Fixed by moving
+  hover tracking onto each individual `PillButton` (`PieMenu.lua`'s new
+  `SetGlobalHover` prop) instead of the full-screen wrapper. ("Edit Lane
+  Markings" opening the full designer instead of a dedicated stretch
+  interaction is separate and expected - that interaction was never built,
+  see `TODO.md`.)
+- **Pie menu pills now sit on one consistent ring.** The old per-slot pixel
+  offsets (`Top`/`TopLeft`/`Left`/`Right`/`Bottom`) had different distances
+  from the anchor (70-110px) - not actually on a circle, which is what read
+  as "not all on the circumference." `PieMenu.lua` now generates every
+  offset from a single `RING_RADIUS` and an angle.
+- **Settings now has a home menu instead of forcing both docks open/closed
+  together.** The Settings button used to toggle `regionalDock.Enabled` and
+  `keybindsDock.Enabled` as one unit - both docks default to the same float
+  position, so the second one opened was effectively invisible/unreachable
+  behind the first, which was very likely why keybind capture still seemed
+  broken even after the earlier `gameProcessed` fix (the user was probably
+  never actually looking at the Keybinds dock). `TopBar.lua`'s Settings
+  button now opens a small popover to choose "Regional Preference" or
+  "Keybinds" - each its own independently-toggled dock.
+- **Elevation is now directly editable** (`BuildBar.lua`'s elevation control
+  is a `Components.NumberField`, wired through a new
+  `createRoadSession.SetElevation`) instead of a read-only label, with no
+  "+" prefix on positive values (only negatives show a sign). Added a CS2-
+  style step-size field (`Settings.ElevationStepStuds`) right next to it, so
+  how far each R/F press or arrow click moves no longer requires opening a
+  separate settings dock.
+- **Widen/narrow taper smoothed.** `transitionAlpha` used to be a flat 0
+  followed by a linear ramp - a real slope discontinuity (kink) exactly
+  where the taper zone begins, since the flat zone's derivative is 0 and the
+  ramp's is a nonzero constant. Now smoothstepped (`3t^2 - 2t^3`), whose
+  derivative is 0 at both ends, so the taper blends in and out with no
+  visible bend. Station spacing inside a transition now also scales with
+  how fast the width is changing (studs of width change per stud of length)
+  instead of a flat 4-stud cap, so a short/steep taper still gets short
+  enough strips to read as a smooth line rather than a staircase. (A fully
+  exact wedge-trapezoid taper - each strip literally tapering across its own
+  length instead of stepping between strips - is specified as a follow-up
+  in `TODO.md` if this isn't enough on real testing.)
+- **Colour fields are far more compact and take hex/Color3 text input.**
+  `Components.ColorField` was a swatch plus 3 separate R/G/B number fields -
+  wide enough (~300px) to overflow the settings dock's 260px minimum width,
+  which is very likely what read as "doesn't render within the size
+  constraint." Now a swatch plus one text field accepting either `#RRGGBB`
+  or an `r, g, b` triplet, with the full R/G/B fields available by clicking
+  the swatch to expand.
+- **Section headers now have a divider and breathing room above them**
+  (`Components.Section`), instead of blending straight into the previous
+  section's last row - addresses "better separation between each section,"
+  applied everywhere `Components.Section` is used (Regional Preference,
+  Keybinds, Region Editor, Road Tool/Road Library, Road Editor).
+- **Road Tool and Road Library are now visually two distinct groups** in
+  `BuildBar.lua` (matching the CS2 reference screenshot), separated by
+  `Components.Section`'s divider rather than sitting in one unbroken stack.
+
 ## Keybind capture bug + elevation hint + cancel default
 
 - **Fixed: adding a new keybind silently did nothing.** Root cause:

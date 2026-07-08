@@ -132,6 +132,7 @@ local function RegionalPreferenceGui(props: {
 
 		StyleSection = e(Components.Section, {
 			Text = "Road Style",
+			First = true,
 			LayoutOrder = 1,
 		}),
 		Region = e(LabeledRow, {

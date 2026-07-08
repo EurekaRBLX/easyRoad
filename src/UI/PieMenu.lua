@@ -30,6 +30,7 @@ local function PillButton(props: {
 	Action: PieMenuAction,
 	Primary: boolean,
 	Offset: Vector2,
+	SetGlobalHover: ((boolean) -> ())?,
 })
 	local hovered, setHovered = React.useState(false)
 	local action = props.Action
@@ -54,9 +55,15 @@ local function PillButton(props: {
 		[React.Event.Activated] = action.OnClick,
 		[React.Event.MouseEnter] = function()
 			setHovered(true)
+			if props.SetGlobalHover then
+				props.SetGlobalHover(true)
+			end
 		end,
 		[React.Event.MouseLeave] = function()
 			setHovered(false)
+			if props.SetGlobalHover then
+				props.SetGlobalHover(false)
+			end
 		end,
 	}, {
 		Corner = e("UICorner", { CornerRadius = UDim.new(1, 0) }), -- Pill shape
@@ -72,15 +79,24 @@ local function PillButton(props: {
 	})
 end
 
--- Fixed slot offsets (studs of screen space) around the anchor - matches
--- the reference layout: primary action up top, two side actions, a
--- cancel/dismiss action below.
+-- Slot offsets (pixels of screen space) around the anchor, all on one
+-- common ring radius - matches the reference layout (primary action up
+-- top, two side actions, a cancel/dismiss action below) but as actual
+-- points on a circle rather than ad-hoc pixel offsets with different
+-- radii, so the pills visibly sit on the same ring instead of some
+-- sticking out further than others.
+local RING_RADIUS = 96
+local function ringOffset(angleDegrees: number): Vector2
+	local angle = math.rad(angleDegrees)
+	-- 0 deg = straight up, increasing clockwise (screen space: +X right, +Y down)
+	return Vector2.new(math.sin(angle), -math.cos(angle)) * RING_RADIUS
+end
 local OFFSETS = {
-	Top = Vector2.new(0, -70),
-	TopLeft = Vector2.new(-90, -40),
-	Left = Vector2.new(-110, 6),
-	Right = Vector2.new(110, 6),
-	Bottom = Vector2.new(0, 78),
+	Top = ringOffset(0),
+	TopLeft = ringOffset(-45),
+	Left = ringOffset(-90),
+	Right = ringOffset(90),
+	Bottom = ringOffset(180),
 }
 
 local function PieMenu(props: {
@@ -90,6 +106,7 @@ local function PieMenu(props: {
 	Left: PieMenuAction?,
 	Right: PieMenuAction?,
 	Bottom: PieMenuAction?,
+	SetGlobalHover: ((boolean) -> ())?,
 })
 	local screenPos, setScreenPos = React.useState(Vector2.new(0, 0))
 	local onScreen, setOnScreen = React.useState(false)
@@ -116,22 +133,44 @@ local function PieMenu(props: {
 
 	local children: { [string]: any } = {}
 	if props.Top then
-		children.Top = e(PillButton, { Action = props.Top :: PieMenuAction, Primary = true, Offset = OFFSETS.Top })
+		children.Top = e(PillButton, {
+			Action = props.Top :: PieMenuAction,
+			Primary = true,
+			Offset = OFFSETS.Top,
+			SetGlobalHover = props.SetGlobalHover,
+		})
 	end
 	if props.TopLeft then
-		children.TopLeft =
-			e(PillButton, { Action = props.TopLeft :: PieMenuAction, Primary = false, Offset = OFFSETS.TopLeft })
+		children.TopLeft = e(PillButton, {
+			Action = props.TopLeft :: PieMenuAction,
+			Primary = false,
+			Offset = OFFSETS.TopLeft,
+			SetGlobalHover = props.SetGlobalHover,
+		})
 	end
 	if props.Left then
-		children.Left = e(PillButton, { Action = props.Left :: PieMenuAction, Primary = false, Offset = OFFSETS.Left })
+		children.Left = e(PillButton, {
+			Action = props.Left :: PieMenuAction,
+			Primary = false,
+			Offset = OFFSETS.Left,
+			SetGlobalHover = props.SetGlobalHover,
+		})
 	end
 	if props.Right then
-		children.Right =
-			e(PillButton, { Action = props.Right :: PieMenuAction, Primary = false, Offset = OFFSETS.Right })
+		children.Right = e(PillButton, {
+			Action = props.Right :: PieMenuAction,
+			Primary = false,
+			Offset = OFFSETS.Right,
+			SetGlobalHover = props.SetGlobalHover,
+		})
 	end
 	if props.Bottom then
-		children.Bottom =
-			e(PillButton, { Action = props.Bottom :: PieMenuAction, Primary = false, Offset = OFFSETS.Bottom })
+		children.Bottom = e(PillButton, {
+			Action = props.Bottom :: PieMenuAction,
+			Primary = false,
+			Offset = OFFSETS.Bottom,
+			SetGlobalHover = props.SetGlobalHover,
+		})
 	end
 
 	return e("Frame", {

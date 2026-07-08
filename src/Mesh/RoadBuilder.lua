@@ -37,6 +37,11 @@ local PREVIEW_CHORD_TOLERANCE = 0.35
 local MIN_STEP = 0.75
 local MAX_TURN_PER_STEP = 0.3 -- Radians of heading change allowed per strip
 local RUNOFF_LENGTH_STUDS = 40 -- Superelevation smoothing window
+-- A joint's residual (non-anchor) gap only gets an actual wedge part when it's
+-- bigger than this - below it, simply widening the strips on their far side
+-- (see farEdgePad below) already hides the defect, so most curves need no
+-- wedge at all, only genuinely sharp turns / high-superelevation joints do.
+local WEDGE_GAP_THRESHOLD_STUDS = 0.5
 
 local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
 	Drive = Enum.Material.Asphalt,
@@ -69,19 +74,23 @@ local function colorForKind(kind: RoadProfile.ComponentKind, style: RegionStyles
 	return style.AsphaltColor
 end
 
--- Extra length a flat strip centered at `sMid`, offset `lateralOffset`
--- studs from the centerline, needs so it still overlaps its neighbor
--- through a curve instead of leaving a wedge-shaped gap on the outside of
--- the turn (or, for markings, a visible break in the line).
+-- Extra length (Center-alignment mode) or extra width (Inside/Outside
+-- alignment's far-edge pad) a flat strip needs so it still overlaps its
+-- neighbor through a curve instead of leaving a gap on the outside of the
+-- turn, for a strip centered/anchored at `sMid`-ish and `lateralOffset`
+-- studs from the centerline.
 --
 -- Derived directly from arc length rather than an angle-between-frames
 -- approximation: at radius R = 1/curvature, a point offset by r traces
 -- (R+r)*angle while the centerline traces R*angle over the same turn - a
--- difference of r*angle = r*curvature*nominalLength. Applying this equally
--- means every part - deck strip or marking, whatever length it spans -
--- gets the correct padding for its own lateral offset and curvature at its
--- own position, with no dependency on how that part's span happens to
--- align with station stepping.
+-- difference of r*angle = r*curvature*nominalLength. The same defect size
+-- shows up whether you absorb it as extra length (Center mode, both edges
+-- float) or extra width (Inside/Outside mode, far edge only - see
+-- farEdgePad below); this helper just computes the magnitude, callers
+-- decide which axis to apply it to. Markings don't use this any more -
+-- they anchor both of their own endpoints directly to true curve
+-- positions instead (see placeMarkingSpan), which closes joints exactly
+-- rather than approximating.
 local function curveMiterPad(curve: PolyCurve.PolyCurve, sMid: number, lateralOffset: number, nominalLength: number): number
 	local k = math.abs(curve:CurvatureAt(sMid))
 	if k < 1e-6 then
@@ -180,18 +189,40 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		) * scale
 		taperLength = math.clamp(widthDeltaStuds * 15, 20, length)
 	end
-	-- 0 before the taper begins, then 0 -> 1 across the taper zone
+	-- 0 before the taper begins, then 0 -> 1 across the taper zone.
+	-- Smoothstepped (3t^2 - 2t^3) rather than a plain linear ramp: a linear
+	-- ramp has a derivative of 0 in the flat zone before it and a nonzero
+	-- constant slope the instant the taper starts, i.e. a sharp kink in the
+	-- width (and marking offset) right at that station - visually a sudden
+	-- bend rather than a clean taper. Smoothstep's derivative is exactly 0
+	-- at both t=0 and t=1, so the flat zone blends into the ramp and the
+	-- ramp blends into the final width with no kink at either end.
 	local function transitionAlpha(s: number): number
+		local t: number
 		if not isTransition then
-			return math.clamp(s / length, 0, 1)
+			t = math.clamp(s / length, 0, 1)
+		else
+			t = math.clamp((s - (length - taperLength)) / taperLength, 0, 1)
 		end
-		return math.clamp((s - (length - taperLength)) / taperLength, 0, 1)
+		return t * t * (3 - 2 * t)
 	end
 
 	local maxStep = if preview then settings.PreviewMaxSegmentLengthStuds else settings.MaxSegmentLengthStuds
 	if isTransition then
-		-- Widening/narrowing tapers read much better with short strips
-		maxStep = math.min(maxStep, 4)
+		-- Widening/narrowing tapers read much better with short strips - and
+		-- since each strip's width is constant along its own length (a Part
+		-- can't taper), the width change between one strip and the next
+		-- always shows up as a small step on the non-anchor edge. Bounding
+		-- how much total width change happens per strip (rather than a flat
+		-- 4-stud cap regardless of how steep the taper is) keeps that step
+		-- small enough to read as a smooth line instead of a staircase even
+		-- on a short, steep taper.
+		local widthDeltaStuds = math.abs(
+			RoadProfile.TotalWidthM(options.ProfileStart) - RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
+		) * scale
+		local changeRate = if taperLength > 1e-3 then widthDeltaStuds / taperLength else 0
+		local maxStepForTaper = if changeRate > 1e-3 then 0.4 / changeRate else 4
+		maxStep = math.min(maxStep, 4, math.max(maxStepForTaper, MIN_STEP))
 	end
 	local tolerance = if preview then PREVIEW_CHORD_TOLERANCE else CHORD_TOLERANCE
 	local stations = buildStations(curve, maxStep, tolerance)
@@ -365,11 +396,34 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			return stationOffsets[stationIndex][c]
 		end
 
+		-- The far (non-anchor) edge offset - used only to size how far the
+		-- strip needs to be widened on that side to hide the residual gap.
+		local function farOffsetAt(stationIndex: number, c: number): number
+			if anchorSign > 0 then
+				return stationOffsets[stationIndex][c]
+			end
+			return stationOffsets[stationIndex][c] + stationWidths[stationIndex][c]
+		end
+
+		-- Per-strip far-side pad: the anchor edge is exact by construction,
+		-- but the far edge is a straight line between two true curve points,
+		-- which falls slightly short of the true offset arc on a turn - the
+		-- same r*k*L defect curveMiterPad already models for length padding,
+		-- just absorbed here as extra width on the far side only (so the
+		-- anchor edge doesn't move). Small enough on gentle curves that no
+		-- wedge is ever needed there; genuinely sharp joints still get one
+		-- below.
+		local function farEdgePad(sMid: number, stationA: number, stationB: number, c: number, nominalLength: number): number
+			local farDistance = (math.abs(farOffsetAt(stationA, c)) + math.abs(farOffsetAt(stationB, c))) / 2
+			return curveMiterPad(curve, sMid, farDistance, nominalLength)
+		end
+
 		for i = 1, stationCount - 1 do
 			local headingDot = frames[i].LookVector:Dot(frames[i + 1].LookVector)
 			if headingDot < 0 then
 				continue
 			end
+			local sMid = (stations[i] + stations[i + 1]) / 2
 
 			for c = 1, componentCount do
 				local width = (stationWidths[i][c] + stationWidths[i + 1][c]) / 2
@@ -387,20 +441,28 @@ function RoadBuilder.Build(options: BuildOptions): Model
 					continue
 				end
 
+				local pad = farEdgePad(sMid, i, i + 1, c, segLength)
 				local part = makePart(preview)
 				part.Name = kind
 				part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
 				part.Color = colorForKind(kind, style)
-				part.Size = Vector3.new(width, partHeight, segLength)
-				part.CFrame = stripCF
+				part.Size = Vector3.new(width + pad, partHeight, segLength)
+				-- Widen only away from the anchor edge: shift the center by
+				-- half the pad in the far direction so the anchor-side face
+				-- stays exactly where anchoredStripCFrame put it.
+				part.CFrame = stripCF * CFrame.new(-anchorSign * pad / 2, 0, 0)
 				part.Parent = model
 			end
 		end
 
-		-- Curve joint fills: only the residual (non-anchored) edge can
-		-- still gap, and since the anchor edge is an exact shared point at
-		-- this joint (not two independent approximations like Center mode
-		-- has on both sides), the gap is a single triangle, not a quad.
+		-- Curve joint fills: with the far edge now padded above, only
+		-- genuinely sharp turns or high-superelevation joints still leave a
+		-- gap big enough to need an actual wedge - everything gentler is
+		-- already covered by the widened strips, so most joints add no
+		-- extra part at all. Since the anchor edge is an exact shared point
+		-- at this joint (not two independent approximations like Center
+		-- mode has on both sides), any remaining gap is a single triangle,
+		-- not a quad.
 		for i = 2, stationCount - 1 do
 			local k = math.abs(curve:CurvatureAt(stations[i]))
 			if k < 1e-6 then
@@ -445,6 +507,16 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				local residualNearB =
 					(stripCFB * CFrame.new(-anchorSign * widthB / 2, partHeight / 2, -segLengthB / 2)).Position
 
+				-- The far-side pad above already widens both strips towards
+				-- each other, so the true remaining defect is smaller than
+				-- the raw corner distance - only worth an actual wedge part
+				-- once it's still bigger than the padding could plausibly
+				-- absorb.
+				local gapDistance = (residualFarA - residualNearB).Magnitude
+				if gapDistance < WEDGE_GAP_THRESHOLD_STUDS then
+					continue
+				end
+
 				local function makeWedgePart(): Part
 					local part = makePart(preview)
 					part.Name = kind
@@ -469,30 +541,54 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		})
 		local markingWidth = style.MarkingWidthM * scale
 
-		local function placeMarkingPart(
-			sMid: number,
-			partLength: number,
-			offsetStuds: number,
+		-- Interpolates the roll (superelevation) already computed per
+		-- station at an arbitrary distance s between them.
+		local function rollAt(s: number): number
+			for i = 1, stationCount - 1 do
+				if s <= stations[i + 1] then
+					local span = stations[i + 1] - stations[i]
+					local f = if span > 1e-9 then (s - stations[i]) / span else 0
+					return rolls[i] + (rolls[i + 1] - rolls[i]) * f
+				end
+			end
+			return rolls[stationCount]
+		end
+
+		-- Anchors a marking segment directly to the true curve position at
+		-- both of its own endpoints (s0/offset0, s1/offset1) - the same
+		-- construction the deck's anchored strips use, just without an
+		-- anchorSign edge offset, since a marking's own centerline (not one
+		-- of its lateral edges) is what needs to be exact. Adjacent
+		-- segments that share an endpoint (every interior station, for
+		-- solid lines) therefore meet with zero gap and no separate joint
+		-- patch, and align exactly with whichever deck edge sits at the
+		-- same offset - no curveMiterPad approximation involved.
+		local function placeMarkingSpan(
+			s0: number,
+			s1: number,
+			offset0: number,
+			offset1: number,
+			extraLength: number,
 			color: Color3,
 			altIndex: number
 		)
-			-- Recompute roll at this s by interpolating station rolls
-			local rollMid = 0
-			for i = 1, stationCount - 1 do
-				if sMid <= stations[i + 1] then
-					local span = stations[i + 1] - stations[i]
-					local f = if span > 1e-9 then (sMid - stations[i]) / span else 0
-					rollMid = rolls[i] + (rolls[i + 1] - rolls[i]) * f
-					break
-				end
+			local y = MARKING_LIFT + (altIndex % 2) * 0.004
+			local frame0 = curve:FrameAt(s0, rollAt(s0))
+			local frame1 = curve:FrameAt(s1, rollAt(s1))
+			local p0 = (frame0 * CFrame.new(offset0, y, 0)).Position
+			local p1 = (frame1 * CFrame.new(offset1, y, 0)).Position
+			local segLength = (p1 - p0).Magnitude
+			if segLength < 1e-4 then
+				return
 			end
-			local frame = curve:FrameAt(sMid, rollMid)
+			local forward = (p1 - p0).Unit
+			local mid = (p0 + p1) / 2
 			local part = makePart(preview)
 			part.Name = "Marking"
 			part.Material = Enum.Material.SmoothPlastic
 			part.Color = color
-			part.Size = Vector3.new(markingWidth, MARKING_THICKNESS, partLength)
-			part.CFrame = frame * CFrame.new(offsetStuds, MARKING_LIFT + (altIndex % 2) * 0.004, 0)
+			part.Size = Vector3.new(markingWidth, MARKING_THICKNESS, segLength + extraLength)
+			part.CFrame = CFrame.lookAt(mid, mid + forward, frame1.UpVector)
 			part.Parent = model
 		end
 
@@ -508,36 +604,14 @@ function RoadBuilder.Build(options: BuildOptions): Model
 
 			-- Each compound line type is one or two rails, each rail either
 			-- solid or dashed. lateral = rail offset from the boundary line.
-			-- Markings are thin and high-contrast against the asphalt, so an
-			-- un-mitered gap on a curve is even more visible here than on a
-			-- deck strip - same curveMiterPad helper, evaluated at each
-			-- marking segment's own position/offset regardless of whether it
-			-- lines up with station stepping (dashes rarely do).
+			-- Solid rails anchor to the exact station grid, so neighboring
+			-- segments share an endpoint and meet with no gap or overlap -
+			-- no separate joint patch needed.
 			local function renderSolid(lateral: number)
 				for i = 1, stationCount - 1 do
 					local s0 = stations[i]
 					local s1 = stations[i + 1]
-					local sMid = (s0 + s1) / 2
-					local offset = offsetAt(sMid) + lateral
-					local nominalLength = s1 - s0
-					local miter = curveMiterPad(curve, sMid, offset, nominalLength)
-					placeMarkingPart(sMid, nominalLength + miter + 0.05, offset, color, i)
-				end
-				-- Same small joint patches as the deck strips, at each
-				-- interior station - a solid line is meant to read as
-				-- continuous, so its residual gap (thin + high-contrast
-				-- against the asphalt) is worth the extra bit of insurance.
-				-- Dashes are deliberately discontinuous, so they don't get
-				-- this treatment.
-				for i = 2, stationCount - 1 do
-					local s = stations[i]
-					local k = math.abs(curve:CurvatureAt(s))
-					if k < 1e-6 then
-						continue
-					end
-					local offset = offsetAt(s) + lateral
-					local patchLength = math.max(0.15, math.abs(offset) * k * 6)
-					placeMarkingPart(s, patchLength, offset, color, i)
+					placeMarkingSpan(s0, s1, offsetAt(s0) + lateral, offsetAt(s1) + lateral, 0.02, color, i)
 				end
 			end
 
@@ -547,10 +621,9 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				local s = gapLength / 2
 				local dashIndex = 0
 				while s + dashLength < length do
-					local sMid = s + dashLength / 2
-					local offset = offsetAt(sMid) + lateral
-					local miter = curveMiterPad(curve, sMid, offset, dashLength)
-					placeMarkingPart(sMid, dashLength + miter, offset, color, dashIndex)
+					local s0 = s
+					local s1 = s + dashLength
+					placeMarkingSpan(s0, s1, offsetAt(s0) + lateral, offsetAt(s1) + lateral, 0, color, dashIndex)
 					dashIndex += 1
 					s += dashLength + gapLength
 				end

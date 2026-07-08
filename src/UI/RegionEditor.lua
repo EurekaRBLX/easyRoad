@@ -164,7 +164,7 @@ local function RegionEditor(props: {
 	local children: { [string]: any } = {}
 	local order = 1
 
-	children.Header = e(Components.Section, { Text = "Region Preset", LayoutOrder = order })
+	children.Header = e(Components.Section, { Text = "Region Preset", First = true, LayoutOrder = order })
 	order += 1
 
 	children.Name = e(LabeledRow, {

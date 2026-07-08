@@ -110,6 +110,7 @@ local function BuildBar(props: {
 	Hint: string,
 	Elevation: number,
 	AdjustElevation: (delta: number) -> (),
+	SetElevation: (value: number) -> (),
 	OnStop: () -> (),
 })
 	local profileOptions: { RoadDesigner.LibraryOption } = {}
@@ -125,7 +126,7 @@ local function BuildBar(props: {
 
 	local children: { [string]: any } = {}
 	RoadDesigner.DecorateCard(children)
-	children.Header = e(Components.Section, { Text = "Road Tool", LayoutOrder = 1 })
+	children.Header = e(Components.Section, { Text = "Road Tool", First = true, LayoutOrder = 1 })
 	children.Tools = e(Components.Row, { LayoutOrder = 2 }, {
 		Straight = e(ToolButton, {
 			Mode = "Straight",
@@ -155,7 +156,11 @@ local function BuildBar(props: {
 			LayoutOrder = 3,
 		}),
 	})
-	children.ProfileLabel = e(Components.Label, { Text = "Road library", Dim = true, LayoutOrder = 3 })
+	-- Road Tool (which drawing mode) and Road Library (which road type) are
+	-- deliberately two separate groups, not one unbroken stack - CS2 keeps
+	-- these apart too. Components.Section's own divider (since this isn't
+	-- the first section) provides the separation.
+	children.ProfileLabel = e(Components.Section, { Text = "Road Library", LayoutOrder = 4 })
 	children.Profile = e(RoadDesigner.RoadLibraryList, {
 		Options = profileOptions,
 		SelectedId = props.ProfileId,
@@ -163,9 +168,9 @@ local function BuildBar(props: {
 		RegionStyle = props.RegionStyle,
 		Settings = props.Settings,
 		Height = 90,
-		LayoutOrder = 4,
+		LayoutOrder = 5,
 	})
-	children.Transition = e(Components.Row, { LayoutOrder = 5 }, {
+	children.Transition = e(Components.Row, { LayoutOrder = 6 }, {
 		Label = e(Components.Label, { Text = "Widen to", LayoutOrder = 1, Width = 60 }),
 		Dropdown = e(Components.Dropdown, {
 			Options = endProfileOptions,
@@ -184,10 +189,10 @@ local function BuildBar(props: {
 			props.Settings.SuperelevationMode = if checked then "Auto" else "Off"
 			props.OnSettingsChanged()
 		end,
-		LayoutOrder = 6,
+		LayoutOrder = 7,
 	})
 	children.Speed = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 7 }, {
+		and e(Components.Row, { LayoutOrder = 8 }, {
 			Label = e(Components.Label, { Text = "Speed (km/h)", LayoutOrder = 1, Width = 90 }),
 			Field = e(Components.NumberField, {
 				Value = props.Settings.DesignSpeedKph,
@@ -200,7 +205,7 @@ local function BuildBar(props: {
 				LayoutOrder = 2,
 			}),
 		})
-	children.Elevation = e(Components.Row, { LayoutOrder = 8 }, {
+	children.Elevation = e(Components.Row, { LayoutOrder = 9 }, {
 		Label = e(Components.Label, { Text = "Elevation", LayoutOrder = 1, Width = 64 }),
 		Down = e(Components.Button, {
 			Text = "",
@@ -211,20 +216,43 @@ local function BuildBar(props: {
 			LayoutOrder = 2,
 			Size = UDim2.new(0, 26, 0, Theme.ROW_HEIGHT),
 		}),
-		Value = e(Components.Label, {
-			Text = string.format("%+g studs", props.Elevation),
+		-- Directly editable (type a height, no "+" prefix on positive values
+		-- - only negative elevations show a sign) rather than a read-only
+		-- label, so setting an exact height doesn't require nudging by
+		-- ElevationStepStuds one click at a time.
+		Value = e(Components.NumberField, {
+			Value = props.Elevation,
+			Width = 56,
+			OnChanged = props.SetElevation,
 			LayoutOrder = 3,
-			Width = 66,
 		}),
+		Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 4 }),
 		Up = e(Components.Button, {
 			Text = "",
 			Icon = "rbxassetid://6034818379",
 			OnClick = function()
 				props.AdjustElevation(props.Settings.ElevationStepStuds)
 			end,
-			LayoutOrder = 4,
+			LayoutOrder = 5,
 			Size = UDim2.new(0, 26, 0, Theme.ROW_HEIGHT),
 		}),
+	})
+	-- CS2-style step adjustment: how far each R/F press or arrow click
+	-- moves the elevation, editable right next to the elevation control
+	-- instead of buried in a separate settings dock.
+	children.ElevationStep = e(Components.Row, { LayoutOrder = 10 }, {
+		Label = e(Components.Label, { Text = "Step", Dim = true, LayoutOrder = 1, Width = 64 }),
+		Field = e(Components.NumberField, {
+			Value = props.Settings.ElevationStepStuds,
+			Min = 0.1,
+			Width = 56,
+			OnChanged = function(value: number)
+				props.Settings.ElevationStepStuds = value
+				props.OnSettingsChanged()
+			end,
+			LayoutOrder = 2,
+		}),
+		Unit = e(Components.Label, { Text = "studs / press", Dim = true, LayoutOrder = 3 }),
 	})
 	children.ElevationHint = e(Components.Label, {
 		Text = string.format(
@@ -233,7 +261,7 @@ local function BuildBar(props: {
 			keyHint(props.Settings.Keybinds.ElevationDown)
 		),
 		Dim = true,
-		LayoutOrder = 9,
+		LayoutOrder = 11,
 	})
 	children.Hint = e("TextLabel", {
 		Text = props.Hint,
@@ -245,13 +273,13 @@ local function BuildBar(props: {
 		TextSize = Theme.TEXT_SIZE,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = true,
-		LayoutOrder = 10,
+		LayoutOrder = 12,
 	})
 	children.Stop = e(Components.Button, {
 		Text = "Stop Building",
 		Danger = true,
 		OnClick = props.OnStop,
-		LayoutOrder = 11,
+		LayoutOrder = 13,
 	})
 
 	local scrollProps = Components.ScrollBar()

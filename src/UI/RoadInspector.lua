@@ -58,7 +58,7 @@ local function RoadInspector(props: {
 				SortOrder = Enum.SortOrder.LayoutOrder,
 				Padding = UDim.new(0, 4),
 			}),
-			Header = e(Components.Section, { Text = "Selected Road", LayoutOrder = 1 }),
+			Header = e(Components.Section, { Text = "Selected Road", First = true, LayoutOrder = 1 }),
 			Note = e(Components.Label, {
 				Text = "This road was placed by an older version of easyRoad and can't "
 					.. "be edited in place - delete and re-place it to use the designer.",

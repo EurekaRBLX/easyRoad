@@ -43,6 +43,7 @@ export type RoadSession = {
 	GetEndProfile: () -> RoadProfile.RoadProfile?,
 	GetElevation: () -> number,
 	AdjustElevation: (delta: number) -> (),
+	SetElevation: (value: number) -> (),
 	GetHint: () -> string,
 	GetPointCount: () -> number,
 	CancelPlacement: () -> (),
@@ -95,6 +96,15 @@ local function createRoadSession(
 	-- the moment it's clicked.
 	local function adjustElevation(delta: number)
 		elevation += delta
+		settings.LastElevationStuds = elevation
+		previewDirty = true
+		changeSignal:Fire()
+	end
+
+	-- Direct entry from the build bar's elevation textbox (typing a height
+	-- instead of nudging it by ElevationStepStuds).
+	local function setElevation(value: number)
+		elevation = value
 		settings.LastElevationStuds = elevation
 		previewDirty = true
 		changeSignal:Fire()
@@ -500,6 +510,7 @@ local function createRoadSession(
 	end
 
 	session.AdjustElevation = adjustElevation
+	session.SetElevation = setElevation
 
 	function session.GetPointCount(): number
 		return #points

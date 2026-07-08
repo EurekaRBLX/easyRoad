@@ -200,7 +200,8 @@ return function(
 			assert(topRoot):render(React.createElement(TopBar, {
 				ToolsActive = session ~= nil,
 				EditorActive = designProfile ~= nil,
-				SettingsOpen = regionalDock.Enabled or keybindsDock.Enabled,
+				RegionalOpen = regionalDock.Enabled,
+				KeybindsOpen = keybindsDock.Enabled,
 				OnTools = function()
 					if session then
 						stopSession()
@@ -216,12 +217,16 @@ return function(
 						openEditor()
 					end
 				end,
-				OnSettings = function()
-					-- Settings are separate docks, named by function, rather
-					-- than tabs in one panel - toggle both together.
-					local open = not (regionalDock.Enabled or keybindsDock.Enabled)
-					regionalDock.Enabled = open
-					keybindsDock.Enabled = open
+				-- Settings are separate docks, named by function, rather than
+				-- tabs in one panel - opened one at a time from the Settings
+				-- home menu instead of both together (which used to stack
+				-- both docks at the same default float position, making the
+				-- second one impossible to find).
+				OnOpenRegional = function()
+					regionalDock.Enabled = not regionalDock.Enabled
+				end,
+				OnOpenKeybinds = function()
+					keybindsDock.Enabled = not keybindsDock.Enabled
 				end,
 				OnHoverChanged = function(hovered: boolean)
 					uiState.Hovered = hovered
@@ -368,6 +373,9 @@ return function(
 				AdjustElevation = function(delta: number)
 					currentSession.AdjustElevation(delta)
 				end,
+				SetElevation = function(value: number)
+					currentSession.SetElevation(value)
+				end,
 				OnStop = function()
 					stopSession()
 					plugin:Deactivate()
@@ -457,10 +465,15 @@ return function(
 					pieMenuRoot = ReactRoblox.createRoot(screen)
 				end
 
+				local function setGlobalHover(hovered: boolean)
+					uiState.Hovered = hovered
+				end
+
 				local pieMenuElement: any
 				if editSession.IsShowingMenu() then
 					pieMenuElement = React.createElement(PieMenu, {
 						WorldPosition = anchor,
+						SetGlobalHover = setGlobalHover,
 						Top = {
 							Text = "Edit on Road Builder",
 							OnClick = function()
@@ -511,6 +524,7 @@ return function(
 				elseif editSession.IsShowingSegmentMenu() then
 					pieMenuElement = React.createElement(PieMenu, {
 						WorldPosition = anchor,
+						SetGlobalHover = setGlobalHover,
 						Top = {
 							Text = "Add Bus Bay",
 							OnClick = function()
@@ -535,6 +549,7 @@ return function(
 				else -- PlacingBusBay
 					pieMenuElement = React.createElement(PieMenu, {
 						WorldPosition = anchor,
+						SetGlobalHover = setGlobalHover,
 						Bottom = {
 							Text = "Done (click a sidewalk/parking part to add, an existing stop to remove)",
 							OnClick = function()
@@ -544,15 +559,19 @@ return function(
 					})
 				end
 
+				-- Deliberately NOT tracking hover on this wrapping frame: it
+				-- spans the whole screen (needed so the anchored pie menu
+				-- can be positioned anywhere within it), so a MouseEnter
+				-- here would fire almost immediately and latch
+				-- uiState.Hovered permanently - which used to make
+				-- onBusBayClick's "don't place through the HUD" guard
+				-- swallow every viewport click while any pie menu was
+				-- showing (i.e. whenever a road was selected). Each
+				-- PillButton reports its own (correctly small) hover area
+				-- via SetGlobalHover instead.
 				assert(pieMenuRoot):render(React.createElement("Frame", {
 					Size = UDim2.fromScale(1, 1),
 					BackgroundTransparency = 1,
-					[React.Event.MouseEnter] = function()
-						uiState.Hovered = true
-					end,
-					[React.Event.MouseLeave] = function()
-						uiState.Hovered = false
-					end,
 				}, {
 					Gui = pieMenuElement,
 				}))

@@ -1142,6 +1142,11 @@ local PREVIEW_CHORD_TOLERANCE = 0.35
 local MIN_STEP = 0.75
 local MAX_TURN_PER_STEP = 0.3 -- Radians of heading change allowed per strip
 local RUNOFF_LENGTH_STUDS = 40 -- Superelevation smoothing window
+-- A joint's residual (non-anchor) gap only gets an actual wedge part when it's
+-- bigger than this - below it, simply widening the strips on their far side
+-- (see farEdgePad below) already hides the defect, so most curves need no
+-- wedge at all, only genuinely sharp turns / high-superelevation joints do.
+local WEDGE_GAP_THRESHOLD_STUDS = 0.5
 
 local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
 	Drive = Enum.Material.Asphalt,
@@ -1174,19 +1179,23 @@ local function colorForKind(kind: RoadProfile.ComponentKind, style: RegionStyles
 	return style.AsphaltColor
 end
 
--- Extra length a flat strip centered at `sMid`, offset `lateralOffset`
--- studs from the centerline, needs so it still overlaps its neighbor
--- through a curve instead of leaving a wedge-shaped gap on the outside of
--- the turn (or, for markings, a visible break in the line).
+-- Extra length (Center-alignment mode) or extra width (Inside/Outside
+-- alignment's far-edge pad) a flat strip needs so it still overlaps its
+-- neighbor through a curve instead of leaving a gap on the outside of the
+-- turn, for a strip centered/anchored at `sMid`-ish and `lateralOffset`
+-- studs from the centerline.
 --
 -- Derived directly from arc length rather than an angle-between-frames
 -- approximation: at radius R = 1/curvature, a point offset by r traces
 -- (R+r)*angle while the centerline traces R*angle over the same turn - a
--- difference of r*angle = r*curvature*nominalLength. Applying this equally
--- means every part - deck strip or marking, whatever length it spans -
--- gets the correct padding for its own lateral offset and curvature at its
--- own position, with no dependency on how that part's span happens to
--- align with station stepping.
+-- difference of r*angle = r*curvature*nominalLength. The same defect size
+-- shows up whether you absorb it as extra length (Center mode, both edges
+-- float) or extra width (Inside/Outside mode, far edge only - see
+-- farEdgePad below); this helper just computes the magnitude, callers
+-- decide which axis to apply it to. Markings don't use this any more -
+-- they anchor both of their own endpoints directly to true curve
+-- positions instead (see placeMarkingSpan), which closes joints exactly
+-- rather than approximating.
 local function curveMiterPad(curve: PolyCurve.PolyCurve, sMid: number, lateralOffset: number, nominalLength: number): number
 	local k = math.abs(curve:CurvatureAt(sMid))
 	if k &lt; 1e-6 then
@@ -1285,18 +1294,40 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		) * scale
 		taperLength = math.clamp(widthDeltaStuds * 15, 20, length)
 	end
-	-- 0 before the taper begins, then 0 -&gt; 1 across the taper zone
+	-- 0 before the taper begins, then 0 -&gt; 1 across the taper zone.
+	-- Smoothstepped (3t^2 - 2t^3) rather than a plain linear ramp: a linear
+	-- ramp has a derivative of 0 in the flat zone before it and a nonzero
+	-- constant slope the instant the taper starts, i.e. a sharp kink in the
+	-- width (and marking offset) right at that station - visually a sudden
+	-- bend rather than a clean taper. Smoothstep's derivative is exactly 0
+	-- at both t=0 and t=1, so the flat zone blends into the ramp and the
+	-- ramp blends into the final width with no kink at either end.
 	local function transitionAlpha(s: number): number
+		local t: number
 		if not isTransition then
-			return math.clamp(s / length, 0, 1)
+			t = math.clamp(s / length, 0, 1)
+		else
+			t = math.clamp((s - (length - taperLength)) / taperLength, 0, 1)
 		end
-		return math.clamp((s - (length - taperLength)) / taperLength, 0, 1)
+		return t * t * (3 - 2 * t)
 	end
 
 	local maxStep = if preview then settings.PreviewMaxSegmentLengthStuds else settings.MaxSegmentLengthStuds
 	if isTransition then
-		-- Widening/narrowing tapers read much better with short strips
-		maxStep = math.min(maxStep, 4)
+		-- Widening/narrowing tapers read much better with short strips - and
+		-- since each strip's width is constant along its own length (a Part
+		-- can't taper), the width change between one strip and the next
+		-- always shows up as a small step on the non-anchor edge. Bounding
+		-- how much total width change happens per strip (rather than a flat
+		-- 4-stud cap regardless of how steep the taper is) keeps that step
+		-- small enough to read as a smooth line instead of a staircase even
+		-- on a short, steep taper.
+		local widthDeltaStuds = math.abs(
+			RoadProfile.TotalWidthM(options.ProfileStart) - RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
+		) * scale
+		local changeRate = if taperLength &gt; 1e-3 then widthDeltaStuds / taperLength else 0
+		local maxStepForTaper = if changeRate &gt; 1e-3 then 0.4 / changeRate else 4
+		maxStep = math.min(maxStep, 4, math.max(maxStepForTaper, MIN_STEP))
 	end
 	local tolerance = if preview then PREVIEW_CHORD_TOLERANCE else CHORD_TOLERANCE
 	local stations = buildStations(curve, maxStep, tolerance)
@@ -1470,11 +1501,34 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			return stationOffsets[stationIndex][c]
 		end
 
+		-- The far (non-anchor) edge offset - used only to size how far the
+		-- strip needs to be widened on that side to hide the residual gap.
+		local function farOffsetAt(stationIndex: number, c: number): number
+			if anchorSign &gt; 0 then
+				return stationOffsets[stationIndex][c]
+			end
+			return stationOffsets[stationIndex][c] + stationWidths[stationIndex][c]
+		end
+
+		-- Per-strip far-side pad: the anchor edge is exact by construction,
+		-- but the far edge is a straight line between two true curve points,
+		-- which falls slightly short of the true offset arc on a turn - the
+		-- same r*k*L defect curveMiterPad already models for length padding,
+		-- just absorbed here as extra width on the far side only (so the
+		-- anchor edge doesn't move). Small enough on gentle curves that no
+		-- wedge is ever needed there; genuinely sharp joints still get one
+		-- below.
+		local function farEdgePad(sMid: number, stationA: number, stationB: number, c: number, nominalLength: number): number
+			local farDistance = (math.abs(farOffsetAt(stationA, c)) + math.abs(farOffsetAt(stationB, c))) / 2
+			return curveMiterPad(curve, sMid, farDistance, nominalLength)
+		end
+
 		for i = 1, stationCount - 1 do
 			local headingDot = frames[i].LookVector:Dot(frames[i + 1].LookVector)
 			if headingDot &lt; 0 then
 				continue
 			end
+			local sMid = (stations[i] + stations[i + 1]) / 2
 
 			for c = 1, componentCount do
 				local width = (stationWidths[i][c] + stationWidths[i + 1][c]) / 2
@@ -1492,20 +1546,28 @@ function RoadBuilder.Build(options: BuildOptions): Model
 					continue
 				end
 
+				local pad = farEdgePad(sMid, i, i + 1, c, segLength)
 				local part = makePart(preview)
 				part.Name = kind
 				part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
 				part.Color = colorForKind(kind, style)
-				part.Size = Vector3.new(width, partHeight, segLength)
-				part.CFrame = stripCF
+				part.Size = Vector3.new(width + pad, partHeight, segLength)
+				-- Widen only away from the anchor edge: shift the center by
+				-- half the pad in the far direction so the anchor-side face
+				-- stays exactly where anchoredStripCFrame put it.
+				part.CFrame = stripCF * CFrame.new(-anchorSign * pad / 2, 0, 0)
 				part.Parent = model
 			end
 		end
 
-		-- Curve joint fills: only the residual (non-anchored) edge can
-		-- still gap, and since the anchor edge is an exact shared point at
-		-- this joint (not two independent approximations like Center mode
-		-- has on both sides), the gap is a single triangle, not a quad.
+		-- Curve joint fills: with the far edge now padded above, only
+		-- genuinely sharp turns or high-superelevation joints still leave a
+		-- gap big enough to need an actual wedge - everything gentler is
+		-- already covered by the widened strips, so most joints add no
+		-- extra part at all. Since the anchor edge is an exact shared point
+		-- at this joint (not two independent approximations like Center
+		-- mode has on both sides), any remaining gap is a single triangle,
+		-- not a quad.
 		for i = 2, stationCount - 1 do
 			local k = math.abs(curve:CurvatureAt(stations[i]))
 			if k &lt; 1e-6 then
@@ -1550,6 +1612,16 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				local residualNearB =
 					(stripCFB * CFrame.new(-anchorSign * widthB / 2, partHeight / 2, -segLengthB / 2)).Position
 
+				-- The far-side pad above already widens both strips towards
+				-- each other, so the true remaining defect is smaller than
+				-- the raw corner distance - only worth an actual wedge part
+				-- once it's still bigger than the padding could plausibly
+				-- absorb.
+				local gapDistance = (residualFarA - residualNearB).Magnitude
+				if gapDistance &lt; WEDGE_GAP_THRESHOLD_STUDS then
+					continue
+				end
+
 				local function makeWedgePart(): Part
 					local part = makePart(preview)
 					part.Name = kind
@@ -1574,30 +1646,54 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		})
 		local markingWidth = style.MarkingWidthM * scale
 
-		local function placeMarkingPart(
-			sMid: number,
-			partLength: number,
-			offsetStuds: number,
+		-- Interpolates the roll (superelevation) already computed per
+		-- station at an arbitrary distance s between them.
+		local function rollAt(s: number): number
+			for i = 1, stationCount - 1 do
+				if s &lt;= stations[i + 1] then
+					local span = stations[i + 1] - stations[i]
+					local f = if span &gt; 1e-9 then (s - stations[i]) / span else 0
+					return rolls[i] + (rolls[i + 1] - rolls[i]) * f
+				end
+			end
+			return rolls[stationCount]
+		end
+
+		-- Anchors a marking segment directly to the true curve position at
+		-- both of its own endpoints (s0/offset0, s1/offset1) - the same
+		-- construction the deck's anchored strips use, just without an
+		-- anchorSign edge offset, since a marking's own centerline (not one
+		-- of its lateral edges) is what needs to be exact. Adjacent
+		-- segments that share an endpoint (every interior station, for
+		-- solid lines) therefore meet with zero gap and no separate joint
+		-- patch, and align exactly with whichever deck edge sits at the
+		-- same offset - no curveMiterPad approximation involved.
+		local function placeMarkingSpan(
+			s0: number,
+			s1: number,
+			offset0: number,
+			offset1: number,
+			extraLength: number,
 			color: Color3,
 			altIndex: number
 		)
-			-- Recompute roll at this s by interpolating station rolls
-			local rollMid = 0
-			for i = 1, stationCount - 1 do
-				if sMid &lt;= stations[i + 1] then
-					local span = stations[i + 1] - stations[i]
-					local f = if span &gt; 1e-9 then (sMid - stations[i]) / span else 0
-					rollMid = rolls[i] + (rolls[i + 1] - rolls[i]) * f
-					break
-				end
+			local y = MARKING_LIFT + (altIndex % 2) * 0.004
+			local frame0 = curve:FrameAt(s0, rollAt(s0))
+			local frame1 = curve:FrameAt(s1, rollAt(s1))
+			local p0 = (frame0 * CFrame.new(offset0, y, 0)).Position
+			local p1 = (frame1 * CFrame.new(offset1, y, 0)).Position
+			local segLength = (p1 - p0).Magnitude
+			if segLength &lt; 1e-4 then
+				return
 			end
-			local frame = curve:FrameAt(sMid, rollMid)
+			local forward = (p1 - p0).Unit
+			local mid = (p0 + p1) / 2
 			local part = makePart(preview)
 			part.Name = "Marking"
 			part.Material = Enum.Material.SmoothPlastic
 			part.Color = color
-			part.Size = Vector3.new(markingWidth, MARKING_THICKNESS, partLength)
-			part.CFrame = frame * CFrame.new(offsetStuds, MARKING_LIFT + (altIndex % 2) * 0.004, 0)
+			part.Size = Vector3.new(markingWidth, MARKING_THICKNESS, segLength + extraLength)
+			part.CFrame = CFrame.lookAt(mid, mid + forward, frame1.UpVector)
 			part.Parent = model
 		end
 
@@ -1613,36 +1709,14 @@ function RoadBuilder.Build(options: BuildOptions): Model
 
 			-- Each compound line type is one or two rails, each rail either
 			-- solid or dashed. lateral = rail offset from the boundary line.
-			-- Markings are thin and high-contrast against the asphalt, so an
-			-- un-mitered gap on a curve is even more visible here than on a
-			-- deck strip - same curveMiterPad helper, evaluated at each
-			-- marking segment's own position/offset regardless of whether it
-			-- lines up with station stepping (dashes rarely do).
+			-- Solid rails anchor to the exact station grid, so neighboring
+			-- segments share an endpoint and meet with no gap or overlap -
+			-- no separate joint patch needed.
 			local function renderSolid(lateral: number)
 				for i = 1, stationCount - 1 do
 					local s0 = stations[i]
 					local s1 = stations[i + 1]
-					local sMid = (s0 + s1) / 2
-					local offset = offsetAt(sMid) + lateral
-					local nominalLength = s1 - s0
-					local miter = curveMiterPad(curve, sMid, offset, nominalLength)
-					placeMarkingPart(sMid, nominalLength + miter + 0.05, offset, color, i)
-				end
-				-- Same small joint patches as the deck strips, at each
-				-- interior station - a solid line is meant to read as
-				-- continuous, so its residual gap (thin + high-contrast
-				-- against the asphalt) is worth the extra bit of insurance.
-				-- Dashes are deliberately discontinuous, so they don't get
-				-- this treatment.
-				for i = 2, stationCount - 1 do
-					local s = stations[i]
-					local k = math.abs(curve:CurvatureAt(s))
-					if k &lt; 1e-6 then
-						continue
-					end
-					local offset = offsetAt(s) + lateral
-					local patchLength = math.max(0.15, math.abs(offset) * k * 6)
-					placeMarkingPart(s, patchLength, offset, color, i)
+					placeMarkingSpan(s0, s1, offsetAt(s0) + lateral, offsetAt(s1) + lateral, 0.02, color, i)
 				end
 			end
 
@@ -1652,10 +1726,9 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				local s = gapLength / 2
 				local dashIndex = 0
 				while s + dashLength &lt; length do
-					local sMid = s + dashLength / 2
-					local offset = offsetAt(sMid) + lateral
-					local miter = curveMiterPad(curve, sMid, offset, dashLength)
-					placeMarkingPart(sMid, dashLength + miter, offset, color, dashIndex)
+					local s0 = s
+					local s1 = s + dashLength
+					placeMarkingSpan(s0, s1, offsetAt(s0) + lateral, offsetAt(s1) + lateral, 0, color, dashIndex)
 					dashIndex += 1
 					s += dashLength + gapLength
 				end
@@ -3493,6 +3566,7 @@ local function BuildBar(props: {
 	Hint: string,
 	Elevation: number,
 	AdjustElevation: (delta: number) -&gt; (),
+	SetElevation: (value: number) -&gt; (),
 	OnStop: () -&gt; (),
 })
 	local profileOptions: { RoadDesigner.LibraryOption } = {}
@@ -3508,7 +3582,7 @@ local function BuildBar(props: {
 
 	local children: { [string]: any } = {}
 	RoadDesigner.DecorateCard(children)
-	children.Header = e(Components.Section, { Text = "Road Tool", LayoutOrder = 1 })
+	children.Header = e(Components.Section, { Text = "Road Tool", First = true, LayoutOrder = 1 })
 	children.Tools = e(Components.Row, { LayoutOrder = 2 }, {
 		Straight = e(ToolButton, {
 			Mode = "Straight",
@@ -3538,7 +3612,11 @@ local function BuildBar(props: {
 			LayoutOrder = 3,
 		}),
 	})
-	children.ProfileLabel = e(Components.Label, { Text = "Road library", Dim = true, LayoutOrder = 3 })
+	-- Road Tool (which drawing mode) and Road Library (which road type) are
+	-- deliberately two separate groups, not one unbroken stack - CS2 keeps
+	-- these apart too. Components.Section's own divider (since this isn't
+	-- the first section) provides the separation.
+	children.ProfileLabel = e(Components.Section, { Text = "Road Library", LayoutOrder = 4 })
 	children.Profile = e(RoadDesigner.RoadLibraryList, {
 		Options = profileOptions,
 		SelectedId = props.ProfileId,
@@ -3546,9 +3624,9 @@ local function BuildBar(props: {
 		RegionStyle = props.RegionStyle,
 		Settings = props.Settings,
 		Height = 90,
-		LayoutOrder = 4,
+		LayoutOrder = 5,
 	})
-	children.Transition = e(Components.Row, { LayoutOrder = 5 }, {
+	children.Transition = e(Components.Row, { LayoutOrder = 6 }, {
 		Label = e(Components.Label, { Text = "Widen to", LayoutOrder = 1, Width = 60 }),
 		Dropdown = e(Components.Dropdown, {
 			Options = endProfileOptions,
@@ -3567,10 +3645,10 @@ local function BuildBar(props: {
 			props.Settings.SuperelevationMode = if checked then "Auto" else "Off"
 			props.OnSettingsChanged()
 		end,
-		LayoutOrder = 6,
+		LayoutOrder = 7,
 	})
 	children.Speed = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 7 }, {
+		and e(Components.Row, { LayoutOrder = 8 }, {
 			Label = e(Components.Label, { Text = "Speed (km/h)", LayoutOrder = 1, Width = 90 }),
 			Field = e(Components.NumberField, {
 				Value = props.Settings.DesignSpeedKph,
@@ -3583,7 +3661,7 @@ local function BuildBar(props: {
 				LayoutOrder = 2,
 			}),
 		})
-	children.Elevation = e(Components.Row, { LayoutOrder = 8 }, {
+	children.Elevation = e(Components.Row, { LayoutOrder = 9 }, {
 		Label = e(Components.Label, { Text = "Elevation", LayoutOrder = 1, Width = 64 }),
 		Down = e(Components.Button, {
 			Text = "",
@@ -3594,20 +3672,43 @@ local function BuildBar(props: {
 			LayoutOrder = 2,
 			Size = UDim2.new(0, 26, 0, Theme.ROW_HEIGHT),
 		}),
-		Value = e(Components.Label, {
-			Text = string.format("%+g studs", props.Elevation),
+		-- Directly editable (type a height, no "+" prefix on positive values
+		-- - only negative elevations show a sign) rather than a read-only
+		-- label, so setting an exact height doesn't require nudging by
+		-- ElevationStepStuds one click at a time.
+		Value = e(Components.NumberField, {
+			Value = props.Elevation,
+			Width = 56,
+			OnChanged = props.SetElevation,
 			LayoutOrder = 3,
-			Width = 66,
 		}),
+		Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 4 }),
 		Up = e(Components.Button, {
 			Text = "",
 			Icon = "rbxassetid://6034818379",
 			OnClick = function()
 				props.AdjustElevation(props.Settings.ElevationStepStuds)
 			end,
-			LayoutOrder = 4,
+			LayoutOrder = 5,
 			Size = UDim2.new(0, 26, 0, Theme.ROW_HEIGHT),
 		}),
+	})
+	-- CS2-style step adjustment: how far each R/F press or arrow click
+	-- moves the elevation, editable right next to the elevation control
+	-- instead of buried in a separate settings dock.
+	children.ElevationStep = e(Components.Row, { LayoutOrder = 10 }, {
+		Label = e(Components.Label, { Text = "Step", Dim = true, LayoutOrder = 1, Width = 64 }),
+		Field = e(Components.NumberField, {
+			Value = props.Settings.ElevationStepStuds,
+			Min = 0.1,
+			Width = 56,
+			OnChanged = function(value: number)
+				props.Settings.ElevationStepStuds = value
+				props.OnSettingsChanged()
+			end,
+			LayoutOrder = 2,
+		}),
+		Unit = e(Components.Label, { Text = "studs / press", Dim = true, LayoutOrder = 3 }),
 	})
 	children.ElevationHint = e(Components.Label, {
 		Text = string.format(
@@ -3616,7 +3717,7 @@ local function BuildBar(props: {
 			keyHint(props.Settings.Keybinds.ElevationDown)
 		),
 		Dim = true,
-		LayoutOrder = 9,
+		LayoutOrder = 11,
 	})
 	children.Hint = e("TextLabel", {
 		Text = props.Hint,
@@ -3628,13 +3729,13 @@ local function BuildBar(props: {
 		TextSize = Theme.TEXT_SIZE,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = true,
-		LayoutOrder = 10,
+		LayoutOrder = 12,
 	})
 	children.Stop = e(Components.Button, {
 		Text = "Stop Building",
 		Danger = true,
 		OnClick = props.OnStop,
-		LayoutOrder = 11,
+		LayoutOrder = 13,
 	})
 
 	local scrollProps = Components.ScrollBar()
@@ -3679,20 +3780,41 @@ end
 
 -- Section header --------------------------------------------------------------
 
+-- Extra breathing room above each section header (beyond the list's normal
+-- row spacing) so a long field list actually reads as separate grouped
+-- sections instead of one uninterrupted, cramped stack - plus a faint
+-- divider line, matching the same treatment BuildBar uses between its tool
+-- and library groups.
 function Components.Section(props: {
 	Text: string,
 	LayoutOrder: number?,
+	First: boolean?,
 })
-	return e("TextLabel", {
-		Text = string.upper(props.Text),
-		TextColor3 = Theme.DIM,
+	return e("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
 		BackgroundTransparency = 1,
-		Size = UDim2.new(1, 0, 0, 20),
-		Font = Theme.FONT_BOLD,
-		TextSize = Theme.HEADER_TEXT_SIZE,
-		TextXAlignment = Enum.TextXAlignment.Left,
-		TextTruncate = Enum.TextTruncate.AtEnd,
 		LayoutOrder = props.LayoutOrder,
+	}, {
+		Layout = e("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6) }),
+		Divider = not props.First and e("Frame", {
+			Size = UDim2.new(1, 0, 0, 1),
+			BackgroundColor3 = Theme.GLASS_STROKE,
+			BackgroundTransparency = 0.5,
+			BorderSizePixel = 0,
+			LayoutOrder = 1,
+		}),
+		Label = e("TextLabel", {
+			Text = string.upper(props.Text),
+			TextColor3 = Theme.DIM,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 20),
+			Font = Theme.FONT_BOLD,
+			TextSize = Theme.HEADER_TEXT_SIZE,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			LayoutOrder = 2,
+		}),
 	})
 end
 
@@ -3894,60 +4016,120 @@ function Components.TextField(props: {
 	})
 end
 
--- Colour field: a swatch preview plus R/G/B (0-255) number fields - no
--- gesture-based hue/saturation picker, just reliable typed input.
+-- Colour field: a swatch preview plus one compact text field that accepts
+-- either a hex code ("#RRGGBB" / "RRGGBB") or a Color3-style "r, g, b"
+-- triplet (0-255 each) - replaces the old 3 separate R/G/B number fields,
+-- which alone were wide enough to overflow a docked panel's minimum width.
+-- No gesture-based hue/saturation picker, just reliable typed input; click
+-- the swatch to expand full R/G/B number fields for fine nudging.
+
+local function parseColorText(text: string): Color3?
+	local hex = text:match("^#?(%x%x%x%x%x%x)$")
+	if hex then
+		local r = tonumber(hex:sub(1, 2), 16)
+		local g = tonumber(hex:sub(3, 4), 16)
+		local b = tonumber(hex:sub(5, 6), 16)
+		if r and g and b then
+			return Color3.fromRGB(r, g, b)
+		end
+	end
+	local r, g, b = text:match("^%s*(%d+)%s*,%s*(%d+)%s*,%s*(%d+)%s*$")
+	if r then
+		return Color3.fromRGB(
+			math.clamp(tonumber(r) :: number, 0, 255),
+			math.clamp(tonumber(g) :: number, 0, 255),
+			math.clamp(tonumber(b) :: number, 0, 255)
+		)
+	end
+	return nil
+end
+
+local function colorToHex(color: Color3): string
+	return string.format(
+		"#%02X%02X%02X",
+		math.round(color.R * 255),
+		math.round(color.G * 255),
+		math.round(color.B * 255)
+	)
+end
 
 function Components.ColorField(props: {
 	Value: Color3,
 	OnChanged: (value: Color3) -&gt; (),
 	LayoutOrder: number?,
 })
+	local expanded, setExpanded = React.useState(false)
 	local r = math.round(props.Value.R * 255)
 	local g = math.round(props.Value.G * 255)
 	local b = math.round(props.Value.B * 255)
 
-	return e(Components.Row, { LayoutOrder = props.LayoutOrder }, {
-		Swatch = e("Frame", {
-			Size = UDim2.new(0, 22, 0, Theme.ROW_HEIGHT),
-			BackgroundColor3 = props.Value,
-			LayoutOrder = 1,
-		}, {
-			Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
-			Stroke = e("UIStroke", {
-				Color = Theme.GLASS_STROKE,
-				Transparency = 0.6,
-				Thickness = 1,
+	return e("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = props.LayoutOrder,
+	}, {
+		Layout = e("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2) }),
+		Main = e(Components.Row, { LayoutOrder = 1 }, {
+			Swatch = e("TextButton", {
+				Text = "",
+				Size = UDim2.new(0, 22, 0, Theme.ROW_HEIGHT),
+				BackgroundColor3 = props.Value,
+				LayoutOrder = 1,
+				[React.Event.Activated] = function()
+					setExpanded(not expanded)
+				end,
+			}, {
+				Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+				Stroke = e("UIStroke", {
+					Color = Theme.GLASS_STROKE,
+					Transparency = 0.6,
+					Thickness = 1,
+				}),
+			}),
+			Hex = e(Components.TextField, {
+				Value = colorToHex(props.Value),
+				Width = 90,
+				LayoutOrder = 2,
+				OnChanged = function(text: string)
+					local color = parseColorText(text)
+					if color then
+						props.OnChanged(color)
+					end
+				end,
 			}),
 		}),
-		R = e(Components.NumberField, {
-			Value = r,
-			Min = 0,
-			Max = 255,
-			Width = 44,
-			LayoutOrder = 2,
-			OnChanged = function(value: number)
-				props.OnChanged(Color3.fromRGB(math.round(value), g, b))
-			end,
-		}),
-		G = e(Components.NumberField, {
-			Value = g,
-			Min = 0,
-			Max = 255,
-			Width = 44,
-			LayoutOrder = 3,
-			OnChanged = function(value: number)
-				props.OnChanged(Color3.fromRGB(r, math.round(value), b))
-			end,
-		}),
-		B = e(Components.NumberField, {
-			Value = b,
-			Min = 0,
-			Max = 255,
-			Width = 44,
-			LayoutOrder = 4,
-			OnChanged = function(value: number)
-				props.OnChanged(Color3.fromRGB(r, g, math.round(value)))
-			end,
+		Expanded = expanded and e(Components.Row, { LayoutOrder = 2 }, {
+			R = e(Components.NumberField, {
+				Value = r,
+				Min = 0,
+				Max = 255,
+				Width = 44,
+				LayoutOrder = 1,
+				OnChanged = function(value: number)
+					props.OnChanged(Color3.fromRGB(math.round(value), g, b))
+				end,
+			}),
+			G = e(Components.NumberField, {
+				Value = g,
+				Min = 0,
+				Max = 255,
+				Width = 44,
+				LayoutOrder = 2,
+				OnChanged = function(value: number)
+					props.OnChanged(Color3.fromRGB(r, math.round(value), b))
+				end,
+			}),
+			B = e(Components.NumberField, {
+				Value = b,
+				Min = 0,
+				Max = 255,
+				Width = 44,
+				LayoutOrder = 3,
+				OnChanged = function(value: number)
+					props.OnChanged(Color3.fromRGB(r, g, math.round(value)))
+				end,
+			}),
 		}),
 	})
 end
@@ -4248,7 +4430,7 @@ local function KeybindsGui(props: {
 	end
 
 	local children: { [string]: any } = {}
-	children.Section = e(Components.Section, { Text = "Keybinds", LayoutOrder = 1 })
+	children.Section = e(Components.Section, { Text = "Keybinds", First = true, LayoutOrder = 1 })
 	local order = 2
 	for _, action in KeybindsModule.Actions do
 		local sectionChildren, nextOrder = ActionSection({
@@ -4336,6 +4518,7 @@ local function PillButton(props: {
 	Action: PieMenuAction,
 	Primary: boolean,
 	Offset: Vector2,
+	SetGlobalHover: ((boolean) -&gt; ())?,
 })
 	local hovered, setHovered = React.useState(false)
 	local action = props.Action
@@ -4360,9 +4543,15 @@ local function PillButton(props: {
 		[React.Event.Activated] = action.OnClick,
 		[React.Event.MouseEnter] = function()
 			setHovered(true)
+			if props.SetGlobalHover then
+				props.SetGlobalHover(true)
+			end
 		end,
 		[React.Event.MouseLeave] = function()
 			setHovered(false)
+			if props.SetGlobalHover then
+				props.SetGlobalHover(false)
+			end
 		end,
 	}, {
 		Corner = e("UICorner", { CornerRadius = UDim.new(1, 0) }), -- Pill shape
@@ -4378,15 +4567,24 @@ local function PillButton(props: {
 	})
 end
 
--- Fixed slot offsets (studs of screen space) around the anchor - matches
--- the reference layout: primary action up top, two side actions, a
--- cancel/dismiss action below.
+-- Slot offsets (pixels of screen space) around the anchor, all on one
+-- common ring radius - matches the reference layout (primary action up
+-- top, two side actions, a cancel/dismiss action below) but as actual
+-- points on a circle rather than ad-hoc pixel offsets with different
+-- radii, so the pills visibly sit on the same ring instead of some
+-- sticking out further than others.
+local RING_RADIUS = 96
+local function ringOffset(angleDegrees: number): Vector2
+	local angle = math.rad(angleDegrees)
+	-- 0 deg = straight up, increasing clockwise (screen space: +X right, +Y down)
+	return Vector2.new(math.sin(angle), -math.cos(angle)) * RING_RADIUS
+end
 local OFFSETS = {
-	Top = Vector2.new(0, -70),
-	TopLeft = Vector2.new(-90, -40),
-	Left = Vector2.new(-110, 6),
-	Right = Vector2.new(110, 6),
-	Bottom = Vector2.new(0, 78),
+	Top = ringOffset(0),
+	TopLeft = ringOffset(-45),
+	Left = ringOffset(-90),
+	Right = ringOffset(90),
+	Bottom = ringOffset(180),
 }
 
 local function PieMenu(props: {
@@ -4396,6 +4594,7 @@ local function PieMenu(props: {
 	Left: PieMenuAction?,
 	Right: PieMenuAction?,
 	Bottom: PieMenuAction?,
+	SetGlobalHover: ((boolean) -&gt; ())?,
 })
 	local screenPos, setScreenPos = React.useState(Vector2.new(0, 0))
 	local onScreen, setOnScreen = React.useState(false)
@@ -4422,22 +4621,44 @@ local function PieMenu(props: {
 
 	local children: { [string]: any } = {}
 	if props.Top then
-		children.Top = e(PillButton, { Action = props.Top :: PieMenuAction, Primary = true, Offset = OFFSETS.Top })
+		children.Top = e(PillButton, {
+			Action = props.Top :: PieMenuAction,
+			Primary = true,
+			Offset = OFFSETS.Top,
+			SetGlobalHover = props.SetGlobalHover,
+		})
 	end
 	if props.TopLeft then
-		children.TopLeft =
-			e(PillButton, { Action = props.TopLeft :: PieMenuAction, Primary = false, Offset = OFFSETS.TopLeft })
+		children.TopLeft = e(PillButton, {
+			Action = props.TopLeft :: PieMenuAction,
+			Primary = false,
+			Offset = OFFSETS.TopLeft,
+			SetGlobalHover = props.SetGlobalHover,
+		})
 	end
 	if props.Left then
-		children.Left = e(PillButton, { Action = props.Left :: PieMenuAction, Primary = false, Offset = OFFSETS.Left })
+		children.Left = e(PillButton, {
+			Action = props.Left :: PieMenuAction,
+			Primary = false,
+			Offset = OFFSETS.Left,
+			SetGlobalHover = props.SetGlobalHover,
+		})
 	end
 	if props.Right then
-		children.Right =
-			e(PillButton, { Action = props.Right :: PieMenuAction, Primary = false, Offset = OFFSETS.Right })
+		children.Right = e(PillButton, {
+			Action = props.Right :: PieMenuAction,
+			Primary = false,
+			Offset = OFFSETS.Right,
+			SetGlobalHover = props.SetGlobalHover,
+		})
 	end
 	if props.Bottom then
-		children.Bottom =
-			e(PillButton, { Action = props.Bottom :: PieMenuAction, Primary = false, Offset = OFFSETS.Bottom })
+		children.Bottom = e(PillButton, {
+			Action = props.Bottom :: PieMenuAction,
+			Primary = false,
+			Offset = OFFSETS.Bottom,
+			SetGlobalHover = props.SetGlobalHover,
+		})
 	end
 
 	return e("Frame", {
@@ -4769,7 +4990,7 @@ local function RegionEditor(props: {
 	local children: { [string]: any } = {}
 	local order = 1
 
-	children.Header = e(Components.Section, { Text = "Region Preset", LayoutOrder = order })
+	children.Header = e(Components.Section, { Text = "Region Preset", First = true, LayoutOrder = order })
 	order += 1
 
 	children.Name = e(LabeledRow, {
@@ -5185,6 +5406,7 @@ local function RegionalPreferenceGui(props: {
 
 		StyleSection = e(Components.Section, {
 			Text = "Road Style",
+			First = true,
 			LayoutOrder = 1,
 		}),
 		Region = e(LabeledRow, {
@@ -5900,6 +6122,7 @@ local function LaneStripCard(props: {
 	decorateCard(children)
 	children.Header = e(Components.Section, {
 		Text = string.format("Road Layout - %.1f m", RoadProfile.TotalWidthM(profile)),
+		First = true,
 		LayoutOrder = 1,
 	})
 
@@ -6263,7 +6486,7 @@ local function PaletteOrLibraryCard(props: {
 			}),
 		})
 	else
-		children.Header = e(Components.Section, { Text = "Modules", LayoutOrder = 1 })
+		children.Header = e(Components.Section, { Text = "Modules", First = true, LayoutOrder = 1 })
 	end
 
 	if activeTab == "Library" and props.Picker then
@@ -6356,7 +6579,7 @@ local function Panel(props: {
 
 	-- Properties card
 	local propertiesChildren: { [string]: any } = {}
-	propertiesChildren.Header = e(Components.Section, { Text = "Road Properties", LayoutOrder = 1 })
+	propertiesChildren.Header = e(Components.Section, { Text = "Road Properties", First = true, LayoutOrder = 1 })
 	if props.OnRename then
 		propertiesChildren.NameRow = e(Components.Row, { LayoutOrder = 2 }, {
 			Label = e(Components.Label, { Text = "Name", LayoutOrder = 1, Width = 44 }),
@@ -6551,7 +6774,7 @@ local function RoadInspector(props: {
 				SortOrder = Enum.SortOrder.LayoutOrder,
 				Padding = UDim.new(0, 4),
 			}),
-			Header = e(Components.Section, { Text = "Selected Road", LayoutOrder = 1 }),
+			Header = e(Components.Section, { Text = "Selected Road", First = true, LayoutOrder = 1 }),
 			Note = e(Components.Label, {
 				Text = "This road was placed by an older version of easyRoad and can't "
 					.. "be edited in place - delete and re-place it to use the designer.",
@@ -6738,77 +6961,140 @@ local Components = require("./Components")
 local function TopBar(props: {
 	ToolsActive: boolean,
 	EditorActive: boolean,
-	SettingsOpen: boolean,
+	RegionalOpen: boolean,
+	KeybindsOpen: boolean,
 	OnTools: () -&gt; (),
 	OnEditor: () -&gt; (),
-	OnSettings: () -&gt; (),
+	OnOpenRegional: () -&gt; (),
+	OnOpenKeybinds: () -&gt; (),
 	OnHoverChanged: ((hovered: boolean) -&gt; ())?,
 })
-	return e("Frame", {
-		AnchorPoint = Vector2.new(0.5, 0),
-		Position = UDim2.new(0.5, 0, 0, 8),
-		Size = UDim2.new(0, 0, 0, 42),
-		AutomaticSize = Enum.AutomaticSize.X,
-		BackgroundColor3 = Theme.GLASS_BG,
-		BackgroundTransparency = Theme.GLASS_TRANSPARENCY,
-		BorderSizePixel = 0,
-		[React.Event.MouseEnter] = function()
-			if props.OnHoverChanged then
-				(props.OnHoverChanged :: (hovered: boolean) -&gt; ())(true)
-			end
-		end,
-		[React.Event.MouseLeave] = function()
-			if props.OnHoverChanged then
-				(props.OnHoverChanged :: (hovered: boolean) -&gt; ())(false)
-			end
-		end,
-	}, {
-		Corner = e("UICorner", { CornerRadius = UDim.new(0, Theme.CORNER_RADIUS) }),
-		Stroke = e("UIStroke", {
-			Color = Theme.GLASS_STROKE,
-			Transparency = Theme.GLASS_STROKE_TRANSPARENCY,
-			Thickness = 1,
-			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
-		}),
-		Padding = e("UIPadding", {
-			PaddingLeft = UDim.new(0, 12),
-			PaddingRight = UDim.new(0, 12),
-			PaddingTop = UDim.new(0, 8),
-			PaddingBottom = UDim.new(0, 8),
-		}),
-		Layout = e("UIListLayout", {
-			FillDirection = Enum.FillDirection.Horizontal,
-			SortOrder = Enum.SortOrder.LayoutOrder,
-			Padding = UDim.new(0, 6),
-			VerticalAlignment = Enum.VerticalAlignment.Center,
-		}),
-		Title = e("TextLabel", {
-			Text = "easyRoad",
-			TextColor3 = Theme.ACCENT,
-			BackgroundTransparency = 1,
-			Size = UDim2.new(0, 0, 1, 0),
+	-- Settings has no single dock of its own any more - clicking it opens a
+	-- small home menu to choose Regional Preference or Keybinds, each its
+	-- own independently-toggled dock, instead of forcing both open/closed
+	-- together (which used to stack them at the same default float
+	-- position with no way to tell the second one was even there).
+	local menuOpen, setMenuOpen = React.useState(false)
+	local settingsSelected = props.RegionalOpen or props.KeybindsOpen or menuOpen
+
+	return e(React.Fragment, nil, {
+		Bar = e("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0),
+			Position = UDim2.new(0.5, 0, 0, 8),
+			Size = UDim2.new(0, 0, 0, 42),
 			AutomaticSize = Enum.AutomaticSize.X,
-			Font = Enum.Font.BuilderSansMedium,
-			TextSize = Theme.TEXT_SIZE,
-			LayoutOrder = 1,
+			BackgroundColor3 = Theme.GLASS_BG,
+			BackgroundTransparency = Theme.GLASS_TRANSPARENCY,
+			BorderSizePixel = 0,
+			[React.Event.MouseEnter] = function()
+				if props.OnHoverChanged then
+					(props.OnHoverChanged :: (hovered: boolean) -&gt; ())(true)
+				end
+			end,
+			[React.Event.MouseLeave] = function()
+				if props.OnHoverChanged then
+					(props.OnHoverChanged :: (hovered: boolean) -&gt; ())(false)
+				end
+			end,
+		}, {
+			Corner = e("UICorner", { CornerRadius = UDim.new(0, Theme.CORNER_RADIUS) }),
+			Stroke = e("UIStroke", {
+				Color = Theme.GLASS_STROKE,
+				Transparency = Theme.GLASS_STROKE_TRANSPARENCY,
+				Thickness = 1,
+				ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+			}),
+			Padding = e("UIPadding", {
+				PaddingLeft = UDim.new(0, 12),
+				PaddingRight = UDim.new(0, 12),
+				PaddingTop = UDim.new(0, 8),
+				PaddingBottom = UDim.new(0, 8),
+			}),
+			Layout = e("UIListLayout", {
+				FillDirection = Enum.FillDirection.Horizontal,
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				Padding = UDim.new(0, 6),
+				VerticalAlignment = Enum.VerticalAlignment.Center,
+			}),
+			Title = e("TextLabel", {
+				Text = "easyRoad",
+				TextColor3 = Theme.ACCENT,
+				BackgroundTransparency = 1,
+				Size = UDim2.new(0, 0, 1, 0),
+				AutomaticSize = Enum.AutomaticSize.X,
+				Font = Enum.Font.BuilderSansMedium,
+				TextSize = Theme.TEXT_SIZE,
+				LayoutOrder = 1,
+			}),
+			Tools = e(Components.Button, {
+				Text = "Road Tools",
+				Selected = props.ToolsActive,
+				OnClick = props.OnTools,
+				LayoutOrder = 2,
+			}),
+			Editor = e(Components.Button, {
+				Text = "Road Editor",
+				Selected = props.EditorActive,
+				OnClick = props.OnEditor,
+				LayoutOrder = 3,
+			}),
+			Settings = e(Components.Button, {
+				Text = "Settings",
+				Selected = settingsSelected,
+				OnClick = function()
+					setMenuOpen(not menuOpen)
+				end,
+				LayoutOrder = 4,
+			}),
 		}),
-		Tools = e(Components.Button, {
-			Text = "Road Tools",
-			Selected = props.ToolsActive,
-			OnClick = props.OnTools,
-			LayoutOrder = 2,
-		}),
-		Editor = e(Components.Button, {
-			Text = "Road Editor",
-			Selected = props.EditorActive,
-			OnClick = props.OnEditor,
-			LayoutOrder = 3,
-		}),
-		Settings = e(Components.Button, {
-			Text = "Settings",
-			Selected = props.SettingsOpen,
-			OnClick = props.OnSettings,
-			LayoutOrder = 4,
+		-- Settings home menu: pick Regional Preference or Keybinds, each its
+		-- own dock, opened one at a time instead of both together.
+		SettingsMenu = menuOpen and e("Frame", {
+			AnchorPoint = Vector2.new(0.5, 0),
+			Position = UDim2.new(0.5, 0, 0, 56),
+			Size = UDim2.new(0, 200, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundColor3 = Theme.GLASS_BG,
+			BackgroundTransparency = Theme.GLASS_TRANSPARENCY,
+			BorderSizePixel = 0,
+		}, {
+			Corner = e("UICorner", { CornerRadius = UDim.new(0, Theme.CORNER_RADIUS) }),
+			Stroke = e("UIStroke", {
+				Color = Theme.GLASS_STROKE,
+				Transparency = Theme.GLASS_STROKE_TRANSPARENCY,
+				Thickness = 1,
+				ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+			}),
+			Padding = e("UIPadding", {
+				PaddingLeft = UDim.new(0, 8),
+				PaddingRight = UDim.new(0, 8),
+				PaddingTop = UDim.new(0, 8),
+				PaddingBottom = UDim.new(0, 8),
+			}),
+			Layout = e("UIListLayout", {
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				Padding = UDim.new(0, 4),
+			}),
+			Regional = e(Components.Button, {
+				Text = "Regional Preference",
+				Selected = props.RegionalOpen,
+				OnClick = function()
+					setMenuOpen(false)
+					props.OnOpenRegional()
+				end,
+				Size = UDim2.new(1, 0, 0, 32),
+				LayoutOrder = 1,
+			}),
+			Keybinds = e(Components.Button, {
+				Text = "Keybinds",
+				Selected = props.KeybindsOpen,
+				OnClick = function()
+					setMenuOpen(false)
+					props.OnOpenKeybinds()
+				end,
+				Size = UDim2.new(1, 0, 0, 32),
+				LayoutOrder = 2,
+			}),
 		}),
 	})
 end
@@ -6859,6 +7145,7 @@ export type RoadSession = {
 	GetEndProfile: () -&gt; RoadProfile.RoadProfile?,
 	GetElevation: () -&gt; number,
 	AdjustElevation: (delta: number) -&gt; (),
+	SetElevation: (value: number) -&gt; (),
 	GetHint: () -&gt; string,
 	GetPointCount: () -&gt; number,
 	CancelPlacement: () -&gt; (),
@@ -6911,6 +7198,15 @@ local function createRoadSession(
 	-- the moment it's clicked.
 	local function adjustElevation(delta: number)
 		elevation += delta
+		settings.LastElevationStuds = elevation
+		previewDirty = true
+		changeSignal:Fire()
+	end
+
+	-- Direct entry from the build bar's elevation textbox (typing a height
+	-- instead of nudging it by ElevationStepStuds).
+	local function setElevation(value: number)
+		elevation = value
 		settings.LastElevationStuds = elevation
 		previewDirty = true
 		changeSignal:Fire()
@@ -7316,6 +7612,7 @@ local function createRoadSession(
 	end
 
 	session.AdjustElevation = adjustElevation
+	session.SetElevation = setElevation
 
 	function session.GetPointCount(): number
 		return #points
@@ -7559,7 +7856,8 @@ return function(
 			assert(topRoot):render(React.createElement(TopBar, {
 				ToolsActive = session ~= nil,
 				EditorActive = designProfile ~= nil,
-				SettingsOpen = regionalDock.Enabled or keybindsDock.Enabled,
+				RegionalOpen = regionalDock.Enabled,
+				KeybindsOpen = keybindsDock.Enabled,
 				OnTools = function()
 					if session then
 						stopSession()
@@ -7575,12 +7873,16 @@ return function(
 						openEditor()
 					end
 				end,
-				OnSettings = function()
-					-- Settings are separate docks, named by function, rather
-					-- than tabs in one panel - toggle both together.
-					local open = not (regionalDock.Enabled or keybindsDock.Enabled)
-					regionalDock.Enabled = open
-					keybindsDock.Enabled = open
+				-- Settings are separate docks, named by function, rather than
+				-- tabs in one panel - opened one at a time from the Settings
+				-- home menu instead of both together (which used to stack
+				-- both docks at the same default float position, making the
+				-- second one impossible to find).
+				OnOpenRegional = function()
+					regionalDock.Enabled = not regionalDock.Enabled
+				end,
+				OnOpenKeybinds = function()
+					keybindsDock.Enabled = not keybindsDock.Enabled
 				end,
 				OnHoverChanged = function(hovered: boolean)
 					uiState.Hovered = hovered
@@ -7727,6 +8029,9 @@ return function(
 				AdjustElevation = function(delta: number)
 					currentSession.AdjustElevation(delta)
 				end,
+				SetElevation = function(value: number)
+					currentSession.SetElevation(value)
+				end,
 				OnStop = function()
 					stopSession()
 					plugin:Deactivate()
@@ -7816,10 +8121,15 @@ return function(
 					pieMenuRoot = ReactRoblox.createRoot(screen)
 				end
 
+				local function setGlobalHover(hovered: boolean)
+					uiState.Hovered = hovered
+				end
+
 				local pieMenuElement: any
 				if editSession.IsShowingMenu() then
 					pieMenuElement = React.createElement(PieMenu, {
 						WorldPosition = anchor,
+						SetGlobalHover = setGlobalHover,
 						Top = {
 							Text = "Edit on Road Builder",
 							OnClick = function()
@@ -7870,6 +8180,7 @@ return function(
 				elseif editSession.IsShowingSegmentMenu() then
 					pieMenuElement = React.createElement(PieMenu, {
 						WorldPosition = anchor,
+						SetGlobalHover = setGlobalHover,
 						Top = {
 							Text = "Add Bus Bay",
 							OnClick = function()
@@ -7894,6 +8205,7 @@ return function(
 				else -- PlacingBusBay
 					pieMenuElement = React.createElement(PieMenu, {
 						WorldPosition = anchor,
+						SetGlobalHover = setGlobalHover,
 						Bottom = {
 							Text = "Done (click a sidewalk/parking part to add, an existing stop to remove)",
 							OnClick = function()
@@ -7903,15 +8215,19 @@ return function(
 					})
 				end
 
+				-- Deliberately NOT tracking hover on this wrapping frame: it
+				-- spans the whole screen (needed so the anchored pie menu
+				-- can be positioned anywhere within it), so a MouseEnter
+				-- here would fire almost immediately and latch
+				-- uiState.Hovered permanently - which used to make
+				-- onBusBayClick's "don't place through the HUD" guard
+				-- swallow every viewport click while any pie menu was
+				-- showing (i.e. whenever a road was selected). Each
+				-- PillButton reports its own (correctly small) hover area
+				-- via SetGlobalHover instead.
 				assert(pieMenuRoot):render(React.createElement("Frame", {
 					Size = UDim2.fromScale(1, 1),
 					BackgroundTransparency = 1,
-					[React.Event.MouseEnter] = function()
-						uiState.Hovered = true
-					end,
-					[React.Event.MouseLeave] = function()
-						uiState.Hovered = false
-					end,
 				}, {
 					Gui = pieMenuElement,
 				}))

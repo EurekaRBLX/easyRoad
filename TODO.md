@@ -84,11 +84,21 @@ built.
   bus-stop decoration/marking; nothing renders it yet.
 - **Parallel mode.** CS2-style "place a mirrored road alongside an existing
   one, offset by N studs" workflow. Not started.
-- **Curve Alignment for markings.** `Settings.CurveAlignment`
-  (Center/Inside/Outside) only affects deck strips right now — lane
-  markings always use the older miter-padding treatment regardless of the
-  setting. Revisit if the residual marking gap ever turns out to matter in
-  practice (see `SHIPPED.md`).
+- **True wedge-trapezoid taper for widen/narrow transitions.** Each transition
+  strip is still a constant-width rectangular `Part` for its whole length, so
+  a lane's width change between one station and the next shows up as a small
+  step on the non-anchor edge rather than a continuous taper - a stairstep
+  made of straight segments, most visible on a short/steep taper. This round
+  smoothed the taper's alpha curve (no more sharp kink where the taper zone
+  begins) and tightened station spacing to keep each step small, which should
+  read as clean in most cases, but the fully correct fix is a real trapezoid:
+  build each transitioning strip as a rectangle (at the smaller of its two
+  end widths) plus a triangular `FillTriangle` wedge covering the width
+  delta, tapering to a point exactly at whichever station has the smaller
+  width - same machinery already built for curve joints this round, just
+  driven by a width delta between stations instead of a curvature-driven
+  lateral gap. Worth doing if the smoothed/finer-stepped version still looks
+  chunky on real in-Studio testing.
 - **Per-point elevation - clarify with user.** The user asked for "define
   the position and elevation of point A, then point B, like CS2." As far
   as I can tell this already works mechanically:

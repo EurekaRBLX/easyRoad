@@ -100,7 +100,7 @@ local function KeybindsGui(props: {
 	end
 
 	local children: { [string]: any } = {}
-	children.Section = e(Components.Section, { Text = "Keybinds", LayoutOrder = 1 })
+	children.Section = e(Components.Section, { Text = "Keybinds", First = true, LayoutOrder = 1 })
 	local order = 2
 	for _, action in KeybindsModule.Actions do
 		local sectionChildren, nextOrder = ActionSection({
