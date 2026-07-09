@@ -351,10 +351,19 @@ local function SVSquare(props: {
 		end,
 	}, {
 		Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+		-- Two alpha-blended overlays stacked on the pure-hue background
+		-- aren't order-independent (compositing white-then-black gives a
+		-- different result than black-then-white at the same point), and
+		-- these are sibling Frames with no LayoutOrder to lean on - their
+		-- table keys are plain Lua hash keys, so relying on write order in
+		-- the constructor isn't safe. Explicit ZIndex pins Value (black,
+		-- must win at the bottom edge so it reads as true black regardless
+		-- of how saturated that column is) above Saturation (white).
 		Saturation = e("Frame", {
 			Size = UDim2.fromScale(1, 1),
 			BackgroundColor3 = Theme.WHITE,
 			BorderSizePixel = 0,
+			ZIndex = 1,
 		}, {
 			Gradient = e("UIGradient", {
 				Color = ColorSequence.new(Theme.WHITE),
@@ -368,6 +377,7 @@ local function SVSquare(props: {
 			Size = UDim2.fromScale(1, 1),
 			BackgroundColor3 = Color3.new(0, 0, 0),
 			BorderSizePixel = 0,
+			ZIndex = 2,
 		}, {
 			Gradient = e("UIGradient", {
 				Color = ColorSequence.new(Color3.new(0, 0, 0)),
@@ -384,7 +394,7 @@ local function SVSquare(props: {
 			Size = UDim2.new(0, 10, 0, 10),
 			BackgroundColor3 = Color3.fromHSV(props.Hue, props.Saturation, props.Value),
 			BorderSizePixel = 0,
-			ZIndex = 2,
+			ZIndex = 3,
 		}, {
 			Corner = e("UICorner", { CornerRadius = UDim.new(1, 0) }),
 			Stroke = e("UIStroke", { Color = Theme.WHITE, Thickness = 2 }),

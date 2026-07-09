@@ -4,6 +4,66 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Curved bay chord gap, fewer bay wedges, superelevation twist smoothing, colour picker z-order
+
+- **Fixed a curve gap on bus bays.** `RoadBuilder.BuildWithBay`'s dwell
+  rectangle and both tapers were each a single flat/straight `Part` (or one
+  `FillTriangle` triangle) spanning only the 2-4 stations bounding the
+  dwell/tapers - a straight chord. On a curved road the base road's own
+  edge at that same nominal offset (built by the normal `Build` call,
+  which follows the true curve with fine adaptive stations) bows away from
+  that chord, leaving exactly the sliver gap in the user's screenshot.
+  Rewrote the bay's own asphalt (dwell + both tapers) as one adaptive-
+  station chain sharing the same `bayAlphaAt` ramp the nearside pavement
+  shift already used, so its inner/outer edges sit on the true curve at
+  every station, closing the gap exactly.
+- **Cut bay wedge-part count back down.** The fix above initially reused
+  the nearside pavement loop's `math.min(settings.MaxSegmentLengthStuds,
+  4, ...)` step cap, but that cap exists to keep the main widen/narrow
+  loop's *smoothstepped* taper reading smooth - the bay's own ramp
+  (`bayAlphaAt`) is plain linear, so `FillTriangle` is already exact for
+  any interval size; the only thing that should drive subdivision here is
+  curvature (for curve-following), not width-change rate. Dropped the cap
+  down to just `settings.MaxSegmentLengthStuds` for both the bay asphalt
+  and nearside-pavement loops, so a straight or gently-curved bay collapses
+  back to the same 1-2 wedge parts it used before this round's curve fix,
+  and only a genuinely sharp curve subdivides further.
+- **Superelevation transitions now subdivide by bank-angle change, not just
+  curvature.** `buildStations` only ever sized steps off lateral curvature
+  - it had no idea the bank angle (roll) can change quickly across a span
+  the curve itself considers straight enough for one long strip: the
+  deliberate ramp-to-zero-bank at both ends of every segment, and
+  `SmoothRolls`' box filter smearing bank in from a nearby curve onto an
+  adjoining flat run. Each deck strip is one rigid, flat `Part` - a strip
+  that twists continuously along its own length is a non-planar ruled
+  surface, which no flat wedge or single rigid `Part` can represent
+  exactly (unlike the lateral gaps above, which really are flat quads) -
+  so the only real fix is finer subdivision, not a wedge fill. Added a
+  refinement pass in `RoadBuilder.Build`: after computing the curvature-
+  only station grid and its rolls, walk consecutive rolls and insert extra
+  stations (capped at 8 per interval) wherever the bank-angle step between
+  them exceeds `MAX_ROLL_PER_STEP` (0.02 rad), then recompute rolls once
+  over the final, denser grid. Same mitigation curvature already gets via
+  `MAX_TURN_PER_STEP`, just driven by roll instead.
+- **Fixed the colour picker's SV square rendering wrong colours** (bottom
+  of the square wasn't reaching true black, read as a washed-out
+  olive/grey instead). `Components.ColorField`'s `SVSquare` stacks two
+  alpha-blended overlay `Frame`s (white for saturation, black for value)
+  over a pure-hue background with no explicit `ZIndex` - their table keys
+  are plain Lua hash keys, so paint order (and therefore which overlay
+  wins where they overlap) wasn't guaranteed by write order in the
+  constructor. Alpha-compositing two overlays isn't order-independent
+  (white-then-black composites differently than black-then-white at the
+  same point), and the black (value) layer must win at low-value pixels
+  for them to read as true black regardless of saturation. Pinned explicit
+  `ZIndex` (Saturation = 1, Value = 2, Cursor = 3) so the stacking order is
+  deterministic.
+- Not verified in a live Studio session (this environment can't render
+  Studio) - flagging the superelevation fix in particular for a live check
+  since the roll-subdivision threshold (`MAX_ROLL_PER_STEP`) was chosen by
+  reasoning about typical max-superelevation magnitudes (~0.06-0.08 ratio,
+  so ~4.5° peak bank), not measured against an actual rendered curve.
+
 ## True "no kerb line" option, CanTouch perf win
 
 - **Added a genuine "no kerb line at all" option.** `RoadProfile

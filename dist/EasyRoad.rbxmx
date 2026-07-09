@@ -1416,6 +1416,7 @@ local CHORD_TOLERANCE = 0.1 -- Max chord deviation (studs) used for adaptive ste
 local PREVIEW_CHORD_TOLERANCE = 0.35
 local MIN_STEP = 0.75
 local MAX_TURN_PER_STEP = 0.3 -- Radians of heading change allowed per strip
+local MAX_ROLL_PER_STEP = 0.02 -- Radians of superelevation (bank) change allowed per strip
 local RUNOFF_LENGTH_STUDS = 40 -- Superelevation smoothing window
 
 local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
@@ -1619,13 +1620,8 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	end
 	local tolerance = if preview then PREVIEW_CHORD_TOLERANCE else CHORD_TOLERANCE
 	local stations = buildStations(curve, maxStep, tolerance)
-	local stationCount = #stations
 
 	-- Per-station data ---------------------------------------------------------
-	local rolls = table.create(stationCount)
-	for i, s in stations do
-		rolls[i] = Superelevation.RollAt(curve:CurvatureAt(s), settings, style)
-	end
 	-- Both the curvature-noise smoothing window and the end-of-segment
 	-- runoff taper below scale with this segment's own length (capped at
 	-- RUNOFF_LENGTH_STUDS) instead of always using a fixed 40 studs -
@@ -1636,16 +1632,60 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	-- a 40% flat "full bank" middle zone, so short curves scale the same
 	-- way long ones do instead of being dominated by the absolute constant.
 	local runoffLength = math.min(RUNOFF_LENGTH_STUDS, length * 0.3)
-	rolls = Superelevation.SmoothRolls(rolls, stations, runoffLength)
-	-- Superelevation is per-segment: taper the bank to zero at both ends of
-	-- the segment (runoff) so chained segments always meet flush at joints
-	-- with no height step between the two bodies.
-	if runoffLength &gt; 1e-3 then
-		for i, s in stations do
-			local taper = math.min(1, s / runoffLength, (length - s) / runoffLength)
-			rolls[i] *= math.max(taper, 0)
+
+	local function computeRolls(stationList: { number }): { number }
+		local computed = table.create(#stationList)
+		for i, s in stationList do
+			computed[i] = Superelevation.RollAt(curve:CurvatureAt(s), settings, style)
 		end
+		computed = Superelevation.SmoothRolls(computed, stationList, runoffLength)
+		-- Superelevation is per-segment: taper the bank to zero at both ends
+		-- of the segment (runoff) so chained segments always meet flush at
+		-- joints with no height step between the two bodies.
+		if runoffLength &gt; 1e-3 then
+			for i, s in stationList do
+				local taper = math.min(1, s / runoffLength, (length - s) / runoffLength)
+				computed[i] *= math.max(taper, 0)
+			end
+		end
+		return computed
 	end
+
+	local rolls = computeRolls(stations)
+
+	-- The station grid above is spaced purely by lateral curvature (chord
+	-- tolerance / heading change per strip) - it has no idea the bank angle
+	-- (roll) can also change quickly across a span the curve itself
+	-- considers "straight enough": most obviously the deliberate runoff
+	-- ramp to zero bank at both ends of every segment, but also wherever
+	-- SmoothRolls' box filter smears bank in from a nearby curve onto an
+	-- otherwise-flat run. Each deck strip is a single rigid, flat Part
+	-- though - a strip that twists continuously along its own length is a
+	-- non-planar ruled surface, not something FillTriangle's flat wedges
+	-- (or any single rigid Part) can represent exactly - so an under-
+	-- subdivided roll transition shows up as a visible kink at the strip
+	-- seam instead of a smooth twist. Insert extra stations wherever the
+	-- roll step between neighbours is too large, then recompute rolls once
+	-- over the final, denser grid - the same mitigation curvature already
+	-- gets via MAX_TURN_PER_STEP, just driven by bank angle instead.
+	local refined = { stations[1] }
+	for i = 1, #stations - 1 do
+		local s0, s1 = stations[i], stations[i + 1]
+		local rollDelta = math.abs(rolls[i + 1] - rolls[i])
+		local subdivisions = math.min(8, math.ceil(rollDelta / MAX_ROLL_PER_STEP))
+		for j = 1, subdivisions - 1 do
+			local s = s0 + (s1 - s0) * (j / subdivisions)
+			if s - refined[#refined] &gt;= MIN_STEP * 0.5 then
+				table.insert(refined, s)
+			end
+		end
+		table.insert(refined, s1)
+	end
+	if #refined &gt; #stations then
+		stations = refined
+		rolls = computeRolls(stations)
+	end
+	local stationCount = #stations
 
 	local frames: { CFrame } = table.create(stationCount)
 	for i, s in stations do
@@ -2066,14 +2106,6 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		return curve:FrameAt(s, Superelevation.RollAt(curve:CurvatureAt(s), settings, style))
 	end
 
-	-- Deck top surface (Y=0 in frame-local terms, matching every other
-	-- deck strip's convention) - FillTriangle expects top-surface points
-	-- and extrudes `partHeight` downward itself; the plain dwell rectangle
-	-- below shifts its own center down by partHeight/2 after using this.
-	local function posAt(s: number, offset: number): Vector3
-		return (frameAt(s) * CFrame.new(offset, 0, 0)).Position
-	end
-
 	local function makeBayPart(): Part
 		local part = makePart(preview)
 		part.Name = "Bay"
@@ -2082,54 +2114,11 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		return part
 	end
 
-	-- Dwell: a plain flat strip at full bay width, anchored to true curve
-	-- positions at both ends exactly like the deck's other strips.
-	if dwellEnd - dwellStart &gt; 1e-3 then
-		local innerStart = posAt(dwellStart, kerbOffset)
-		local outerStart = posAt(dwellStart, bayOffset)
-		local innerEnd = posAt(dwellEnd, kerbOffset)
-		local outerEnd = posAt(dwellEnd, bayOffset)
-		local mid = (innerStart + outerStart + innerEnd + outerEnd) / 4
-		local forwardVec = (innerEnd + outerEnd) / 2 - (innerStart + outerStart) / 2
-		local segLength = forwardVec.Magnitude
-		if segLength &gt; 1e-3 then
-			local part = makeBayPart()
-			part.Size = Vector3.new(bayWidthStuds, partHeight, segLength)
-			part.CFrame = CFrame.lookAt(mid, mid + forwardVec.Unit, frameAt(dwellStart).UpVector)
-				* CFrame.new(0, -partHeight / 2, 0)
-			part.Parent = model
-		end
-	end
-
-	-- Tapers: each is a single triangle (the pinch point where bay width
-	-- is exactly zero, plus the two dwell-side corners) - the one place
-	-- FillTriangle's wedges are still used, since a taper here is a real
-	-- abrupt trapezoid shape to build exactly, not a curve to approximate.
-	if dwellStart - taperInStart &gt; 1e-3 then
-		local pinch = posAt(taperInStart, kerbOffset)
-		local innerAtDwell = posAt(dwellStart, kerbOffset)
-		local outerAtDwell = posAt(dwellStart, bayOffset)
-		FillTriangle(pinch, innerAtDwell, outerAtDwell, partHeight, -frameAt(dwellStart).UpVector, makeBayPart, model)
-	end
-	if taperOutEnd - dwellEnd &gt; 1e-3 then
-		local pinch = posAt(taperOutEnd, kerbOffset)
-		local innerAtDwell = posAt(dwellEnd, kerbOffset)
-		local outerAtDwell = posAt(dwellEnd, bayOffset)
-		FillTriangle(innerAtDwell, outerAtDwell, pinch, partHeight, -frameAt(dwellEnd).UpVector, makeBayPart, model)
-	end
-
-	-- Nearside pavement, displaced outward over the bay's footprint: its
-	-- inner edge follows the exact same straight-line ramp (0 at
-	-- taperInStart/taperOutEnd, full bayWidthStuds through the dwell) as
-	-- the bay's own FillTriangle taper edge above, so the two boundaries
-	-- are literally the same line - no gap, no overlap. Built as a chain of
-	-- small, diagonally-oriented strips across adaptive stations (the same
-	-- technique the main deck-strip loop uses for ordinary offset changes),
-	-- since a strip that shifts sideways along its own length is a
-	-- parallelogram in plan - not exactly representable by any single
-	-- rigid Part, but angling each small strip to its own true endpoints
-	-- (instead of holding flat-and-square until the next station) gets
-	-- close enough that fine adaptive stepping reads as a smooth slope.
+	-- 0 outside the bay's footprint, ramping 0-&gt;1 across each taper and flat
+	-- 1 through the dwell - shared by both the bay's own asphalt below and
+	-- the displaced nearside pavement further down, so their common
+	-- boundary (the bay's outer edge / the pavement's inner edge) is always
+	-- exactly the same line at every station.
 	local function bayAlphaAt(s: number): number
 		if s &lt;= taperInStart then
 			return 0
@@ -2145,18 +2134,91 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		return 0
 	end
 
+	-- Bay asphalt (dwell + both tapers): a chain of small, curve-following
+	-- intervals, not one flat dwell rectangle plus two single-triangle
+	-- tapers. The single-part version anchored the bay's inner edge
+	-- (kerbOffset) to only the 2-4 station points bounding the dwell/
+	-- tapers, so on an actual curve that inner edge was a straight chord
+	-- while the base road's own edge at that same nominal offset (built by
+	-- the normal Build call just outside ExcludeComponentIndices, with its
+	-- usual fine adaptive stations) kept following the true curve - the
+	-- chord-vs-arc mismatch showed up as a visible sliver gap on curved
+	-- bays. Same adaptive-station + FillTriangle technique the nearside
+	-- pavement shift loop and the main deck loop's transition strips use
+	-- closes it exactly: every small interval's own corners sit on the
+	-- true curve.
+	-- Station density here is driven purely by curvature tolerance (the
+	-- same formula the rest of the road uses), not an extra width-change
+	-- cap: unlike the main loop's widen/narrow taper (a smoothstepped
+	-- ramp, which genuinely needs short strips to approximate its curved
+	-- profile with straight chords), bayAlphaAt is a plain linear ramp, so
+	-- a single FillTriangle interval already represents it exactly on a
+	-- straight road - no benefit to chopping it up further, only more
+	-- wedge parts for no visual gain. A tight curve still subdivides
+	-- fully, since that's governed by buildStations' own curvature check.
+	local baySlice = curve:Slice(taperInStart, taperOutEnd)
+	if baySlice.Length &gt; 1e-3 then
+		local bayStations = buildStations(baySlice, settings.MaxSegmentLengthStuds, CHORD_TOLERANCE)
+		for i = 1, #bayStations - 1 do
+			local s0 = taperInStart + bayStations[i]
+			local s1 = taperInStart + bayStations[i + 1]
+			local outerOffset0 = kerbOffset + outward * bayWidthStuds * bayAlphaAt(s0)
+			local outerOffset1 = kerbOffset + outward * bayWidthStuds * bayAlphaAt(s1)
+			if math.abs(outerOffset0 - kerbOffset) &lt; 1e-4 and math.abs(outerOffset1 - kerbOffset) &lt; 1e-4 then
+				continue
+			end
+			local sMid = (s0 + s1) / 2
+			local midFrame = frameAt(sMid)
+			local nominalLength = s1 - s0
+
+			if math.abs(outerOffset1 - outerOffset0) &gt; 1e-4 then
+				local innerStart = (frameAt(s0) * CFrame.new(kerbOffset, 0, 0)).Position
+				local outerStart = (frameAt(s0) * CFrame.new(outerOffset0, 0, 0)).Position
+				local innerEnd = (frameAt(s1) * CFrame.new(kerbOffset, 0, 0)).Position
+				local outerEnd = (frameAt(s1) * CFrame.new(outerOffset1, 0, 0)).Position
+				local downVector = -midFrame.UpVector
+				FillTriangle(innerStart, outerStart, outerEnd, partHeight, downVector, makeBayPart, model)
+				FillTriangle(innerStart, outerEnd, innerEnd, partHeight, downVector, makeBayPart, model)
+			else
+				local width = math.abs(outerOffset0 - kerbOffset)
+				local centerOffset = (kerbOffset + outerOffset0) / 2
+				local edgeDistance = math.max(math.abs(centerOffset - width / 2), math.abs(centerOffset + width / 2))
+				local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
+				local padding = miter + 0.08
+				local part = makeBayPart()
+				part.Size = Vector3.new(width, partHeight, nominalLength + padding)
+				part.CFrame = midFrame * CFrame.new(centerOffset, -partHeight / 2, 0)
+				part.Parent = model
+			end
+		end
+	end
+
+	-- Nearside pavement, displaced outward over the bay's footprint: its
+	-- inner edge follows the exact same ramp (0 at taperInStart/
+	-- taperOutEnd, full bayWidthStuds through the dwell, via the shared
+	-- bayAlphaAt above) as the bay's own outer edge, so the two boundaries
+	-- are literally the same line at every station - no gap, no overlap.
+	-- Built as a chain of small, diagonally-oriented strips across adaptive
+	-- stations (the same technique the main deck-strip loop uses for
+	-- ordinary offset changes), since a strip that shifts sideways along
+	-- its own length is a parallelogram in plan - not exactly representable
+	-- by any single rigid Part, but angling each small strip to its own
+	-- true endpoints (instead of holding flat-and-square until the next
+	-- station) gets close enough that fine adaptive stepping reads as a
+	-- smooth slope.
 	local nearsideWidthStuds = nearsideComponent.WidthM * scale
 	local nearsideKind = nearsideComponent.Kind
 	local nearsideRaised = RoadProfile.IsRaised(nearsideKind)
 	local nearsidePartHeight = if nearsideRaised then thickness + curbHeight else thickness
 	local nearsideCenterY = if nearsideRaised then (curbHeight - thickness) / 2 else -thickness / 2
 
+	-- Same reasoning as the bay asphalt loop above: bayAlphaAt is a linear
+	-- ramp, so FillTriangle is already exact per interval regardless of
+	-- size - subdivision only needs to track curvature, not width-change
+	-- rate, so no extra cap here either.
 	local shiftSlice = curve:Slice(taperInStart, taperOutEnd)
 	if shiftSlice.Length &gt; 1e-3 then
-		local changeRate = bayWidthStuds / math.max(taperLength, 1e-3)
-		local maxStepForTaper = if changeRate &gt; 1e-3 then 0.4 / changeRate else 4
-		local maxStep = math.min(settings.MaxSegmentLengthStuds, 4, math.max(maxStepForTaper, MIN_STEP))
-		local shiftStations = buildStations(shiftSlice, maxStep, CHORD_TOLERANCE)
+		local shiftStations = buildStations(shiftSlice, settings.MaxSegmentLengthStuds, CHORD_TOLERANCE)
 		for i = 1, #shiftStations - 1 do
 			local s0 = taperInStart + shiftStations[i]
 			local s1 = taperInStart + shiftStations[i + 1]
@@ -4878,10 +4940,19 @@ local function SVSquare(props: {
 		end,
 	}, {
 		Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+		-- Two alpha-blended overlays stacked on the pure-hue background
+		-- aren't order-independent (compositing white-then-black gives a
+		-- different result than black-then-white at the same point), and
+		-- these are sibling Frames with no LayoutOrder to lean on - their
+		-- table keys are plain Lua hash keys, so relying on write order in
+		-- the constructor isn't safe. Explicit ZIndex pins Value (black,
+		-- must win at the bottom edge so it reads as true black regardless
+		-- of how saturated that column is) above Saturation (white).
 		Saturation = e("Frame", {
 			Size = UDim2.fromScale(1, 1),
 			BackgroundColor3 = Theme.WHITE,
 			BorderSizePixel = 0,
+			ZIndex = 1,
 		}, {
 			Gradient = e("UIGradient", {
 				Color = ColorSequence.new(Theme.WHITE),
@@ -4895,6 +4966,7 @@ local function SVSquare(props: {
 			Size = UDim2.fromScale(1, 1),
 			BackgroundColor3 = Color3.new(0, 0, 0),
 			BorderSizePixel = 0,
+			ZIndex = 2,
 		}, {
 			Gradient = e("UIGradient", {
 				Color = ColorSequence.new(Color3.new(0, 0, 0)),
@@ -4911,7 +4983,7 @@ local function SVSquare(props: {
 			Size = UDim2.new(0, 10, 0, 10),
 			BackgroundColor3 = Color3.fromHSV(props.Hue, props.Saturation, props.Value),
 			BorderSizePixel = 0,
-			ZIndex = 2,
+			ZIndex = 3,
 		}, {
 			Corner = e("UICorner", { CornerRadius = UDim.new(1, 0) }),
 			Stroke = e("UIStroke", { Color = Theme.WHITE, Thickness = 2 }),
