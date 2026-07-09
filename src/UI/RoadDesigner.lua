@@ -1062,46 +1062,62 @@ local function Panel(
 		})
 	end
 
+	-- Ghost is a sibling of Stack, NOT a child of the UIListLayout'd frame
+	-- below - a UIListLayout unconditionally overrides its direct children's
+	-- Position to lay them out in a column, which was silently fighting the
+	-- ghost's own cursor-following Position every frame a drag was active
+	-- (snapping it into the list flow and shoving Top/StripCard down by its
+	-- height). This is likely why drag-and-drop has looked "broken" again
+	-- each time - previous rounds rewrote the input-tracking mechanism
+	-- (plugin:GetMouse(), GuiService hit-testing, UserInputService) without
+	-- ever catching that the panel's own layout was reflowing underneath the
+	-- cursor mid-drag regardless of which mechanism drove it.
 	return e("Frame", {
 		ref = rootRef,
 		Size = UDim2.fromScale(1, 1),
 		BackgroundTransparency = 1,
 	}, {
-		Layout = e("UIListLayout", {
-			SortOrder = Enum.SortOrder.LayoutOrder,
-			Padding = UDim.new(0, 8),
-		}),
-		-- Properties pinned to the left edge, Modules/Library pinned to the
-		-- right edge - independently anchored (no shared list layout) so the
-		-- gap opens up in the middle instead of hugging the Properties card.
-		Top = e("Frame", {
-			Size = UDim2.new(1, 0, 1, -(STRIP_HEIGHT + 8)),
+		Stack = e("Frame", {
+			Size = UDim2.fromScale(1, 1),
 			BackgroundTransparency = 1,
-			LayoutOrder = 1,
 		}, {
-			Properties = scrollColumn(240, 1, propertiesChildren),
-			Palette = not readOnly and e(PaletteOrLibraryCard, {
-				Picker = props.Picker,
-				RegionStyle = props.RegionStyle,
-				Settings = props.Settings,
-				Width = 220,
-				AlignRight = true,
-				OnInsert = function(kind: RoadProfile.ComponentKind)
-					insertKind(kind, nil)
-				end,
-				OnDragStart = drag.BeginDrag,
+			Layout = e("UIListLayout", {
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				Padding = UDim.new(0, 8),
+			}),
+			-- Properties pinned to the left edge, Modules/Library pinned to
+			-- the right edge - independently anchored (no shared list
+			-- layout) so the gap opens up in the middle instead of hugging
+			-- the Properties card.
+			Top = e("Frame", {
+				Size = UDim2.new(1, 0, 1, -(STRIP_HEIGHT + 8)),
+				BackgroundTransparency = 1,
+				LayoutOrder = 1,
+			}, {
+				Properties = scrollColumn(240, 1, propertiesChildren),
+				Palette = not readOnly and e(PaletteOrLibraryCard, {
+					Picker = props.Picker,
+					RegionStyle = props.RegionStyle,
+					Settings = props.Settings,
+					Width = 220,
+					AlignRight = true,
+					OnInsert = function(kind: RoadProfile.ComponentKind)
+						insertKind(kind, nil)
+					end,
+					OnDragStart = drag.BeginDrag,
+					LayoutOrder = 2,
+				}),
+			}),
+			StripCard = e(LaneStripCard, {
+				Profile = profile,
+				ReadOnly = readOnly,
+				SelectedIndex = selectedIndex,
+				OnSelect = setSelectedIndex,
+				OnChange = props.OnChange,
+				OnTileHoverChanged = drag.OnTileHoverChanged,
+				OnStripHoverChanged = drag.OnStripHoverChanged,
 				LayoutOrder = 2,
 			}),
-		}),
-		StripCard = e(LaneStripCard, {
-			Profile = profile,
-			ReadOnly = readOnly,
-			SelectedIndex = selectedIndex,
-			OnSelect = setSelectedIndex,
-			OnChange = props.OnChange,
-			OnTileHoverChanged = drag.OnTileHoverChanged,
-			OnStripHoverChanged = drag.OnStripHoverChanged,
-			LayoutOrder = 2,
 		}),
 		Ghost = ghost,
 	})

@@ -4,6 +4,52 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Fixed the real root cause of the recurring palette drag bug; live in-plugin keybind rebinding
+
+- **Found the actual root cause of "Palette drag is broken again"** after
+  five previous rounds (tasks #19, #26, #36, #47, #91) each rewrote the
+  *input-tracking* mechanism (GuiService hit-testing, `plugin:GetMouse()` +
+  `RenderStepped`, then `UserInputService`) without the breakage going away
+  for good. The actual bug was never the input mechanism: `RoadDesigner.Panel`'s
+  root `Frame` has a `UIListLayout` directly on it, and the cursor-following
+  drag ghost (`Ghost`) was a sibling *under that same layout*. A
+  `UIListLayout` unconditionally overrides its direct children's `Position`
+  to lay them out in a column - so the instant a drag passed the pickup
+  threshold and the ghost started rendering, the layout engine was fighting
+  its manually-computed cursor-following `Position` every frame, snapping it
+  into the list flow and shoving `Top`/`StripCard` down by the ghost's
+  height. That reflow is what made the whole panel look "broken" while
+  dragging (tiles jumping/misaligning under the cursor, drops missing)
+  regardless of which input mechanism drove the drag underneath - explaining
+  why rewriting the input tracking alone kept not fixing it. Fixed by moving
+  `Layout`/`Top`/`StripCard` into an inner `Stack` frame and keeping `Ghost`
+  as an unmanaged sibling of that `Stack`, so its explicit `Position` is
+  finally respected.
+- **Live in-plugin keybind rebinding**, replacing the read-only "go find
+  Studio's own Customize Shortcuts dialog" panel from the `PluginAction`
+  rework. Per the TODO's option B: capture is two-phase, gated on
+  `UserInputService.WindowFocused` rather than the raw next keypress -
+  clicking "+ Add" in the docked Keybinds panel only arms
+  `capturingAction`; the actual `InputBegan` capture additionally requires
+  `capturingReady`, which only flips true once `WindowFocused` fires (i.e.
+  once the user has actually clicked/refocused into the 3D viewport). That
+  first refocusing click is consumed as "becoming ready," not as the
+  binding itself, so a plain click-to-refocus-then-press-a-key gesture
+  can't accidentally bind `MouseButton1` by mistake. The listener pair
+  lives in `main.lua`, connected once for the plugin's whole lifetime
+  (independent of the Keybinds dock's own React mount/unmount), and is
+  cancelled if the dock closes mid-capture. `KeybindsGui.lua` is now a live
+  editable list (chips per binding with a small remove "x", always leaving
+  at least one binding per action so it can't go fully unbound) instead of
+  a static reference table; the Customize Shortcuts / `PluginAction` route
+  from the previous round is untouched and still works as a fallback.
+  **Not verified in a live Studio session** - this is exactly the kind of
+  focus-handoff behaviour that's broken three times before on variations
+  of "capture from inside the docked panel," so it's flagged rather than
+  claimed working; if `WindowFocused` doesn't fire the way it's expected to
+  in Studio's specific plugin-dock window model, capture will just hang
+  waiting (Cancel button recovers cleanly) rather than silently misbinding.
+
 ## Fixed dashed-marking wobble on superelevated curves; stretches overwrite instead of stacking
 
 - **Root-caused a real regression from this session's own roll-refinement

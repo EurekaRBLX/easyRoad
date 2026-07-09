@@ -17,6 +17,7 @@
 -- same designer bottom bar bound to that road, with Apply/Revert.
 
 local CoreGui = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
 
 local Packages = script.Parent.Parent.Packages
 local React = require(Packages.React)
@@ -24,6 +25,7 @@ local ReactRoblox = require(Packages.ReactRoblox)
 local Signal = require(Packages.Signal)
 
 local Settings = require("./Settings")
+local Keybinds = require("./Keybinds")
 local RegionStyles = require("./RegionStyles")
 local RoadProfile = require("./RoadProfile")
 local createRoadLibrary = require("./RoadLibrary")
@@ -171,6 +173,58 @@ return function(
 		elseif editSession.IsPlacingMarkingStretch() or editSession.IsConfirmingMarkingStretch() then
 			editSession.CancelMarkingStretchPlacement()
 		end
+	end)
+
+	-- In-plugin keybind rebinding (Keybinds settings dock's "Add binding"
+	-- flow) - the PluginAction/Customize Shortcuts route above is the
+	-- reliable fallback that keeps working regardless, but the user wants an
+	-- in-plugin "click Add, press a key, done" experience too. Three earlier
+	-- rounds tried capturing the very next InputBegan the instant "Add
+	-- binding" was clicked and failed, because a DockWidgetPluginGui is a
+	-- genuinely separate native window - input doesn't reliably reach
+	-- UserInputService at all while it has focus. The difference here:
+	-- capture is two-phase. Clicking "Add binding" only arms
+	-- `capturingAction`; the InputBegan listener below additionally requires
+	-- `capturingReady`, which only flips true once
+	-- UserInputService.WindowFocused fires - i.e. once the user has actually
+	-- clicked (or otherwise refocused) into the 3D viewport. That first
+	-- refocusing interaction is consumed as "becoming ready", not as the
+	-- binding itself, so a plain click-to-refocus-then-press-a-key gesture
+	-- doesn't accidentally bind MouseButton1 every time. This listener pair
+	-- is connected once, for the plugin's whole lifetime, independent of
+	-- session/editSession state or the Keybinds dock's own React lifecycle.
+	local capturingAction: Keybinds.ActionId? = nil
+	local capturingReady = false
+	local function cancelCapture()
+		if capturingAction then
+			capturingAction = nil
+			capturingReady = false
+			updateUI()
+		end
+	end
+	local windowFocusedCn = UserInputService.WindowFocused:Connect(function()
+		if capturingAction and not capturingReady then
+			capturingReady = true
+			updateUI()
+		end
+	end)
+	local captureInputCn = UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+		if not capturingAction or not capturingReady or gameProcessed then
+			return
+		end
+		local label = Keybinds.CaptureLabel(input)
+		if not label then
+			return
+		end
+		local actionId = capturingAction :: Keybinds.ActionId
+		local list = settings.Keybinds[actionId]
+		if not table.find(list, label) then
+			table.insert(list, label)
+		end
+		capturingAction = nil
+		capturingReady = false
+		persist()
+		updateUI()
 	end)
 
 	local function destroySession()
@@ -937,6 +991,23 @@ return function(
 				keybindsRoot = ReactRoblox.createRoot(keybindsDock)
 			end
 			assert(keybindsRoot):render(React.createElement(KeybindsGui, {
+				Keybinds = settings.Keybinds,
+				CapturingAction = capturingAction,
+				CapturingReady = capturingReady,
+				OnStartCapture = function(actionId: string)
+					capturingAction = actionId :: Keybinds.ActionId
+					capturingReady = false
+					updateUI()
+				end,
+				OnCancelCapture = cancelCapture,
+				OnRemoveBinding = function(actionId: string, index: number)
+					local list = settings.Keybinds[actionId]
+					if list and #list > 1 then
+						table.remove(list, index)
+						persist()
+						updateUI()
+					end
+				end,
 				OnClose = function()
 					keybindsDock.Enabled = false
 				end,
@@ -962,6 +1033,9 @@ return function(
 		updateUI()
 	end)
 	keybindsDock:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if not keybindsDock.Enabled then
+			cancelCapture()
+		end
 		updateUI()
 	end)
 
@@ -1012,6 +1086,8 @@ return function(
 		editSessionChangedCn:Disconnect()
 		persist()
 		clickedCn:Disconnect()
+		windowFocusedCn:Disconnect()
+		captureInputCn:Disconnect()
 		elevationUpAction:Destroy()
 		elevationDownAction:Destroy()
 		cancelPlacementAction:Destroy()
