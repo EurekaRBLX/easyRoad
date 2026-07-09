@@ -4,6 +4,36 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Found the actual palette-drop crash; fixed Keybinds Remove button overlap
+
+- **The real reason drops never inserted anything** ("nah cant drop still" -
+  this time with a Studio Output screenshot showing the exact error):
+  `useLaneDrag` calls its insert callback as `onInsertAt(index, kind)`, but
+  `Panel`'s own `insertKind(kind, atIndex)` takes the arguments in the
+  opposite order (it's also called directly by the click-to-insert path as
+  `insertKind(kind, nil)`, which is why that path never showed a problem).
+  Passing `insertKind` straight through as the drag callback sent the tile
+  index into the `kind` parameter and the kind string into `atIndex`,
+  so every real drop crashed `math.clamp(atIndex, ...)` with "number
+  expected, got string" - the drag itself (ghost tracking, hover
+  detection) had been correct since the previous two rounds; nothing ever
+  actually reached `table.insert` on a drop. Fixed by wrapping the callback
+  passed to `useLaneDrag` to swap the arguments back into `insertKind`'s
+  order, instead of changing either signature (both are used correctly by
+  their own respective call sites otherwise).
+- **Fixed the Keybinds "Remove" button rendering on top of its own label**
+  instead of beside it (screenshot: overlapping red buttons, text
+  unreadable). `Components.Button` only reads a fixed set of known props
+  (`Text`/`Icon`/`OnClick`/`Selected`/`Danger`/`LayoutOrder`/`Size`/`Grow`)
+  and builds its own `TextButton` prop table rather than spreading
+  arbitrary props through - the previous round's `AnchorPoint`/`Position`
+  passed to it to right-anchor the Remove button were silently no-ops, so
+  both the label and the button defaulted to the same top-left corner.
+  Switched `BindingRow` to `Components.Row` (the same horizontal
+  `UIListLayout` flow every other button row in this UI already uses),
+  which makes overlap impossible by construction instead of relying on
+  manual positioning `Components.Button` doesn't actually support.
+
 ## Fixed the drag ghost blocking its own drop target; Keybinds as a proper list
 
 - **Fixed "can drag now but can't drop"** - live-tested feedback on last

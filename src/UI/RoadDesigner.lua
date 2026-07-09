@@ -938,7 +938,18 @@ local function Panel(
 		setSelectedIndex(at)
 	end
 
-	local drag = useLaneDrag(props.PluginObj, insertKind)
+	-- useLaneDrag calls its callback as (index, kind) - the opposite
+	-- argument order from insertKind's own (kind, atIndex), since insertKind
+	-- is also called directly by the click-to-insert path as
+	-- insertKind(kind, nil). Passing insertKind straight through here sent
+	-- the drag's tile index into insertKind's `kind` parameter and the kind
+	-- string into `atIndex`, crashing math.clamp on a string every time a
+	-- drop actually landed on a tile - drag looked completely fine, but
+	-- every drop errored silently in the Output window instead of
+	-- inserting anything.
+	local drag = useLaneDrag(props.PluginObj, function(index: number, kind: RoadProfile.ComponentKind)
+		insertKind(kind, index)
+	end)
 
 	-- Properties card
 	local propertiesChildren: { [string]: any } = {}

@@ -36,26 +36,23 @@ local function BindingRow(props: {
 	OnRemove: (() -> ())?,
 	LayoutOrder: number,
 })
-	return e("Frame", {
-		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-		BackgroundTransparency = 1,
-		LayoutOrder = props.LayoutOrder,
-	}, {
-		Label = e("TextLabel", {
-			Text = props.Text,
-			TextColor3 = Theme.OFFWHITE,
-			TextXAlignment = Enum.TextXAlignment.Left,
-			BackgroundTransparency = 1,
-			Size = UDim2.new(1, if props.OnRemove then -78 else 0, 1, 0),
-			Font = Theme.FONT,
-			TextSize = Theme.TEXT_SIZE,
-		}),
+	-- Components.Button only reads a fixed set of known props (Text, Icon,
+	-- OnClick, Selected, Danger, LayoutOrder, Size, Grow) - it builds its
+	-- own TextButton prop table rather than spreading arbitrary props
+	-- through, so passing AnchorPoint/Position to it (an earlier version of
+	-- this row did, to right-anchor Remove) is silently a no-op. Both ended
+	-- up at the same default (0,0,0,0) position, stacking Remove directly
+	-- on top of the label text instead of beside it. Using Components.Row's
+	-- UIListLayout instead - the same left-to-right flow every other button
+	-- row in this UI already uses - makes overlap impossible by
+	-- construction.
+	return e(Components.Row, { LayoutOrder = props.LayoutOrder }, {
+		Label = e(Components.Label, { Text = props.Text, LayoutOrder = 1 }),
 		Remove = props.OnRemove and e(Components.Button, {
 			Text = "Remove",
 			Danger = true,
 			Size = UDim2.new(0, 74, 0, Theme.ROW_HEIGHT),
-			AnchorPoint = Vector2.new(1, 0),
-			Position = UDim2.new(1, 0, 0, 0),
+			LayoutOrder = 2,
 			OnClick = props.OnRemove,
 		}),
 	})
