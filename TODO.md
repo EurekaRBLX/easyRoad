@@ -4,42 +4,6 @@ Planned/requested work not yet built, roughly ordered by how developed the
 plan is. Not user-facing; internal planning only. See `SHIPPED.md` for
 what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
-## Bay/taper seam gaps - flat width padding wasn't enough, needs a real wedge fix
-
-User confirmed with a follow-up screenshot that the `WEDGE_WIDTH_PAD` flat
-0.15-stud width margin (see `SHIPPED.md`) did **not** fully close the gaps
-at the seams between diagonally-oriented strips - still visible on the same
-exaggerated-size bay's shifted-sidewalk trapezoid. Explicitly deferred by
-the user for a future session ("add it to todo tho cause i wanna end it
-here for today") rather than iterated on further tonight.
-
-Padding the width is fundamentally papering over the defect rather than
-fixing it: a strip whose offset shifts between two stations is a
-parallelogram in plan (see the original "wedge, not blocks" writeup in
-`SHIPPED.md`), and no single rigid `Part` can represent that exactly no
-matter how it's padded - consecutive rotated strips' width edges are
-perpendicular to different local slope angles by construction, so there
-will always be *some* residual sliver, just smaller or larger depending on
-the pad size and how sharply the slope changes between stations.
-
-The actual fix the user is pointing at ("a wedge algorithm") is almost
-certainly: stop trying to avoid the seam gap via padding, and instead
-**exactly fill each seam's residual triangle with `Mesh/FillTriangle.lua`**
-- the same MIT-licensed exact-triangle-fill helper already used for the
-bay's own pull-in-lane taper (`BuildWithBay`'s two `FillTriangle` calls) and
-previously for curve-joint wedges. Concretely, for each pair of consecutive
-diagonal strips sharing a station boundary: build the strips at their
-*exact* (unpadded) width, then compute the small triangular gap between
-strip i's trailing width-edge corner, strip i+1's leading width-edge
-corner, and the shared centerline point, and fill it with one `FillTriangle`
-call - this closes the gap exactly rather than approximately, matching the
-precision the bay's own asphalt taper already has. Needs doing in both
-places `WEDGE_WIDTH_PAD` was just added: the general `RoadBuilder.Build`
-transition loop, and `BuildWithBay`'s pavement-shift overlay. Worth
-reverting/removing `WEDGE_WIDTH_PAD` once this lands, since it becomes
-redundant (and could even reintroduce a slight overlap) once the seams are
-closed exactly instead of padded.
-
 ## Keybinds - user wants an in-plugin UI to change them, not just Studio's
 
 User feedback after the `PluginAction` rework (see `SHIPPED.md`): "now it is

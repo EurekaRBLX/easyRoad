@@ -1389,15 +1389,6 @@ local PREVIEW_CHORD_TOLERANCE = 0.35
 local MIN_STEP = 0.75
 local MAX_TURN_PER_STEP = 0.3 -- Radians of heading change allowed per strip
 local RUNOFF_LENGTH_STUDS = 40 -- Superelevation smoothing window
--- Extra width for diagonally-oriented (transitioning) strips: each one is
--- rotated to follow its own local slope, but the slope itself keeps
--- changing along a taper, so consecutive strips' width-direction edges
--- are perpendicular to slightly different angles - even though their
--- centerline endpoints connect exactly, the width edges fan apart a
--- little at every seam, leaving a sliver gap. Worse the longer/fewer the
--- strips (most visible on an exaggerated-size taper). Flat safety margin,
--- same philosophy as the +0.08 length padding just below.
-local WEDGE_WIDTH_PAD = 0.15
 
 local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
 	Drive = Enum.Material.Asphalt,
@@ -1722,40 +1713,50 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			-- against any remaining sliver of a gap.
 			local padding = miter + 0.08
 
-			local part = makePart(preview)
-			part.Name = kind
-			part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
-			part.Color = colorForKind(kind, style)
+			local function makeTransitionPart(): Part
+				local part = makePart(preview)
+				part.Name = kind
+				part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
+				part.Color = colorForKind(kind, style)
+				return part
+			end
 
 			-- Wedge, not a block: when this component's own center offset
 			-- moves between the two stations (a widen/narrow transition, or
 			-- an offset shift caused by a neighboring component changing
-			-- width), orient the strip along the true diagonal between its
-			-- two exact endpoint positions instead of flat-and-square to
-			-- the curve tangent - a chain of axis-aligned strips each
-			-- holding a constant offset until the next one steps to a new
-			-- one reads as a visible staircase; angling each strip to
-			-- follow its own true endpoints removes that step. Strips that
+			-- width), the true shape between the two stations is a
+			-- quadrilateral (its two "width" edges generally aren't
+			-- parallel), not a rectangle - no single rigid Part can
+			-- represent that exactly, and approximating it with a rotated
+			-- rectangle (an earlier attempt) left sliver gaps at the seams
+			-- between strips, since two adjacent rotated rectangles' width
+			-- edges are perpendicular to two different local slope angles.
+			-- Filled exactly instead: split the true quad into two
+			-- triangles along its innerStart-outerEnd diagonal and fill
+			-- each with FillTriangle (the same exact-fill helper the bay's
+			-- own taper already uses). Adjacent intervals share their
+			-- exact end/start corner positions by construction (both
+			-- computed from the same per-station offset/width data), so
+			-- there's no gap or overlap regardless of how sharply the
+			-- offset or width changes station to station. Strips that
 			-- aren't transitioning (centerOffset0 == centerOffset1, the
-			-- ordinary case for most of any road) are completely unaffected
-			-- - same construction as before.
+			-- ordinary case for most of any road) are unaffected - same
+			-- plain rectangle construction as before.
 			if math.abs(centerOffset1 - centerOffset0) &gt; 1e-4 then
-				local p0 = (frames[i] * CFrame.new(centerOffset0, centerY, 0)).Position
-				local p1 = (frames[i + 1] * CFrame.new(centerOffset1, centerY, 0)).Position
-				local diagonal = p1 - p0
-				local segLength = diagonal.Magnitude
-				if segLength &gt; 1e-4 then
-					part.Size = Vector3.new(width + WEDGE_WIDTH_PAD, partHeight, segLength + padding)
-					part.CFrame = CFrame.lookAt((p0 + p1) / 2, p1, midFrame.UpVector)
-				else
-					part.Size = Vector3.new(width, partHeight, nominalLength + padding)
-					part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
-				end
+				local topY = if raised then curbHeight else 0
+				local innerStart = (frames[i] * CFrame.new(centerOffset0 - w0 / 2, topY, 0)).Position
+				local outerStart = (frames[i] * CFrame.new(centerOffset0 + w0 / 2, topY, 0)).Position
+				local innerEnd = (frames[i + 1] * CFrame.new(centerOffset1 - w1 / 2, topY, 0)).Position
+				local outerEnd = (frames[i + 1] * CFrame.new(centerOffset1 + w1 / 2, topY, 0)).Position
+				local downVector = -midFrame.UpVector
+				FillTriangle(innerStart, outerStart, outerEnd, partHeight, downVector, makeTransitionPart, model)
+				FillTriangle(innerStart, outerEnd, innerEnd, partHeight, downVector, makeTransitionPart, model)
 			else
+				local part = makeTransitionPart()
 				part.Size = Vector3.new(width, partHeight, nominalLength + padding)
 				part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
+				part.Parent = model
 			end
-			part.Parent = model
 		end
 	end
 
@@ -2138,34 +2139,39 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
 			local padding = miter + 0.08
 
-			local part = makePart(preview)
-			part.Name = nearsideKind
-			part.Material = MATERIAL_BY_KIND[nearsideKind] or Enum.Material.Concrete
-			part.Color = colorForKind(nearsideKind, style)
+			local function makeNearsidePart(): Part
+				local part = makePart(preview)
+				part.Name = nearsideKind
+				part.Material = MATERIAL_BY_KIND[nearsideKind] or Enum.Material.Concrete
+				part.Color = colorForKind(nearsideKind, style)
+				return part
+			end
 
-			-- Wedge, not a block - see the matching comment in the main
-			-- deck-strip loop above: orient along the true diagonal between
-			-- this strip's two exact endpoints rather than flat-and-square,
-			-- so the chain of strips reads as a smooth slope instead of a
-			-- staircase.
+			-- Wedge, not a block - filled exactly with FillTriangle, same
+			-- as the matching case in the main deck-strip loop above (see
+			-- its comment for the full reasoning): the true shape between
+			-- two stations here is a shifting-offset quad (a parallelogram,
+			-- since this component's own width is constant - only its
+			-- offset moves), not representable by a single rigid Part.
+			-- Split into two triangles along the innerStart-outerEnd
+			-- diagonal instead of approximating with a rotated rectangle
+			-- (an earlier attempt left sliver gaps at the seams).
 			if math.abs(centerOffset1 - centerOffset0) &gt; 1e-4 then
-				local p0 = (frameAt(s0) * CFrame.new(centerOffset0, nearsideCenterY, 0)).Position
-				local p1 = (frameAt(s1) * CFrame.new(centerOffset1, nearsideCenterY, 0)).Position
-				local diagonal = p1 - p0
-				local segLength = diagonal.Magnitude
-				if segLength &gt; 1e-4 then
-					part.Size =
-						Vector3.new(nearsideWidthStuds + WEDGE_WIDTH_PAD, nearsidePartHeight, segLength + padding)
-					part.CFrame = CFrame.lookAt((p0 + p1) / 2, p1, midFrame.UpVector)
-				else
-					part.Size = Vector3.new(nearsideWidthStuds, nearsidePartHeight, nominalLength + padding)
-					part.CFrame = midFrame * CFrame.new(centerOffset, nearsideCenterY, 0)
-				end
+				local topY = if nearsideRaised then curbHeight else 0
+				local half = nearsideWidthStuds / 2
+				local innerStart = (frameAt(s0) * CFrame.new(centerOffset0 - half, topY, 0)).Position
+				local outerStart = (frameAt(s0) * CFrame.new(centerOffset0 + half, topY, 0)).Position
+				local innerEnd = (frameAt(s1) * CFrame.new(centerOffset1 - half, topY, 0)).Position
+				local outerEnd = (frameAt(s1) * CFrame.new(centerOffset1 + half, topY, 0)).Position
+				local downVector = -midFrame.UpVector
+				FillTriangle(innerStart, outerStart, outerEnd, nearsidePartHeight, downVector, makeNearsidePart, model)
+				FillTriangle(innerStart, outerEnd, innerEnd, nearsidePartHeight, downVector, makeNearsidePart, model)
 			else
+				local part = makeNearsidePart()
 				part.Size = Vector3.new(nearsideWidthStuds, nearsidePartHeight, nominalLength + padding)
 				part.CFrame = midFrame * CFrame.new(centerOffset, nearsideCenterY, 0)
+				part.Parent = model
 			end
-			part.Parent = model
 		end
 	end
 

@@ -4,6 +4,30 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Diagonal-strip seams closed exactly with FillTriangle, not padded
+
+- **Replaced the flat `WEDGE_WIDTH_PAD` width margin with an exact fix**,
+  per the plan scoped after the padding attempt didn't fully close the
+  gaps a user confirmed with a follow-up screenshot. The true shape
+  between two stations of a transitioning (offset- and/or width-changing)
+  strip is a quadrilateral whose two "width" edges generally aren't
+  parallel - no single rigid `Part` can represent that exactly, so no
+  amount of padding a rotated-rectangle approximation was ever going to
+  fully close it. Both `RoadBuilder.Build`'s main transition loop and
+  `BuildWithBay`'s pavement-shift overlay now split that true quad into
+  two triangles (along the innerStart-outerEnd diagonal) and fill each
+  exactly with `Mesh/FillTriangle.lua` - the same exact-fill helper the
+  bay's own pull-in-lane taper already used. Adjacent intervals share
+  their exact corner positions by construction (both computed from the
+  same per-station offset/width data), so there's no gap or overlap
+  regardless of how sharply the offset or width changes station to
+  station - not an approximation tuned to look acceptable, but the exact
+  shape. `WEDGE_WIDTH_PAD` is removed entirely, now dead code.
+- Not verified in a live Studio session (this environment can't render
+  Studio) - this is the second attempt at this exact defect, so it
+  particularly warrants a real check, ideally against the same
+  exaggerated-size bay the user already has queued up for testing.
+
 ## Gaps at diagonal-strip seams (the "wedge, not blocks" fix's own residual gap)
 
 - **Fixed sliver gaps at the seams between diagonally-oriented strips**,
