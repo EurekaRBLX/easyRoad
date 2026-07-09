@@ -1,6 +1,10 @@
 --!strict
 -- Keybinds: live "click + Add binding, then act in the 3D viewport" rebind
--- UI, plus per-action remove buttons.
+-- UI - each action as its own labeled list of bindings (one per row, a
+-- Remove button on the right), not chips crammed onto one horizontal row -
+-- the previous chips-in-a-row layout overflowed the docked panel's width
+-- the moment an action had 2+ bindings with longer names ("Right Click",
+-- "Middle Click").
 --
 -- Earlier rounds tried capturing the very next InputBegan the instant "Add
 -- binding" was clicked, reasoning that's equivalent to a normal key-capture
@@ -27,56 +31,41 @@ local Theme = require("./Theme")
 local Components = require("./Components")
 local KeybindsModule = require("../Keybinds")
 
-local function BindingChip(props: {
+local function BindingRow(props: {
 	Text: string,
 	OnRemove: (() -> ())?,
 	LayoutOrder: number,
 })
 	return e("Frame", {
-		BackgroundColor3 = Theme.FIELD,
-		BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,
-		Size = UDim2.new(0, 0, 0, Theme.ROW_HEIGHT - 4),
-		AutomaticSize = Enum.AutomaticSize.X,
+		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
+		BackgroundTransparency = 1,
 		LayoutOrder = props.LayoutOrder,
 	}, {
-		Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
-		Padding = e("UIPadding", {
-			PaddingLeft = UDim.new(0, 8),
-			PaddingRight = UDim.new(0, 4),
-		}),
-		Layout = e("UIListLayout", {
-			FillDirection = Enum.FillDirection.Horizontal,
-			SortOrder = Enum.SortOrder.LayoutOrder,
-			VerticalAlignment = Enum.VerticalAlignment.Center,
-			Padding = UDim.new(0, 2),
-		}),
 		Label = e("TextLabel", {
 			Text = props.Text,
 			TextColor3 = Theme.OFFWHITE,
+			TextXAlignment = Enum.TextXAlignment.Left,
 			BackgroundTransparency = 1,
-			Size = UDim2.new(0, 0, 1, 0),
-			AutomaticSize = Enum.AutomaticSize.X,
+			Size = UDim2.new(1, if props.OnRemove then -78 else 0, 1, 0),
 			Font = Theme.FONT,
 			TextSize = Theme.TEXT_SIZE,
-			LayoutOrder = 1,
 		}),
-		Remove = props.OnRemove and e("TextButton", {
-			Text = "\u{2715}",
-			TextColor3 = Theme.DIM,
-			BackgroundTransparency = 1,
-			Size = UDim2.new(0, 18, 1, 0),
-			Font = Theme.FONT,
-			TextSize = 12,
-			LayoutOrder = 2,
-			[React.Event.Activated] = props.OnRemove,
+		Remove = props.OnRemove and e(Components.Button, {
+			Text = "Remove",
+			Danger = true,
+			Size = UDim2.new(0, 74, 0, Theme.ROW_HEIGHT),
+			AnchorPoint = Vector2.new(1, 0),
+			Position = UDim2.new(1, 0, 0, 0),
+			OnClick = props.OnRemove,
 		}),
 	})
 end
 
-local function ActionRow(props: {
+local function ActionGroup(props: {
 	ActionId: string,
 	Label: string,
 	Bindings: { string },
+	First: boolean,
 	Capturing: boolean,
 	CapturingReady: boolean,
 	OnStartCapture: () -> (),
@@ -84,16 +73,17 @@ local function ActionRow(props: {
 	OnRemoveBinding: (index: number) -> (),
 	LayoutOrder: number,
 })
-	local chips: { [string]: any } = {
+	local children: { [string]: any } = {
 		Layout = e("UIListLayout", {
-			FillDirection = Enum.FillDirection.Horizontal,
 			SortOrder = Enum.SortOrder.LayoutOrder,
-			Padding = UDim.new(0, 4),
-			VerticalAlignment = Enum.VerticalAlignment.Center,
+			Padding = UDim.new(0, 2),
 		}),
+		Header = e(Components.Section, { Text = props.Label, First = props.First, LayoutOrder = 1 }),
 	}
+
+	local order = 2
 	for index, bound in props.Bindings do
-		chips["Chip" .. index] = e(BindingChip, {
+		children["Binding" .. index] = e(BindingRow, {
 			Text = KeybindsModule.Describe(bound),
 			-- Always leave at least one binding so the action never becomes
 			-- completely unreachable from within this panel.
@@ -102,37 +92,27 @@ local function ActionRow(props: {
 					props.OnRemoveBinding(index)
 				end
 				else nil,
-			LayoutOrder = index,
+			LayoutOrder = order,
 		})
+		order += 1
 	end
-	chips["Add"] = e(Components.Button, {
-		Text = if props.Capturing then "Cancel" else "+ Add",
-		Danger = props.Capturing,
-		OnClick = if props.Capturing then props.OnCancelCapture else props.OnStartCapture,
-		LayoutOrder = #props.Bindings + 1,
-	})
 
-	local children: { [string]: any } = {
-		Layout = e("UIListLayout", {
-			SortOrder = Enum.SortOrder.LayoutOrder,
-			Padding = UDim.new(0, 2),
-		}),
-		Header = e(Components.Row, { LayoutOrder = 1 }, {
-			Label = e(Components.Label, { Text = props.Label, LayoutOrder = 1, Width = 130 }),
-			Chips = e("Frame", {
-				Size = UDim2.new(1, -134, 0, Theme.ROW_HEIGHT),
-				BackgroundTransparency = 1,
-				LayoutOrder = 2,
-			}, chips),
-		}),
-	}
+	children["Add"] = e(Components.Button, {
+		Text = if props.Capturing then "Cancel" else "+ Add binding",
+		Danger = props.Capturing,
+		Size = UDim2.new(0, 130, 0, Theme.ROW_HEIGHT),
+		OnClick = if props.Capturing then props.OnCancelCapture else props.OnStartCapture,
+		LayoutOrder = order,
+	})
+	order += 1
+
 	if props.Capturing then
-		children.Hint = e(Components.Label, {
+		children["Hint"] = e(Components.Label, {
 			Text = if props.CapturingReady
 				then "Listening - press a key or click a mouse button in the 3D viewport..."
 				else "Click anywhere in the 3D viewport to begin...",
 			Dim = true,
-			LayoutOrder = 2,
+			LayoutOrder = order,
 		})
 	end
 
@@ -154,19 +134,19 @@ local function KeybindsGui(props: {
 	OnClose: () -> (),
 })
 	local children: { [string]: any } = {}
-	children.Section = e(Components.Section, { Text = "Keybinds", First = true, LayoutOrder = 1 })
 	children.Hint = e(Components.Label, {
 		Text = "Click Add, then click or press a key in the 3D viewport to bind it.",
 		Dim = true,
-		LayoutOrder = 2,
+		LayoutOrder = 1,
 	})
 
-	local order = 3
+	local order = 2
 	for _, action in KeybindsModule.Actions do
-		children["Row" .. order] = e(ActionRow, {
+		children["Group" .. order] = e(ActionGroup, {
 			ActionId = action.Id,
 			Label = action.Label,
 			Bindings = props.Keybinds[action.Id] or KeybindsModule.Defaults[action.Id],
+			First = order == 2,
 			Capturing = props.CapturingAction == action.Id,
 			CapturingReady = props.CapturingReady,
 			OnStartCapture = function()

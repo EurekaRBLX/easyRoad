@@ -1036,15 +1036,21 @@ local function Panel(
 
 	-- Drag ghost: follows the cursor while a module tile is being dragged.
 	-- Positioned relative to the panel's own root frame (a ref, so it may be
-	-- nil for one frame at the very start of a drag).
+	-- nil for one frame at the very start of a drag). Offset down-right of
+	-- the actual cursor position rather than centered on it (an OS-cursor-
+	-- style offset) - a Frame with BackgroundTransparency < 1 blocks
+	-- Roblox's own mouse hit-testing for whatever's directly beneath it, so
+	-- a ghost centered exactly on the pointer would sit on top of the very
+	-- tile the hover-tracking drop logic (OnTileHoverChanged, wired below)
+	-- needs to detect - the drag would look right but never be droppable.
 	local ghost = nil
 	if drag.Dragging and rootRef.current then
 		local rootAbs = (rootRef.current :: Frame).AbsolutePosition
 		local dragging = drag.Dragging :: DragPayload
 		ghost = e("Frame", {
 			ZIndex = 50,
-			AnchorPoint = Vector2.new(0.5, 0.5),
-			Position = UDim2.fromOffset(drag.DragPos.X - rootAbs.X, drag.DragPos.Y - rootAbs.Y),
+			AnchorPoint = Vector2.new(0, 0),
+			Position = UDim2.fromOffset(drag.DragPos.X - rootAbs.X + 14, drag.DragPos.Y - rootAbs.Y + 14),
 			Size = UDim2.new(0, 50, 0, 52),
 			BackgroundColor3 = Theme.SELECTED,
 			BackgroundTransparency = 0.2,

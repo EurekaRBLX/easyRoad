@@ -4,6 +4,35 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Fixed the drag ghost blocking its own drop target; Keybinds as a proper list
+
+- **Fixed "can drag now but can't drop"** - live-tested feedback on last
+  round's UIListLayout fix, which did fix the ghost's cursor-tracking (drag
+  now visibly follows the mouse) but exposed the actual remaining bug: the
+  ghost is a `Frame` with `BackgroundTransparency = 0.2` (not fully
+  transparent), and Roblox's mouse hit-testing treats that as opaque to
+  input - so a ghost correctly centered exactly on the cursor sits directly
+  on top of whatever tile the hover-tracking drop logic
+  (`OnTileHoverChanged`) needs to detect, blocking its own drop target. This
+  was very likely present through every earlier "fix" of this bug (tasks
+  #19, #26, #36, #47, #91) too, just masked each time by some other visual
+  breakage landing first. Fixed with an OS-cursor-style offset: the ghost
+  now renders 14px down-right of the actual pointer position instead of
+  centered on it, so the exact point Roblox hit-tests against is never
+  covered by the ghost sprite itself.
+- **Keybinds panel rebuilt as a real list**, not chips crammed onto one
+  horizontal row. The live capture UI shipped last round packed a label,
+  every binding as an inline chip, and an Add/Cancel button all onto a
+  single `Components.Row` per action - fine with one short binding, but
+  overflowed the docked panel's width the moment an action had 2+ longer
+  bindings ("Right Click", "Middle Click" ran off the visible edge, per a
+  live screenshot). Each action is now its own `Components.Section` group
+  (matching this panel's existing divider convention) with one binding per
+  row (label left, a "Remove" button right-anchored) and the Add/Cancel
+  button on its own row underneath - same underlying capture logic
+  (`main.lua`'s `WindowFocused`-gated two-phase listener), purely a layout
+  fix.
+
 ## Fixed the real root cause of the recurring palette drag bug; live in-plugin keybind rebinding
 
 - **Found the actual root cause of "Palette drag is broken again"** after
