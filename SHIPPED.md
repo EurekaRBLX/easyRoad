@@ -29,22 +29,41 @@ internal planning only. See `TODO.md` for planned new features and
   back to the same 1-2 wedge parts it used before this round's curve fix,
   and only a genuinely sharp curve subdivides further.
 - **Superelevation transitions now subdivide by bank-angle change, not just
-  curvature.** `buildStations` only ever sized steps off lateral curvature
-  - it had no idea the bank angle (roll) can change quickly across a span
-  the curve itself considers straight enough for one long strip: the
-  deliberate ramp-to-zero-bank at both ends of every segment, and
-  `SmoothRolls`' box filter smearing bank in from a nearby curve onto an
-  adjoining flat run. Each deck strip is one rigid, flat `Part` - a strip
-  that twists continuously along its own length is a non-planar ruled
-  surface, which no flat wedge or single rigid `Part` can represent
-  exactly (unlike the lateral gaps above, which really are flat quads) -
-  so the only real fix is finer subdivision, not a wedge fill. Added a
-  refinement pass in `RoadBuilder.Build`: after computing the curvature-
-  only station grid and its rolls, walk consecutive rolls and insert extra
-  stations (capped at 8 per interval) wherever the bank-angle step between
-  them exceeds `MAX_ROLL_PER_STEP` (0.02 rad), then recompute rolls once
-  over the final, denser grid. Same mitigation curvature already gets via
-  `MAX_TURN_PER_STEP`, just driven by roll instead.
+  curvature, AND use exact-corner wedges instead of averaged flat boxes.**
+  Two-part fix:
+  - `buildStations` only ever sized steps off lateral curvature - it had
+    no idea the bank angle (roll) can change quickly across a span the
+    curve itself considers straight enough for one long strip: the
+    deliberate ramp-to-zero-bank at both ends of every segment, and
+    `SmoothRolls`' box filter smearing bank in from a nearby curve onto an
+    adjoining flat run. Added a refinement pass in `RoadBuilder.Build`:
+    after computing the curvature-only station grid and its rolls, walk
+    consecutive rolls and insert extra stations (capped at 8 per interval)
+    wherever the bank-angle step between them exceeds `MAX_ROLL_PER_STEP`
+    (0.02 rad), then recompute rolls once over the final, denser grid -
+    same mitigation curvature already gets via `MAX_TURN_PER_STEP`, just
+    driven by roll instead.
+  - The main deck-strip loop's non-transitioning ("flat box") branch was
+    still using a single *averaged* roll (`(rolls[i] + rolls[i+1]) / 2`)
+    for the whole strip whenever offset/width didn't change - exact
+    nowhere, and visibly kinks against a neighbour strip that averaged a
+    different pair. The FillTriangle branch right next to it, used for
+    lateral (offset/width) transitions, was *already* roll-correct by
+    construction - it builds its 4 corners from `frames[i]`/`frames[i+1]`,
+    which already carry each station's own true roll. So the same branch
+    now also triggers on a meaningful per-strip roll change
+    (`ROLL_WEDGE_EPSILON`, 1e-4 rad), even with no lateral change, giving
+    every strip exact-roll corners instead of an averaged tilt. A
+    continuously twisting deck between two different rolls is still a
+    non-planar ruled surface, so this isn't a mathematically exact curved
+    surface (no flat wedge can be, unlike the lateral case, which really
+    is a flat quad) - but anchoring every strip's corners to the true
+    per-station roll means adjacent strips always share an exact edge with
+    no gap, same as the lateral case, and the residual twist is a small
+    facet instead of an averaging error. Since a constant-radius curve's
+    roll stabilizes to the same value station-to-station once past the
+    entry/exit runoff, this only adds wedges in the actual transition
+    zones, not along the whole curve.
 - **Fixed the colour picker's SV square rendering wrong colours** (bottom
   of the square wasn't reaching true black, read as a washed-out
   olive/grey instead). `Components.ColorField`'s `SVSquare` stacks two

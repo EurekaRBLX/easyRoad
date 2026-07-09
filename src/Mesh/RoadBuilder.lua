@@ -43,6 +43,7 @@ local PREVIEW_CHORD_TOLERANCE = 0.35
 local MIN_STEP = 0.75
 local MAX_TURN_PER_STEP = 0.3 -- Radians of heading change allowed per strip
 local MAX_ROLL_PER_STEP = 0.02 -- Radians of superelevation (bank) change allowed per strip
+local ROLL_WEDGE_EPSILON = 1e-4 -- Roll change (radians) per strip above which a flat box would visibly kink
 local RUNOFF_LENGTH_STUDS = 40 -- Superelevation smoothing window
 
 local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
@@ -384,6 +385,11 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		-- <= arc length on a curve, so sizing off it alone under-covers
 		-- even the centerline before any lateral miter padding.
 		local nominalLength = s1 - s0
+		-- How much the bank angle (roll) itself changes across this
+		-- interval - see the wedge-vs-box branch below, which uses this to
+		-- decide whether a flat box (constant tilt) would visibly kink
+		-- against its neighbour.
+		local rollDelta = math.abs(rolls[i + 1] - rolls[i])
 
 		for c = 1, componentCount do
 			if excludedComponents[c] then
@@ -442,11 +448,28 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			-- exact end/start corner positions by construction (both
 			-- computed from the same per-station offset/width data), so
 			-- there's no gap or overlap regardless of how sharply the
-			-- offset or width changes station to station. Strips that
-			-- aren't transitioning (centerOffset0 == centerOffset1, the
-			-- ordinary case for most of any road) are unaffected - same
+			-- offset or width changes station to station.
+			--
+			-- The same branch also covers a superelevation (roll) change
+			-- between the two stations, even when the offset/width don't
+			-- move at all: frames[i] and frames[i+1] already carry each
+			-- station's own exact roll, so innerStart/outerStart (frames[i])
+			-- and innerEnd/outerEnd (frames[i+1]) are already correctly
+			-- tilted - the flat-box "else" branch below instead collapses
+			-- the whole interval to one constant tilt (the two rolls
+			-- averaged), which is exact nowhere and visibly kinks against a
+			-- neighbouring strip that averaged a different pair. A
+			-- continuously twisting deck between two different rolls is a
+			-- non-planar ruled surface, so this still can't be exactly flat
+			-- - but anchoring every strip's corners to the true per-station
+			-- roll (rather than a rigid, uniformly-tilted box) means
+			-- adjacent strips always share an exact edge with no gap, same
+			-- as the lateral case, and the residual twist is a small,
+			-- imperceptible facet instead of an averaging error. Strips
+			-- that are neither transitioning nor banking (the ordinary
+			-- case for most flat, straight road) are unaffected - same
 			-- plain rectangle construction as before.
-			if math.abs(centerOffset1 - centerOffset0) > 1e-4 then
+			if math.abs(centerOffset1 - centerOffset0) > 1e-4 or rollDelta > ROLL_WEDGE_EPSILON then
 				local topY = if raised then curbHeight else 0
 				local innerStart = (frames[i] * CFrame.new(centerOffset0 - w0 / 2, topY, 0)).Position
 				local outerStart = (frames[i] * CFrame.new(centerOffset0 + w0 / 2, topY, 0)).Position
