@@ -4,6 +4,42 @@ Planned/requested work not yet built, roughly ordered by how developed the
 plan is. Not user-facing; internal planning only. See `SHIPPED.md` for
 what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Marking stretch v1 follow-ups (deliberately deferred, not forgotten)
+
+The marking-stretch feature (drag a lane boundary's marking to override its
+type over a free-form sub-range, siblings moving together - see
+`SHIPPED.md`) shipped a real v1, but a few things were deliberately scoped
+out rather than solved, and should get their own pass later:
+
+- **Removal is all-or-nothing.** `ClearMarkingStretches` wipes every stretch
+  on the road; there's no per-stretch removal (e.g. click an existing ghost
+  line to delete just that one). Fine for the common "one stretch per road"
+  case, annoying once someone has stretches on both directions of a divided
+  road and only wants one gone.
+- **`ComponentIndex`-keyed storage isn't stable across a structural profile
+  edit.** A stretch stores which cross-section boundary it targets by
+  index; if the user later adds/removes/reorders lanes in the designer and
+  hits Apply, an existing stretch can end up pointing at the wrong boundary
+  (or silently drop, if the index no longer resolves to a same-direction
+  boundary at all - `Markings.lua` degrades safely, it just doesn't warn).
+  A `RightBoundary` rule doesn't have this problem since it lives on the
+  component itself and moves/deletes with it; a stretch is a separate list
+  keyed by position instead.
+- **`BuildWithBay` + transition + stretch is only approximately handled.**
+  When a road has both a widen/narrow transition AND a bus bay AND a
+  stretch, the stretch's `ComponentIndex` is resolved against whichever
+  component list produced it, but the bay-aware builder's "before"/"after"
+  taper slices use `MatchForTransition`'s (possibly reindexed/padded)
+  component list while the middle bay slice uses the unmatched
+  `baseProfile.Components` list directly - if a transition inserts an extra
+  component before the targeted boundary, the index can point at the wrong
+  boundary in one slice but not another. A genuinely rare combination
+  (transition + bay + stretch all on the same road); flagging rather than
+  fixing blind.
+- **Drag ghost only previews one boundary line**, not every sibling in the
+  run (the committed geometry is correct for all siblings regardless - this
+  is a live-preview simplification only).
+
 ## Keybinds - user wants an in-plugin UI to change them, not just Studio's
 
 User feedback after the `PluginAction` rework (see `SHIPPED.md`): "now it is
@@ -47,19 +83,6 @@ there's currently no UI slot that would display a roundabout icon, so
 building one now would be orphaned geometry with no consumer. Revisit once
 roundabouts (see Intersections & roundabouts below) or some other roundabout-
 adjacent UI actually exists to use it.
-
-**Marking "stretch" interaction — still not built (the one piece of "Edit
-Road Segment" deliberately left out of that round).** Dragging a lane
-marking's end (Studio-resize-handle style) to extend it and its sibling
-lanes' markings together across a run, i.e. a *partial-length* override on
-top of `Mesh/Markings.lua`'s per-segment-continuous-run computation. This
-needs real drag-resize handles in the 3D viewport (adorner-style, like
-Studio's own resize handles) plus a rule for how "siblings in that segment"
-is defined and how the extended length is stored/rendered - none of which
-exists today. The rest of "Edit Road Segment" (bus stop / bus bay
-click-placement, numpad marking shortcut, the hover submenu itself) already
-shipped - see `SHIPPED.md`. Flagging this specifically so it isn't quietly
-dropped.
 
 **Junctions & intersections.** With placed roads now selectable and
 editable, the next structurally biggest gap is that roads can only ever
@@ -122,27 +145,8 @@ built.
   itself still exists in `RoadProfile`/`RoadBuilder`/`RegionStyles` (only
   the palette tile was removed), so this is a UI-surfacing task, not a
   rebuild of the underlying feature.
-- **Bus stop icon reserved, unused.** `Icons.BusStop`
-  (`rbxassetid://97224093362859`) is stashed in `UI/Icons.lua` for a future
-  bus-stop decoration/marking; nothing renders it yet.
 - **Parallel mode.** CS2-style "place a mirrored road alongside an existing
   one, offset by N studs" workflow. Not started.
-- **Exact rectangle + FillTriangle wedge taper - still not built, if the
-  diagonal-alignment fix isn't enough.** A user screenshot showed a visible
-  staircase on a strip whose offset shifts across stations without its width
-  changing (the bus bay's displaced-pavement overlay); this round fixed both
-  that case and the general width-transition loop by orienting each small
-  per-station strip along the true diagonal between its own two endpoint
-  positions (`CFrame.lookAt`) instead of flat-and-square to the curve
-  tangent - each strip is still a `Part` (still technically a facet chain,
-  not one continuous surface), just angled to follow the true taper instead
-  of holding a constant offset until the next station steps. This should
-  read as clean with fine adaptive stepping, but isn't a mathematically
-  exact trapezoid. If it still looks chunky on real in-Studio testing, the
-  fully exact fix is: build each transitioning strip as a rectangle (at the
-  smaller of its two end widths) plus a triangular `FillTriangle` wedge
-  covering the width delta, tapering to a point exactly at whichever station
-  has the smaller width.
 - **Per-point elevation - clarify with user.** The user asked for "define
   the position and elevation of point A, then point B, like CS2." As far
   as I can tell this already works mechanically:

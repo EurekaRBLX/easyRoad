@@ -23,21 +23,36 @@ local RegionStyles = require("./RegionStyles")
 local Settings = require("./Settings")
 local Keybinds = require("./Keybinds")
 local BusStops = require("./BusStops")
+local Markings = require("./Mesh/Markings")
 
 -- Pie-menu state machine for a selected road:
 --   Menu         - top-level pills (Edit on Road Builder / Place More / ...)
 --   SegmentMenu  - "Edit Road Segment" submenu (Add Bus Bay / Edit Lane
---                  Markings / Back). A standalone marker-only "Add Bus
---                  Stop" mode used to live here too - removed since a real
---                  bus bay already serves as a stop; BusStops.Render below
---                  still re-renders any markers stamped before that change
---                  so existing roads aren't affected.
+--                  Markings / Stretch Marking / Back). A standalone
+--                  marker-only "Add Bus Stop" mode used to live here too -
+--                  removed since a real bus bay already serves as a stop;
+--                  BusStops.Render below still re-renders any markers
+--                  stamped before that change so existing roads aren't
+--                  affected.
 --   PlacingBay   - click-drag-to-draw mode for a real bus BAY (a physical
 --                  pull-in carved into the road's cross-section).
 --   ConfirmingBay - after a bay's drawn, adjust its length/width (defaults:
 --                  the dragged size) before committing the geometry rebuild.
+--   PlacingMarkingStretch - click a same-direction lane boundary, then drag
+--                  along the road to pick the free-form sub-range where its
+--                  marking (and every same-direction sibling boundary's)
+--                  should be overridden to a different line type.
+--   ConfirmingMarkingStretch - adjust the dragged range/line type before
+--                  committing.
 --   Designer     - the full RoadInspector designer
-type Mode = "Menu" | "SegmentMenu" | "PlacingBay" | "ConfirmingBay" | "Designer"
+type Mode =
+	"Menu"
+	| "SegmentMenu"
+	| "PlacingBay"
+	| "ConfirmingBay"
+	| "PlacingMarkingStretch"
+	| "ConfirmingMarkingStretch"
+	| "Designer"
 
 export type BayDraft = {
 	LengthStuds: number,
@@ -86,6 +101,20 @@ export type RoadEditSession = {
 	SetBayDraftLength: (lengthStuds: number) -> (),
 	SetBayDraftWidth: (widthM: number) -> (),
 	ConfirmBay: () -> (),
+	-- Marking stretch: click a same-direction lane boundary and drag
+	-- free-form along the road to override it (and its siblings) to a
+	-- different line type over that sub-range.
+	IsPlacingMarkingStretch: () -> boolean,
+	StartMarkingStretchPlacement: () -> (),
+	CancelMarkingStretchPlacement: () -> (),
+	IsConfirmingMarkingStretch: () -> boolean,
+	GetMarkingStretchDraft: () -> Markings.MarkingStretch?,
+	SetMarkingStretchDraftFrom: (studs: number) -> (),
+	SetMarkingStretchDraftTo: (studs: number) -> (),
+	SetMarkingStretchDraftLine: (line: RegionStyles.LineType) -> (),
+	ConfirmMarkingStretch: () -> (),
+	GetMarkingStretches: () -> { Markings.MarkingStretch },
+	ClearMarkingStretches: () -> (),
 	Destroy: () -> (),
 }
 
@@ -110,6 +139,13 @@ local function createRoadEditSession(
 	local bayDragStartStation: number? = nil
 	local bayDragStartHit: Vector3? = nil
 	local bayGhost: Part? = nil
+	local stretchConnections: { RBXScriptConnection } = {}
+	local stretchDraft: Markings.MarkingStretch? = nil
+	-- Click-drag-to-draw state, same convention as the bay's: set on mouse
+	-- down, cleared once the drag finishes or is cancelled.
+	local stretchDragStartStation: number? = nil
+	local stretchDragComponentIndex: number? = nil
+	local stretchGhost: Part? = nil
 
 	-- Cancels either step of bay placement: before a drag is drawn
 	-- (PlacingBay, still listening for a click-drag) or after
@@ -134,6 +170,239 @@ local function createRoadEditSession(
 		bayStation = nil
 		bayDraft = nil
 		mode = "SegmentMenu"
+		changeSignal:Fire()
+	end
+
+	-- Cancels either step of marking-stretch placement, same shape as
+	-- stopBayPlacement above.
+	local function stopMarkingStretchPlacement()
+		if mode ~= "PlacingMarkingStretch" and mode ~= "ConfirmingMarkingStretch" then
+			return
+		end
+		if mode == "PlacingMarkingStretch" then
+			plugin:Deactivate()
+		end
+		for _, connection in stretchConnections do
+			connection:Disconnect()
+		end
+		table.clear(stretchConnections)
+		if stretchGhost then
+			stretchGhost:Destroy()
+			stretchGhost = nil
+		end
+		stretchDragStartStation = nil
+		stretchDragComponentIndex = nil
+		stretchDraft = nil
+		mode = "SegmentMenu"
+		changeSignal:Fire()
+	end
+
+	-- Finds the same-direction Drive/Drive boundary nearest the click's
+	-- lateral position - mirrors exactly the condition Markings.lua uses to
+	-- decide a boundary is a lane-changing rule candidate at all (kerb/edge
+	-- lines and opposing-direction center lines aren't valid stretch
+	-- targets), so a click always resolves to something Markings.Compute
+	-- will actually recognise as a member of a sibling run.
+	local function resolveComponentIndexFromHit(station: number, hitPosition: Vector3): number?
+		if not originalData then
+			return nil
+		end
+		local profile = editingProfile or originalData.ProfileStart
+		local frame = originalData.Curve:FrameAt(station)
+		local lateralOffsetM = (hitPosition - frame.Position):Dot(frame.RightVector) / settings.MetersToStuds
+		local offsets = RoadProfile.ComponentOffsetsM(profile)
+		local components = profile.Components
+		local bestIndex: number? = nil
+		local bestDistance = math.huge
+		for i = 1, #components - 1 do
+			local a, b = components[i], components[i + 1]
+			local isSameDirBoundary = a.Kind == "Drive"
+				and b.Kind == "Drive"
+				and not (a.Direction ~= 0 and b.Direction ~= 0 and a.Direction ~= b.Direction)
+			if isSameDirBoundary and offsets[i] then
+				local distance = math.abs(lateralOffsetM - offsets[i].Right)
+				if distance < bestDistance then
+					bestDistance = distance
+					bestIndex = i
+				end
+			end
+		end
+		return bestIndex
+	end
+
+	-- Draws a single ghost strip at the clicked boundary's own offset - a
+	-- deliberate simplification versus drawing every sibling boundary's
+	-- strip too (the committed geometry is correct for all siblings
+	-- regardless, via Markings.lua's sibling-run resolution; only the live
+	-- drag preview is simplified to one line).
+	local function updateStretchGhost(componentIndex: number, s0: number, s1: number)
+		if not selectedRoad or not originalData then
+			return
+		end
+		local curve = originalData.Curve
+		local profile = editingProfile or originalData.ProfileStart
+		local offsets = RoadProfile.ComponentOffsetsM(profile)
+		local boundary = offsets[componentIndex]
+		if not boundary then
+			return
+		end
+		local lo = math.min(s0, s1)
+		local hi = math.max(s0, s1)
+		if hi - lo < 1e-3 then
+			if stretchGhost then
+				stretchGhost.Size = Vector3.new(0, 0, 0)
+			end
+			return
+		end
+		local scale = settings.MetersToStuds
+		local offsetStuds = boundary.Right * scale
+		local style = getStyle()
+		local y = 0.15 -- Flush with the ordinary deck marking height, not a kerb
+		local frameA = curve:FrameAt(lo)
+		local frameB = curve:FrameAt(hi)
+		local pA = (frameA * CFrame.new(offsetStuds, y, 0)).Position
+		local pB = (frameB * CFrame.new(offsetStuds, y, 0)).Position
+		local segLength = (pB - pA).Magnitude
+		if segLength < 1e-3 then
+			return
+		end
+		if not stretchGhost then
+			local ghost = Instance.new("Part")
+			ghost.Name = "EasyRoadMarkingStretchGhost"
+			ghost.Anchored = true
+			ghost.CanCollide = false
+			ghost.CanQuery = false
+			ghost.CanTouch = false
+			ghost.CastShadow = false
+			ghost.Material = Enum.Material.Neon
+			ghost.Color = style.WhiteMarking
+			ghost.Transparency = 0.2
+			ghost.Parent = workspace
+			stretchGhost = ghost
+		end
+		local ghost = stretchGhost :: Part
+		ghost.Size = Vector3.new(math.max(style.MarkingWidthM * scale, 0.3), 0.2, segLength)
+		ghost.CFrame = CFrame.lookAt((pA + pB) / 2, pB, frameA.UpVector)
+	end
+
+	local function onStretchDragBegin()
+		if mode ~= "PlacingMarkingStretch" or not selectedRoad or not originalData then
+			return
+		end
+		if uiState.Hovered then
+			return
+		end
+		local station = originalData.Curve:ClosestS(mouse.Hit.Position)
+		local componentIndex = resolveComponentIndexFromHit(station, mouse.Hit.Position)
+		if not componentIndex then
+			return
+		end
+		stretchDragStartStation = station
+		stretchDragComponentIndex = componentIndex
+	end
+
+	local function onStretchDragMove()
+		if
+			mode ~= "PlacingMarkingStretch"
+			or not stretchDragStartStation
+			or not stretchDragComponentIndex
+			or not originalData
+		then
+			return
+		end
+		local currentStation = originalData.Curve:ClosestS(mouse.Hit.Position)
+		updateStretchGhost(stretchDragComponentIndex, stretchDragStartStation, currentStation)
+	end
+
+	local function onStretchDragEnd()
+		if
+			mode ~= "PlacingMarkingStretch"
+			or not stretchDragStartStation
+			or not stretchDragComponentIndex
+			or not originalData
+		then
+			return
+		end
+		local currentStation = originalData.Curve:ClosestS(mouse.Hit.Position)
+		local lo = math.min(stretchDragStartStation, currentStation)
+		local hi = math.max(stretchDragStartStation, currentStation)
+		if hi - lo < 1 then
+			-- Too short to be an intentional drag - stay in PlacingMarkingStretch
+			-- so a misclick doesn't abort the whole flow, matching how a
+			-- near-zero bay drag is silently ignored rather than committed.
+			stretchDragStartStation = nil
+			stretchDragComponentIndex = nil
+			if stretchGhost then
+				stretchGhost:Destroy()
+				stretchGhost = nil
+			end
+			return
+		end
+		stretchDraft = {
+			ComponentIndex = stretchDragComponentIndex,
+			FromStationStuds = lo,
+			ToStationStuds = hi,
+			Line = "Solid",
+		}
+		stretchDragStartStation = nil
+		stretchDragComponentIndex = nil
+		if stretchGhost then
+			stretchGhost:Destroy()
+			stretchGhost = nil
+		end
+		for _, connection in stretchConnections do
+			connection:Disconnect()
+		end
+		table.clear(stretchConnections)
+		plugin:Deactivate()
+		mode = "ConfirmingMarkingStretch"
+		changeSignal:Fire()
+	end
+
+	-- Rebuilds the selected road's geometry with the given marking
+	-- stretches (replacing whatever was stamped before), then re-stamps
+	-- everything - the same "clone-and-mutate, rebuild as one undo step"
+	-- pattern session.Apply/ConfirmBay use, shared here since
+	-- ConfirmMarkingStretch and ClearMarkingStretches both need it.
+	local function rebuildWithMarkingStretches(stretches: { Markings.MarkingStretch }, historyLabel: string)
+		if not selectedRoad or not originalData then
+			return
+		end
+		local road = selectedRoad
+		local data = originalData
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", historyLabel)
+		local buildOptions = {
+			Curve = data.Curve,
+			ProfileStart = editingProfile or data.ProfileStart,
+			ProfileEnd = data.ProfileEnd,
+			Style = getStyle(),
+			Settings = settings,
+			Preview = false,
+			MarkingStretches = if #stretches > 0 then stretches else nil,
+		}
+		local built = if data.Bay
+			then RoadBuilder.BuildWithBay(buildOptions, {
+				StationStuds = data.Bay.StationStuds,
+				LengthStuds = data.Bay.LengthStuds,
+				WidthM = data.Bay.WidthM,
+				Side = data.Bay.Side,
+			})
+			else RoadBuilder.Build(buildOptions)
+		for _, child in road:GetChildren() do
+			child:Destroy()
+		end
+		for _, child in built:GetChildren() do
+			child.Parent = road
+		end
+		built:Destroy()
+		RoadInstance.StampModel(road, data.Curve.Segments[1], editingProfile or data.ProfileStart, data.ProfileEnd)
+		RoadInstance.StampBay(road, data.Bay)
+		RoadInstance.StampMarkingStretches(road, stretches)
+		BusStops.Render(road)
+		data.MarkingStretches = stretches
+		if recording then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		end
 		changeSignal:Fire()
 	end
 
@@ -295,12 +564,15 @@ local function createRoadEditSession(
 		end
 		if mode == "PlacingBay" then
 			stopBayPlacement()
+		elseif mode == "PlacingMarkingStretch" then
+			stopMarkingStretchPlacement()
 		end
 		selectedRoad = road
 		originalData = if road then RoadInstance.Read(road) else nil
 		editingProfile = if originalData then RoadProfile.Clone(originalData.ProfileStart) else nil
 		bayStation = nil
 		bayDraft = nil
+		stretchDraft = nil
 		mode = "Menu"
 		changeSignal:Fire()
 	end
@@ -318,6 +590,11 @@ local function createRoadEditSession(
 				and Keybinds.Matches(settings.Keybinds.CancelPlacement, input)
 			then
 				stopBayPlacement()
+			elseif
+				(mode == "PlacingMarkingStretch" or mode == "ConfirmingMarkingStretch")
+				and Keybinds.Matches(settings.Keybinds.CancelPlacement, input)
+			then
+				stopMarkingStretchPlacement()
 			end
 		end)
 	)
@@ -362,6 +639,12 @@ local function createRoadEditSession(
 			return
 		end
 		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Edit road")
+		-- Note: MarkingStretches reference boundaries by component index: an
+		-- edit here that reorders/removes cross-section components (not
+		-- just tweaks an existing one) can leave a stretch pointing at the
+		-- wrong boundary. Accepted as a known v1 limitation rather than
+		-- solved now - Markings.lua simply drops a stretch whose
+		-- ComponentIndex no longer resolves to a same-direction boundary.
 		local buildOptions = {
 			Curve = originalData.Curve,
 			ProfileStart = editingProfile,
@@ -369,6 +652,7 @@ local function createRoadEditSession(
 			Style = getStyle(),
 			Settings = settings,
 			Preview = false,
+			MarkingStretches = if #originalData.MarkingStretches > 0 then originalData.MarkingStretches else nil,
 		}
 		-- If this road has a bus bay, rebuild it through the bay-aware
 		-- builder instead - otherwise an unrelated edit here (colour, kerb
@@ -394,12 +678,14 @@ local function createRoadEditSession(
 		built:Destroy()
 		RoadInstance.StampModel(selectedRoad, originalData.Curve.Segments[1], editingProfile, originalData.ProfileEnd)
 		RoadInstance.StampBay(selectedRoad, originalData.Bay)
+		RoadInstance.StampMarkingStretches(selectedRoad, originalData.MarkingStretches)
 		BusStops.Render(selectedRoad)
 		originalData = {
 			Curve = originalData.Curve,
 			ProfileStart = RoadProfile.Clone(editingProfile),
 			ProfileEnd = originalData.ProfileEnd,
 			Bay = originalData.Bay,
+			MarkingStretches = originalData.MarkingStretches,
 		}
 		if recording then
 			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
@@ -501,6 +787,7 @@ local function createRoadEditSession(
 			Style = getStyle(),
 			Settings = settings,
 			Preview = false,
+			MarkingStretches = if #originalData.MarkingStretches > 0 then originalData.MarkingStretches else nil,
 		}, bay)
 		for _, child in selectedRoad:GetChildren() do
 			child:Destroy()
@@ -516,6 +803,7 @@ local function createRoadEditSession(
 			originalData.ProfileEnd
 		)
 		RoadInstance.StampBay(selectedRoad, bay)
+		RoadInstance.StampMarkingStretches(selectedRoad, originalData.MarkingStretches)
 		BusStops.Render(selectedRoad)
 		originalData.Bay = bay
 		bayStation = nil
@@ -525,6 +813,81 @@ local function createRoadEditSession(
 			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
 		end
 		changeSignal:Fire()
+	end
+
+	function session.IsPlacingMarkingStretch(): boolean
+		return mode == "PlacingMarkingStretch"
+	end
+
+	function session.StartMarkingStretchPlacement()
+		if mode ~= "SegmentMenu" or not selectedRoad then
+			return
+		end
+		mode = "PlacingMarkingStretch"
+		plugin:Activate(true)
+		table.insert(stretchConnections, mouse.Button1Down:Connect(onStretchDragBegin))
+		table.insert(stretchConnections, mouse.Move:Connect(onStretchDragMove))
+		table.insert(stretchConnections, mouse.Button1Up:Connect(onStretchDragEnd))
+		changeSignal:Fire()
+	end
+
+	session.CancelMarkingStretchPlacement = stopMarkingStretchPlacement
+
+	function session.IsConfirmingMarkingStretch(): boolean
+		return mode == "ConfirmingMarkingStretch"
+	end
+
+	function session.GetMarkingStretchDraft(): Markings.MarkingStretch?
+		return stretchDraft
+	end
+
+	function session.SetMarkingStretchDraftFrom(studs: number)
+		if stretchDraft then
+			stretchDraft.FromStationStuds = math.clamp(studs, 0, stretchDraft.ToStationStuds - 1)
+			changeSignal:Fire()
+		end
+	end
+
+	function session.SetMarkingStretchDraftTo(studs: number)
+		if stretchDraft and originalData then
+			stretchDraft.ToStationStuds =
+				math.clamp(studs, stretchDraft.FromStationStuds + 1, originalData.Curve.Length)
+			changeSignal:Fire()
+		end
+	end
+
+	function session.SetMarkingStretchDraftLine(line: RegionStyles.LineType)
+		if stretchDraft then
+			stretchDraft.Line = line
+			changeSignal:Fire()
+		end
+	end
+
+	function session.ConfirmMarkingStretch()
+		if mode ~= "ConfirmingMarkingStretch" or not originalData or not stretchDraft then
+			return
+		end
+		local stretches = {}
+		for _, existing in originalData.MarkingStretches do
+			if existing.ComponentIndex ~= stretchDraft.ComponentIndex then
+				table.insert(stretches, existing)
+			end
+		end
+		table.insert(stretches, stretchDraft)
+		stretchDraft = nil
+		mode = "SegmentMenu"
+		rebuildWithMarkingStretches(stretches, "Stretch marking")
+	end
+
+	function session.GetMarkingStretches(): { Markings.MarkingStretch }
+		return if originalData then originalData.MarkingStretches else {}
+	end
+
+	function session.ClearMarkingStretches()
+		if not originalData or #originalData.MarkingStretches == 0 then
+			return
+		end
+		rebuildWithMarkingStretches({}, "Clear marking stretches")
 	end
 
 	function session.GetAnchorWorldPosition(): Vector3?
@@ -549,7 +912,7 @@ local function createRoadEditSession(
 	end
 
 	function session.Destroy()
-		if mode == "PlacingBay" then
+		if mode == "PlacingBay" or mode == "PlacingMarkingStretch" then
 			plugin:Deactivate()
 		end
 		for _, connection in bayConnections do
@@ -559,6 +922,14 @@ local function createRoadEditSession(
 		if bayGhost then
 			bayGhost:Destroy()
 			bayGhost = nil
+		end
+		for _, connection in stretchConnections do
+			connection:Disconnect()
+		end
+		table.clear(stretchConnections)
+		if stretchGhost then
+			stretchGhost:Destroy()
+			stretchGhost = nil
 		end
 		for _, connection in connections do
 			connection:Disconnect()

@@ -35,6 +35,14 @@ export type MarkingLine = {
 	Color: Color3,
 	DashLengthM: number,
 	DashGapM: number,
+	-- Longitudinal render range in studs (RoadBuilder's own station space,
+	-- NOT meters - matches RoadInstance.BayData's StationStuds convention).
+	-- nil/nil means the whole segment, same as before this field existed;
+	-- set by a "stretch" override below to restrict this particular line
+	-- to a sub-range (used to splice a different line type - e.g. a solid
+	-- no-lane-change line - into part of an otherwise-continuous boundary).
+	FromStationStuds: number?,
+	ToStationStuds: number?,
 }
 
 export type MarkingOptions = {
@@ -43,6 +51,28 @@ export type MarkingOptions = {
 	DashLengthM: number?, -- Override dash geometry for every dashed line on this road
 	DashGapM: number?,
 	KerbIndent: boolean?, -- true/nil = inset from the kerb, false = flush at the plain edge-line spot
+	MarkingStretches: { MarkingStretch }?,
+}
+
+-- A user-placed override on a same-direction lane boundary's marking over
+-- part of the road's length (e.g. a dashed lane line forced solid
+-- approaching a junction) - see RoadEditSession's PlacingMarkingStretch/
+-- ConfirmingMarkingStretch modes for how these are captured.
+--
+-- ComponentIndex identifies ANY ONE same-direction Drive/Drive boundary in
+-- the "sibling run" this override targets (the boundary between
+-- components[ComponentIndex] and components[ComponentIndex + 1]) - siblings
+-- are resolved below to every internal boundary of that same contiguous,
+-- same-direction run, so dragging one lane's line stretches all of them
+-- together, matching how real multi-lane no-lane-change zones read. A
+-- separate same-direction run elsewhere in the cross-section (e.g. the
+-- opposing carriageway on a divided road) is a different sibling group and
+-- unaffected by this entry.
+export type MarkingStretch = {
+	ComponentIndex: number,
+	FromStationStuds: number,
+	ToStationStuds: number,
+	Line: RegionStyles.LineType,
 }
 
 local Markings = {}
@@ -115,7 +145,9 @@ function Markings.Compute(
 		lineType: RegionStyles.LineType,
 		color: Color3,
 		dashLengthM: number?,
-		dashGapM: number?
+		dashGapM: number?,
+		fromStationStuds: number?,
+		toStationStuds: number?
 	)
 		if lineType == "None" then
 			return
@@ -127,7 +159,103 @@ function Markings.Compute(
 			Color = color,
 			DashLengthM = dashLengthOverride or dashLengthM or style.DashLengthM,
 			DashGapM = dashGapOverride or dashGapM or style.DashGapM,
+			FromStationStuds = fromStationStuds,
+			ToStationStuds = toStationStuds,
 		})
+	end
+
+	-- Every same-direction Drive/Drive boundary index (1-based, between
+	-- componentsStart[i] and [i + 1]) that a lane-changing rule can apply
+	-- to - mirrors exactly the condition the boundary loop below uses to
+	-- pick the "same-direction boundary" branch, computed up front so
+	-- sibling runs (see below) can be resolved before that loop runs.
+	local isSameDirBoundary: { [number]: boolean } = {}
+	for i = 1, n - 1 do
+		local a, b = componentsStart[i], componentsStart[i + 1]
+		isSameDirBoundary[i] = a.Kind == "Drive"
+			and b.Kind == "Drive"
+			and not (a.Direction ~= 0 and b.Direction ~= 0 and a.Direction ~= b.Direction)
+	end
+
+	-- Maps every same-direction boundary index to every other boundary
+	-- index in its own contiguous run - a run breaks wherever the
+	-- direction changes or a non-Drive component interrupts it. A
+	-- MarkingStretch naming any one boundary in a run applies to every
+	-- member of that run, which is what makes dragging one lane's marking
+	-- stretch its same-direction siblings together.
+	local siblingsOf: { [number]: { number } } = {}
+	do
+		local runStart: number? = nil
+		local function closeRun(runEnd: number)
+			if not runStart then
+				return
+			end
+			local members = {}
+			for j = runStart, runEnd do
+				table.insert(members, j)
+			end
+			for _, j in members do
+				siblingsOf[j] = members
+			end
+			runStart = nil
+		end
+		for i = 1, n - 1 do
+			if isSameDirBoundary[i] then
+				if not runStart then
+					runStart = i
+				end
+			else
+				closeRun(i - 1)
+			end
+		end
+		closeRun(n - 1)
+	end
+
+	local stretchByBoundary: { [number]: MarkingStretch } = {}
+	if options and options.MarkingStretches then
+		for _, stretch in options.MarkingStretches :: { MarkingStretch } do
+			local siblings = siblingsOf[stretch.ComponentIndex]
+			if siblings then
+				for _, j in siblings do
+					stretchByBoundary[j] = stretch
+				end
+			end
+		end
+	end
+
+	-- Emits a same-direction lane boundary's line, splicing in a
+	-- MarkingStretch override (if this boundary is a member of one) as a
+	-- middle sub-range with the base line type resuming on either side.
+	-- Always emits the "before"/"after" pieces even when the override sits
+	-- flush against one end of the segment - RoadBuilder's own station
+	-- clipping renders nothing for a degenerate (empty) sub-range, so this
+	-- is safe without extra edge-case branching here.
+	local function emitBoundaryLine(
+		boundaryIndex: number,
+		offsetStart: number,
+		offsetEnd: number,
+		lineType: RegionStyles.LineType,
+		color: Color3,
+		dashLengthM: number?,
+		dashGapM: number?
+	)
+		local stretch = stretchByBoundary[boundaryIndex]
+		if not stretch then
+			addLine(offsetStart, offsetEnd, lineType, color, dashLengthM, dashGapM)
+			return
+		end
+		addLine(offsetStart, offsetEnd, lineType, color, dashLengthM, dashGapM, nil, stretch.FromStationStuds)
+		addLine(
+			offsetStart,
+			offsetEnd,
+			stretch.Line,
+			trafficLineColor(style.WhiteMarking),
+			nil,
+			nil,
+			stretch.FromStationStuds,
+			stretch.ToStationStuds
+		)
+		addLine(offsetStart, offsetEnd, lineType, color, dashLengthM, dashGapM, stretch.ToStationStuds, nil)
 	end
 
 	-- Kerb (no parking / no stopping) lines: painted just inside a roadway
@@ -217,7 +345,8 @@ function Markings.Compute(
 					-- Same-direction boundary: apply the component's rule
 					local rule = a.RightBoundary
 					if rule ~= nil and rule ~= "Auto" then
-						addLine(
+						emitBoundaryLine(
+							i,
 							boundaryStart,
 							boundaryEnd,
 							rule :: RegionStyles.LineType,
@@ -226,7 +355,15 @@ function Markings.Compute(
 							style.LaneLine.DashGapM
 						)
 					else
-						addSpec(boundaryStart, boundaryEnd, style.LaneLine, trafficLineColor(style.LaneLine.Color))
+						emitBoundaryLine(
+							i,
+							boundaryStart,
+							boundaryEnd,
+							style.LaneLine.Line,
+							trafficLineColor(style.LaneLine.Color),
+							style.LaneLine.DashLengthM,
+							style.LaneLine.DashGapM
+						)
 					end
 				end
 			elseif (a.Kind == "Drive") ~= (b.Kind == "Drive") then

@@ -4,6 +4,81 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Marking "stretch" - drag a lane boundary's marking to a different type over part of the road
+
+The last piece of the original "Edit Road Segment" ask that was deliberately
+scoped out earlier (see the old `TODO.md` entry, now removed). Two design
+questions were asked up front rather than guessed at, since they'd change
+the interaction entirely: (1) should parallel same-direction lane boundaries
+move together when you drag one - yes, and (2) should the dragged range be
+anchored to a segment end, or free-form on both ends - free-form. Shipped
+matching both answers:
+
+- **New pie-menu flow**: "Edit Road Segment" gained a **Stretch Marking**
+  pill (`Right` slot) alongside Add Bus Bay/Edit Lane Markings. Click a
+  same-direction lane boundary line, then drag along the road (either
+  direction, from anywhere to anywhere - not anchored to either end); a
+  confirm panel (`UI/MarkingStretchPanel.lua`) lets you fine-tune the
+  From/To stations (studs) and pick the override line type (Solid, Double
+  Solid, Dashed, Double Dashed, Solid/Dash, Dash/Solid) before an "Apply
+  Stretch" pill on the pie menu commits it. A **Clear Marking Stretches**
+  pill appears on the segment menu once any exist (bulk-remove only - see
+  `TODO.md` for the deferred per-stretch removal).
+- **Sibling resolution lives in `Mesh/Markings.lua`**, the module that
+  already owns the "is this a same-direction Drive/Drive boundary" rule: a
+  new pre-pass groups every such boundary into contiguous same-direction
+  runs (a run breaks on a direction change or a non-Drive component), so a
+  `MarkingStretch` naming any one boundary in a run (`ComponentIndex`)
+  expands to every member of that run automatically - dragging one lane's
+  line stretches every parallel same-direction lane's line with it, matching
+  how a real multi-lane "no lane changing" zone before a junction reads. A
+  separate run elsewhere in the cross-section (e.g. the opposing
+  carriageway on a divided road) is untouched.
+- **Station-range clipping added to `MarkingLine`** (`FromStationStuds`/
+  `ToStationStuds`, nil = whole segment as before): `Markings.Compute`
+  splices a stretched boundary into up to three line entries (before/
+  override/after) sharing the same lateral-offset function but different
+  ranges; `RoadBuilder.Build`'s `renderSolid`/`renderDashed` clip their
+  per-station loop to `[loS, hiS]`. Adjacent spliced ranges share an exact
+  station endpoint (both compute the same `curve:FrameAt(s, roll)`), so
+  there's no gap or overlap at the splice, and `renderDashed`'s dash phase
+  is computed from the whole segment's start regardless of range, so a
+  dashed line resuming after a solid stretch continues its rhythm instead
+  of restarting.
+- **Data model**: `RoadInstance.RoadData.MarkingStretches` (a list, not a
+  single optional like `Bay` - a road can have independent stretches on
+  each direction), stamped/read via a new `RW_MarkingStretchesJson`
+  attribute, same pattern as `StampBay`/`bayFromModel`. Threaded through
+  `RoadBuilder.BuildOptions.MarkingStretches` into `Markings.Compute`, and
+  through `BuildWithBay`'s three curve-slice `Build` calls with a
+  `stretchesForSlice` remap (each slice is its own `PolyCurve` with station
+  0 at the slice's own start per `PolyCurve.Slice`, so stretch stations get
+  offset and clipped per slice, dropping anything outside it entirely).
+- **Drag interaction reuses the bay's established click-drag-via-
+  `plugin:GetMouse()` convention** (`RoadEditSession`'s new
+  `PlacingMarkingStretch`/`ConfirmingMarkingStretch` modes): mouse-down
+  resolves the clicked lane boundary by projecting the hit point onto the
+  road's `RightVector` at the clicked station and picking the nearest
+  same-direction boundary; mouse-move updates a single ghost strip (a
+  deliberate simplification - only previews the clicked boundary, not every
+  sibling, though the committed geometry is correct for all of them
+  regardless); mouse-up finalizes the free-form `[min, max]` station range.
+  `rebuildWithMarkingStretches` factors the "swap children, re-stamp,
+  re-render bus stops" rebuild-in-place sequence shared by
+  `ConfirmMarkingStretch`/`ClearMarkingStretches` (Apply/ConfirmBay keep
+  their own copies, unchanged, to avoid touching already-working code for
+  this).
+- **Known v1 limitations, deliberately accepted rather than solved now**
+  (all logged in `TODO.md` under "Marking stretch v1 follow-ups"):
+  removal is all-or-nothing (no per-stretch delete), `ComponentIndex`-keyed
+  storage isn't stable across a structural cross-section edit (add/remove/
+  reorder lanes) in the designer, and a road with a transition AND a bay
+  AND a stretch all at once can misalign the index between the bay
+  builder's matched vs. unmatched component lists.
+- Not verified in a live Studio session (this environment can't render
+  Studio) - this is the largest single feature built this session without
+  in-engine testing, worth a careful look before relying on it.
+
 ## Curved bay chord gap, fewer bay wedges, superelevation twist smoothing, colour picker z-order
 
 - **Fixed a curve gap on bus bays.** `RoadBuilder.BuildWithBay`'s dwell

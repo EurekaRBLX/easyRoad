@@ -40,6 +40,7 @@ local KeybindsGui = require("./UI/KeybindsGui")
 local Components = require("./UI/Components")
 local PieMenu = require("./UI/PieMenu")
 local BayDraftPanel = require("./UI/BayDraftPanel")
+local MarkingStretchPanel = require("./UI/MarkingStretchPanel")
 
 return function(
 	plugin: Plugin,
@@ -165,6 +166,8 @@ return function(
 			session.CancelPlacement()
 		elseif editSession.IsPlacingBay() or editSession.IsConfirmingBay() then
 			editSession.CancelBayPlacement()
+		elseif editSession.IsPlacingMarkingStretch() or editSession.IsConfirmingMarkingStretch() then
+			editSession.CancelMarkingStretchPlacement()
 		end
 	end)
 
@@ -509,12 +512,33 @@ return function(
 					Size = UDim2.new(0, 260, 0, 180),
 				}
 			end
+		elseif editSession.GetSelectedRoad() and editSession.IsConfirmingMarkingStretch() then
+			local draft = editSession.GetMarkingStretchDraft()
+			if draft then
+				bottomContent = React.createElement(MarkingStretchPanel, {
+					FromStationStuds = draft.FromStationStuds,
+					ToStationStuds = draft.ToStationStuds,
+					Line = draft.Line,
+					OnFromChanged = editSession.SetMarkingStretchDraftFrom,
+					OnToChanged = editSession.SetMarkingStretchDraftTo,
+					OnLineChanged = function(id: string)
+						editSession.SetMarkingStretchDraftLine(id :: RegionStyles.LineType)
+					end,
+				})
+				bottomFrameProps = {
+					AnchorPoint = Vector2.new(0, 1),
+					Position = UDim2.new(0, 12, 1, -12),
+					Size = UDim2.new(0, 280, 0, 240),
+				}
+			end
 		elseif
 			editSession.GetSelectedRoad()
 			and not editSession.IsShowingMenu()
 			and not editSession.IsShowingSegmentMenu()
 			and not editSession.IsPlacingBay()
 			and not editSession.IsConfirmingBay()
+			and not editSession.IsPlacingMarkingStretch()
+			and not editSession.IsConfirmingMarkingStretch()
 		then
 			bottomContent = React.createElement(RoadInspector, {
 				PluginObj = plugin,
@@ -588,6 +612,8 @@ return function(
 				or editSession.IsShowingSegmentMenu()
 				or editSession.IsPlacingBay()
 				or editSession.IsConfirmingBay()
+				or editSession.IsPlacingMarkingStretch()
+				or editSession.IsConfirmingMarkingStretch()
 			)
 		if showPieMenu then
 			local anchor = editSession.GetAnchorWorldPosition()
@@ -620,7 +646,9 @@ return function(
 					then "Menu"
 					elseif editSession.IsShowingSegmentMenu() then "SegmentMenu"
 					elseif editSession.IsPlacingBay() then "PlacingBay"
-					else "ConfirmingBay"
+					elseif editSession.IsConfirmingBay() then "ConfirmingBay"
+					elseif editSession.IsPlacingMarkingStretch() then "PlacingMarkingStretch"
+					else "ConfirmingMarkingStretch"
 				if pieMenuMode ~= lastPieMenuMode then
 					lastPieMenuMode = pieMenuMode
 					uiState.Hovered = false
@@ -682,6 +710,7 @@ return function(
 					local profile = editSession.GetProfile()
 					-- Highways don't have bus bays in real life.
 					local canAddBay = profile == nil or profile.Category ~= "Highways"
+					local hasStretches = #editSession.GetMarkingStretches() > 0
 					pieMenuElement = React.createElement(PieMenu, {
 						WorldPosition = anchor,
 						SetGlobalHover = setGlobalHover,
@@ -693,12 +722,26 @@ return function(
 								end,
 							}
 							else nil,
+						TopLeft = if hasStretches
+							then {
+								Text = "Clear Marking Stretches",
+								OnClick = function()
+									editSession.ClearMarkingStretches()
+								end,
+							}
+							else nil,
 						Left = {
 							Text = "Edit Lane Markings",
 							OnClick = function()
 								-- Number keys 1-4 set a selected lane's marking
 								-- directly once inside the designer.
 								editSession.OpenEditor()
+							end,
+						},
+						Right = {
+							Text = "Stretch Marking",
+							OnClick = function()
+								editSession.StartMarkingStretchPlacement()
 							end,
 						},
 						Bottom = {
@@ -719,7 +762,7 @@ return function(
 							end,
 						},
 					})
-				else -- ConfirmingBay: length/width panel is the bottom HUD below
+				elseif editSession.IsConfirmingBay() then
 					pieMenuElement = React.createElement(PieMenu, {
 						WorldPosition = anchor,
 						SetGlobalHover = setGlobalHover,
@@ -733,6 +776,34 @@ return function(
 							Text = "Cancel",
 							OnClick = function()
 								editSession.CancelBayPlacement()
+							end,
+						},
+					})
+				elseif editSession.IsPlacingMarkingStretch() then
+					pieMenuElement = React.createElement(PieMenu, {
+						WorldPosition = anchor,
+						SetGlobalHover = setGlobalHover,
+						Bottom = {
+							Text = "Click a lane line, then drag along the road (Esc to cancel)",
+							OnClick = function()
+								editSession.CancelMarkingStretchPlacement()
+							end,
+						},
+					})
+				else -- ConfirmingMarkingStretch: range/line-type panel is the bottom HUD below
+					pieMenuElement = React.createElement(PieMenu, {
+						WorldPosition = anchor,
+						SetGlobalHover = setGlobalHover,
+						Top = {
+							Text = "Apply Stretch",
+							OnClick = function()
+								editSession.ConfirmMarkingStretch()
+							end,
+						},
+						Bottom = {
+							Text = "Cancel",
+							OnClick = function()
+								editSession.CancelMarkingStretchPlacement()
 							end,
 						},
 					})

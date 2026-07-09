@@ -14,6 +14,7 @@ local HttpService = game:GetService("HttpService")
 local CurveSegment = require("./Geometry/CurveSegment")
 local PolyCurve = require("./Geometry/PolyCurve")
 local RoadProfile = require("./RoadProfile")
+local Markings = require("./Mesh/Markings")
 
 export type BayData = {
 	StationStuds: number,
@@ -32,6 +33,7 @@ export type RoadData = {
 	ProfileStart: RoadProfile.RoadProfile,
 	ProfileEnd: RoadProfile.RoadProfile?,
 	Bay: BayData?,
+	MarkingStretches: { Markings.MarkingStretch },
 }
 
 local RoadInstance = {}
@@ -114,6 +116,42 @@ local function bayFromModel(model: Model): BayData?
 	}
 end
 
+-- Marking stretches are stamped separately (rather than folded into
+-- StampModel), same reasoning as StampBay - optional, only ever set/read by
+-- RoadEditSession's marking-stretch mode.
+function RoadInstance.StampMarkingStretches(model: Model, stretches: { Markings.MarkingStretch })
+	model:SetAttribute("RW_MarkingStretchesJson", if #stretches > 0 then HttpService:JSONEncode(stretches) else nil)
+end
+
+local function stretchesFromModel(model: Model): { Markings.MarkingStretch }
+	local raw = model:GetAttribute("RW_MarkingStretchesJson")
+	if typeof(raw) ~= "string" then
+		return {}
+	end
+	local ok, decoded = pcall(HttpService.JSONDecode, HttpService, raw)
+	if not ok or typeof(decoded) ~= "table" then
+		return {}
+	end
+	local stretches: { Markings.MarkingStretch } = {}
+	for _, entry in decoded :: { any } do
+		if
+			typeof(entry) == "table"
+			and typeof(entry.ComponentIndex) == "number"
+			and typeof(entry.FromStationStuds) == "number"
+			and typeof(entry.ToStationStuds) == "number"
+			and typeof(entry.Line) == "string"
+		then
+			table.insert(stretches, {
+				ComponentIndex = entry.ComponentIndex,
+				FromStationStuds = entry.FromStationStuds,
+				ToStationStuds = entry.ToStationStuds,
+				Line = entry.Line :: any,
+			})
+		end
+	end
+	return stretches
+end
+
 local function segmentFromModel(model: Model): CurveSegment.Segment?
 	local kind = model:GetAttribute("RW_CurveKind")
 	local p0 = model:GetAttribute("RW_P0")
@@ -173,6 +211,7 @@ function RoadInstance.Read(model: Model): RoadData?
 		ProfileStart = profileStart,
 		ProfileEnd = profileEnd,
 		Bay = bayFromModel(model),
+		MarkingStretches = stretchesFromModel(model),
 	}
 end
 

@@ -34,6 +34,9 @@ export type BuildOptions = {
 	-- its own shifted-outward replacement can be overlaid without doubling
 	-- geometry or overlapping the bay's own pull-in lane.
 	ExcludeComponentIndices: { number }?,
+	-- User-placed partial-length marking overrides (see RoadEditSession's
+	-- marking-stretch mode) - passed straight through to Markings.Compute.
+	MarkingStretches: { Markings.MarkingStretch }?,
 }
 
 local MARKING_THICKNESS = 0.05
@@ -494,6 +497,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			MarkingColor = options.ProfileStart.MarkingColor,
 			DashLengthM = options.ProfileStart.MarkingDashLengthM,
 			DashGapM = options.ProfileStart.MarkingDashGapM,
+			MarkingStretches = options.MarkingStretches,
 			KerbIndent = options.ProfileStart.KerbIndent,
 		})
 		local markingWidth = style.MarkingWidthM * scale
@@ -559,6 +563,15 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				return offset0 + (offset1 - offset0) * transitionAlpha(s)
 			end
 
+			-- A "stretch" override (see Markings.emitBoundaryLine) restricts
+			-- a line to a station sub-range instead of the whole segment;
+			-- nil on either end means unbounded that way, matching the
+			-- normal (unstretched) case. Degenerate/empty ranges (e.g. the
+			-- "before" piece when the override starts right at s=0) simply
+			-- render nothing below rather than needing special-casing here.
+			local loS = line.FromStationStuds or 0
+			local hiS = line.ToStationStuds or length
+
 			-- Each compound line type is one or two rails, each rail either
 			-- solid or dashed. lateral = rail offset from the boundary line.
 			-- Solid rails anchor to the exact station grid, so neighboring
@@ -568,6 +581,11 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				for i = 1, stationCount - 1 do
 					local s0 = stations[i]
 					local s1 = stations[i + 1]
+					if s1 <= loS or s0 >= hiS then
+						continue
+					end
+					s0 = math.max(s0, loS)
+					s1 = math.min(s1, hiS)
 					placeMarkingSpan(s0, s1, offsetAt(s0) + lateral, offsetAt(s1) + lateral, 0.02, color, i)
 				end
 			end
@@ -577,11 +595,13 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				local gapLength = line.DashGapM * scale
 				local s = gapLength / 2
 				local dashIndex = 0
-				while s + dashLength < length do
-					local s0 = s
-					local s1 = s + dashLength
-					placeMarkingSpan(s0, s1, offsetAt(s0) + lateral, offsetAt(s1) + lateral, 0, color, dashIndex)
-					dashIndex += 1
+				while s + dashLength < math.min(length, hiS) do
+					if s >= loS then
+						local s0 = s
+						local s1 = s + dashLength
+						placeMarkingSpan(s0, s1, offsetAt(s0) + lateral, offsetAt(s1) + lateral, 0, color, dashIndex)
+						dashIndex += 1
+					end
 					s += dashLength + gapLength
 				end
 			end
@@ -709,6 +729,30 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		return RoadBuilder.Build(options)
 	end
 
+	-- MarkingStretches are captured in the whole road's own station space,
+	-- but each slice below is its own PolyCurve with station 0 at the
+	-- slice's start (see PolyCurve.Slice) - remap into that local space and
+	-- drop anything that doesn't overlap this particular slice at all.
+	local function stretchesForSlice(sliceStart: number, sliceEnd: number): { Markings.MarkingStretch }?
+		if not options.MarkingStretches then
+			return nil
+		end
+		local remapped = {}
+		for _, stretch in options.MarkingStretches :: { Markings.MarkingStretch } do
+			local from = math.max(stretch.FromStationStuds, sliceStart)
+			local to = math.min(stretch.ToStationStuds, sliceEnd)
+			if to > from then
+				table.insert(remapped, {
+					ComponentIndex = stretch.ComponentIndex,
+					FromStationStuds = from - sliceStart,
+					ToStationStuds = to - sliceStart,
+					Line = stretch.Line,
+				})
+			end
+		end
+		return if #remapped > 0 then remapped else nil
+	end
+
 	-- Base road: the unaffected zones build normally; the bay's footprint
 	-- excludes the nearside component (rebuilt below, shifted outward) so
 	-- its original position doesn't coexist with the new one.
@@ -728,6 +772,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			Style = style,
 			Settings = settings,
 			Preview = preview,
+			MarkingStretches = stretchesForSlice(0, taperInStart),
 		}))
 	end
 	mergeIn(RoadBuilder.Build({
@@ -737,6 +782,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		Settings = settings,
 		Preview = preview,
 		ExcludeComponentIndices = { nearsideIndex },
+		MarkingStretches = stretchesForSlice(taperInStart, taperOutEnd),
 	}))
 	if length - taperOutEnd > 1e-3 then
 		mergeIn(RoadBuilder.Build({
@@ -746,6 +792,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			Style = style,
 			Settings = settings,
 			Preview = preview,
+			MarkingStretches = stretchesForSlice(taperOutEnd, length),
 		}))
 	end
 
