@@ -4,6 +4,40 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Ghost Parts now match the real road's superelevation tilt; stale-ghost sweep
+
+Reported live: the marking-stretch ghost "sometimes shows, sometimes not"
+specifically on curved sections, alongside a screenshot showing a dozen-plus
+leftover `EasyRoadMarkingStretchGhost` Parts sitting loose in the Explorer.
+
+- **Root cause of the intermittent ghost**: every ghost frame in
+  `RoadEditSession.lua` (the stretch drag/select ghosts, the bus bay ghost)
+  was built with a plain `curve:FrameAt(s)` - roll defaults to 0 with no
+  second argument. `RoadBuilder.Build` computes the *real* road's frames
+  with `Superelevation.RollAt(curve:CurvatureAt(s), settings, style)`, the
+  actual bank angle for that station. On a real banked curve those two
+  frames diverge - a flat, un-rolled ghost drifts away from the true
+  (tilted) pavement surface, more so the sharper the bend, landing either
+  floating above it or clipped inside it (invisible, since Parts don't
+  render through other opaque Parts) depending on how much bank was in
+  effect at that particular station. New shared `frameAtWithRoll(curve, s)`
+  helper reproduces the exact same roll formula the real build uses;
+  wired into both the marking-stretch ghosts and the bus bay ghost (same
+  underlying bug, not previously reported for that one).
+- **Stale ghost sweep**: rather than trying to prove every cleanup code
+  path is airtight (the underlying leak in the screenshot was never
+  conclusively root-caused - possibly debris from testing an earlier
+  version, possibly a real remaining path), `RoadEditSession`'s setup now
+  destroys any stray Part named `EasyRoadMarkingStretchGhost` or
+  `EasyRoadBayGhost` already sitting under `workspace` once, at plugin
+  load - cheap, and can't touch anything else since it matches ghost Parts'
+  exact, distinctive names. Existing leaked ghosts in an already-open file
+  clear the moment the plugin reloads.
+- Not verified in a live Studio session (this environment can't render
+  Studio) - the roll-frame fix in particular is a strong, well-reasoned
+  hypothesis (matches the reported symptom's shape - "curved sections"
+  specifically), not something confirmed against an actual banked curve.
+
 ## Marking stretch v2: multiple stretches per boundary, All/Individual/Select modes, curve-following ghosts, decoupled "Edit Lane Markings"
 
 Four related fixes/requests landed together since they all touch the same

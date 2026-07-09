@@ -3117,6 +3117,8 @@ local Settings = require("./Settings")
 local Keybinds = require("./Keybinds")
 local BusStops = require("./BusStops")
 local Markings = require("./Mesh/Markings")
+local PolyCurve = require("./Geometry/PolyCurve")
+local Superelevation = require("./Geometry/Superelevation")
 
 -- Pie-menu state machine for a selected road:
 --   Menu         - top-level pills (Edit on Road Builder / Place More / ...)
@@ -3276,6 +3278,18 @@ local function createRoadEditSession(
 	local stretchSelectedIndices: { [number]: boolean } = {}
 	local stretchSelectGhosts: { Part } = {}
 
+	-- Frame at a station INCLUDING the same superelevation (bank) roll
+	-- RoadBuilder.Build actually uses for the real geometry - a plain
+	-- curve:FrameAt(s) (roll defaults to 0) drifts away from the true
+	-- (tilted) road surface on a banked curve, more so the sharper the
+	-- bend, which could put a ghost's flat local-Y offset either floating
+	-- above the pavement or clipped inside it depending on how much bank
+	-- is in effect at that station - reported live as a stretch ghost that
+	-- "sometimes shows, sometimes not" specifically on curved sections.
+	local function frameAtWithRoll(curve: PolyCurve.PolyCurve, s: number): CFrame
+		return curve:FrameAt(s, Superelevation.RollAt(curve:CurvatureAt(s), settings, getStyle()))
+	end
+
 	-- Cancels either step of bay placement: before a drag is drawn
 	-- (PlacingBay, still listening for a click-drag) or after
 	-- (ConfirmingBay, adjusting length/width) - both just return to
@@ -3433,8 +3447,8 @@ local function createRoadEditSession(
 				for i = 0, segments - 1 do
 					local segLo = lo + (hi - lo) * (i / segments)
 					local segHi = lo + (hi - lo) * ((i + 1) / segments)
-					local frameA = curve:FrameAt(segLo)
-					local frameB = curve:FrameAt(segHi)
+					local frameA = frameAtWithRoll(curve, segLo)
+					local frameB = frameAtWithRoll(curve, segHi)
 					local pA = (frameA * CFrame.new(offsetStuds, y, 0)).Position
 					local pB = (frameB * CFrame.new(offsetStuds, y, 0)).Position
 					local segLength = (pB - pA).Magnitude
@@ -3665,8 +3679,8 @@ local function createRoadEditSession(
 			else (if offsets[#offsets] then offsets[#offsets].Left else 0)
 		local kerbOffset = kerbOffsetM * scale
 		local outerOffset = kerbOffset + outward * widthStuds
-		local frameA = curve:FrameAt(s0)
-		local frameB = curve:FrameAt(s1)
+		local frameA = frameAtWithRoll(curve, s0)
+		local frameB = frameAtWithRoll(curve, s1)
 		local centerOffset = (kerbOffset + outerOffset) / 2
 		-- Sits exactly at the road's own highest surface (a raised
 		-- sidewalk/median's top is always exactly `curbHeight` above the
@@ -3810,6 +3824,18 @@ local function createRoadEditSession(
 			end
 		end)
 	)
+	-- Defensive sweep: destroy any stray ghost Parts already sitting under
+	-- workspace from a previous session (an interrupted drag whose cleanup
+	-- path didn't run, an older plugin version's bug, ...) rather than
+	-- relying purely on every code path getting cleanup exactly right.
+	-- Cheap (runs once, at plugin load) and matches the ghost Parts' own
+	-- naming exactly, so it can't touch anything else.
+	for _, child in workspace:GetChildren() do
+		if child.Name == "EasyRoadMarkingStretchGhost" or child.Name == "EasyRoadBayGhost" then
+			child:Destroy()
+		end
+	end
+
 	loadSelection()
 
 	local session = {} :: RoadEditSession
