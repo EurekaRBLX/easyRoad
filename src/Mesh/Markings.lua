@@ -77,6 +77,48 @@ export type MarkingStretch = {
 
 local Markings = {}
 
+-- Every same-direction Drive/Drive boundary index (1-based, between
+-- components[i] and [i + 1]) in the road - mirrors exactly the condition
+-- the boundary loop in Compute uses to pick the "same-direction boundary"
+-- branch, since only those boundaries are valid sibling/stretch targets.
+local function sameDirBoundaries(components: { RoadProfile.ProfileComponent }): { [number]: boolean }
+	local isSameDirBoundary: { [number]: boolean } = {}
+	for i = 1, #components - 1 do
+		local a, b = components[i], components[i + 1]
+		isSameDirBoundary[i] = a.Kind == "Drive"
+			and b.Kind == "Drive"
+			and not (a.Direction ~= 0 and b.Direction ~= 0 and a.Direction ~= b.Direction)
+	end
+	return isSameDirBoundary
+end
+
+-- Every boundary index in componentIndex's own contiguous same-direction
+-- run (including componentIndex itself) - a run breaks wherever the
+-- direction changes or a non-Drive component interrupts it. Empty if
+-- componentIndex isn't a same-direction Drive/Drive boundary at all.
+-- Exposed so RoadEditSession's drag-ghost preview can show every boundary
+-- a stretch will actually affect, not just the one that was clicked -
+-- Compute below uses the same helper for the real geometry, so the two
+-- can never disagree.
+function Markings.SiblingBoundaries(components: { RoadProfile.ProfileComponent }, componentIndex: number): { number }
+	local isSameDirBoundary = sameDirBoundaries(components)
+	if not isSameDirBoundary[componentIndex] then
+		return {}
+	end
+	local lo, hi = componentIndex, componentIndex
+	while isSameDirBoundary[lo - 1] do
+		lo -= 1
+	end
+	while isSameDirBoundary[hi + 1] do
+		hi += 1
+	end
+	local members = {}
+	for j = lo, hi do
+		table.insert(members, j)
+	end
+	return members
+end
+
 local function offsetsFor(components: { RoadProfile.ProfileComponent }): { { Left: number, Right: number } }
 	local total = 0
 	for _, component in components do
@@ -164,61 +206,15 @@ function Markings.Compute(
 		})
 	end
 
-	-- Every same-direction Drive/Drive boundary index (1-based, between
-	-- componentsStart[i] and [i + 1]) that a lane-changing rule can apply
-	-- to - mirrors exactly the condition the boundary loop below uses to
-	-- pick the "same-direction boundary" branch, computed up front so
-	-- sibling runs (see below) can be resolved before that loop runs.
-	local isSameDirBoundary: { [number]: boolean } = {}
-	for i = 1, n - 1 do
-		local a, b = componentsStart[i], componentsStart[i + 1]
-		isSameDirBoundary[i] = a.Kind == "Drive"
-			and b.Kind == "Drive"
-			and not (a.Direction ~= 0 and b.Direction ~= 0 and a.Direction ~= b.Direction)
-	end
-
-	-- Maps every same-direction boundary index to every other boundary
-	-- index in its own contiguous run - a run breaks wherever the
-	-- direction changes or a non-Drive component interrupts it. A
-	-- MarkingStretch naming any one boundary in a run applies to every
-	-- member of that run, which is what makes dragging one lane's marking
-	-- stretch its same-direction siblings together.
-	local siblingsOf: { [number]: { number } } = {}
-	do
-		local runStart: number? = nil
-		local function closeRun(runEnd: number)
-			if not runStart then
-				return
-			end
-			local members = {}
-			for j = runStart, runEnd do
-				table.insert(members, j)
-			end
-			for _, j in members do
-				siblingsOf[j] = members
-			end
-			runStart = nil
-		end
-		for i = 1, n - 1 do
-			if isSameDirBoundary[i] then
-				if not runStart then
-					runStart = i
-				end
-			else
-				closeRun(i - 1)
-			end
-		end
-		closeRun(n - 1)
-	end
-
+	-- A MarkingStretch naming any one boundary applies to every boundary in
+	-- its same-direction sibling run (see Markings.SiblingBoundaries),
+	-- which is what makes dragging one lane's marking stretch its
+	-- same-direction siblings together.
 	local stretchByBoundary: { [number]: MarkingStretch } = {}
 	if options and options.MarkingStretches then
 		for _, stretch in options.MarkingStretches :: { MarkingStretch } do
-			local siblings = siblingsOf[stretch.ComponentIndex]
-			if siblings then
-				for _, j in siblings do
-					stretchByBoundary[j] = stretch
-				end
+			for _, j in Markings.SiblingBoundaries(componentsStart, stretch.ComponentIndex) do
+				stretchByBoundary[j] = stretch
 			end
 		end
 	end

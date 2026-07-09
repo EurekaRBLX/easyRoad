@@ -1150,6 +1150,48 @@ export type MarkingStretch = {
 
 local Markings = {}
 
+-- Every same-direction Drive/Drive boundary index (1-based, between
+-- components[i] and [i + 1]) in the road - mirrors exactly the condition
+-- the boundary loop in Compute uses to pick the "same-direction boundary"
+-- branch, since only those boundaries are valid sibling/stretch targets.
+local function sameDirBoundaries(components: { RoadProfile.ProfileComponent }): { [number]: boolean }
+	local isSameDirBoundary: { [number]: boolean } = {}
+	for i = 1, #components - 1 do
+		local a, b = components[i], components[i + 1]
+		isSameDirBoundary[i] = a.Kind == "Drive"
+			and b.Kind == "Drive"
+			and not (a.Direction ~= 0 and b.Direction ~= 0 and a.Direction ~= b.Direction)
+	end
+	return isSameDirBoundary
+end
+
+-- Every boundary index in componentIndex's own contiguous same-direction
+-- run (including componentIndex itself) - a run breaks wherever the
+-- direction changes or a non-Drive component interrupts it. Empty if
+-- componentIndex isn't a same-direction Drive/Drive boundary at all.
+-- Exposed so RoadEditSession's drag-ghost preview can show every boundary
+-- a stretch will actually affect, not just the one that was clicked -
+-- Compute below uses the same helper for the real geometry, so the two
+-- can never disagree.
+function Markings.SiblingBoundaries(components: { RoadProfile.ProfileComponent }, componentIndex: number): { number }
+	local isSameDirBoundary = sameDirBoundaries(components)
+	if not isSameDirBoundary[componentIndex] then
+		return {}
+	end
+	local lo, hi = componentIndex, componentIndex
+	while isSameDirBoundary[lo - 1] do
+		lo -= 1
+	end
+	while isSameDirBoundary[hi + 1] do
+		hi += 1
+	end
+	local members = {}
+	for j = lo, hi do
+		table.insert(members, j)
+	end
+	return members
+end
+
 local function offsetsFor(components: { RoadProfile.ProfileComponent }): { { Left: number, Right: number } }
 	local total = 0
 	for _, component in components do
@@ -1237,61 +1279,15 @@ function Markings.Compute(
 		})
 	end
 
-	-- Every same-direction Drive/Drive boundary index (1-based, between
-	-- componentsStart[i] and [i + 1]) that a lane-changing rule can apply
-	-- to - mirrors exactly the condition the boundary loop below uses to
-	-- pick the "same-direction boundary" branch, computed up front so
-	-- sibling runs (see below) can be resolved before that loop runs.
-	local isSameDirBoundary: { [number]: boolean } = {}
-	for i = 1, n - 1 do
-		local a, b = componentsStart[i], componentsStart[i + 1]
-		isSameDirBoundary[i] = a.Kind == "Drive"
-			and b.Kind == "Drive"
-			and not (a.Direction ~= 0 and b.Direction ~= 0 and a.Direction ~= b.Direction)
-	end
-
-	-- Maps every same-direction boundary index to every other boundary
-	-- index in its own contiguous run - a run breaks wherever the
-	-- direction changes or a non-Drive component interrupts it. A
-	-- MarkingStretch naming any one boundary in a run applies to every
-	-- member of that run, which is what makes dragging one lane's marking
-	-- stretch its same-direction siblings together.
-	local siblingsOf: { [number]: { number } } = {}
-	do
-		local runStart: number? = nil
-		local function closeRun(runEnd: number)
-			if not runStart then
-				return
-			end
-			local members = {}
-			for j = runStart, runEnd do
-				table.insert(members, j)
-			end
-			for _, j in members do
-				siblingsOf[j] = members
-			end
-			runStart = nil
-		end
-		for i = 1, n - 1 do
-			if isSameDirBoundary[i] then
-				if not runStart then
-					runStart = i
-				end
-			else
-				closeRun(i - 1)
-			end
-		end
-		closeRun(n - 1)
-	end
-
+	-- A MarkingStretch naming any one boundary applies to every boundary in
+	-- its same-direction sibling run (see Markings.SiblingBoundaries),
+	-- which is what makes dragging one lane's marking stretch its
+	-- same-direction siblings together.
 	local stretchByBoundary: { [number]: MarkingStretch } = {}
 	if options and options.MarkingStretches then
 		for _, stretch in options.MarkingStretches :: { MarkingStretch } do
-			local siblings = siblingsOf[stretch.ComponentIndex]
-			if siblings then
-				for _, j in siblings do
-					stretchByBoundary[j] = stretch
-				end
+			for _, j in Markings.SiblingBoundaries(componentsStart, stretch.ComponentIndex) do
+				stretchByBoundary[j] = stretch
 			end
 		end
 	end
@@ -3215,7 +3211,7 @@ local function createRoadEditSession(
 	-- down, cleared once the drag finishes or is cancelled.
 	local stretchDragStartStation: number? = nil
 	local stretchDragComponentIndex: number? = nil
-	local stretchGhost: Part? = nil
+	local stretchGhosts: { Part } = {}
 
 	-- Cancels either step of bay placement: before a drag is drawn
 	-- (PlacingBay, still listening for a click-drag) or after
@@ -3243,6 +3239,13 @@ local function createRoadEditSession(
 		changeSignal:Fire()
 	end
 
+	local function clearStretchGhosts()
+		for _, ghost in stretchGhosts do
+			ghost:Destroy()
+		end
+		table.clear(stretchGhosts)
+	end
+
 	-- Cancels either step of marking-stretch placement, same shape as
 	-- stopBayPlacement above.
 	local function stopMarkingStretchPlacement()
@@ -3256,10 +3259,7 @@ local function createRoadEditSession(
 			connection:Disconnect()
 		end
 		table.clear(stretchConnections)
-		if stretchGhost then
-			stretchGhost:Destroy()
-			stretchGhost = nil
-		end
+		clearStretchGhosts()
 		stretchDragStartStation = nil
 		stretchDragComponentIndex = nil
 		stretchDraft = nil
@@ -3285,11 +3285,7 @@ local function createRoadEditSession(
 		local bestIndex: number? = nil
 		local bestDistance = math.huge
 		for i = 1, #components - 1 do
-			local a, b = components[i], components[i + 1]
-			local isSameDirBoundary = a.Kind == "Drive"
-				and b.Kind == "Drive"
-				and not (a.Direction ~= 0 and b.Direction ~= 0 and a.Direction ~= b.Direction)
-			if isSameDirBoundary and offsets[i] then
+			if #Markings.SiblingBoundaries(components, i) &gt; 0 and offsets[i] then
 				local distance = math.abs(lateralOffsetM - offsets[i].Right)
 				if distance &lt; bestDistance then
 					bestDistance = distance
@@ -3300,59 +3296,62 @@ local function createRoadEditSession(
 		return bestIndex
 	end
 
-	-- Draws a single ghost strip at the clicked boundary's own offset - a
-	-- deliberate simplification versus drawing every sibling boundary's
-	-- strip too (the committed geometry is correct for all siblings
-	-- regardless, via Markings.lua's sibling-run resolution; only the live
-	-- drag preview is simplified to one line).
+	-- Draws one ghost strip per boundary in the clicked lane's sibling run
+	-- (see Markings.SiblingBoundaries) - every boundary the committed
+	-- geometry will actually stretch together, not just the one that was
+	-- clicked, so the live preview matches what Apply actually does.
+	-- Rebuilt from scratch each call rather than reused/resized: the
+	-- sibling count only changes if a different boundary is clicked, which
+	-- always starts a fresh drag anyway, and this only runs on mouse-move
+	-- while dragging, not every frame.
 	local function updateStretchGhost(componentIndex: number, s0: number, s1: number)
+		clearStretchGhosts()
 		if not selectedRoad or not originalData then
-			return
-		end
-		local curve = originalData.Curve
-		local profile = editingProfile or originalData.ProfileStart
-		local offsets = RoadProfile.ComponentOffsetsM(profile)
-		local boundary = offsets[componentIndex]
-		if not boundary then
 			return
 		end
 		local lo = math.min(s0, s1)
 		local hi = math.max(s0, s1)
 		if hi - lo &lt; 1e-3 then
-			if stretchGhost then
-				stretchGhost.Size = Vector3.new(0, 0, 0)
-			end
+			return
+		end
+		local curve = originalData.Curve
+		local profile = editingProfile or originalData.ProfileStart
+		local offsets = RoadProfile.ComponentOffsetsM(profile)
+		local siblings = Markings.SiblingBoundaries(profile.Components, componentIndex)
+		if #siblings == 0 then
 			return
 		end
 		local scale = settings.MetersToStuds
-		local offsetStuds = boundary.Right * scale
 		local style = getStyle()
 		local y = 0.15 -- Flush with the ordinary deck marking height, not a kerb
 		local frameA = curve:FrameAt(lo)
 		local frameB = curve:FrameAt(hi)
-		local pA = (frameA * CFrame.new(offsetStuds, y, 0)).Position
-		local pB = (frameB * CFrame.new(offsetStuds, y, 0)).Position
-		local segLength = (pB - pA).Magnitude
-		if segLength &lt; 1e-3 then
-			return
+		local width = math.max(style.MarkingWidthM * scale, 0.3)
+		for _, boundaryIndex in siblings do
+			local boundary = offsets[boundaryIndex]
+			if boundary then
+				local offsetStuds = boundary.Right * scale
+				local pA = (frameA * CFrame.new(offsetStuds, y, 0)).Position
+				local pB = (frameB * CFrame.new(offsetStuds, y, 0)).Position
+				local segLength = (pB - pA).Magnitude
+				if segLength &gt; 1e-3 then
+					local ghost = Instance.new("Part")
+					ghost.Name = "EasyRoadMarkingStretchGhost"
+					ghost.Anchored = true
+					ghost.CanCollide = false
+					ghost.CanQuery = false
+					ghost.CanTouch = false
+					ghost.CastShadow = false
+					ghost.Material = Enum.Material.Neon
+					ghost.Color = style.WhiteMarking
+					ghost.Transparency = 0.2
+					ghost.Size = Vector3.new(width, 0.2, segLength)
+					ghost.CFrame = CFrame.lookAt((pA + pB) / 2, pB, frameA.UpVector)
+					ghost.Parent = workspace
+					table.insert(stretchGhosts, ghost)
+				end
+			end
 		end
-		if not stretchGhost then
-			local ghost = Instance.new("Part")
-			ghost.Name = "EasyRoadMarkingStretchGhost"
-			ghost.Anchored = true
-			ghost.CanCollide = false
-			ghost.CanQuery = false
-			ghost.CanTouch = false
-			ghost.CastShadow = false
-			ghost.Material = Enum.Material.Neon
-			ghost.Color = style.WhiteMarking
-			ghost.Transparency = 0.2
-			ghost.Parent = workspace
-			stretchGhost = ghost
-		end
-		local ghost = stretchGhost :: Part
-		ghost.Size = Vector3.new(math.max(style.MarkingWidthM * scale, 0.3), 0.2, segLength)
-		ghost.CFrame = CFrame.lookAt((pA + pB) / 2, pB, frameA.UpVector)
 	end
 
 	local function onStretchDragBegin()
@@ -3402,10 +3401,7 @@ local function createRoadEditSession(
 			-- near-zero bay drag is silently ignored rather than committed.
 			stretchDragStartStation = nil
 			stretchDragComponentIndex = nil
-			if stretchGhost then
-				stretchGhost:Destroy()
-				stretchGhost = nil
-			end
+			clearStretchGhosts()
 			return
 		end
 		stretchDraft = {
@@ -3416,10 +3412,7 @@ local function createRoadEditSession(
 		}
 		stretchDragStartStation = nil
 		stretchDragComponentIndex = nil
-		if stretchGhost then
-			stretchGhost:Destroy()
-			stretchGhost = nil
-		end
+		clearStretchGhosts()
 		for _, connection in stretchConnections do
 			connection:Disconnect()
 		end
@@ -3997,10 +3990,7 @@ local function createRoadEditSession(
 			connection:Disconnect()
 		end
 		table.clear(stretchConnections)
-		if stretchGhost then
-			stretchGhost:Destroy()
-			stretchGhost = nil
-		end
+		clearStretchGhosts()
 		for _, connection in connections do
 			connection:Disconnect()
 		end

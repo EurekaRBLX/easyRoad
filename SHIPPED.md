@@ -59,15 +59,28 @@ matching both answers:
   `PlacingMarkingStretch`/`ConfirmingMarkingStretch` modes): mouse-down
   resolves the clicked lane boundary by projecting the hit point onto the
   road's `RightVector` at the clicked station and picking the nearest
-  same-direction boundary; mouse-move updates a single ghost strip (a
-  deliberate simplification - only previews the clicked boundary, not every
-  sibling, though the committed geometry is correct for all of them
-  regardless); mouse-up finalizes the free-form `[min, max]` station range.
+  same-direction boundary; mouse-move updates a live ghost preview; mouse-up
+  finalizes the free-form `[min, max]` station range.
   `rebuildWithMarkingStretches` factors the "swap children, re-stamp,
   re-render bus stops" rebuild-in-place sequence shared by
   `ConfirmMarkingStretch`/`ClearMarkingStretches` (Apply/ConfirmBay keep
   their own copies, unchanged, to avoid touching already-working code for
   this).
+- **Fast-follow: ghost preview shows every sibling, not just the clicked
+  line.** The first cut only drew a single ghost strip at the clicked
+  boundary while dragging - the committed geometry was already correct for
+  every sibling in the run, but the preview didn't show that, so on a
+  multi-lane carriageway it looked like only one lane's marking would
+  change (user feedback: "it should be 2 dashes right"). Fixed by exporting
+  `Markings.SiblingBoundaries(components, componentIndex)` - the same
+  run-resolution `Compute` already used internally, now a shared function
+  instead of a private pre-pass - and having `RoadEditSession`'s
+  `updateStretchGhost` draw one strip per sibling boundary, rebuilt fresh
+  each drag-move. `resolveComponentIndexFromHit` (deciding which boundary a
+  click landed on) was also switched to the same exported helper instead of
+  its own inline copy of the same-direction check, so there's one source of
+  truth for "is this boundary a valid stretch target" across preview,
+  click-resolution, and the real build.
 - **Known v1 limitations, deliberately accepted rather than solved now**
   (all logged in `TODO.md` under "Marking stretch v1 follow-ups"):
   removal is all-or-nothing (no per-stretch delete), `ComponentIndex`-keyed

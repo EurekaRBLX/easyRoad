@@ -36,10 +36,6 @@ out rather than solved, and should get their own pass later:
   boundary in one slice but not another. A genuinely rare combination
   (transition + bay + stretch all on the same road); flagging rather than
   fixing blind.
-- **Drag ghost only previews one boundary line**, not every sibling in the
-  run (the committed geometry is correct for all siblings regardless - this
-  is a live-preview simplification only).
-
 ## Keybinds - user wants an in-plugin UI to change them, not just Studio's
 
 User feedback after the `PluginAction` rework (see `SHIPPED.md`): "now it is
