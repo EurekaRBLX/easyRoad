@@ -54,22 +54,22 @@ export type MarkingOptions = {
 	MarkingStretches: { MarkingStretch }?,
 }
 
--- A user-placed override on a same-direction lane boundary's marking over
--- part of the road's length (e.g. a dashed lane line forced solid
--- approaching a junction) - see RoadEditSession's PlacingMarkingStretch/
--- ConfirmingMarkingStretch modes for how these are captured.
+-- A user-placed override on one or more same-direction lane boundaries'
+-- markings over part of the road's length (e.g. a dashed lane line forced
+-- solid approaching a junction) - see RoadEditSession's
+-- PlacingMarkingStretch/ConfirmingMarkingStretch modes for how these are
+-- captured, including the All/Individual/Select boundary-selection modes
+-- that decide what ComponentIndices ends up holding.
 --
--- ComponentIndex identifies ANY ONE same-direction Drive/Drive boundary in
--- the "sibling run" this override targets (the boundary between
--- components[ComponentIndex] and components[ComponentIndex + 1]) - siblings
--- are resolved below to every internal boundary of that same contiguous,
--- same-direction run, so dragging one lane's line stretches all of them
--- together, matching how real multi-lane no-lane-change zones read. A
--- separate same-direction run elsewhere in the cross-section (e.g. the
--- opposing carriageway on a divided road) is a different sibling group and
--- unaffected by this entry.
+-- ComponentIndices is any set of same-direction Drive/Drive boundary
+-- indices (each between components[i] and components[i + 1]) - not
+-- necessarily a whole contiguous run, since Select mode can pick an
+-- arbitrary subset. Each listed index gets its own independent override;
+-- a boundary can also appear in more than one MarkingStretch (see
+-- Markings.Compute's stretchByBoundary, which is keyed per boundary as a
+-- list, not a single value).
 export type MarkingStretch = {
-	ComponentIndex: number,
+	ComponentIndices: { number },
 	FromStationStuds: number,
 	ToStationStuds: number,
 	Line: RegionStyles.LineType,
@@ -80,7 +80,7 @@ local Markings = {}
 -- Every same-direction Drive/Drive boundary index (1-based, between
 -- components[i] and [i + 1]) in the road - mirrors exactly the condition
 -- the boundary loop in Compute uses to pick the "same-direction boundary"
--- branch, since only those boundaries are valid sibling/stretch targets.
+-- branch, since only those boundaries are valid stretch targets.
 local function sameDirBoundaries(components: { RoadProfile.ProfileComponent }): { [number]: boolean }
 	local isSameDirBoundary: { [number]: boolean } = {}
 	for i = 1, #components - 1 do
@@ -92,14 +92,19 @@ local function sameDirBoundaries(components: { RoadProfile.ProfileComponent }): 
 	return isSameDirBoundary
 end
 
+-- Whether componentIndex is a valid same-direction Drive/Drive boundary at
+-- all - the basic membership test both "All"/"Individual" clicks and
+-- "Select" mode's toggling need before adding an index to a MarkingStretch.
+function Markings.IsSameDirectionBoundary(components: { RoadProfile.ProfileComponent }, componentIndex: number): boolean
+	return sameDirBoundaries(components)[componentIndex] == true
+end
+
 -- Every boundary index in componentIndex's own contiguous same-direction
 -- run (including componentIndex itself) - a run breaks wherever the
 -- direction changes or a non-Drive component interrupts it. Empty if
--- componentIndex isn't a same-direction Drive/Drive boundary at all.
--- Exposed so RoadEditSession's drag-ghost preview can show every boundary
--- a stretch will actually affect, not just the one that was clicked -
--- Compute below uses the same helper for the real geometry, so the two
--- can never disagree.
+-- componentIndex isn't a same-direction Drive/Drive boundary at all. Used
+-- for the "All" selection mode (and its drag-ghost preview) - "Individual"
+-- and "Select" build their own ComponentIndices sets directly instead.
 function Markings.SiblingBoundaries(components: { RoadProfile.ProfileComponent }, componentIndex: number): { number }
 	local isSameDirBoundary = sameDirBoundaries(components)
 	if not isSameDirBoundary[componentIndex] then
@@ -206,26 +211,40 @@ function Markings.Compute(
 		})
 	end
 
-	-- A MarkingStretch naming any one boundary applies to every boundary in
-	-- its same-direction sibling run (see Markings.SiblingBoundaries),
-	-- which is what makes dragging one lane's marking stretch its
-	-- same-direction siblings together.
-	local stretchByBoundary: { [number]: MarkingStretch } = {}
+	-- A MarkingStretch applies independently to every boundary listed in
+	-- its own ComponentIndices (however that set was built - the whole
+	-- sibling run, one lane, or an arbitrary hand-picked selection, see the
+	-- type's own doc comment). A boundary can carry more than one stretch
+	-- (e.g. solid approaching two separate junctions on the same lane
+	-- pair) - each MarkingStretch is independent, never merged or replaced
+	-- by another one on the same boundary. Indices that no longer resolve
+	-- to a valid same-direction boundary (e.g. after a structural profile
+	-- edit) are silently skipped rather than erroring.
+	local stretchByBoundary: { [number]: { MarkingStretch } } = {}
 	if options and options.MarkingStretches then
 		for _, stretch in options.MarkingStretches :: { MarkingStretch } do
-			for _, j in Markings.SiblingBoundaries(componentsStart, stretch.ComponentIndex) do
-				stretchByBoundary[j] = stretch
+			for _, j in stretch.ComponentIndices do
+				if Markings.IsSameDirectionBoundary(componentsStart, j) then
+					if not stretchByBoundary[j] then
+						stretchByBoundary[j] = {}
+					end
+					table.insert(stretchByBoundary[j], stretch)
+				end
 			end
 		end
 	end
 
-	-- Emits a same-direction lane boundary's line, splicing in a
-	-- MarkingStretch override (if this boundary is a member of one) as a
-	-- middle sub-range with the base line type resuming on either side.
-	-- Always emits the "before"/"after" pieces even when the override sits
-	-- flush against one end of the segment - RoadBuilder's own station
-	-- clipping renders nothing for a degenerate (empty) sub-range, so this
-	-- is safe without extra edge-case branching here.
+	-- Emits a same-direction lane boundary's line, splicing in every
+	-- MarkingStretch that targets this boundary (sorted by station) as its
+	-- own middle sub-range, with the base line type resuming between and
+	-- around them. Always emits the "before"/"between"/"after" pieces even
+	-- when an override sits flush against a segment end or another
+	-- stretch - RoadBuilder's own station clipping renders nothing for a
+	-- degenerate (empty) sub-range, so this is safe without extra
+	-- edge-case branching here. Overlapping stretches on the same boundary
+	-- aren't validated against each other - a malformed overlap just
+	-- produces a degenerate (empty or negative) "between" piece, which
+	-- clips away harmlessly rather than crashing.
 	local function emitBoundaryLine(
 		boundaryIndex: number,
 		offsetStart: number,
@@ -235,23 +254,31 @@ function Markings.Compute(
 		dashLengthM: number?,
 		dashGapM: number?
 	)
-		local stretch = stretchByBoundary[boundaryIndex]
-		if not stretch then
+		local stretches = stretchByBoundary[boundaryIndex]
+		if not stretches or #stretches == 0 then
 			addLine(offsetStart, offsetEnd, lineType, color, dashLengthM, dashGapM)
 			return
 		end
-		addLine(offsetStart, offsetEnd, lineType, color, dashLengthM, dashGapM, nil, stretch.FromStationStuds)
-		addLine(
-			offsetStart,
-			offsetEnd,
-			stretch.Line,
-			trafficLineColor(style.WhiteMarking),
-			nil,
-			nil,
-			stretch.FromStationStuds,
-			stretch.ToStationStuds
-		)
-		addLine(offsetStart, offsetEnd, lineType, color, dashLengthM, dashGapM, stretch.ToStationStuds, nil)
+		local sorted = table.clone(stretches)
+		table.sort(sorted, function(a, b)
+			return a.FromStationStuds < b.FromStationStuds
+		end)
+		local cursor: number? = nil
+		for _, stretch in sorted do
+			addLine(offsetStart, offsetEnd, lineType, color, dashLengthM, dashGapM, cursor, stretch.FromStationStuds)
+			addLine(
+				offsetStart,
+				offsetEnd,
+				stretch.Line,
+				trafficLineColor(style.WhiteMarking),
+				nil,
+				nil,
+				stretch.FromStationStuds,
+				stretch.ToStationStuds
+			)
+			cursor = stretch.ToStationStuds
+		end
+		addLine(offsetStart, offsetEnd, lineType, color, dashLengthM, dashGapM, cursor, nil)
 	end
 
 	-- Kerb (no parking / no stopping) lines: painted just inside a roadway

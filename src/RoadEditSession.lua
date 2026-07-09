@@ -44,6 +44,16 @@ local Markings = require("./Mesh/Markings")
 --                  should be overridden to a different line type.
 --   ConfirmingMarkingStretch - adjust the dragged range/line type before
 --                  committing.
+--   ViewingStretches - lists this road's existing marking stretches with a
+--                  per-stretch Remove button - "Edit Lane Markings"'s own
+--                  destination. Deliberately NOT the full Designer: that
+--                  was the original behaviour ("Edit Lane Markings" was
+--                  identical to "Edit on Road Builder", just the same
+--                  designer under a different label), reported back as
+--                  confusing now that a stretch is a road-local, spatial
+--                  edit rather than a whole-profile one - a full
+--                  cross-section editor isn't the right destination for
+--                  "show me the stretches on this road."
 --   Designer     - the full RoadInspector designer
 type Mode =
 	"Menu"
@@ -52,6 +62,7 @@ type Mode =
 	| "ConfirmingBay"
 	| "PlacingMarkingStretch"
 	| "ConfirmingMarkingStretch"
+	| "ViewingStretches"
 	| "Designer"
 
 export type BayDraft = {
@@ -88,10 +99,15 @@ export type RoadEditSession = {
 	GetAnchorWorldPosition: () -> Vector3?,
 	GetContinuation: () -> Continuation?,
 	-- "Edit Road Segment" second-level submenu (Add Bus Bay / Edit Lane
-	-- Markings / Back).
+	-- Markings / Stretch Marking / Back).
 	IsShowingSegmentMenu: () -> boolean,
 	OpenSegmentMenu: () -> (),
 	CloseSegmentMenu: () -> (),
+	-- "Edit Lane Markings" - lists this road's stretches (see
+	-- ViewingStretches above), not the full Designer.
+	IsViewingStretches: () -> boolean,
+	OpenStretchesView: () -> (),
+	CloseStretchesView: () -> (),
 	-- Real bus bay: click a point on the road, then adjust length/width.
 	IsPlacingBay: () -> boolean,
 	StartBayPlacement: () -> (),
@@ -102,9 +118,15 @@ export type RoadEditSession = {
 	SetBayDraftWidth: (widthM: number) -> (),
 	ConfirmBay: () -> (),
 	-- Marking stretch: click a same-direction lane boundary and drag
-	-- free-form along the road to override it (and its siblings) to a
-	-- different line type over that sub-range.
+	-- free-form along the road to override it (and, depending on
+	-- selection mode, related boundaries) to a different line type over
+	-- that sub-range.
 	IsPlacingMarkingStretch: () -> boolean,
+	-- All = the whole same-direction sibling run (default); Individual =
+	-- just the clicked boundary; Select = an arbitrary set, built by
+	-- plain (non-drag) clicks toggling membership before the range drag.
+	GetMarkingStretchSelectionMode: () -> "All" | "Individual" | "Select",
+	SetMarkingStretchSelectionMode: (mode: "All" | "Individual" | "Select") -> (),
 	StartMarkingStretchPlacement: () -> (),
 	CancelMarkingStretchPlacement: () -> (),
 	IsConfirmingMarkingStretch: () -> boolean,
@@ -147,6 +169,19 @@ local function createRoadEditSession(
 	local stretchDragStartStation: number? = nil
 	local stretchDragComponentIndex: number? = nil
 	local stretchGhosts: { Part } = {}
+	-- Which boundaries a drag applies to: "All" (the whole same-direction
+	-- sibling run - the default), "Individual" (just the clicked
+	-- boundary), or "Select" (an arbitrary, user-built set - see
+	-- stretchSelectedIndices below, toggled by plain clicks while in this
+	-- mode). Persists across separate stretch placements on the same road
+	-- (a deliberate choice, unlike the toggle set below); reset only when
+	-- a different road is selected.
+	local stretchSelectionMode: "All" | "Individual" | "Select" = "All"
+	-- The pending "Select" mode boundary set, built up by toggling clicks
+	-- before the actual range-setting drag - cleared on every cancel/
+	-- confirm/mode-switch, never carried between placements.
+	local stretchSelectedIndices: { [number]: boolean } = {}
+	local stretchSelectGhosts: { Part } = {}
 
 	-- Cancels either step of bay placement: before a drag is drawn
 	-- (PlacingBay, still listening for a click-drag) or after
@@ -181,6 +216,13 @@ local function createRoadEditSession(
 		table.clear(stretchGhosts)
 	end
 
+	local function clearStretchSelectGhosts()
+		for _, ghost in stretchSelectGhosts do
+			ghost:Destroy()
+		end
+		table.clear(stretchSelectGhosts)
+	end
+
 	-- Cancels either step of marking-stretch placement, same shape as
 	-- stopBayPlacement above.
 	local function stopMarkingStretchPlacement()
@@ -195,6 +237,8 @@ local function createRoadEditSession(
 		end
 		table.clear(stretchConnections)
 		clearStretchGhosts()
+		clearStretchSelectGhosts()
+		stretchSelectedIndices = {}
 		stretchDragStartStation = nil
 		stretchDragComponentIndex = nil
 		stretchDraft = nil
@@ -220,7 +264,7 @@ local function createRoadEditSession(
 		local bestIndex: number? = nil
 		local bestDistance = math.huge
 		for i = 1, #components - 1 do
-			if #Markings.SiblingBoundaries(components, i) > 0 and offsets[i] then
+			if Markings.IsSameDirectionBoundary(components, i) and offsets[i] then
 				local distance = math.abs(lateralOffsetM - offsets[i].Right)
 				if distance < bestDistance then
 					bestDistance = distance
@@ -231,62 +275,117 @@ local function createRoadEditSession(
 		return bestIndex
 	end
 
-	-- Draws one ghost strip per boundary in the clicked lane's sibling run
-	-- (see Markings.SiblingBoundaries) - every boundary the committed
-	-- geometry will actually stretch together, not just the one that was
-	-- clicked, so the live preview matches what Apply actually does.
-	-- Rebuilt from scratch each call rather than reused/resized: the
-	-- sibling count only changes if a different boundary is clicked, which
-	-- always starts a fresh drag anyway, and this only runs on mouse-move
-	-- while dragging, not every frame.
-	local function updateStretchGhost(componentIndex: number, s0: number, s1: number)
-		clearStretchGhosts()
+	-- What a drag starting on clickedIndex will actually apply to, given
+	-- the current selection mode - shared by the live drag-ghost preview
+	-- and the final committed ComponentIndices, so the two can never
+	-- disagree. "Select" mode falls back to just clickedIndex when nothing
+	-- has been toggled yet, so a plain click-drag with no prior toggles
+	-- behaves like "Individual".
+	local function resolvePreviewIndices(clickedIndex: number): { number }
+		local profile = (editingProfile or (originalData :: RoadInstance.RoadData).ProfileStart).Components
+		if stretchSelectionMode == "All" then
+			return Markings.SiblingBoundaries(profile, clickedIndex)
+		elseif stretchSelectionMode == "Individual" then
+			return { clickedIndex }
+		end
+		local indices = {}
+		for index in stretchSelectedIndices do
+			table.insert(indices, index)
+		end
+		if not table.find(indices, clickedIndex) then
+			table.insert(indices, clickedIndex)
+		end
+		return indices
+	end
+
+	local GHOST_MAX_SEGMENTS = 8
+
+	-- Builds ghost strips for `indices` between stations s0/s1, following
+	-- the curve with a small, fixed number of straight facets instead of
+	-- one long chord - a single chord directly connecting its two
+	-- endpoints visibly cuts corners on an actual curve. This is only ever
+	-- a live, ephemeral preview (never committed geometry), so a coarse
+	-- facet chain is a deliberate accuracy/performance tradeoff: good
+	-- enough to read as curve-following without redrawing a large number
+	-- of Parts on every mouse-move. Shared by the active-drag range
+	-- preview and the persistent "Select" mode toggle highlight below.
+	local function buildGhostStrips(
+		indices: { number },
+		s0: number,
+		s1: number,
+		color: Color3,
+		transparency: number,
+		into: { Part }
+	)
 		if not selectedRoad or not originalData then
 			return
 		end
 		local lo = math.min(s0, s1)
 		local hi = math.max(s0, s1)
-		if hi - lo < 1e-3 then
+		if hi - lo < 1e-3 or #indices == 0 then
 			return
 		end
 		local curve = originalData.Curve
 		local profile = editingProfile or originalData.ProfileStart
 		local offsets = RoadProfile.ComponentOffsetsM(profile)
-		local siblings = Markings.SiblingBoundaries(profile.Components, componentIndex)
-		if #siblings == 0 then
-			return
-		end
 		local scale = settings.MetersToStuds
 		local style = getStyle()
 		local y = 0.15 -- Flush with the ordinary deck marking height, not a kerb
-		local frameA = curve:FrameAt(lo)
-		local frameB = curve:FrameAt(hi)
 		local width = math.max(style.MarkingWidthM * scale, 0.3)
-		for _, boundaryIndex in siblings do
+		local segments = math.min(GHOST_MAX_SEGMENTS, math.max(1, math.floor((hi - lo) / 4)))
+		for _, boundaryIndex in indices do
 			local boundary = offsets[boundaryIndex]
 			if boundary then
 				local offsetStuds = boundary.Right * scale
-				local pA = (frameA * CFrame.new(offsetStuds, y, 0)).Position
-				local pB = (frameB * CFrame.new(offsetStuds, y, 0)).Position
-				local segLength = (pB - pA).Magnitude
-				if segLength > 1e-3 then
-					local ghost = Instance.new("Part")
-					ghost.Name = "EasyRoadMarkingStretchGhost"
-					ghost.Anchored = true
-					ghost.CanCollide = false
-					ghost.CanQuery = false
-					ghost.CanTouch = false
-					ghost.CastShadow = false
-					ghost.Material = Enum.Material.Neon
-					ghost.Color = style.WhiteMarking
-					ghost.Transparency = 0.2
-					ghost.Size = Vector3.new(width, 0.2, segLength)
-					ghost.CFrame = CFrame.lookAt((pA + pB) / 2, pB, frameA.UpVector)
-					ghost.Parent = workspace
-					table.insert(stretchGhosts, ghost)
+				for i = 0, segments - 1 do
+					local segLo = lo + (hi - lo) * (i / segments)
+					local segHi = lo + (hi - lo) * ((i + 1) / segments)
+					local frameA = curve:FrameAt(segLo)
+					local frameB = curve:FrameAt(segHi)
+					local pA = (frameA * CFrame.new(offsetStuds, y, 0)).Position
+					local pB = (frameB * CFrame.new(offsetStuds, y, 0)).Position
+					local segLength = (pB - pA).Magnitude
+					if segLength > 1e-3 then
+						local ghost = Instance.new("Part")
+						ghost.Name = "EasyRoadMarkingStretchGhost"
+						ghost.Anchored = true
+						ghost.CanCollide = false
+						ghost.CanQuery = false
+						ghost.CanTouch = false
+						ghost.CastShadow = false
+						ghost.Material = Enum.Material.Neon
+						ghost.Color = color
+						ghost.Transparency = transparency
+						ghost.Size = Vector3.new(width, 0.2, segLength)
+						ghost.CFrame = CFrame.lookAt((pA + pB) / 2, pB, frameA.UpVector)
+						ghost.Parent = workspace
+						table.insert(into, ghost)
+					end
 				end
 			end
 		end
+	end
+
+	local function updateStretchGhost(indices: { number }, s0: number, s1: number)
+		clearStretchGhosts()
+		buildGhostStrips(indices, s0, s1, getStyle().WhiteMarking, 0.2, stretchGhosts)
+	end
+
+	-- Persistent (not drag-bound) highlight for "Select" mode's pending
+	-- toggle set, spanning the whole road so it stays visible before a
+	-- range has even been chosen - a distinct amber colour from the
+	-- white/style-coloured drag-range ghost above, so "selected but no
+	-- range yet" reads differently from "this range is about to apply".
+	local function updateSelectGhosts()
+		clearStretchSelectGhosts()
+		if not originalData then
+			return
+		end
+		local indices = {}
+		for index in stretchSelectedIndices do
+			table.insert(indices, index)
+		end
+		buildGhostStrips(indices, 0, originalData.Curve.Length, Color3.fromRGB(255, 196, 64), 0.5, stretchSelectGhosts)
 	end
 
 	local function onStretchDragBegin()
@@ -315,7 +414,7 @@ local function createRoadEditSession(
 			return
 		end
 		local currentStation = originalData.Curve:ClosestS(mouse.Hit.Position)
-		updateStretchGhost(stretchDragComponentIndex, stretchDragStartStation, currentStation)
+		updateStretchGhost(resolvePreviewIndices(stretchDragComponentIndex), stretchDragStartStation, currentStation)
 	end
 
 	local function onStretchDragEnd()
@@ -330,24 +429,44 @@ local function createRoadEditSession(
 		local currentStation = originalData.Curve:ClosestS(mouse.Hit.Position)
 		local lo = math.min(stretchDragStartStation, currentStation)
 		local hi = math.max(stretchDragStartStation, currentStation)
+		local clickedIndex = stretchDragComponentIndex
+
 		if hi - lo < 1 then
-			-- Too short to be an intentional drag - stay in PlacingMarkingStretch
-			-- so a misclick doesn't abort the whole flow, matching how a
-			-- near-zero bay drag is silently ignored rather than committed.
+			if stretchSelectionMode == "Select" then
+				-- A plain click (no meaningful drag) in Select mode toggles
+				-- this boundary's membership in the pending set instead of
+				-- cancelling - the eventual range-setting drag can start
+				-- from any boundary, selected or not (falls back to just
+				-- that one via resolvePreviewIndices if nothing's toggled).
+				if stretchSelectedIndices[clickedIndex] then
+					stretchSelectedIndices[clickedIndex] = nil
+				else
+					stretchSelectedIndices[clickedIndex] = true
+				end
+				updateSelectGhosts()
+			end
+			-- Too short to be an intentional range drag either way - stay
+			-- in PlacingMarkingStretch so a misclick doesn't abort the
+			-- whole flow, matching how a near-zero bay drag is silently
+			-- ignored rather than committed.
 			stretchDragStartStation = nil
 			stretchDragComponentIndex = nil
 			clearStretchGhosts()
+			changeSignal:Fire()
 			return
 		end
+
 		stretchDraft = {
-			ComponentIndex = stretchDragComponentIndex,
+			ComponentIndices = resolvePreviewIndices(clickedIndex),
 			FromStationStuds = lo,
 			ToStationStuds = hi,
 			Line = "Solid",
 		}
 		stretchDragStartStation = nil
 		stretchDragComponentIndex = nil
+		stretchSelectedIndices = {}
 		clearStretchGhosts()
+		clearStretchSelectGhosts()
 		for _, connection in stretchConnections do
 			connection:Disconnect()
 		end
@@ -571,6 +690,8 @@ local function createRoadEditSession(
 		bayStation = nil
 		bayDraft = nil
 		stretchDraft = nil
+		stretchSelectionMode = "All"
+		stretchSelectedIndices = {}
 		mode = "Menu"
 		changeSignal:Fire()
 	end
@@ -727,6 +848,24 @@ local function createRoadEditSession(
 		end
 	end
 
+	function session.IsViewingStretches(): boolean
+		return mode == "ViewingStretches"
+	end
+
+	function session.OpenStretchesView()
+		if mode == "SegmentMenu" then
+			mode = "ViewingStretches"
+			changeSignal:Fire()
+		end
+	end
+
+	function session.CloseStretchesView()
+		if mode == "ViewingStretches" then
+			mode = "SegmentMenu"
+			changeSignal:Fire()
+		end
+	end
+
 	function session.IsPlacingBay(): boolean
 		return mode == "PlacingBay"
 	end
@@ -817,6 +956,20 @@ local function createRoadEditSession(
 		return mode == "PlacingMarkingStretch"
 	end
 
+	function session.GetMarkingStretchSelectionMode(): "All" | "Individual" | "Select"
+		return stretchSelectionMode
+	end
+
+	function session.SetMarkingStretchSelectionMode(newMode: "All" | "Individual" | "Select")
+		if stretchSelectionMode == newMode then
+			return
+		end
+		stretchSelectionMode = newMode
+		stretchSelectedIndices = {}
+		clearStretchSelectGhosts()
+		changeSignal:Fire()
+	end
+
 	function session.StartMarkingStretchPlacement()
 		if mode ~= "SegmentMenu" or not selectedRoad then
 			return
@@ -865,12 +1018,13 @@ local function createRoadEditSession(
 		if mode ~= "ConfirmingMarkingStretch" or not originalData or not stretchDraft then
 			return
 		end
-		local stretches = {}
-		for _, existing in originalData.MarkingStretches do
-			if existing.ComponentIndex ~= stretchDraft.ComponentIndex then
-				table.insert(stretches, existing)
-			end
-		end
+		-- Always adds a new entry rather than replacing an existing one on
+		-- the same boundary - a lane pair can need more than one stretch
+		-- (e.g. solid approaching two separate junctions), and
+		-- Markings.lua's emitBoundaryLine already supports any number of
+		-- independent stretches per boundary. Use RemoveMarkingStretch
+		-- (the per-stretch management list) to take one back out.
+		local stretches = table.clone(originalData.MarkingStretches)
 		table.insert(stretches, stretchDraft)
 		stretchDraft = nil
 		mode = "SegmentMenu"
@@ -939,6 +1093,7 @@ local function createRoadEditSession(
 		end
 		table.clear(stretchConnections)
 		clearStretchGhosts()
+		clearStretchSelectGhosts()
 		for _, connection in connections do
 			connection:Disconnect()
 		end

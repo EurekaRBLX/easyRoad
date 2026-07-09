@@ -743,7 +743,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			local to = math.min(stretch.ToStationStuds, sliceEnd)
 			if to > from then
 				table.insert(remapped, {
-					ComponentIndex = stretch.ComponentIndex,
+					ComponentIndices = stretch.ComponentIndices,
 					FromStationStuds = from - sliceStart,
 					ToStationStuds = to - sliceStart,
 					Line = stretch.Line,

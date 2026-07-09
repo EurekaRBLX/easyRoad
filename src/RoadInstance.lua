@@ -136,17 +136,25 @@ local function stretchesFromModel(model: Model): { Markings.MarkingStretch }
 	for _, entry in decoded :: { any } do
 		if
 			typeof(entry) == "table"
-			and typeof(entry.ComponentIndex) == "number"
+			and typeof(entry.ComponentIndices) == "table"
 			and typeof(entry.FromStationStuds) == "number"
 			and typeof(entry.ToStationStuds) == "number"
 			and typeof(entry.Line) == "string"
 		then
-			table.insert(stretches, {
-				ComponentIndex = entry.ComponentIndex,
-				FromStationStuds = entry.FromStationStuds,
-				ToStationStuds = entry.ToStationStuds,
-				Line = entry.Line :: any,
-			})
+			local indices: { number } = {}
+			for _, index in entry.ComponentIndices :: { any } do
+				if typeof(index) == "number" then
+					table.insert(indices, index)
+				end
+			end
+			if #indices > 0 then
+				table.insert(stretches, {
+					ComponentIndices = indices,
+					FromStationStuds = entry.FromStationStuds,
+					ToStationStuds = entry.ToStationStuds,
+					Line = entry.Line :: any,
+				})
+			end
 		end
 	end
 	return stretches

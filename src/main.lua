@@ -41,6 +41,8 @@ local Components = require("./UI/Components")
 local PieMenu = require("./UI/PieMenu")
 local BayDraftPanel = require("./UI/BayDraftPanel")
 local MarkingStretchPanel = require("./UI/MarkingStretchPanel")
+local MarkingStretchListPanel = require("./UI/MarkingStretchListPanel")
+local MarkingSelectionModePod = require("./UI/MarkingSelectionModePod")
 
 return function(
 	plugin: Plugin,
@@ -550,6 +552,40 @@ return function(
 					Size = UDim2.new(0, 280, 0, 240),
 				}
 			end
+		elseif editSession.GetSelectedRoad() and editSession.IsPlacingMarkingStretch() then
+			-- Full-screen wrapper so the pod can position itself
+			-- bottom-center via its own AnchorPoint (same convention the
+			-- placement session's ToolMode/RoadLibrary panels use) -
+			-- skipGenericHover is required here for the same reason it is
+			-- there: a full-screen wrapper's own MouseEnter would otherwise
+			-- latch uiState.Hovered on any viewport hover at all, blocking
+			-- every subsequent click. The pod reports its own small hover
+			-- area directly instead.
+			skipGenericHover = true
+			bottomContent = React.createElement(MarkingSelectionModePod, {
+				Mode = editSession.GetMarkingStretchSelectionMode(),
+				OnModeChanged = function(newMode: string)
+					editSession.SetMarkingStretchSelectionMode(newMode :: any)
+				end,
+				OnHoverChanged = function(hovered: boolean)
+					uiState.Hovered = hovered
+				end,
+			})
+			bottomFrameProps = {
+				AnchorPoint = Vector2.new(0, 0),
+				Position = UDim2.new(0, 0, 0, 0),
+				Size = UDim2.new(1, 0, 1, 0),
+			}
+		elseif editSession.GetSelectedRoad() and editSession.IsViewingStretches() then
+			bottomContent = React.createElement(MarkingStretchListPanel, {
+				Stretches = editSession.GetMarkingStretches(),
+				OnRemove = editSession.RemoveMarkingStretch,
+			})
+			bottomFrameProps = {
+				AnchorPoint = Vector2.new(0, 1),
+				Position = UDim2.new(0, 12, 1, -12),
+				Size = UDim2.new(0, 280, 0, 260),
+			}
 		elseif
 			editSession.GetSelectedRoad()
 			and not editSession.IsShowingMenu()
@@ -558,6 +594,7 @@ return function(
 			and not editSession.IsConfirmingBay()
 			and not editSession.IsPlacingMarkingStretch()
 			and not editSession.IsConfirmingMarkingStretch()
+			and not editSession.IsViewingStretches()
 		then
 			bottomContent = React.createElement(RoadInspector, {
 				PluginObj = plugin,
@@ -633,6 +670,7 @@ return function(
 				or editSession.IsConfirmingBay()
 				or editSession.IsPlacingMarkingStretch()
 				or editSession.IsConfirmingMarkingStretch()
+				or editSession.IsViewingStretches()
 			)
 		if showPieMenu then
 			local anchor = editSession.GetAnchorWorldPosition()
@@ -667,7 +705,8 @@ return function(
 					elseif editSession.IsPlacingBay() then "PlacingBay"
 					elseif editSession.IsConfirmingBay() then "ConfirmingBay"
 					elseif editSession.IsPlacingMarkingStretch() then "PlacingMarkingStretch"
-					else "ConfirmingMarkingStretch"
+					elseif editSession.IsConfirmingMarkingStretch() then "ConfirmingMarkingStretch"
+					else "ViewingStretches"
 				if pieMenuMode ~= lastPieMenuMode then
 					lastPieMenuMode = pieMenuMode
 					uiState.Hovered = false
@@ -752,9 +791,7 @@ return function(
 						Left = {
 							Text = "Edit Lane Markings",
 							OnClick = function()
-								-- Number keys 1-4 set a selected lane's marking
-								-- directly once inside the designer.
-								editSession.OpenEditor()
+								editSession.OpenStretchesView()
 							end,
 						},
 						Right = {
@@ -809,7 +846,8 @@ return function(
 							end,
 						},
 					})
-				else -- ConfirmingMarkingStretch: range/line-type panel is the bottom HUD below
+				elseif editSession.IsConfirmingMarkingStretch() then
+					-- Range/line-type panel is the bottom HUD below
 					pieMenuElement = React.createElement(PieMenu, {
 						WorldPosition = anchor,
 						SetGlobalHover = setGlobalHover,
@@ -823,6 +861,17 @@ return function(
 							Text = "Cancel",
 							OnClick = function()
 								editSession.CancelMarkingStretchPlacement()
+							end,
+						},
+					})
+				else -- ViewingStretches: the stretch list is the bottom HUD below
+					pieMenuElement = React.createElement(PieMenu, {
+						WorldPosition = anchor,
+						SetGlobalHover = setGlobalHover,
+						Bottom = {
+							Text = "Back",
+							OnClick = function()
+								editSession.CloseStretchesView()
 							end,
 						},
 					})

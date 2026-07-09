@@ -11,26 +11,27 @@ type over a free-form sub-range, siblings moving together - see
 `SHIPPED.md`) shipped a real v1, but a few things were deliberately scoped
 out rather than solved, and should get their own pass later:
 
-- **`ComponentIndex`-keyed storage isn't stable across a structural profile
-  edit.** A stretch stores which cross-section boundary it targets by
-  index; if the user later adds/removes/reorders lanes in the designer and
-  hits Apply, an existing stretch can end up pointing at the wrong boundary
-  (or silently drop, if the index no longer resolves to a same-direction
-  boundary at all - `Markings.lua` degrades safely, it just doesn't warn).
-  A `RightBoundary` rule doesn't have this problem since it lives on the
-  component itself and moves/deletes with it; a stretch is a separate list
-  keyed by position instead.
+- **`ComponentIndices`-keyed storage isn't stable across a structural
+  profile edit.** A stretch stores which cross-section boundaries it
+  targets by index; if the user later adds/removes/reorders lanes in the
+  designer and hits Apply, an existing stretch can end up pointing at the
+  wrong boundary (or silently drop an index, if it no longer resolves to a
+  same-direction boundary at all - `Markings.lua` degrades safely per
+  index, it just doesn't warn). A `RightBoundary` rule doesn't have this
+  problem since it lives on the component itself and moves/deletes with
+  it; a stretch is a separate list keyed by position instead.
 - **`BuildWithBay` + transition + stretch is only approximately handled.**
   When a road has both a widen/narrow transition AND a bus bay AND a
-  stretch, the stretch's `ComponentIndex` is resolved against whichever
-  component list produced it, but the bay-aware builder's "before"/"after"
-  taper slices use `MatchForTransition`'s (possibly reindexed/padded)
-  component list while the middle bay slice uses the unmatched
+  stretch, the stretch's `ComponentIndices` are resolved against whichever
+  component list produced them, but the bay-aware builder's "before"/
+  "after" taper slices use `MatchForTransition`'s (possibly reindexed/
+  padded) component list while the middle bay slice uses the unmatched
   `baseProfile.Components` list directly - if a transition inserts an extra
-  component before the targeted boundary, the index can point at the wrong
+  component before a targeted boundary, an index can point at the wrong
   boundary in one slice but not another. A genuinely rare combination
   (transition + bay + stretch all on the same road); flagging rather than
   fixing blind.
+
 ## Keybinds - user wants an in-plugin UI to change them, not just Studio's
 
 User feedback after the `PluginAction` rework (see `SHIPPED.md`): "now it is

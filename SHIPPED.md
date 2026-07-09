@@ -4,6 +4,71 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Marking stretch v2: multiple stretches per boundary, All/Individual/Select modes, curve-following ghosts, decoupled "Edit Lane Markings"
+
+Four related fixes/requests landed together since they all touch the same
+drag/ghost machinery:
+
+- **A boundary can now carry more than one stretch.** `ConfirmMarkingStretch`
+  used to replace any existing stretch on the same boundary before adding
+  the new one - dragging a second stretch onto the same lane pair (e.g.
+  solid approaching two separate junctions) silently deleted the first.
+  `MarkingStretch.ComponentIndex: number` became `ComponentIndices:
+  {number}` (touches `Markings.lua`, `RoadBuilder.lua`'s `BuildWithBay`
+  slice remap, and `RoadInstance.lua`'s JSON stamp/read), and
+  `Markings.Compute`'s `stretchByBoundary` is now keyed to a *list* per
+  boundary - `emitBoundaryLine` sorts every stretch on a boundary by
+  station and splices in "before/stretch/between/stretch/.../after" pieces
+  instead of just "before/stretch/after". `ConfirmMarkingStretch` now
+  always appends.
+- **All / Individual / Select boundary-selection modes**, exposed as a new
+  bottom "pod" (`UI/MarkingSelectionModePod.lua`, shown only while
+  `PlacingMarkingStretch`) - the plain click-drag interaction now branches
+  on `RoadEditSession`'s `stretchSelectionMode`:
+  - **All** (previous/default behaviour): the whole same-direction sibling
+    run.
+  - **Individual**: just the clicked boundary.
+  - **Select**: click boundaries one at a time (a plain click, not a drag,
+    toggles membership - shown as a persistent amber highlight spanning the
+    whole road) to build an arbitrary set, then drag any point to set the
+    range for that set - falls back to "just the dragged boundary" if
+    nothing was toggled first, so a plain click-drag with no prior toggles
+    behaves like Individual. `resolvePreviewIndices` is the single function
+    both the live ghost preview and the final committed `stretchDraft` call,
+    so they can't disagree. Mode persists across separate stretch
+    placements on the same road; the pending Select toggle set does not
+    (cleared on cancel/confirm/mode-switch).
+- **Ghost previews now follow the curve** instead of being one straight
+  chord directly connecting their two endpoints (visibly cut corners on an
+  actual curve - reported live, with a screenshot showing the chord slicing
+  across a bend). `buildGhostStrips` (shared by both the active-drag range
+  preview and the persistent Select-mode highlight) subdivides into up to 8
+  straight facets scaled to the drag length, rather than 1 - a deliberate
+  accuracy/performance tradeoff since these are ephemeral preview Parts
+  redrawn on every mouse-move, not committed geometry (which already uses
+  proper adaptive/exact station-following elsewhere in `RoadBuilder.lua`).
+- **"Edit Lane Markings" no longer opens the full Designer.** It used to be
+  identical to "Edit on Road Builder" (literally the same `OpenEditor()`
+  call) - reported as confusing now that a stretch is a road-local, spatial
+  edit rather than a whole-profile one. New `ViewingStretches` mode (own
+  pie menu: just "Back") shows a dedicated `UI/MarkingStretchListPanel.lua`
+  instead - the same per-stretch Remove-button list already added to the
+  Designer's own Road Properties card, just without forcing a detour
+  through the full cross-section editor to see it. The Designer's own
+  section stays too (harmless extra context if you go there for other
+  reasons) rather than ripping out already-working code for this.
+- The `PlacingMarkingStretch` bottom pod required the same
+  `skipGenericHover` treatment the placement session's ToolMode/RoadLibrary
+  panels already use: its wrapper Frame spans the whole screen (so the pod
+  can self-position bottom-center), which would otherwise latch
+  `uiState.Hovered` permanently on any viewport hover at all - the exact
+  hover-trap bug fixed earlier this session, now guarded against
+  proactively for this new surface via an `OnHoverChanged` prop instead.
+- Not verified in a live Studio session (this environment can't render
+  Studio) - flagging the Select-mode toggle interaction in particular,
+  since distinguishing "a click" from "a drag" by distance threshold is the
+  kind of thing that's easy to get subtly wrong without hands-on testing.
+
 ## Fixed a leaked ghost Part; "Edit Lane Markings" now manages existing stretches
 
 - **Fixed a stray `EasyRoadMarkingStretchGhost`/bay-ghost Part left behind
