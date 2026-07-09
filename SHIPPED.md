@@ -4,6 +4,44 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Fixed a leaked ghost Part; "Edit Lane Markings" now manages existing stretches
+
+- **Fixed a stray `EasyRoadMarkingStretchGhost`/bay-ghost Part left behind
+  in the workspace.** Reported live: an orphaned ghost sitting loose in the
+  Explorer with nothing placing it. Root cause: the top-level "Road Editor"
+  tab and starting a new placement session (`main.lua`'s `openEditor`/
+  `startSession`) only ever reset `session`/`designProfile` and called
+  `plugin:Deactivate()` - neither touches `RoadEditSession`'s own internal
+  state at all. If a bay or marking-stretch drag was active on a selected
+  road when either was clicked, `plugin:Deactivate()` stopped the tool from
+  outside, but `editSession`'s own `mode` stayed `"PlacingBay"`/
+  `"PlacingMarkingStretch"` forever, its mouse connections were never
+  disconnected, and any ghost Parts it had created were never destroyed -
+  `RoadEditSession.lua` only ever cleans that state up from *inside* itself
+  (`Selection.SelectionChanged`, its own Cancel/Apply paths), none of which
+  fire when a completely different part of the UI switches the whole
+  plugin's top-level mode out from under it. Fixed by having both
+  `openEditor` and `startSession` unconditionally call
+  `editSession.CancelBayPlacement()` / `CancelMarkingStretchPlacement()`
+  first (both are no-ops if no such drag is in progress).
+- **"Edit Lane Markings" now lists a placed road's active marking
+  stretches for management**, not just the same generic designer "Edit on
+  Road Builder" already opens. Asked which direction to take this in first
+  (surface stretches for management vs. retire the redundant pill vs.
+  something else) since it changes the designer's shared layout either
+  way - user picked management. `RoadDesigner.Panel` gains optional
+  `MarkingStretches`/`OnRemoveMarkingStretch` props (only ever populated by
+  `RoadInspector`, which has a real `editSession` behind it - the
+  standalone road-*type* editor has no concept of a specific placed road's
+  station-based stretches, so the section is simply absent there). Each
+  stretch renders as a `From-To studs (Line type)` row with its own Remove
+  button, backed by a new `RoadEditSession.RemoveMarkingStretch(index)` -
+  this also closes the "removal is all-or-nothing" v1 limitation logged
+  earlier (`ClearMarkingStretches`, the bulk version, stays for clearing
+  everything at once).
+- Not verified in a live Studio session (this environment can't render
+  Studio).
+
 ## Marking "stretch" - drag a lane boundary's marking to a different type over part of the road
 
 The last piece of the original "Edit Road Segment" ask that was deliberately

@@ -3181,6 +3181,7 @@ export type RoadEditSession = {
 	ConfirmMarkingStretch: () -&gt; (),
 	GetMarkingStretches: () -&gt; { Markings.MarkingStretch },
 	ClearMarkingStretches: () -&gt; (),
+	RemoveMarkingStretch: (index: number) -&gt; (),
 	Destroy: () -&gt; (),
 }
 
@@ -3951,6 +3952,19 @@ local function createRoadEditSession(
 			return
 		end
 		rebuildWithMarkingStretches({}, "Clear marking stretches")
+	end
+
+	-- Removes a single stretch by its position in GetMarkingStretches()'s
+	-- own list (the designer's stretch-management rows pass this straight
+	-- back) rather than by identity - the list is plain data round-tripped
+	-- through JSON, so there's no stable identity to match on beyond index.
+	function session.RemoveMarkingStretch(index: number)
+		if not originalData or not originalData.MarkingStretches[index] then
+			return
+		end
+		local stretches = table.clone(originalData.MarkingStretches)
+		table.remove(stretches, index)
+		rebuildWithMarkingStretches(stretches, "Remove marking stretch")
 	end
 
 	function session.GetAnchorWorldPosition(): Vector3?
@@ -7376,6 +7390,7 @@ local RoadThumbnail = require("./RoadThumbnail")
 local RoadProfile = require("../RoadProfile")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
+local Markings = require("../Mesh/Markings")
 
 export type DesignerAction = {
 	Text: string,
@@ -7386,6 +7401,16 @@ export type DesignerAction = {
 
 local STRIP_HEIGHT = 140
 local TILE_WIDTH = 58
+
+local LINE_TYPE_LABELS: { [string]: string } = {
+	None = "No line",
+	Solid = "Solid",
+	Dashed = "Dashed",
+	DoubleSolid = "Double solid",
+	DoubleDashed = "Double dashed",
+	SolidDash = "Solid/dash",
+	DashSolid = "Dash/solid",
+}
 
 -- Palette entries: every placeable module, with Commonwealth-flavoured
 -- display names (Sidewalk reads as "Pavement", matching the reference kit).
@@ -8221,18 +8246,24 @@ local function PaletteOrLibraryCard(props: {
 	return e("Frame", frameProps, children)
 end
 
-local function Panel(props: {
-	PluginObj: Plugin,
-	Profile: RoadProfile.RoadProfile,
-	RegionStyle: RegionStyles.RegionStyle,
-	Settings: Settings.EasyRoadSettings,
-	OnChange: (transform: (profile: RoadProfile.RoadProfile) -&gt; ()) -&gt; (),
-	OnRename: ((name: string) -&gt; ())?,
-	Subtitle: string?,
-	ReadOnlyLanes: boolean?,
-	Picker: PanelPicker?, -- Road switcher shown atop the properties card
-	Actions: { DesignerAction },
-})
+local function Panel(
+	props: {
+		PluginObj: Plugin,
+		Profile: RoadProfile.RoadProfile,
+		RegionStyle: RegionStyles.RegionStyle,
+		Settings: Settings.EasyRoadSettings,
+		OnChange: (transform: (profile: RoadProfile.RoadProfile) -&gt; ()) -&gt; (),
+		OnRename: ((name: string) -&gt; ())?,
+		Subtitle: string?,
+		ReadOnlyLanes: boolean?,
+		Picker: PanelPicker?, -- Road switcher shown atop the properties card
+		Actions: { DesignerAction },
+		-- Only set by RoadInspector (a specific placed road, not a library
+		-- type) - see the "Marking Stretches" section below.
+		MarkingStretches: { Markings.MarkingStretch }?,
+		OnRemoveMarkingStretch: ((index: number) -&gt; ())?,
+	}
+)
 	local profile = props.Profile
 	local readOnly = props.ReadOnlyLanes == true
 	local count = #profile.Components
@@ -8296,8 +8327,48 @@ local function Panel(props: {
 			LayoutOrder = 3,
 		})
 	end
-	local afterOptions =
-		ProfileFields.InsertMarkingOptions(propertiesChildren, profile, props.RegionStyle, props.Settings, 4, props.OnChange)
+	local afterOptions = ProfileFields.InsertMarkingOptions(
+		propertiesChildren,
+		profile,
+		props.RegionStyle,
+		props.Settings,
+		4,
+		props.OnChange
+	)
+	-- Existing marking stretches on this placed road (see RoadEditSession's
+	-- Stretch Marking flow) - only ever populated by RoadInspector, which
+	-- has a real editSession behind it; the standalone road-TYPE editor has
+	-- no concept of a specific placed road's station-based stretches, so
+	-- this section only appears when the caller actually passes some.
+	if props.MarkingStretches and #props.MarkingStretches &gt; 0 then
+		propertiesChildren.StretchesHeader =
+			e(Components.Section, { Text = "Marking Stretches", LayoutOrder = afterOptions })
+		afterOptions += 1
+		for index, stretch in props.MarkingStretches do
+			propertiesChildren["StretchLabel" .. index] = e(Components.Label, {
+				Text = string.format(
+					"%d-%d studs (%s)",
+					math.floor(stretch.FromStationStuds),
+					math.floor(stretch.ToStationStuds),
+					LINE_TYPE_LABELS[stretch.Line] or stretch.Line
+				),
+				LayoutOrder = afterOptions,
+			})
+			afterOptions += 1
+			propertiesChildren["StretchRemove" .. index] = e(Components.Button, {
+				Text = "Remove",
+				Danger = true,
+				Size = UDim2.new(0, 90, 0, Theme.ROW_HEIGHT),
+				LayoutOrder = afterOptions,
+				OnClick = function()
+					if props.OnRemoveMarkingStretch then
+						props.OnRemoveMarkingStretch(index)
+					end
+				end,
+			})
+			afterOptions += 1
+		end
+	end
 	local actionButtons: { [string]: any } = {}
 	for index, action in props.Actions do
 		actionButtons["Action" .. index] = e(Components.Button, {
@@ -8503,6 +8574,8 @@ local function RoadInspector(props: {
 			session.SetProfile(copy)
 		end,
 		Actions = actions,
+		MarkingStretches = session.GetMarkingStretches(),
+		OnRemoveMarkingStretch = session.RemoveMarkingStretch,
 	})
 end
 
@@ -9820,6 +9893,16 @@ return function(
 		if session then
 			return
 		end
+		-- A bay/marking-stretch drag on a selected road activates its own
+		-- plugin tool and holds mouse connections + ghost Parts in
+		-- editSession's own state, independent of `session`/`designProfile`
+		-- here - switching to a placement session without cancelling first
+		-- left that tool active and its ghosts stranded in the workspace
+		-- (never reached by anything that only resets `session`/
+		-- `designProfile`, since editSession's own mode never got told to
+		-- stop). Both are no-ops if no such drag is in progress.
+		editSession.CancelBayPlacement()
+		editSession.CancelMarkingStretchPlacement()
 		designProfile = nil -- Tools and Editor are exclusive modes
 		pluginOpen = true
 		setButtonActive(true)
@@ -9839,6 +9922,15 @@ return function(
 
 	local function openEditor(sourceProfile: RoadProfile.RoadProfile?)
 		destroySession()
+		-- Same reasoning as startSession above: plugin:Deactivate() below
+		-- only stops whatever tool is active, it doesn't reset editSession's
+		-- own bay/stretch placement state (mode, mouse connections, ghost
+		-- Parts) - without this, switching to the standalone road-type
+		-- editor mid-drag left a stray ghost Part sitting in the workspace
+		-- indefinitely (reported: a "EasyRoadMarkingStretchGhost" visible in
+		-- the Explorer with nothing left placing it).
+		editSession.CancelBayPlacement()
+		editSession.CancelMarkingStretchPlacement()
 		plugin:Deactivate()
 		pluginOpen = true
 		setButtonActive(true)

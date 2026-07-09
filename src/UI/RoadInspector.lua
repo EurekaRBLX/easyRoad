@@ -107,6 +107,8 @@ local function RoadInspector(props: {
 			session.SetProfile(copy)
 		end,
 		Actions = actions,
+		MarkingStretches = session.GetMarkingStretches(),
+		OnRemoveMarkingStretch = session.RemoveMarkingStretch,
 	})
 end
 

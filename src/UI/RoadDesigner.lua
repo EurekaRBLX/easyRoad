@@ -42,6 +42,7 @@ local RoadThumbnail = require("./RoadThumbnail")
 local RoadProfile = require("../RoadProfile")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
+local Markings = require("../Mesh/Markings")
 
 export type DesignerAction = {
 	Text: string,
@@ -52,6 +53,16 @@ export type DesignerAction = {
 
 local STRIP_HEIGHT = 140
 local TILE_WIDTH = 58
+
+local LINE_TYPE_LABELS: { [string]: string } = {
+	None = "No line",
+	Solid = "Solid",
+	Dashed = "Dashed",
+	DoubleSolid = "Double solid",
+	DoubleDashed = "Double dashed",
+	SolidDash = "Solid/dash",
+	DashSolid = "Dash/solid",
+}
 
 -- Palette entries: every placeable module, with Commonwealth-flavoured
 -- display names (Sidewalk reads as "Pavement", matching the reference kit).
@@ -887,18 +898,24 @@ local function PaletteOrLibraryCard(props: {
 	return e("Frame", frameProps, children)
 end
 
-local function Panel(props: {
-	PluginObj: Plugin,
-	Profile: RoadProfile.RoadProfile,
-	RegionStyle: RegionStyles.RegionStyle,
-	Settings: Settings.EasyRoadSettings,
-	OnChange: (transform: (profile: RoadProfile.RoadProfile) -> ()) -> (),
-	OnRename: ((name: string) -> ())?,
-	Subtitle: string?,
-	ReadOnlyLanes: boolean?,
-	Picker: PanelPicker?, -- Road switcher shown atop the properties card
-	Actions: { DesignerAction },
-})
+local function Panel(
+	props: {
+		PluginObj: Plugin,
+		Profile: RoadProfile.RoadProfile,
+		RegionStyle: RegionStyles.RegionStyle,
+		Settings: Settings.EasyRoadSettings,
+		OnChange: (transform: (profile: RoadProfile.RoadProfile) -> ()) -> (),
+		OnRename: ((name: string) -> ())?,
+		Subtitle: string?,
+		ReadOnlyLanes: boolean?,
+		Picker: PanelPicker?, -- Road switcher shown atop the properties card
+		Actions: { DesignerAction },
+		-- Only set by RoadInspector (a specific placed road, not a library
+		-- type) - see the "Marking Stretches" section below.
+		MarkingStretches: { Markings.MarkingStretch }?,
+		OnRemoveMarkingStretch: ((index: number) -> ())?,
+	}
+)
 	local profile = props.Profile
 	local readOnly = props.ReadOnlyLanes == true
 	local count = #profile.Components
@@ -962,8 +979,48 @@ local function Panel(props: {
 			LayoutOrder = 3,
 		})
 	end
-	local afterOptions =
-		ProfileFields.InsertMarkingOptions(propertiesChildren, profile, props.RegionStyle, props.Settings, 4, props.OnChange)
+	local afterOptions = ProfileFields.InsertMarkingOptions(
+		propertiesChildren,
+		profile,
+		props.RegionStyle,
+		props.Settings,
+		4,
+		props.OnChange
+	)
+	-- Existing marking stretches on this placed road (see RoadEditSession's
+	-- Stretch Marking flow) - only ever populated by RoadInspector, which
+	-- has a real editSession behind it; the standalone road-TYPE editor has
+	-- no concept of a specific placed road's station-based stretches, so
+	-- this section only appears when the caller actually passes some.
+	if props.MarkingStretches and #props.MarkingStretches > 0 then
+		propertiesChildren.StretchesHeader =
+			e(Components.Section, { Text = "Marking Stretches", LayoutOrder = afterOptions })
+		afterOptions += 1
+		for index, stretch in props.MarkingStretches do
+			propertiesChildren["StretchLabel" .. index] = e(Components.Label, {
+				Text = string.format(
+					"%d-%d studs (%s)",
+					math.floor(stretch.FromStationStuds),
+					math.floor(stretch.ToStationStuds),
+					LINE_TYPE_LABELS[stretch.Line] or stretch.Line
+				),
+				LayoutOrder = afterOptions,
+			})
+			afterOptions += 1
+			propertiesChildren["StretchRemove" .. index] = e(Components.Button, {
+				Text = "Remove",
+				Danger = true,
+				Size = UDim2.new(0, 90, 0, Theme.ROW_HEIGHT),
+				LayoutOrder = afterOptions,
+				OnClick = function()
+					if props.OnRemoveMarkingStretch then
+						props.OnRemoveMarkingStretch(index)
+					end
+				end,
+			})
+			afterOptions += 1
+		end
+	end
 	local actionButtons: { [string]: any } = {}
 	for index, action in props.Actions do
 		actionButtons["Action" .. index] = e(Components.Button, {

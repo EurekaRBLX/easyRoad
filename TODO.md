@@ -11,11 +11,6 @@ type over a free-form sub-range, siblings moving together - see
 `SHIPPED.md`) shipped a real v1, but a few things were deliberately scoped
 out rather than solved, and should get their own pass later:
 
-- **Removal is all-or-nothing.** `ClearMarkingStretches` wipes every stretch
-  on the road; there's no per-stretch removal (e.g. click an existing ghost
-  line to delete just that one). Fine for the common "one stretch per road"
-  case, annoying once someone has stretches on both directions of a divided
-  road and only wants one gone.
 - **`ComponentIndex`-keyed storage isn't stable across a structural profile
   edit.** A stretch stores which cross-section boundary it targets by
   index; if the user later adds/removes/reorders lanes in the designer and

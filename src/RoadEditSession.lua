@@ -115,6 +115,7 @@ export type RoadEditSession = {
 	ConfirmMarkingStretch: () -> (),
 	GetMarkingStretches: () -> { Markings.MarkingStretch },
 	ClearMarkingStretches: () -> (),
+	RemoveMarkingStretch: (index: number) -> (),
 	Destroy: () -> (),
 }
 
@@ -885,6 +886,19 @@ local function createRoadEditSession(
 			return
 		end
 		rebuildWithMarkingStretches({}, "Clear marking stretches")
+	end
+
+	-- Removes a single stretch by its position in GetMarkingStretches()'s
+	-- own list (the designer's stretch-management rows pass this straight
+	-- back) rather than by identity - the list is plain data round-tripped
+	-- through JSON, so there's no stable identity to match on beyond index.
+	function session.RemoveMarkingStretch(index: number)
+		if not originalData or not originalData.MarkingStretches[index] then
+			return
+		end
+		local stretches = table.clone(originalData.MarkingStretches)
+		table.remove(stretches, index)
+		rebuildWithMarkingStretches(stretches, "Remove marking stretch")
 	end
 
 	function session.GetAnchorWorldPosition(): Vector3?

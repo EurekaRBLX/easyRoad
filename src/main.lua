@@ -192,6 +192,16 @@ return function(
 		if session then
 			return
 		end
+		-- A bay/marking-stretch drag on a selected road activates its own
+		-- plugin tool and holds mouse connections + ghost Parts in
+		-- editSession's own state, independent of `session`/`designProfile`
+		-- here - switching to a placement session without cancelling first
+		-- left that tool active and its ghosts stranded in the workspace
+		-- (never reached by anything that only resets `session`/
+		-- `designProfile`, since editSession's own mode never got told to
+		-- stop). Both are no-ops if no such drag is in progress.
+		editSession.CancelBayPlacement()
+		editSession.CancelMarkingStretchPlacement()
 		designProfile = nil -- Tools and Editor are exclusive modes
 		pluginOpen = true
 		setButtonActive(true)
@@ -211,6 +221,15 @@ return function(
 
 	local function openEditor(sourceProfile: RoadProfile.RoadProfile?)
 		destroySession()
+		-- Same reasoning as startSession above: plugin:Deactivate() below
+		-- only stops whatever tool is active, it doesn't reset editSession's
+		-- own bay/stretch placement state (mode, mouse connections, ghost
+		-- Parts) - without this, switching to the standalone road-type
+		-- editor mid-drag left a stray ghost Part sitting in the workspace
+		-- indefinitely (reported: a "EasyRoadMarkingStretchGhost" visible in
+		-- the Explorer with nothing left placing it).
+		editSession.CancelBayPlacement()
+		editSession.CancelMarkingStretchPlacement()
 		plugin:Deactivate()
 		pluginOpen = true
 		setButtonActive(true)
