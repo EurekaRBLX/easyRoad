@@ -23,10 +23,9 @@ internal planning only. See `TODO.md` for planned new features and
   regardless of how sharply the offset or width changes station to
   station - not an approximation tuned to look acceptable, but the exact
   shape. `WEDGE_WIDTH_PAD` is removed entirely, now dead code.
-- Not verified in a live Studio session (this environment can't render
-  Studio) - this is the second attempt at this exact defect, so it
-  particularly warrants a real check, ideally against the same
-  exaggerated-size bay the user already has queued up for testing.
+- **Confirmed fixed live** - user re-tested against the same
+  exaggerated-size bay used to catch the padding attempt's residual gaps
+  and confirmed the seams are closed.
 
 ## Gaps at diagonal-strip seams (the "wedge, not blocks" fix's own residual gap)
 
