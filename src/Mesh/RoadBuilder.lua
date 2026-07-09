@@ -111,11 +111,21 @@ local function makePart(preview: boolean): Part
 	part.CastShadow = false
 	part.TopSurface = Enum.SurfaceType.Smooth
 	part.BottomSurface = Enum.SurfaceType.Smooth
+	-- Nothing in this codebase listens for .Touched on any road part
+	-- (checked - no `.Touched` usage anywhere), so this is a free perf win
+	-- unconditionally, for real placed roads too, not just previews.
+	-- CanQuery stays at the engine default (true) for real parts though,
+	-- unlike preview - createRoadSession.lua's ground raycast and
+	-- RoadEditSession's bay-drag positioning both need to actually hit an
+	-- existing placed road's own Parts to work correctly (continuing a
+	-- road across another's surface, finding the closest station under the
+	-- cursor while dragging a bay); CanQuery=false would make roads
+	-- invisible to those raycasts.
+	part.CanTouch = false
 	if preview then
 		part.Transparency = 0.55
 		part.CanCollide = false
 		part.CanQuery = false
-		part.CanTouch = false
 	end
 	return part
 end

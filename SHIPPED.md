@@ -4,6 +4,40 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## True "no kerb line" option, CanTouch perf win
+
+- **Added a genuine "no kerb line at all" option.** `RoadProfile
+  .KerbRestriction = "None"` ("No restriction" in the dropdown) turned out
+  to still draw a plain white edge line at every kerb boundary -
+  `Mesh/Markings.lua` only ever skipped the *yellow* restriction line, and
+  always fell back to `style.EdgeLine` whenever there wasn't one, so there
+  was actually no way to have zero markings at a kerb. Added a new
+  `KerbRestriction = "NoLine"` value ("No line at all" in
+  `UI/ProfileFields.lua`'s Kerb Lines dropdown) that suppresses both,
+  scoped to genuine kerb boundaries specifically (a non-kerb roadway edge,
+  e.g. a median, keeps its plain edge line regardless - that's a separate
+  concept from a road's kerb restriction).
+- **Disabled `CanTouch` on every generated road Part, real and preview**
+  (previously preview-only) - confirmed via a full-codebase grep that
+  nothing anywhere listens for `.Touched`, so this is a free perf win with
+  zero functional risk. Also applied to `BusStops.lua`'s marker parts,
+  where it's paired with a now-safe `CanQuery = false` too, since the only
+  code that ever raycast against a bus stop marker (`onBusStopClick`,
+  add/remove-by-click) was removed earlier this round.
+  - **`CanQuery` was NOT disabled on real (non-preview) road Parts**,
+    despite the user's original ask covering both flags - investigating
+    first (per the standing caution already logged) found two genuine
+    dependencies: `createRoadSession.lua`'s ground raycast needs to detect
+    an *existing* placed road as "ground" (continuing a road across
+    another's surface, or just finding height under the cursor while
+    hovering one), and `RoadEditSession.lua`'s bus bay drag positioning
+    needs `mouse.Hit` to actually land on the selected road's own surface.
+    `CanQuery = false` would make roads invisible to both. Scoped down to
+    just the confirmed-safe `CanTouch` win rather than risk breaking
+    either of those to chase the full claimed perf number.
+- Not verified in a live Studio session (this environment can't render
+  Studio).
+
 ## Diagonal-strip seams closed exactly with FillTriangle, not padded
 
 - **Replaced the flat `WEDGE_WIDTH_PAD` width margin with an exact fix**,

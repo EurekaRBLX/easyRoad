@@ -84,6 +84,7 @@ function BusStops.Render(model: Model)
 		marker.Anchored = true
 		marker.CanCollide = false
 		marker.CanTouch = false
+		marker.CanQuery = false
 		marker.CastShadow = false
 		marker.Color = Color3.fromRGB(255, 196, 64)
 		marker.Material = Enum.Material.Neon

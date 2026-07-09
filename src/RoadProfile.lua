@@ -32,6 +32,9 @@ export type RoadProfile = {
 	BuiltIn: boolean,
 	Components: { ProfileComponent },
 	-- Kerb (no parking/stopping) lines: "None" | "SingleYellow" | "DoubleYellow"
+	-- | "NoLine" - "None" still draws the plain edge line (no *parking*
+	-- restriction is a separate concept from no marking at all); "NoLine"
+	-- suppresses any line at the kerb boundary entirely.
 	KerbRestriction: string?,
 	-- Force centre/lane line colour: "Auto" | "White" | "Yellow"
 	MarkingColor: string?,

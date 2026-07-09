@@ -44,6 +44,7 @@ function ProfileFields.InsertMarkingOptions(
 				{ Id = "None", Text = "No restriction" },
 				{ Id = "SingleYellow", Text = "Single yellow (no parking)" },
 				{ Id = "DoubleYellow", Text = "Double yellow (no parking)" },
+				{ Id = "NoLine", Text = "No line at all" },
 			},
 			SelectedId = profile.KerbRestriction or "None",
 			OnSelected = function(id: string)

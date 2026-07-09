@@ -37,27 +37,6 @@ and an in-plugin experience:
   the panel, which is the actual root cause the PluginAction rework
   sidestepped rather than solved.
 
-## Performance
-
-**Disable CanTouch and CanQuery on generated road Parts** (user: "disabling
-those can boost up game performance like, 20%"). `Mesh/RoadBuilder.lua`'s
-`makePart(preview)` currently only turns these off (along with CanCollide)
-for `preview` parts - real, placed-road Parts keep the engine defaults
-(CanTouch/CanQuery both true), which cost real perf at scale (every deck
-strip, marking, curb, bay overlay Part fires Touched-event bookkeeping and
-is raycast/spatial-query-eligible for no reason a static road needs).
-CanCollide should very likely stay on for real roads (so characters/
-vehicles can actually stand on them) - only CanTouch and CanQuery are the
-ones to flip off. Check whether anything in this codebase actually relies
-on Touched or a raycast/query hitting a road's own deck Parts before
-flipping this (road *selection* goes through Studio's own Selection
-service on the Model, not our own raycasting, so this is probably safe,
-but worth a quick check first) - if RoadEditSession or createRoadSession's
-own click-to-place logic uses `mouse.Target`/raycasting against these
-Parts to detect "did I click the road," CanQuery=false would break that
-and would need to stay true, or those specific interactive Parts would
-need to be excluded from the change.
-
 ## Next up — needs a decision or real design work
 
 **Roundabout icon - deliberately not built.** The queued CS2-style UI polish

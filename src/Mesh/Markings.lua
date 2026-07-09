@@ -38,7 +38,7 @@ export type MarkingLine = {
 }
 
 export type MarkingOptions = {
-	KerbRestriction: string?, -- "None" | "SingleYellow" | "DoubleYellow"
+	KerbRestriction: string?, -- "None" | "SingleYellow" | "DoubleYellow" | "NoLine"
 	MarkingColor: string?, -- "Auto" | "White" | "Yellow" (centre/lane lines)
 	DashLengthM: number?, -- Override dash geometry for every dashed line on this road
 	DashGapM: number?,
@@ -158,24 +158,49 @@ function Markings.Compute(
 			-- a no-parking line already marks the roadway edge). Applies to
 			-- any roadway kind at the outer edge (Drive, Parking, Bay, ...) -
 			-- kerb lines matter most exactly where parking/bay lanes meet
-			-- the kerb.
+			-- the kerb. "NoLine" suppresses both entirely at a genuine kerb
+			-- boundary (leftIsKerb/rightIsKerb) - "None" ("No restriction")
+			-- still falls back to the plain edge line, since that's a
+			-- separate concept (no *parking* restriction, not no marking at
+			-- all); a non-kerb roadway edge (e.g. a median boundary) always
+			-- keeps its plain edge line regardless of KerbRestriction.
 			if not previousIsRoadway then
 				if kerbLineType and leftIsKerb then
-					addLine(startOffsets[i].Left + kerbInset, endOffsets[i].Left + kerbInset,
-						kerbLineType, style.YellowMarking)
+					addLine(
+						startOffsets[i].Left + kerbInset,
+						endOffsets[i].Left + kerbInset,
+						kerbLineType,
+						style.YellowMarking
+					)
+				elseif kerbRestriction == "NoLine" and leftIsKerb then
+					-- no marking at all
 				else
-					addSpec(startOffsets[i].Left + inset, endOffsets[i].Left + inset,
-						style.EdgeLine, style.EdgeLine.Color)
+					addSpec(
+						startOffsets[i].Left + inset,
+						endOffsets[i].Left + inset,
+						style.EdgeLine,
+						style.EdgeLine.Color
+					)
 				end
 			end
 			-- Right edge of a roadway run: same rule
 			if not nextIsRoadway then
 				if kerbLineType and rightIsKerb then
-					addLine(startOffsets[i].Right - kerbInset, endOffsets[i].Right - kerbInset,
-						kerbLineType, style.YellowMarking)
+					addLine(
+						startOffsets[i].Right - kerbInset,
+						endOffsets[i].Right - kerbInset,
+						kerbLineType,
+						style.YellowMarking
+					)
+				elseif kerbRestriction == "NoLine" and rightIsKerb then
+					-- no marking at all
 				else
-					addSpec(startOffsets[i].Right - inset, endOffsets[i].Right - inset,
-						style.EdgeLine, style.EdgeLine.Color)
+					addSpec(
+						startOffsets[i].Right - inset,
+						endOffsets[i].Right - inset,
+						style.EdgeLine,
+						style.EdgeLine.Color
+					)
 				end
 			end
 		end
@@ -187,19 +212,21 @@ function Markings.Compute(
 			local a, b = component, nextComponent
 			if a.Kind == "Drive" and b.Kind == "Drive" then
 				if a.Direction ~= 0 and b.Direction ~= 0 and a.Direction ~= b.Direction then
-					addSpec(boundaryStart, boundaryEnd,
-						style.CenterLine, trafficLineColor(style.CenterLine.Color))
+					addSpec(boundaryStart, boundaryEnd, style.CenterLine, trafficLineColor(style.CenterLine.Color))
 				else
 					-- Same-direction boundary: apply the component's rule
 					local rule = a.RightBoundary
 					if rule ~= nil and rule ~= "Auto" then
-						addLine(boundaryStart, boundaryEnd,
+						addLine(
+							boundaryStart,
+							boundaryEnd,
 							rule :: RegionStyles.LineType,
 							trafficLineColor(style.WhiteMarking),
-							style.LaneLine.DashLengthM, style.LaneLine.DashGapM)
+							style.LaneLine.DashLengthM,
+							style.LaneLine.DashGapM
+						)
 					else
-						addSpec(boundaryStart, boundaryEnd,
-							style.LaneLine, trafficLineColor(style.LaneLine.Color))
+						addSpec(boundaryStart, boundaryEnd, style.LaneLine, trafficLineColor(style.LaneLine.Color))
 					end
 				end
 			elseif (a.Kind == "Drive") ~= (b.Kind == "Drive") then
