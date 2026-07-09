@@ -4,6 +4,47 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Fixed dashed-marking wobble on superelevated curves; stretches overwrite instead of stacking
+
+- **Root-caused a real regression from this session's own roll-refinement
+  work** (reported live, with a screenshot of visibly zigzagging dashes on
+  a banked curve - "originally its ok, weird" after "the new patch").
+  `RoadBuilder.Build`'s roll-based station refinement (inserting extra
+  stations wherever the bank angle changes too fast between neighbours)
+  was recomputing `Superelevation.SmoothRolls` from scratch on the new,
+  denser-in-places grid. `SmoothRolls`'s box filter is a plain per-sample
+  average, not arc-length-weighted, so it's implicitly biased toward
+  whichever part of a smoothing window happens to have more samples -
+  once refinement made station density jump sharply in some spots but not
+  others, re-deriving the average on that uneven grid shifted
+  non-smoothly as the window slid across the density boundary, producing
+  small oscillations in the roll curve. Dashed markings sample `rollAt()`
+  at arbitrary intermediate points (not anchored to stations, unlike solid
+  lines and deck strips), so they visibly picked up on that now-non-smooth
+  curve as a wobble along otherwise-straight dashes - solid lines and the
+  deck barely showed it, matching exactly what was reported. Fixed by
+  resampling (linearly interpolating) the coarse grid's *already-smoothed*
+  roll curve at the new refinement stations instead of recomputing
+  smoothing on the denser grid - mathematically consistent by
+  construction (same curve, just more samples), so it can't introduce new
+  oscillation.
+- **Marking stretches now overwrite instead of stacking on genuine
+  overlap.** The multi-stretch work shipped a few messages ago intentionally
+  let a lane keep more than one stretch (e.g. solid near two separate
+  junctions), but that meant dragging a *new* stretch over a section that
+  already had one just layered both, fighting over the same physical
+  markings - reported as "i want overwrite when i do it on existing
+  section." `ConfirmMarkingStretch` now runs `applyStretchOverwrite`: for
+  each existing stretch, only the boundaries it shares with the new one
+  AND whose station range actually overlaps gets carved out (split into
+  a "before" and/or "after" remainder, or dropped entirely if fully
+  covered); boundaries the new stretch doesn't touch, or ranges that don't
+  overlap at all, are left completely alone. Two stretches on different
+  lanes, or two non-overlapping ranges on the same lane, still coexist -
+  only genuine overlaps are resolved in the new stretch's favour.
+- Not verified in a live Studio session (this environment can't render
+  Studio).
+
 ## Ghost Parts now match the real road's superelevation tilt; stale-ghost sweep
 
 Reported live: the marking-stretch ghost "sometimes shows, sometimes not"

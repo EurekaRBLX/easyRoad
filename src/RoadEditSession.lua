@@ -1040,18 +1040,92 @@ local function createRoadEditSession(
 		end
 	end
 
+	local function intersectIndices(a: { number }, b: { number }): { number }
+		local bSet: { [number]: boolean } = {}
+		for _, i in b do
+			bSet[i] = true
+		end
+		local result = {}
+		for _, i in a do
+			if bSet[i] then
+				table.insert(result, i)
+			end
+		end
+		return result
+	end
+
+	local function subtractIndices(a: { number }, b: { number }): { number }
+		local bSet: { [number]: boolean } = {}
+		for _, i in b do
+			bSet[i] = true
+		end
+		local result = {}
+		for _, i in a do
+			if not bSet[i] then
+				table.insert(result, i)
+			end
+		end
+		return result
+	end
+
+	-- Splices newStretch into existing, overwriting any overlap on shared
+	-- boundaries instead of layering both - two stretches covering the
+	-- same physical section of the same lane would otherwise fight for
+	-- the same markings there (both trying to draw at once). Only the
+	-- genuinely overlapping (same boundary AND overlapping station range)
+	-- portion of an existing stretch gets carved out: boundaries the new
+	-- stretch doesn't touch, and ranges that don't actually overlap, are
+	-- left completely alone - two stretches on different lanes, or two
+	-- non-overlapping ranges on the same lane, still coexist normally.
+	local function applyStretchOverwrite(
+		existing: { Markings.MarkingStretch },
+		newStretch: Markings.MarkingStretch
+	): { Markings.MarkingStretch }
+		local result: { Markings.MarkingStretch } = {}
+		for _, e in existing do
+			local shared = intersectIndices(e.ComponentIndices, newStretch.ComponentIndices)
+			local overlaps = #shared > 0
+				and e.FromStationStuds < newStretch.ToStationStuds
+				and e.ToStationStuds > newStretch.FromStationStuds
+			if not overlaps then
+				table.insert(result, e)
+			else
+				local unshared = subtractIndices(e.ComponentIndices, shared)
+				if #unshared > 0 then
+					table.insert(result, {
+						ComponentIndices = unshared,
+						FromStationStuds = e.FromStationStuds,
+						ToStationStuds = e.ToStationStuds,
+						Line = e.Line,
+					})
+				end
+				if e.FromStationStuds < newStretch.FromStationStuds then
+					table.insert(result, {
+						ComponentIndices = shared,
+						FromStationStuds = e.FromStationStuds,
+						ToStationStuds = newStretch.FromStationStuds,
+						Line = e.Line,
+					})
+				end
+				if e.ToStationStuds > newStretch.ToStationStuds then
+					table.insert(result, {
+						ComponentIndices = shared,
+						FromStationStuds = newStretch.ToStationStuds,
+						ToStationStuds = e.ToStationStuds,
+						Line = e.Line,
+					})
+				end
+			end
+		end
+		table.insert(result, newStretch)
+		return result
+	end
+
 	function session.ConfirmMarkingStretch()
 		if mode ~= "ConfirmingMarkingStretch" or not originalData or not stretchDraft then
 			return
 		end
-		-- Always adds a new entry rather than replacing an existing one on
-		-- the same boundary - a lane pair can need more than one stretch
-		-- (e.g. solid approaching two separate junctions), and
-		-- Markings.lua's emitBoundaryLine already supports any number of
-		-- independent stretches per boundary. Use RemoveMarkingStretch
-		-- (the per-stretch management list) to take one back out.
-		local stretches = table.clone(originalData.MarkingStretches)
-		table.insert(stretches, stretchDraft)
+		local stretches = applyStretchOverwrite(originalData.MarkingStretches, stretchDraft)
 		stretchDraft = nil
 		mode = "SegmentMenu"
 		rebuildWithMarkingStretches(stretches, "Stretch marking")

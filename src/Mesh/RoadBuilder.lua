@@ -283,6 +283,24 @@ function RoadBuilder.Build(options: BuildOptions): Model
 
 	local rolls = computeRolls(stations)
 
+	-- Piecewise-linear lookup into an arbitrary (sValues, values) sample
+	-- pair, used below to resample the already-smoothed coarse roll curve
+	-- at newly-inserted refinement stations.
+	local function interpolateAt(sValues: { number }, values: { number }, s: number): number
+		local n = #sValues
+		if s <= sValues[1] then
+			return values[1]
+		end
+		for i = 1, n - 1 do
+			if s <= sValues[i + 1] then
+				local span = sValues[i + 1] - sValues[i]
+				local f = if span > 1e-9 then (s - sValues[i]) / span else 0
+				return values[i] + (values[i + 1] - values[i]) * f
+			end
+		end
+		return values[n]
+	end
+
 	-- The station grid above is spaced purely by lateral curvature (chord
 	-- tolerance / heading change per strip) - it has no idea the bank angle
 	-- (roll) can also change quickly across a span the curve itself
@@ -312,8 +330,31 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		table.insert(refined, s1)
 	end
 	if #refined > #stations then
+		-- Resample the coarse grid's already-smoothed roll curve at the new
+		-- refinement stations, rather than recomputing SmoothRolls from
+		-- scratch on this denser, unevenly-spaced grid: SmoothRolls' box
+		-- filter is a plain per-sample average (not arc-length-weighted),
+		-- so it's biased toward whichever part of a smoothing window
+		-- happens to have more samples - once refinement makes density
+		-- jump sharply in some spots but not others, re-deriving the
+		-- average on that uneven grid shifted non-smoothly as the window
+		-- slid across the density boundary, producing small oscillations
+		-- in the roll curve. Dashed markings sample rollAt() at arbitrary
+		-- intermediate points (not station-anchored), so they visibly
+		-- picked up on that now-non-smooth curve as a "wobble" along
+		-- otherwise-straight dashes on superelevated curves; solid lines
+		-- and deck strips anchor exactly to station points and barely
+		-- showed it. Interpolating the coarse curve instead is
+		-- mathematically consistent by construction - same curve, just
+		-- resampled - so it can't introduce new oscillation.
+		local coarseStations = stations
+		local coarseRolls = rolls
+		local resampled = table.create(#refined)
+		for i, s in refined do
+			resampled[i] = interpolateAt(coarseStations, coarseRolls, s)
+		end
 		stations = refined
-		rolls = computeRolls(stations)
+		rolls = resampled
 	end
 	local stationCount = #stations
 
