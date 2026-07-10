@@ -35,6 +35,10 @@ export type RoadData = {
 	Bay: BayData?,
 	MarkingStretches: { Markings.MarkingStretch },
 	KerbStretches: { Markings.KerbStretch },
+	-- Ids of the JunctionNode (see JunctionInstance.lua) this road's start/
+	-- end connects to, if any - nil means a free (unconnected) end.
+	StartJunctionId: string?,
+	EndJunctionId: string?,
 }
 
 local RoadInstance = {}
@@ -81,6 +85,16 @@ function RoadInstance.StampModel(
 	model:SetAttribute("RW_EndPos", CurveSegment.PosAtS(segment, segment.Length))
 	model:SetAttribute("RW_StartTan", CurveSegment.TangentAtS(segment, 0))
 	model:SetAttribute("RW_EndTan", CurveSegment.TangentAtS(segment, segment.Length))
+end
+
+-- Junction connectivity is stamped separately (rather than folded into
+-- StampModel) since it's optional and set independently at each end - one
+-- end might snap to an existing junction while the other stays free, or a
+-- road placed before this feature existed has neither yet. nil clears an
+-- end back to unconnected (e.g. if the junction it referenced is deleted).
+function RoadInstance.StampJunctions(model: Model, startJunctionId: string?, endJunctionId: string?)
+	model:SetAttribute("RW_StartJunctionId", startJunctionId)
+	model:SetAttribute("RW_EndJunctionId", endJunctionId)
 end
 
 -- Bus bay placement is stamped separately (rather than folded into
@@ -252,6 +266,8 @@ function RoadInstance.Read(model: Model): RoadData?
 			profileEnd = RoadProfile.Deserialize(endRaw)
 		end
 	end
+	local startJunctionId = model:GetAttribute("RW_StartJunctionId")
+	local endJunctionId = model:GetAttribute("RW_EndJunctionId")
 	return {
 		Curve = PolyCurve.new({ segment }),
 		ProfileStart = profileStart,
@@ -259,6 +275,8 @@ function RoadInstance.Read(model: Model): RoadData?
 		Bay = bayFromModel(model),
 		MarkingStretches = stretchesFromModel(model),
 		KerbStretches = kerbStretchesFromModel(model),
+		StartJunctionId = if typeof(startJunctionId) == "string" then startJunctionId else nil,
+		EndJunctionId = if typeof(endJunctionId) == "string" then endJunctionId else nil,
 	}
 end
 

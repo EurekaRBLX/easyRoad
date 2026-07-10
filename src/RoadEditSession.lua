@@ -1109,6 +1109,8 @@ local function createRoadEditSession(
 			Bay = originalData.Bay,
 			MarkingStretches = originalData.MarkingStretches,
 			KerbStretches = originalData.KerbStretches,
+			StartJunctionId = originalData.StartJunctionId,
+			EndJunctionId = originalData.EndJunctionId,
 		}
 		if recording then
 			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)

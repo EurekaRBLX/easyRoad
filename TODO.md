@@ -43,45 +43,78 @@ building one now would be orphaned geometry with no consumer. Revisit once
 roundabouts (see Intersections & roundabouts below) or some other roundabout-
 adjacent UI actually exists to use it.
 
-**Junctions & intersections.** With placed roads now selectable and
-editable, the next structurally biggest gap is that roads can only ever
-meet end-to-end (chained placement or endpoint snap) — there's no way to
-make two roads actually intersect mid-network, no corner fillets, no stop
-lines, no roundabouts. This is a large, mostly-greenfield feature (junction
-node data model, per-lane connection graph, re-deriving markings at the
-junction) and probably deserves a design pass before code. Worth reusing
-the inspector's rebuild-in-place convention (`RoadEditSession.Apply`) for
-whatever rebuilds a junction node's roads after an edit, so the two
-features share one pattern instead of two.
+## Junctions & intersections — phased plan (Phase 1a shipped, rest in progress)
 
-Smaller alternative that builds on the inspector instead of junctions:
-dragging a placed road's endpoint, or a duplicate/delete action in the
-inspector panel — both reuse the same Apply-in-place machinery already
-built.
+CS2-style node model: a `JunctionNode` (`JunctionInstance.lua`) is a real,
+first-class entity roads reference by Id (`RW_StartJunctionId`/
+`RW_EndJunctionId` attributes, see `RoadInstance.lua`), replacing pure
+positional endpoint-snap coincidence. A road ending at a junction is just
+`curve:Slice(0, s)` handed to the unmodified `RoadBuilder.Build` (the same
+mechanism already used for bus-bay tapers/marking stretches) - the
+junction's own pad/fillet surface is a separate module that stitches the
+seam, so ordinary road geometry needed no surgery. See `SHIPPED.md` for
+what Phase 1a actually built.
+
+**Phase 1a (shipped):** node data model, auto-create-on-snap at both
+placement endpoints (not just the chained-continuation case), a v1
+circular asphalt pad sized to the widest connected road. Deliberately
+scoped out of Phase 1a, in rough priority order:
+
+- **No skip-for-simple-pass-through.** Every 2-road meeting point gets a
+  pad, including a plain chained straight continuation where one isn't
+  really needed - harmless but redundant geometry. A fast follow: skip pad
+  generation when exactly 2 roads meet with roughly-opposite tangents and
+  matching profiles.
+- **No orphan cleanup on road deletion.** Deleting a road via Studio's
+  native Delete key doesn't currently shrink or remove the junction it was
+  connected to (there's no plugin-level delete hook to react to today -
+  would need a `workspace.Roads.ChildRemoved` listener, owned at the
+  `main.lua` level rather than per-session so it doesn't come and go with
+  placement tool activation).
+- **No junction selection/editing UI.** Can't currently select a placed
+  junction, see what's connected to it, or delete one directly (only
+  indirectly, by deleting all its roads and never rebuilding the pad - see
+  above).
+- **No mid-span split tool.** A junction is only ever created where two
+  roads' endpoints already coincide (on placement). Clicking a point
+  partway along an *existing* road to split it and insert a junction there
+  is a separate, not-yet-built tool - this is also the prerequisite for
+  "a new road crosses an existing one mid-network," not just endpoint-to-
+  endpoint meetings.
+- **Pad is a crude circular disc, not an exact fillet polygon.** Unlike
+  curve joints and superelevation wedges elsewhere in `Mesh/`, which
+  converged on exact corner geometry via `FillTriangle` after a padding
+  scheme proved insufficient, the junction pad doesn't yet compute the
+  real per-corner fillet outline from each connected road's edge
+  geometry - it's sized generously enough to always cover the seam, but
+  won't look like a proper rounded-corner intersection.
+- **No lane markings drawn through the junction.** Stop lines, give-way
+  markings, crosswalks, lane-guidance paint - `Markings.Compute` is
+  fundamentally "one road, station 0 to Length" and deliberately wasn't
+  touched; junction marking geometry needs its own module.
+
+**Phase 2 - roundabouts.** A specialised junction node, same connectivity
+model, different surface generator (circular deck instead of a fillet).
+Needs a new arc-based `CurveSegment.SegmentKind` first - there's currently
+no true circular-arc primitive, only Line/Quadratic/Cubic Bézier. Variants
+in roughly increasing complexity: single-lane, multi-lane concentric
+standard, multi-lane concentric with turbo markings, true turbo (spiral,
+Netherlands-style) roundabouts.
+
+**Phase 3 - lane connector + traffic light API.** Per-lane connection
+graph at a junction (drag connections between incoming/outgoing lanes,
+markings re-render from the graph); a mock Traffic Light API sharing that
+same per-lane graph model so it's designed once for both.
+
+Smaller, independent alternative that builds on the inspector instead of
+junctions: dragging a placed road's endpoint, or a duplicate/delete action
+in the inspector panel — both reuse the `RoadEditSession.Apply` rebuild-
+in-place machinery already built, unrelated to the junction work above.
 
 ## Backlog (not yet started)
 
-- **Intersections & roundabouts.** Junction nodes where roads meet
-  mid-network, corner fillets, stop lines. Biggest missing capability
-  overall. Roundabout variants to support, in roughly increasing order of
-  complexity:
-  - **Single-lane roundabouts** - standard geometry for low-capacity
-    intersections.
-  - **Multi-lane, concentric standard** - the classic multi-lane layout,
-    concentric rings with normal (non-spiral) lane markings.
-  - **Multi-lane, concentric standard with turbo markings** - same
-    concentric geometry, but with spiral/turbo-style lane-guidance
-    markings painted on top to guide lane changes on approach.
-  - **True turbo roundabouts** - spiral geometry with physical or marked
-    lane dividers between rings, not just concentric circles (the
-    Netherlands-style layout designed to prevent side-by-side lane
-    changes entirely).
-- **Lane connector (CS2-style).** Per-lane graph at junctions; drag
-  connections between incoming/outgoing lanes; markings re-render from the
-  connection graph.
-- **Traffic Light API (mock).** Reserve an API surface for a future plugin
-  to specify signal phases down to a per-lane basis. Shares the per-lane
-  graph model with the lane connector — design together.
+- **Crossings.** Zebra crossings and HK/UK-style uncontrolled cautionary
+  crossings (zigzag give-way markings).
 - **Crossings.** Zebra crossings and HK/UK-style uncontrolled cautionary
   crossings (zigzag give-way markings).
 - **Tunnels / bridges standard.** Auto-generated barriers/parapets on

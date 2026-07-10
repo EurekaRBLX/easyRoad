@@ -26,7 +26,10 @@ local CurveSegment = require("./Geometry/CurveSegment")
 local PolyCurve = require("./Geometry/PolyCurve")
 local Fitting = require("./Geometry/Fitting")
 local RoadBuilder = require("./Mesh/RoadBuilder")
+local JunctionBuilder = require("./Mesh/JunctionBuilder")
 local RoadProfile = require("./RoadProfile")
+local RoadInstance = require("./RoadInstance")
+local JunctionInstance = require("./JunctionInstance")
 local RegionStyles = require("./RegionStyles")
 local Settings = require("./Settings")
 local Keybinds = require("./Keybinds")
@@ -196,6 +199,79 @@ local function createRoadSession(
 		return bestPos, bestTangent
 	end
 
+	-- Finds an existing road (other than `exclude`) whose start or end lies
+	-- within snap radius of `pos` - used after committing a new road to
+	-- decide whether its own start/end should be linked into a JunctionNode.
+	-- A separate, simpler pass from findEndpointSnap above (which only
+	-- guides the click position/tangent while still placing): this one runs
+	-- after the fact and doesn't care about tangents, just "is there another
+	-- road's endpoint right here" - so it applies uniformly regardless of
+	-- whether the new road's point got there via a click-time snap or a
+	-- chained/seeded continuation.
+	local function findConnectableEndpoint(pos: Vector3, exclude: Model): (Model?, ("Start" | "End")?)
+		local folder = getRoadsFolder(false)
+		if not folder then
+			return nil, nil
+		end
+		local bestDistance = settings.SnapRadiusStuds
+		local bestModel: Model? = nil
+		local bestEnd: ("Start" | "End")? = nil
+		for _, child in folder:GetChildren() do
+			if child == exclude or child:GetAttribute("RW_Road") ~= true then
+				continue
+			end
+			local startPos = child:GetAttribute("RW_StartPos") :: Vector3?
+			local endPos = child:GetAttribute("RW_EndPos") :: Vector3?
+			if startPos then
+				local d = (startPos - pos).Magnitude
+				if d < bestDistance then
+					bestDistance = d
+					bestModel = child :: Model
+					bestEnd = "Start"
+				end
+			end
+			if endPos then
+				local d = (endPos - pos).Magnitude
+				if d < bestDistance then
+					bestDistance = d
+					bestModel = child :: Model
+					bestEnd = "End"
+				end
+			end
+		end
+		return bestModel, bestEnd
+	end
+
+	-- Links `model`'s given end (and, if provided, `otherModel`'s
+	-- `otherEnd`) to whatever JunctionNode already sits at `pos`, reusing
+	-- one within snap radius so repeated connections at the same corner
+	-- don't stack duplicate nodes, creating a fresh one otherwise - then
+	-- rebuilds that junction's pad.
+	local function connectAt(
+		pos: Vector3,
+		model: Model,
+		modelEnd: "Start" | "End",
+		otherModel: Model?,
+		otherEnd: ("Start" | "End")?
+	)
+		local junctionModel = JunctionInstance.FindNear(pos, settings.SnapRadiusStuds) or JunctionInstance.Create(pos)
+		local junctionData = JunctionInstance.Read(junctionModel)
+		if not junctionData then
+			return
+		end
+		local function setEnd(m: Model, whichEnd: "Start" | "End")
+			local data = RoadInstance.Read(m)
+			local startId = if whichEnd == "Start" then junctionData.Id elseif data then data.StartJunctionId else nil
+			local endId = if whichEnd == "End" then junctionData.Id elseif data then data.EndJunctionId else nil
+			RoadInstance.StampJunctions(m, startId, endId)
+		end
+		setEnd(model, modelEnd)
+		if otherModel and otherEnd then
+			setEnd(otherModel, otherEnd)
+		end
+		JunctionBuilder.Rebuild(junctionData.Id, getStyle(), settings)
+	end
+
 	local function applyGridSnap(pos: Vector3): Vector3
 		if not settings.SnapToGrid or settings.GridSizeStuds <= 0 then
 			return pos
@@ -355,6 +431,18 @@ local function createRoadSession(
 			Preview = false,
 		})
 		model.Parent = getRoadsFolder(true)
+
+		local startPos = curve:PosAt(0)
+		local endPos = curve:PosAt(curve.Length)
+		local otherAtStart, otherStartEnd = findConnectableEndpoint(startPos, model)
+		if otherAtStart then
+			connectAt(startPos, model, "Start", otherAtStart, otherStartEnd)
+		end
+		local otherAtEnd, otherEndEnd = findConnectableEndpoint(endPos, model)
+		if otherAtEnd then
+			connectAt(endPos, model, "End", otherAtEnd, otherEndEnd)
+		end
+
 		if recording then
 			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
 		end

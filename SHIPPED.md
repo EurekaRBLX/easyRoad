@@ -4,6 +4,37 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junctions Phase 1a: node data model + auto-fillet pads
+
+- **First real step of the intersections/roundabouts feature** (CS2-style:
+  an intersection is a node, not just two roads happening to touch). Two
+  roads meeting has always been pure positional coincidence up to now -
+  each road's `Curve` is a fully independent `PolyCurve`, with nothing
+  recording "this road's end is the same physical point as that other
+  road's start." `JunctionInstance.lua` adds a real `JunctionNode` (its own
+  Model under `workspace.Junctions`, a stable GUID) that roads reference by
+  Id (`RW_StartJunctionId`/`RW_EndJunctionId` attributes, threaded through
+  `RoadInstance.RoadData`) - the junction doesn't keep its own reverse list
+  of connected roads (same "single source of truth, no dual bookkeeping"
+  choice already made for Bay/MarkingStretches/KerbStretches); it's derived
+  by scanning for matching Ids.
+- **Endpoint snapping now creates junctions on BOTH ends of a placement**,
+  not just the already-working chained-continuation case.
+  `createRoadSession.commitRoad` checks both the new road's start and end
+  position against every other road's stamped endpoint attributes after
+  committing, and links whichever ends coincide into a shared junction
+  (reusing one within snap radius if a third road lands on an
+  already-shared corner, rather than stacking duplicates) - all inside the
+  same `ChangeHistoryService` recording as the placement itself, so undo
+  doesn't leave an orphaned junction or a half-linked neighbour behind.
+- **`JunctionBuilder.lua`** builds the junction's visible geometry: a v1
+  circular asphalt pad flush with the roads' deck height, radius sized to
+  the widest connected road's profile. Deliberately simple for a first
+  pass - no exact per-corner fillet polygon yet, no skip for a plain
+  2-road pass-through, no lane markings drawn through it. Full phased plan
+  (Phase 2 roundabouts, Phase 3 lane connector/traffic-light API) and the
+  complete Phase 1a scope-out list are in `TODO.md`.
+
 ## Fixed kerb-stretch selectability/rendering (EdgeIndex) + category autofocus
 
 - **All kerb lines are now selectable, and stretches actually render.**
