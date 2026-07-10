@@ -29,6 +29,7 @@ local RoadBuilder = require("./Mesh/RoadBuilder")
 local JunctionBuilder = require("./Mesh/JunctionBuilder")
 local RoadProfile = require("./RoadProfile")
 local RoadInstance = require("./RoadInstance")
+local RoadSplit = require("./RoadSplit")
 local JunctionInstance = require("./JunctionInstance")
 local RegionStyles = require("./RegionStyles")
 local Settings = require("./Settings")
@@ -242,6 +243,18 @@ local function createRoadSession(
 		return bestModel, bestEnd
 	end
 
+	-- Stamps `junctionId` onto just one end of `m`, reading its current
+	-- attributes fresh so the OTHER end's existing link (if any) is
+	-- preserved rather than clobbered - shared by connectAt and the
+	-- mid-span split path below, both of which only ever touch one end at
+	-- a time even when called more than once for the same model.
+	local function stampEndJunction(m: Model, whichEnd: "Start" | "End", junctionId: string)
+		local data = RoadInstance.Read(m)
+		local startId = if whichEnd == "Start" then junctionId elseif data then data.StartJunctionId else nil
+		local endId = if whichEnd == "End" then junctionId elseif data then data.EndJunctionId else nil
+		RoadInstance.StampJunctions(m, startId, endId)
+	end
+
 	-- Links `model`'s given end (and, if provided, `otherModel`'s
 	-- `otherEnd`) to whatever JunctionNode already sits at `pos`, reusing
 	-- one within snap radius so repeated connections at the same corner
@@ -259,17 +272,62 @@ local function createRoadSession(
 		if not junctionData then
 			return
 		end
-		local function setEnd(m: Model, whichEnd: "Start" | "End")
-			local data = RoadInstance.Read(m)
-			local startId = if whichEnd == "Start" then junctionData.Id elseif data then data.StartJunctionId else nil
-			local endId = if whichEnd == "End" then junctionData.Id elseif data then data.EndJunctionId else nil
-			RoadInstance.StampJunctions(m, startId, endId)
-		end
-		setEnd(model, modelEnd)
+		stampEndJunction(model, modelEnd, junctionData.Id)
 		if otherModel and otherEnd then
-			setEnd(otherModel, otherEnd)
+			stampEndJunction(otherModel, otherEnd, junctionData.Id)
 		end
 		JunctionBuilder.Rebuild(junctionData.Id, getStyle(), settings)
+	end
+
+	-- Finds the closest point on any OTHER splittable road's curve to
+	-- `pos`, within a tolerance that scales with that road's own width (so
+	-- clicking anywhere on its visible pavement counts as "connect here,"
+	-- not just within a fixed small radius of its exact centerline) - the
+	-- fallback when neither endpoint matched (findConnectableEndpoint
+	-- above), so a new road drawn crossing an existing one mid-span can
+	-- still connect to it instead of silently overlapping with no
+	-- relationship at all.
+	local function findMidSpanMatch(pos: Vector3, exclude: Model): (Model?, number?)
+		local folder = getRoadsFolder(false)
+		if not folder then
+			return nil, nil
+		end
+		local best: Model? = nil
+		local bestStation: number? = nil
+		local bestDistance = math.huge
+		for _, child in folder:GetChildren() do
+			if child == exclude or child:GetAttribute("RW_Road") ~= true then
+				continue
+			end
+			if not RoadSplit.CanSplit(child) then
+				continue
+			end
+			local data = RoadInstance.Read(child)
+			if not data then
+				continue
+			end
+			local station = data.Curve:ClosestS(pos)
+			local distance = (data.Curve:PosAt(station) - pos).Magnitude
+			local tolerance = RoadProfile.TotalWidthM(data.ProfileStart) / 2 * settings.MetersToStuds
+				+ settings.SnapRadiusStuds
+			if distance < tolerance and distance < bestDistance then
+				bestDistance = distance
+				best = child :: Model
+				bestStation = station
+			end
+		end
+		return best, bestStation
+	end
+
+	-- Splits `road` at `station` and links `model`'s given end to the fresh
+	-- junction created there - the mid-span counterpart of connectAt above.
+	local function connectAtSplit(road: Model, station: number, model: Model, modelEnd: "Start" | "End")
+		local _, _, junctionId = RoadSplit.SplitAt(road, station, getStyle(), settings)
+		if not junctionId then
+			return
+		end
+		stampEndJunction(model, modelEnd, junctionId)
+		JunctionBuilder.Rebuild(junctionId, getStyle(), settings)
 	end
 
 	local function applyGridSnap(pos: Vector3): Vector3
@@ -437,10 +495,20 @@ local function createRoadSession(
 		local otherAtStart, otherStartEnd = findConnectableEndpoint(startPos, model)
 		if otherAtStart then
 			connectAt(startPos, model, "Start", otherAtStart, otherStartEnd)
+		else
+			local midRoad, midStation = findMidSpanMatch(startPos, model)
+			if midRoad and midStation then
+				connectAtSplit(midRoad, midStation, model, "Start")
+			end
 		end
 		local otherAtEnd, otherEndEnd = findConnectableEndpoint(endPos, model)
 		if otherAtEnd then
 			connectAt(endPos, model, "End", otherAtEnd, otherEndEnd)
+		else
+			local midRoad, midStation = findMidSpanMatch(endPos, model)
+			if midRoad and midStation then
+				connectAtSplit(midRoad, midStation, model, "End")
+			end
 		end
 
 		if recording then

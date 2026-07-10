@@ -6,10 +6,11 @@
 -- the widest connected road, flush with the roads' own deck height. It
 -- doesn't yet compute an exact per-corner fillet polygon (the way curve
 -- joints and superelevation wedges do elsewhere in Mesh/ via FillTriangle),
--- doesn't skip itself for a plain two-road pass-through (a straight chained
--- placement gets a redundant-but-harmless pad too), and doesn't re-derive
--- lane markings through the junction - see TODO.md's "Junctions &
--- roundabouts" section for the follow-up work this is scoped out of.
+-- and doesn't re-derive lane markings through the junction - see TODO.md's
+-- "Junctions & roundabouts" section for the follow-up work this is scoped
+-- out of. It DOES skip itself for a plain two-road pass-through (matching
+-- profiles, roughly opposite outward directions) - a chained straight or
+-- gently-curving continuation doesn't need a seam pad at all.
 
 local RoadProfile = require("../RoadProfile")
 local RegionStyles = require("../RegionStyles")
@@ -36,6 +37,50 @@ local function profileAtJunctionEnd(road: Model, junctionId: string): RoadProfil
 	return data.ProfileStart
 end
 
+-- The direction `road` extends AWAY from this junction - +TangentAt(0) if
+-- the junction is at the road's start (the road runs forward from here),
+-- -TangentAt(Length) if it's at the road's end (the road arrives here
+-- travelling forward, so away-from-junction is the reverse).
+local function outwardTangentAt(road: Model, junctionId: string): Vector3?
+	local data = RoadInstance.Read(road)
+	if not data then
+		return nil
+	end
+	if data.StartJunctionId == junctionId then
+		return data.Curve:TangentAt(0)
+	elseif data.EndJunctionId == junctionId then
+		return -data.Curve:TangentAt(data.Curve.Length)
+	end
+	return nil
+end
+
+-- Roughly opposite outward directions (within ~32 degrees of dead
+-- straight) - a chained continuation's tangent is locked exactly
+-- opposite (dot = -1); this leaves headroom for a gentle through-curve
+-- placed independently rather than chained.
+local PASS_THROUGH_DOT_THRESHOLD = -0.85
+
+-- True when exactly two roads meet here with matching profiles, extending
+-- away from the junction in roughly opposite directions - a plain chained
+-- continuation (or gentle through-curve) that doesn't need a seam pad at
+-- all, as opposed to a genuine corner or crossing.
+local function isSmoothPassThrough(roads: { Model }, junctionId: string): boolean
+	if #roads ~= 2 then
+		return false
+	end
+	local profileA = profileAtJunctionEnd(roads[1], junctionId)
+	local profileB = profileAtJunctionEnd(roads[2], junctionId)
+	if not profileA or not profileB or profileA.Id ~= profileB.Id then
+		return false
+	end
+	local tangentA = outwardTangentAt(roads[1], junctionId)
+	local tangentB = outwardTangentAt(roads[2], junctionId)
+	if not tangentA or not tangentB then
+		return false
+	end
+	return tangentA:Dot(tangentB) < PASS_THROUGH_DOT_THRESHOLD
+end
+
 -- Rebuilds the junction's pad from scratch based on whichever roads
 -- currently reference it - call after stamping a road's Start/EndJunctionId
 -- (both the newly placed road and whatever it snapped onto), and again after
@@ -58,6 +103,9 @@ function JunctionBuilder.Rebuild(
 	if #roads < 2 then
 		-- A single connected road (or none, if this was the last one
 		-- removed) doesn't need a seam pad at all.
+		return
+	end
+	if isSmoothPassThrough(roads, junctionId) then
 		return
 	end
 

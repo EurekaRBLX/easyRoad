@@ -4,6 +4,33 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junctions Phase 1b: mid-span connect + skip pads for pass-throughs
+
+- **Drawing a new road across an existing one now actually connects them**,
+  not just visual overlap. Previously a junction could only form where two
+  roads' stored endpoints coincided (Phase 1a) - confirmed live that this
+  wasn't enough ("i cant connect new roads to it yet"). `RoadSplit.lua`
+  splits an existing road at whatever station a new road's endpoint lands
+  closest to, using genuine Bézier subdivision (`CurveSegment.Sub`, added
+  via the standard De Casteljau split algorithm) rather than
+  `PolyCurve:Slice`'s lightweight view - the two resulting pieces are real,
+  independently-persisted roads, each stamped with their own curve control
+  points. A JunctionNode is created at the cut and the new road links to
+  it, same as an ordinary endpoint connection. Match tolerance scales with
+  the existing road's own width (half its pavement plus the normal snap
+  radius) so clicking anywhere on its visible surface counts, not just
+  within a few studs of its exact centreline.
+  - v1 scope: only plain roads can be split (no active widen/narrow
+    transition, no bus bay - both refuse cleanly rather than risk wrong
+    geometry); MarkingStretches/KerbStretches on the original road are
+    dropped rather than remapped across the cut.
+- **Junction pads now skip themselves for a plain 2-road pass-through**
+  (matching profiles, roughly opposite outward tangents - a chained
+  straight or gently-curving continuation) - confirmed live that every
+  meeting point getting a pad, including ordinary chaining, was more
+  clutter than signal. A genuine corner, crossing, or 3+-way junction
+  still gets one.
+
 ## Junctions Phase 1a: node data model + auto-fillet pads
 
 - **First real step of the intersections/roundabouts feature** (CS2-style:

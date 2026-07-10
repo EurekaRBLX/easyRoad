@@ -198,6 +198,57 @@ function CurveSegment.CurvatureAtS(segment: Segment, s: number): number
 	return -cross / (speedSq ^ 1.5)
 end
 
+-- Subdivision -------------------------------------------------------------
+
+-- Standard De Casteljau split: given control points P0..Pn and a parameter
+-- t, returns the control points of the two sub-curves over [0,t] and [t,1]
+-- (each reparametrized to its own [0,1]). Degree-agnostic (works for lines,
+-- quadratics, and cubics alike).
+local function deCasteljauSplit(points: { Vector3 }, t: number): ({ Vector3 }, { Vector3 })
+	local n = #points
+	local working = points
+	local left = table.create(n)
+	local right = table.create(n)
+	left[1] = working[1]
+	right[n] = working[n]
+	for r = 1, n - 1 do
+		local nextRow = table.create(n - r)
+		for i = 1, n - r do
+			nextRow[i] = working[i]:Lerp(working[i + 1], t)
+		end
+		left[r + 1] = nextRow[1]
+		right[n - r] = nextRow[#nextRow]
+		working = nextRow
+	end
+	return left, right
+end
+
+-- Extracts the portion of `segment` between distances s0 and s1 (0 <= s0 <
+-- s1 <= segment.Length) as its own independent Segment, with genuinely new
+-- control points (not just a station-offset view like PolyCurve:Slice) -
+-- so it can be persisted (RoadInstance.StampModel) and read back later.
+-- Used to split one placed road into two when a new road connects to it
+-- mid-span rather than at an existing endpoint (see RoadSplit.lua).
+function CurveSegment.Sub(segment: Segment, s0: number, s1: number): Segment
+	local t0 = CurveSegment.TAtS(segment, s0)
+	local t1 = CurveSegment.TAtS(segment, s1)
+	if segment.Kind == "Line" then
+		return CurveSegment.Line(evaluate(segment, t0), evaluate(segment, t1))
+	end
+	local points: { Vector3 } = if segment.Kind == "Quadratic"
+		then { segment.P0, segment.P1, segment.P2 :: Vector3 }
+		else { segment.P0, segment.P1, segment.P2 :: Vector3, segment.P3 :: Vector3 }
+	-- First isolate [0, t1] (its left branch), then isolate [t0, t1] within
+	-- that (its right branch, after rescaling t0 into the [0, t1] range).
+	local uptoT1 = deCasteljauSplit(points, t1)
+	local t0Rescaled = if t1 > 1e-9 then t0 / t1 else 0
+	local _, sub = deCasteljauSplit(uptoT1, t0Rescaled)
+	if segment.Kind == "Quadratic" then
+		return CurveSegment.Quadratic(sub[1], sub[2], sub[3])
+	end
+	return CurveSegment.Cubic(sub[1], sub[2], sub[3], sub[4])
+end
+
 CurveSegment.Evaluate = evaluate
 CurveSegment.Derivative = derivative
 

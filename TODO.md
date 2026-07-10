@@ -43,7 +43,7 @@ building one now would be orphaned geometry with no consumer. Revisit once
 roundabouts (see Intersections & roundabouts below) or some other roundabout-
 adjacent UI actually exists to use it.
 
-## Junctions & intersections — phased plan (Phase 1a shipped, rest in progress)
+## Junctions & intersections — phased plan (Phase 1a+1b shipped, rest in progress)
 
 CS2-style node model: a `JunctionNode` (`JunctionInstance.lua`) is a real,
 first-class entity roads reference by Id (`RW_StartJunctionId`/
@@ -53,18 +53,34 @@ positional endpoint-snap coincidence. A road ending at a junction is just
 mechanism already used for bus-bay tapers/marking stretches) - the
 junction's own pad/fillet surface is a separate module that stitches the
 seam, so ordinary road geometry needed no surgery. See `SHIPPED.md` for
-what Phase 1a actually built.
+what Phase 1a/1b actually built.
 
 **Phase 1a (shipped):** node data model, auto-create-on-snap at both
 placement endpoints (not just the chained-continuation case), a v1
-circular asphalt pad sized to the widest connected road. Deliberately
-scoped out of Phase 1a, in rough priority order:
+circular asphalt pad sized to the widest connected road.
 
-- **No skip-for-simple-pass-through.** Every 2-road meeting point gets a
-  pad, including a plain chained straight continuation where one isn't
-  really needed - harmless but redundant geometry. A fast follow: skip pad
-  generation when exactly 2 roads meet with roughly-opposite tangents and
-  matching profiles.
+**Phase 1b (shipped):** mid-span connect - a new road whose endpoint lands
+on an EXISTING road's curve (not just its stored endpoints) now splits
+that road at the closest station (`CurveSegment.Sub`, genuine Bézier
+subdivision via `RoadSplit.lua`, not just a `PolyCurve:Slice` view) and
+inserts a junction there, so "draw a new road crossing an existing one"
+actually connects instead of just visually overlapping. Also: the pad now
+skips itself for a plain 2-road pass-through (matching profiles, roughly
+opposite outward tangents) - confirmed live in Studio as wanted, since a
+chained straight/gently-curving continuation doesn't read as an
+intersection at all.
+
+Deliberately scoped out of Phase 1a/1b, in rough priority order:
+
+- **`RoadSplit` refuses to split a road with a transition or bus bay.**
+  Interpolating the exact profile at an arbitrary cut station, or deciding
+  which piece keeps a bay, is real geometry work not attempted yet -
+  splitting simply doesn't happen for those roads (the new road's end is
+  left unconnected, same as today).
+- **`RoadSplit` drops MarkingStretches/KerbStretches across a cut** rather
+  than remapping their station ranges into each piece's own local
+  coordinate space - the same class of complexity already flagged for
+  marking stretches surviving a structural profile edit, above.
 - **No orphan cleanup on road deletion.** Deleting a road via Studio's
   native Delete key doesn't currently shrink or remove the junction it was
   connected to (there's no plugin-level delete hook to react to today -
@@ -75,12 +91,6 @@ scoped out of Phase 1a, in rough priority order:
   junction, see what's connected to it, or delete one directly (only
   indirectly, by deleting all its roads and never rebuilding the pad - see
   above).
-- **No mid-span split tool.** A junction is only ever created where two
-  roads' endpoints already coincide (on placement). Clicking a point
-  partway along an *existing* road to split it and insert a junction there
-  is a separate, not-yet-built tool - this is also the prerequisite for
-  "a new road crosses an existing one mid-network," not just endpoint-to-
-  endpoint meetings.
 - **Pad is a crude circular disc, not an exact fillet polygon.** Unlike
   curve joints and superelevation wedges elsewhere in `Mesh/`, which
   converged on exact corner geometry via `FillTriangle` after a padding
