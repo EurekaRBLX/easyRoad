@@ -47,7 +47,6 @@ local MIN_STEP = 0.75
 local MAX_TURN_PER_STEP = 0.3 -- Radians of heading change allowed per strip
 local MAX_ROLL_PER_STEP = 0.02 -- Radians of superelevation (bank) change allowed per strip
 local ROLL_WEDGE_EPSILON = 1e-4 -- Roll change (radians) per strip above which a flat box would visibly kink
-local RUNOFF_LENGTH_STUDS = 40 -- Superelevation smoothing window
 
 local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
 	Drive = Enum.Material.Asphalt,
@@ -254,14 +253,21 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	-- Per-station data ---------------------------------------------------------
 	-- Both the curvature-noise smoothing window and the end-of-segment
 	-- runoff taper below scale with this segment's own length (capped at
-	-- RUNOFF_LENGTH_STUDS) instead of always using a fixed 40 studs -
-	-- otherwise a short segment gets disproportionately eaten by the taper
-	-- (or over-smoothed) compared to a long one, so two curves of the same
-	-- radius but different lengths would bank to visibly different peak
-	-- amounts. Capping at 30% of length on each end always leaves at least
-	-- a 40% flat "full bank" middle zone, so short curves scale the same
-	-- way long ones do instead of being dominated by the absolute constant.
-	local runoffLength = math.min(RUNOFF_LENGTH_STUDS, length * 0.3)
+	-- settings.SuperelevationRunoffM converted to studs) instead of always
+	-- using a fixed stud constant - otherwise a short segment gets
+	-- disproportionately eaten by the taper (or over-smoothed) compared to
+	-- a long one, so two curves of the same radius but different lengths
+	-- would bank to visibly different peak amounts. Capping at 30% of
+	-- length on each end always leaves at least a 40% flat "full bank"
+	-- middle zone, so short curves scale the same way long ones do instead
+	-- of being dominated by the absolute constant. Converting the runoff
+	-- distance from a user-configurable REAL-WORLD meters setting (not a
+	-- bare stud constant) means the transition covers the same real-world
+	-- distance regardless of a user's own studs-per-meter scale - a fixed
+	-- stud value made the same transition feel more abrupt for anyone
+	-- running a higher studs-per-meter ratio than the ~3.571 default.
+	local runoffLengthStuds = settings.SuperelevationRunoffM * settings.MetersToStuds
+	local runoffLength = math.min(runoffLengthStuds, length * 0.3)
 
 	local function computeRolls(stationList: { number }): { number }
 		local computed = table.create(#stationList)

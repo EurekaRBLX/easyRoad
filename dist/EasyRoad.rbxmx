@@ -1581,7 +1581,6 @@ local MIN_STEP = 0.75
 local MAX_TURN_PER_STEP = 0.3 -- Radians of heading change allowed per strip
 local MAX_ROLL_PER_STEP = 0.02 -- Radians of superelevation (bank) change allowed per strip
 local ROLL_WEDGE_EPSILON = 1e-4 -- Roll change (radians) per strip above which a flat box would visibly kink
-local RUNOFF_LENGTH_STUDS = 40 -- Superelevation smoothing window
 
 local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
 	Drive = Enum.Material.Asphalt,
@@ -1788,14 +1787,21 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	-- Per-station data ---------------------------------------------------------
 	-- Both the curvature-noise smoothing window and the end-of-segment
 	-- runoff taper below scale with this segment's own length (capped at
-	-- RUNOFF_LENGTH_STUDS) instead of always using a fixed 40 studs -
-	-- otherwise a short segment gets disproportionately eaten by the taper
-	-- (or over-smoothed) compared to a long one, so two curves of the same
-	-- radius but different lengths would bank to visibly different peak
-	-- amounts. Capping at 30% of length on each end always leaves at least
-	-- a 40% flat "full bank" middle zone, so short curves scale the same
-	-- way long ones do instead of being dominated by the absolute constant.
-	local runoffLength = math.min(RUNOFF_LENGTH_STUDS, length * 0.3)
+	-- settings.SuperelevationRunoffM converted to studs) instead of always
+	-- using a fixed stud constant - otherwise a short segment gets
+	-- disproportionately eaten by the taper (or over-smoothed) compared to
+	-- a long one, so two curves of the same radius but different lengths
+	-- would bank to visibly different peak amounts. Capping at 30% of
+	-- length on each end always leaves at least a 40% flat "full bank"
+	-- middle zone, so short curves scale the same way long ones do instead
+	-- of being dominated by the absolute constant. Converting the runoff
+	-- distance from a user-configurable REAL-WORLD meters setting (not a
+	-- bare stud constant) means the transition covers the same real-world
+	-- distance regardless of a user's own studs-per-meter scale - a fixed
+	-- stud value made the same transition feel more abrupt for anyone
+	-- running a higher studs-per-meter ratio than the ~3.571 default.
+	local runoffLengthStuds = settings.SuperelevationRunoffM * settings.MetersToStuds
+	local runoffLength = math.min(runoffLengthStuds, length * 0.3)
 
 	local function computeRolls(stationList: { number }): { number }
 		local computed = table.create(#stationList)
@@ -5123,6 +5129,15 @@ export type EasyRoadSettings = {
 	DesignSpeedKph: number, -- Used by auto superelevation
 	SuperelevationMode: SuperelevationMode,
 	ManualBankDeg: number, -- Used when SuperelevationMode == "Manual"
+	-- How gradually the bank angle ramps in/out of a curve, in real-world
+	-- METERS (not studs) - RoadBuilder.lua converts via MetersToStuds at
+	-- build time, so this stays a constant real-world transition distance
+	-- regardless of a user's own studs-per-meter scale. Previously a bare
+	-- stud constant (40), which meant a user running a larger
+	-- studs-per-meter ratio than the ~3.571 default got a shorter, more
+	-- abrupt real-world transition for the exact same value - the whole
+	-- point of storing distances in meters here instead of studs.
+	SuperelevationRunoffM: number,
 	AutoMarkings: boolean,
 	DriveSideOverride: string, -- "Region" | "Left" | "Right"
 	LanguageVariant: LanguageVariant,
@@ -5163,6 +5178,9 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		DesignSpeedKph = raw.DesignSpeedKph or 60,
 		SuperelevationMode = raw.SuperelevationMode or "Auto",
 		ManualBankDeg = raw.ManualBankDeg or 4,
+		-- Default preserves the exact prior fixed behaviour (40 studs at
+		-- the default 3.571 studs/meter scale, ~11.2m).
+		SuperelevationRunoffM = raw.SuperelevationRunoffM or 11.2,
 		AutoMarkings = if raw.AutoMarkings == nil then true else raw.AutoMarkings,
 		DriveSideOverride = raw.DriveSideOverride or "Region",
 		LanguageVariant = if typeof(raw.LanguageVariant) == "string"
@@ -5191,6 +5209,7 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		DesignSpeedKph = settings.DesignSpeedKph,
 		SuperelevationMode = settings.SuperelevationMode,
 		ManualBankDeg = settings.ManualBankDeg,
+		SuperelevationRunoffM = settings.SuperelevationRunoffM,
 		AutoMarkings = settings.AutoMarkings,
 		DriveSideOverride = settings.DriveSideOverride,
 		LanguageVariant = settings.LanguageVariant,
@@ -6117,6 +6136,111 @@ function Components.ColorField(props: {
 					end,
 				}),
 			}),
+		}),
+	})
+end
+
+-- Slider ---------------------------------------------------------------------------
+
+-- A draggable value slider (track + fill + handle) plus a numeric readout,
+-- same drag-within-bounds convention as HueBar above (InputBegan jumps to
+-- the click position, InputChanged tracks while the button stays held via
+-- UserInputService:IsMouseButtonPressed rather than a separate global
+-- connection). Distinct from Components.NumberField (a type-to-edit text
+-- field with +/- stepper) - use this where dragging to feel out a value
+-- matters more than typing an exact one.
+function Components.Slider(props: {
+	Value: number,
+	Min: number,
+	Max: number,
+	OnChanged: (value: number) -&gt; (),
+	LayoutOrder: number?,
+	ValueSuffix: string?,
+	Decimals: number?,
+})
+	local function updateFromInput(rbx: Frame, input: InputObject)
+		local size = rbx.AbsoluteSize
+		if size.X &lt;= 0 then
+			return
+		end
+		local pos = rbx.AbsolutePosition
+		local alpha = math.clamp((input.Position.X - pos.X) / size.X, 0, 1)
+		props.OnChanged(props.Min + (props.Max - props.Min) * alpha)
+	end
+	local range = props.Max - props.Min
+	local alpha = if range &gt; 1e-6 then math.clamp((props.Value - props.Min) / range, 0, 1) else 0
+	local decimals = props.Decimals or 1
+
+	-- A plain Components.Row defaults to 100% of ITS OWN parent's width,
+	-- which is correct when a Row is the sole/top-level content of a card
+	-- but overflows when nested as one item beside a Label inside another
+	-- Row (its 100% would be measured against the whole outer row's width,
+	-- not "whatever's left after the Label"). Using a UIFlexItem instead -
+	-- the same proven "share the row's available width" mechanism
+	-- Components.Button's own Grow prop already relies on - so Track/Value
+	-- below are sized relative to the space actually left over, not the
+	-- full outer row.
+	return e("Frame", {
+		Size = UDim2.new(0, 0, 0, Theme.ROW_HEIGHT),
+		BackgroundTransparency = 1,
+		LayoutOrder = props.LayoutOrder,
+	}, {
+		Flex = e("UIFlexItem", { FlexMode = Enum.UIFlexMode.Grow }),
+		Layout = e("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			VerticalAlignment = Enum.VerticalAlignment.Center,
+			Padding = UDim.new(0, 4),
+		}),
+		Track = e("Frame", {
+			Size = UDim2.new(1, -56, 0, 16),
+			BackgroundColor3 = Theme.FIELD,
+			BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,
+			BorderSizePixel = 0,
+			LayoutOrder = 1,
+			[React.Event.InputBegan] = function(rbx: Frame, input: InputObject)
+				if input.UserInputType == Enum.UserInputType.MouseButton1 then
+					updateFromInput(rbx, input)
+				end
+			end,
+			[React.Event.InputChanged] = function(rbx: Frame, input: InputObject)
+				if
+					input.UserInputType == Enum.UserInputType.MouseMovement
+					and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+				then
+					updateFromInput(rbx, input)
+				end
+			end,
+		}, {
+			Corner = e("UICorner", { CornerRadius = UDim.new(1, 0) }),
+			Fill = e("Frame", {
+				Size = UDim2.new(alpha, 0, 1, 0),
+				BackgroundColor3 = Theme.SELECTED,
+				BorderSizePixel = 0,
+				ZIndex = 2,
+			}, {
+				Corner = e("UICorner", { CornerRadius = UDim.new(1, 0) }),
+			}),
+			Handle = e("Frame", {
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.new(alpha, 0, 0.5, 0),
+				Size = UDim2.new(0, 14, 0, 14),
+				BackgroundColor3 = Theme.WHITE,
+				BorderSizePixel = 0,
+				ZIndex = 3,
+			}, {
+				Corner = e("UICorner", { CornerRadius = UDim.new(1, 0) }),
+			}),
+		}),
+		Value = e("TextLabel", {
+			Text = string.format("%." .. decimals .. "f", props.Value) .. (props.ValueSuffix or ""),
+			TextColor3 = Theme.OFFWHITE,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0, 52, 0, Theme.ROW_HEIGHT),
+			Font = Theme.FONT_MONO,
+			TextSize = Theme.TEXT_SIZE,
+			TextXAlignment = Enum.TextXAlignment.Right,
+			LayoutOrder = 2,
 		}),
 	})
 end
@@ -7846,6 +7970,30 @@ local function RegionalPreferenceGui(props: {
 					Max = 30,
 					OnChanged = function(value: number)
 						settings.ManualBankDeg = value
+						props.OnSettingsChanged()
+					end,
+					LayoutOrder = 2,
+				}),
+			},
+		}),
+		-- How gradually the bank ramps in/out of a curve, in real-world
+		-- meters - a fixed stud constant used to make the transition feel
+		-- more abrupt for anyone running a higher studs-per-meter scale
+		-- than the ~3.571 default (reported live: "at 6.667stud=&gt;1m ...
+		-- it is more abrupt"). Shown regardless of Auto/Manual, since the
+		-- runoff taper applies to both - only hidden when banking is Off
+		-- entirely and there's nothing to transition.
+		TransitionLength = settings.SuperelevationMode ~= "Off" and e(LabeledRow, {
+			Label = "Transition length (m)",
+			LayoutOrder = 14,
+			children = {
+				Slider = e(Components.Slider, {
+					Value = settings.SuperelevationRunoffM,
+					Min = 2,
+					Max = 30,
+					ValueSuffix = " m",
+					OnChanged = function(value: number)
+						settings.SuperelevationRunoffM = value
 						props.OnSettingsChanged()
 					end,
 					LayoutOrder = 2,

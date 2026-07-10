@@ -4,6 +4,31 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Superelevation transition length: fixed a real scale bug, added a slider
+
+- **Root-caused "at 6.667stud=>1m instead of 3.57 it is more abrupt."**
+  `RoadBuilder.lua`'s superelevation runoff/smoothing window was a bare
+  stud constant (`RUNOFF_LENGTH_STUDS = 40`), not a real-world distance -
+  at a higher studs-per-meter scale than the ~3.571 default, the same 40
+  studs covers fewer real-world meters, so the bank transition physically
+  happens over a shorter distance and reads as more abrupt. Replaced with
+  `settings.SuperelevationRunoffM * settings.MetersToStuds`, so the
+  transition covers the same real-world distance regardless of a user's
+  own scale - the actual bug, independent of whether it's ever exposed as
+  a setting at all.
+- **New `Settings.SuperelevationRunoffM`** (meters, default 11.2 - exactly
+  reproduces the old fixed 40-stud behaviour at the default 3.571
+  studs/meter scale) plus a new `Components.Slider` (drag-a-track-and-
+  handle control, same InputBegan/InputChanged +
+  `UserInputService:IsMouseButtonPressed` drag convention the colour
+  picker's hue bar already uses) wired into Regional Preference's
+  Superelevation section as "Transition length (m)", shown whenever
+  banking isn't Off. `Components.Slider`'s own Frame carries a
+  `UIFlexItem(Grow)` rather than defaulting to `Components.Row`'s 100%-of-
+  parent sizing, so it shares the row's actual remaining width (after the
+  Label) instead of overflowing past it - the same "share the row"
+  mechanism `Components.Button`'s existing `Grow` prop already relies on.
+
 ## "Place More" can now continue from either end of the road
 
 - **"Place More" always continued from the road's far end** regardless of

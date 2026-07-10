@@ -275,6 +275,30 @@ local function RegionalPreferenceGui(props: {
 				}),
 			},
 		}),
+		-- How gradually the bank ramps in/out of a curve, in real-world
+		-- meters - a fixed stud constant used to make the transition feel
+		-- more abrupt for anyone running a higher studs-per-meter scale
+		-- than the ~3.571 default (reported live: "at 6.667stud=>1m ...
+		-- it is more abrupt"). Shown regardless of Auto/Manual, since the
+		-- runoff taper applies to both - only hidden when banking is Off
+		-- entirely and there's nothing to transition.
+		TransitionLength = settings.SuperelevationMode ~= "Off" and e(LabeledRow, {
+			Label = "Transition length (m)",
+			LayoutOrder = 14,
+			children = {
+				Slider = e(Components.Slider, {
+					Value = settings.SuperelevationRunoffM,
+					Min = 2,
+					Max = 30,
+					ValueSuffix = " m",
+					OnChanged = function(value: number)
+						settings.SuperelevationRunoffM = value
+						props.OnSettingsChanged()
+					end,
+					LayoutOrder = 2,
+				}),
+			},
+		}),
 
 		PlacementSection = e(Components.Section, {
 			Text = "Placement",

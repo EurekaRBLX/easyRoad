@@ -566,6 +566,111 @@ function Components.ColorField(props: {
 	})
 end
 
+-- Slider ---------------------------------------------------------------------------
+
+-- A draggable value slider (track + fill + handle) plus a numeric readout,
+-- same drag-within-bounds convention as HueBar above (InputBegan jumps to
+-- the click position, InputChanged tracks while the button stays held via
+-- UserInputService:IsMouseButtonPressed rather than a separate global
+-- connection). Distinct from Components.NumberField (a type-to-edit text
+-- field with +/- stepper) - use this where dragging to feel out a value
+-- matters more than typing an exact one.
+function Components.Slider(props: {
+	Value: number,
+	Min: number,
+	Max: number,
+	OnChanged: (value: number) -> (),
+	LayoutOrder: number?,
+	ValueSuffix: string?,
+	Decimals: number?,
+})
+	local function updateFromInput(rbx: Frame, input: InputObject)
+		local size = rbx.AbsoluteSize
+		if size.X <= 0 then
+			return
+		end
+		local pos = rbx.AbsolutePosition
+		local alpha = math.clamp((input.Position.X - pos.X) / size.X, 0, 1)
+		props.OnChanged(props.Min + (props.Max - props.Min) * alpha)
+	end
+	local range = props.Max - props.Min
+	local alpha = if range > 1e-6 then math.clamp((props.Value - props.Min) / range, 0, 1) else 0
+	local decimals = props.Decimals or 1
+
+	-- A plain Components.Row defaults to 100% of ITS OWN parent's width,
+	-- which is correct when a Row is the sole/top-level content of a card
+	-- but overflows when nested as one item beside a Label inside another
+	-- Row (its 100% would be measured against the whole outer row's width,
+	-- not "whatever's left after the Label"). Using a UIFlexItem instead -
+	-- the same proven "share the row's available width" mechanism
+	-- Components.Button's own Grow prop already relies on - so Track/Value
+	-- below are sized relative to the space actually left over, not the
+	-- full outer row.
+	return e("Frame", {
+		Size = UDim2.new(0, 0, 0, Theme.ROW_HEIGHT),
+		BackgroundTransparency = 1,
+		LayoutOrder = props.LayoutOrder,
+	}, {
+		Flex = e("UIFlexItem", { FlexMode = Enum.UIFlexMode.Grow }),
+		Layout = e("UIListLayout", {
+			FillDirection = Enum.FillDirection.Horizontal,
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			VerticalAlignment = Enum.VerticalAlignment.Center,
+			Padding = UDim.new(0, 4),
+		}),
+		Track = e("Frame", {
+			Size = UDim2.new(1, -56, 0, 16),
+			BackgroundColor3 = Theme.FIELD,
+			BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,
+			BorderSizePixel = 0,
+			LayoutOrder = 1,
+			[React.Event.InputBegan] = function(rbx: Frame, input: InputObject)
+				if input.UserInputType == Enum.UserInputType.MouseButton1 then
+					updateFromInput(rbx, input)
+				end
+			end,
+			[React.Event.InputChanged] = function(rbx: Frame, input: InputObject)
+				if
+					input.UserInputType == Enum.UserInputType.MouseMovement
+					and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+				then
+					updateFromInput(rbx, input)
+				end
+			end,
+		}, {
+			Corner = e("UICorner", { CornerRadius = UDim.new(1, 0) }),
+			Fill = e("Frame", {
+				Size = UDim2.new(alpha, 0, 1, 0),
+				BackgroundColor3 = Theme.SELECTED,
+				BorderSizePixel = 0,
+				ZIndex = 2,
+			}, {
+				Corner = e("UICorner", { CornerRadius = UDim.new(1, 0) }),
+			}),
+			Handle = e("Frame", {
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.new(alpha, 0, 0.5, 0),
+				Size = UDim2.new(0, 14, 0, 14),
+				BackgroundColor3 = Theme.WHITE,
+				BorderSizePixel = 0,
+				ZIndex = 3,
+			}, {
+				Corner = e("UICorner", { CornerRadius = UDim.new(1, 0) }),
+			}),
+		}),
+		Value = e("TextLabel", {
+			Text = string.format("%." .. decimals .. "f", props.Value) .. (props.ValueSuffix or ""),
+			TextColor3 = Theme.OFFWHITE,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(0, 52, 0, Theme.ROW_HEIGHT),
+			Font = Theme.FONT_MONO,
+			TextSize = Theme.TEXT_SIZE,
+			TextXAlignment = Enum.TextXAlignment.Right,
+			LayoutOrder = 2,
+		}),
+	})
+end
+
 -- Checkbox ------------------------------------------------------------------------------
 
 function Components.Checkbox(props: {

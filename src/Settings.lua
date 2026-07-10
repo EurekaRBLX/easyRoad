@@ -27,6 +27,15 @@ export type EasyRoadSettings = {
 	DesignSpeedKph: number, -- Used by auto superelevation
 	SuperelevationMode: SuperelevationMode,
 	ManualBankDeg: number, -- Used when SuperelevationMode == "Manual"
+	-- How gradually the bank angle ramps in/out of a curve, in real-world
+	-- METERS (not studs) - RoadBuilder.lua converts via MetersToStuds at
+	-- build time, so this stays a constant real-world transition distance
+	-- regardless of a user's own studs-per-meter scale. Previously a bare
+	-- stud constant (40), which meant a user running a larger
+	-- studs-per-meter ratio than the ~3.571 default got a shorter, more
+	-- abrupt real-world transition for the exact same value - the whole
+	-- point of storing distances in meters here instead of studs.
+	SuperelevationRunoffM: number,
 	AutoMarkings: boolean,
 	DriveSideOverride: string, -- "Region" | "Left" | "Right"
 	LanguageVariant: LanguageVariant,
@@ -67,6 +76,9 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		DesignSpeedKph = raw.DesignSpeedKph or 60,
 		SuperelevationMode = raw.SuperelevationMode or "Auto",
 		ManualBankDeg = raw.ManualBankDeg or 4,
+		-- Default preserves the exact prior fixed behaviour (40 studs at
+		-- the default 3.571 studs/meter scale, ~11.2m).
+		SuperelevationRunoffM = raw.SuperelevationRunoffM or 11.2,
 		AutoMarkings = if raw.AutoMarkings == nil then true else raw.AutoMarkings,
 		DriveSideOverride = raw.DriveSideOverride or "Region",
 		LanguageVariant = if typeof(raw.LanguageVariant) == "string"
@@ -95,6 +107,7 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		DesignSpeedKph = settings.DesignSpeedKph,
 		SuperelevationMode = settings.SuperelevationMode,
 		ManualBankDeg = settings.ManualBankDeg,
+		SuperelevationRunoffM = settings.SuperelevationRunoffM,
 		AutoMarkings = settings.AutoMarkings,
 		DriveSideOverride = settings.DriveSideOverride,
 		LanguageVariant = settings.LanguageVariant,
