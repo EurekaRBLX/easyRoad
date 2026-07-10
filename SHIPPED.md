@@ -4,6 +4,32 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junctions Phase 2+3 v0: roundabout ring generator + lane/traffic-light API surface
+
+- **Requested to build all remaining phases now, roughly, to be refined
+  later** - so this round trades depth for breadth on purpose. Full scope
+  of what's real vs. deliberately stubbed is in `TODO.md`; summary below.
+- **`RoundaboutBuilder.lua` generates a real single-lane, one-way ring.**
+  A `PolyCurve` of 4 cubic-Bézier quarter-arcs approximates a true circle
+  (the standard `k = 0.5522847498` construction) - not a new
+  `CurveSegment` kind, since a closed ring is mechanically just an
+  ordinary road whose curve starts and ends at the same point, so
+  `RoadBuilder.Build` needed zero changes to build it. Triggered from a
+  selected junction's panel: a "Make Roundabout" button + radius field,
+  shown once 3+ roads are connected. Deliberately doesn't merge the
+  connected roads into the ring (a visible seam is expected), isn't
+  wired into the road/junction data model at all (not selectable/
+  editable/deletable in-plugin yet - delete via the Explorer), and only
+  supports single-lane.
+- **`JunctionLanes.lua` computes a real per-lane connection graph** - every
+  incoming lane at a junction paired with every outgoing lane on a
+  different connected road (using each component's own traffic
+  `Direction` and which end it connects with) - but nothing calls it yet.
+  No drag UI, no turn classification, no persistence (references live
+  road Models directly, so it only makes sense freshly computed). A
+  `DefaultPhases`/`SignalPhase` mock proves the data shape a future
+  traffic-light plugin would consume, not a real signal-phase algorithm.
+
 ## Junctions Phase 1b cleanup: orphan cleanup, selection UI, real fillet polygon
 
 - **Ground-picking for new road placements now ignores existing roads and

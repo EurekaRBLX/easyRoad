@@ -43,7 +43,7 @@ building one now would be orphaned geometry with no consumer. Revisit once
 roundabouts (see Intersections & roundabouts below) or some other roundabout-
 adjacent UI actually exists to use it.
 
-## Junctions & intersections — phased plan (Phase 1 shipped, Phase 2/3 next)
+## Junctions & intersections — phased plan (Phase 1 shipped, Phase 2/3 v0)
 
 CS2-style node model: a `JunctionNode` (`JunctionInstance.lua`) is a real,
 first-class entity roads reference by Id (`RW_StartJunctionId`/
@@ -93,18 +93,49 @@ Deliberately still out of scope after Phase 1, in rough priority order:
   fundamentally "one road, station 0 to Length" and deliberately wasn't
   touched; junction marking geometry needs its own module.
 
-**Phase 2 - roundabouts.** A specialised junction node, same connectivity
-model, different surface generator (circular deck instead of a fillet).
-Needs a new arc-based `CurveSegment.SegmentKind` first - there's currently
-no true circular-arc primitive, only Line/Quadratic/Cubic Bézier. Variants
-in roughly increasing complexity: single-lane, multi-lane concentric
-standard, multi-lane concentric with turbo markings, true turbo (spiral,
-Netherlands-style) roundabouts.
+**Phase 2 - roundabouts (v0 shipped, rough on purpose).** `RoundaboutBuilder.lua`
+generates a real single-lane, one-way ring - not a new `CurveSegment`
+kind, a `PolyCurve` of 4 cubic-Bézier quarter-arcs approximating a true
+circle (the standard "k = 0.5522847498" construction), reusing
+`RoadBuilder.Build` completely unmodified since a closed ring is
+mechanically just an ordinary road whose curve starts and ends at the
+same point. Triggered from a selected junction's panel ("Make
+Roundabout," shown once 3+ roads are connected) with a radius field.
+**What v0 deliberately doesn't do:**
+- **No spoke-to-ring merge geometry.** The ring is generated as its own
+  free-standing road around the junction; each connected road's pavement
+  just ends near the ring with a visible, unmerged seam. This is the
+  single biggest gap between v0 and a real roundabout.
+- **Not linked into the junction/road data model at all.** The ring isn't
+  stamped `RW_Road` (so `RoadEditSession`'s selection UI, endpoint
+  snapping, and the mid-span split scan all ignore it - none of them are
+  built to handle a closed multi-segment curve) and isn't linked into
+  `Start`/`EndJunctionId` (a ring's seam point generally isn't at the
+  junction centre, so that model doesn't fit). There is currently no
+  in-plugin way to select, edit, or delete a placed ring - delete it via
+  the Explorer.
+- **Winding direction (which way traffic circulates for `DriveOnLeft`)
+  is reasoned through, not verified live.** Flip
+  `RoundaboutBuilder`'s `circleSegments` ternary if it reads backwards
+  once tested in Studio.
+- **Only single-lane.** Multi-lane concentric (standard and turbo-marked)
+  and true spiral turbo roundabouts - the rest of the original
+  complexity ladder - are unbuilt.
 
-**Phase 3 - lane connector + traffic light API.** Per-lane connection
-graph at a junction (drag connections between incoming/outgoing lanes,
-markings re-render from the graph); a mock Traffic Light API sharing that
-same per-lane graph model so it's designed once for both.
+**Phase 3 - lane connector + traffic light API (v0, data-model only, no
+UI).** `JunctionLanes.lua`'s `ComputeConnections` is a real, live
+computation - every incoming lane at a junction paired with every
+outgoing lane on a different connected road, using each component's own
+`Direction` and which end it connects with - but nothing calls it yet:
+no drag-based visualization/editing UI, no turn classification (through/
+left/right), no persistence (a `LaneConnection` references roads by live
+Model, not a stable Id, so it only makes sense freshly computed). Reads
+`JunctionBuilder`'s own angular-sort-around-centre logic as the natural
+place to add turn classification later, once something actually
+consumes this. `DefaultPhases`/`SignalPhase` is a genuinely thin mock -
+proves the shape a future traffic-light plugin would consume (all
+connections green at once), not a real conflict-aware phase-grouping
+algorithm.
 
 Smaller, independent alternative that builds on the inspector instead of
 junctions: dragging a placed road's endpoint, or a duplicate/delete action

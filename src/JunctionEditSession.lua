@@ -23,6 +23,7 @@ export type JunctionEditSession = {
 	ChangeSignal: Signal.Signal<>,
 	GetSelectedJunction: () -> Model?,
 	GetConnectedRoadCount: () -> number,
+	GetSelectedJunctionPosition: () -> Vector3?,
 	DeleteJunction: () -> (),
 	Destroy: () -> (),
 }
@@ -72,6 +73,14 @@ local function createJunctionEditSession(): JunctionEditSession
 			return 0
 		end
 		return #JunctionInstance.ConnectedRoads(data.Id)
+	end
+
+	function session.GetSelectedJunctionPosition(): Vector3?
+		if not selectedJunction then
+			return nil
+		end
+		local data = JunctionInstance.Read(selectedJunction)
+		return if data then data.Position else nil
 	end
 
 	-- Removes the junction itself and clears the reference on every road

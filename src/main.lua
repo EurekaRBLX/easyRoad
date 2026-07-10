@@ -17,6 +17,7 @@
 -- same designer bottom bar bound to that road, with Apply/Revert.
 
 local CoreGui = game:GetService("CoreGui")
+local ChangeHistoryService = game:GetService("ChangeHistoryService")
 
 local Packages = script.Parent.Parent.Packages
 local React = require(Packages.React)
@@ -33,6 +34,7 @@ local createRoadEditSession = require("./RoadEditSession")
 local createJunctionEditSession = require("./JunctionEditSession")
 local JunctionInstance = require("./JunctionInstance")
 local JunctionBuilder = require("./Mesh/JunctionBuilder")
+local RoundaboutBuilder = require("./Mesh/RoundaboutBuilder")
 local RoadDesigner = require("./UI/RoadDesigner")
 local RoadInspector = require("./UI/RoadInspector")
 local BuildBar = require("./UI/BuildBar")
@@ -694,11 +696,22 @@ return function(
 			bottomContent = React.createElement(JunctionPanel, {
 				ConnectedRoadCount = junctionEditSession.GetConnectedRoadCount(),
 				OnDelete = junctionEditSession.DeleteJunction,
+				OnMakeRoundabout = function(radiusStuds: number)
+					local center = junctionEditSession.GetSelectedJunctionPosition()
+					if not center then
+						return
+					end
+					local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Make roundabout")
+					RoundaboutBuilder.Create(center, radiusStuds, getStyle(), settings)
+					if recording then
+						ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+					end
+				end,
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
 				Position = UDim2.new(0, 12, 1, -12),
-				Size = UDim2.new(0, 280, 0, 180),
+				Size = UDim2.new(0, 280, 0, 280),
 			}
 		end
 
