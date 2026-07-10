@@ -923,6 +923,7 @@ local function Panel(
 	local selectedIndex, setSelectedIndex = React.useState(0)
 	local sel: number? = if selectedIndex >= 1 and selectedIndex <= count then selectedIndex else nil
 	local rootRef = React.useRef(nil :: Frame?)
+	local addingCategory, setAddingCategory = React.useState(false)
 
 	local function insertKind(kind: RoadProfile.ComponentKind, atIndex: number?)
 		local at = if atIndex then math.clamp(atIndex, 1, count + 1)
@@ -990,12 +991,79 @@ local function Panel(
 			LayoutOrder = 3,
 		})
 	end
+	-- Category is a road LIBRARY organization concept (which Road Library
+	-- tab a custom road shows up under - Streets/Avenues/Highways/Paths/
+	-- Custom, or a user-typed one of their own), so it only makes sense
+	-- where there's a whole library to browse (props.Picker) - the
+	-- standalone Road Editor, not RoadInspector editing one specific
+	-- placed instance. RoadLibraryPanel.lua already renders ANY category
+	-- string as its own tab (falling back to a generic icon via
+	-- CategoryThumbnail.Build for one it doesn't recognise), so a
+	-- user-typed name works exactly like the four built-in ones.
+	if props.Picker then
+		local picker = props.Picker :: PanelPicker
+		local categoryOptions: { Components.DropdownOption } = {}
+		local seenCategory: { [string]: boolean } = {}
+		for _, builtin in { "Streets", "Avenues", "Highways", "Paths", "Custom" } do
+			seenCategory[builtin] = true
+			table.insert(categoryOptions, { Id = builtin, Text = builtin })
+		end
+		for _, option in picker.Options do
+			local category = option.Profile.Category
+			if not seenCategory[category] then
+				seenCategory[category] = true
+				table.insert(categoryOptions, { Id = category, Text = category })
+			end
+		end
+		table.insert(categoryOptions, { Id = "__new__", Text = "+ New Category..." })
+
+		propertiesChildren.CategoryRow = e(Components.Row, { LayoutOrder = 4 }, {
+			Label = e(Components.Label, { Text = "Category", LayoutOrder = 1, Width = 62 }),
+			Dropdown = not addingCategory and e(Components.Dropdown, {
+				Options = categoryOptions,
+				SelectedId = profile.Category,
+				OnSelected = function(id: string)
+					if id == "__new__" then
+						setAddingCategory(true)
+					else
+						props.OnChange(function(copy)
+							copy.Category = id
+						end)
+					end
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+			NewField = addingCategory and e("TextBox", {
+				Text = "",
+				PlaceholderText = "New category name",
+				TextColor3 = Theme.WHITE,
+				BackgroundColor3 = Theme.FIELD,
+				BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,
+				Size = UDim2.new(1, -66, 0, Theme.ROW_HEIGHT),
+				Font = Theme.FONT,
+				TextSize = Theme.TEXT_SIZE,
+				ClearTextOnFocus = false,
+				LayoutOrder = 2,
+				[React.Event.FocusLost] = function(object: TextBox)
+					if object.Text ~= "" then
+						props.OnChange(function(copy)
+							copy.Category = (object :: TextBox).Text
+						end)
+					end
+					setAddingCategory(false)
+				end,
+			}, {
+				Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+			}),
+		})
+	end
 	local afterOptions = ProfileFields.InsertMarkingOptions(
 		propertiesChildren,
 		profile,
 		props.RegionStyle,
 		props.Settings,
-		4,
+		5,
 		props.OnChange
 	)
 	-- Existing marking stretches on this placed road (see RoadEditSession's

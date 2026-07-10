@@ -4,6 +4,32 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Custom roads can be categorised into Road Library tabs
+
+- **Road Editor gained a Category field**, letting a custom road be filed
+  under Streets/Avenues/Highways/Paths (the built-in tabs) instead of
+  always landing in "Custom" - or under a freely-typed new category name
+  via a "+ New Category..." option, which becomes its own tab the next
+  time the library renders. This was already fully supported on the
+  READ side - `RoadLibraryPanel.lua` already renders any `Category`
+  string as its own tab, falling back to a generic icon via
+  `CategoryThumbnail.Build` for one it doesn't specifically recognise -
+  the only missing piece was ever being able to SET it to anything other
+  than "Custom" in the first place.
+  - The dropdown's options are the four built-ins plus whatever category
+    names are already in use across the whole library (scanned from
+    `props.Picker.Options`, only available in the standalone Road Editor
+    context - Category is a library-organization concept, so the field
+    doesn't appear on `RoadInspector`, which edits one specific placed
+    road instance).
+  - "Save as Copy" (for a built-in template) no longer force-overwrites
+    `Category` back to `"Custom"` after the copy is made - it used to,
+    which would have silently discarded a category chosen in the new
+    field the moment Save was clicked. "Use as Template" (from a placed
+    road) still defaults a fresh copy to `"Custom"` before the editor even
+    opens, which is fine since that's just an initial value the new field
+    can then change.
+
 ## Slider actually follows the mouse; transition length in Road Tools; keybinds panel back to keyboard-first
 
 - **Fixed the slider not following the mouse during a press-and-slide**

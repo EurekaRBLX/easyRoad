@@ -344,7 +344,12 @@ return function(
 						if editing.BuiltIn then
 							toSave.Id = "user_" .. tostring(os.time())
 							toSave.Name = editing.Name .. " (Custom)"
-							toSave.Category = "Custom"
+							-- Category is NOT forced to "Custom" here anymore -
+							-- the Road Editor's own Category field (see
+							-- RoadDesigner.lua) may already have been changed
+							-- to Streets/Avenues/Highways/Paths/a typed name
+							-- before Save was clicked, and that choice should
+							-- stick rather than getting silently overwritten.
 						end
 						toSave.BuiltIn = false
 						library.SaveUserProfile(toSave)
