@@ -37,6 +37,9 @@ export type BuildOptions = {
 	-- User-placed partial-length marking overrides (see RoadEditSession's
 	-- marking-stretch mode) - passed straight through to Markings.Compute.
 	MarkingStretches: { Markings.MarkingStretch }?,
+	-- Same idea for the road's own left/right kerb-restriction line (see
+	-- RoadEditSession's kerb-stretch mode) - also passed straight through.
+	KerbStretches: { Markings.KerbStretch }?,
 }
 
 local MARKING_THICKNESS = 0.05
@@ -545,6 +548,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			DashLengthM = options.ProfileStart.MarkingDashLengthM,
 			DashGapM = options.ProfileStart.MarkingDashGapM,
 			MarkingStretches = options.MarkingStretches,
+			KerbStretches = options.KerbStretches,
 			KerbIndent = options.ProfileStart.KerbIndent,
 		})
 		local markingWidth = style.MarkingWidthM * scale
@@ -802,6 +806,29 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		return if #remapped > 0 then remapped else nil
 	end
 
+	-- Same remapping as stretchesForSlice above, for KerbStretches - no
+	-- ComponentIndices to carry through (Side is stable across slices,
+	-- unlike a lane boundary's index), just the station clip/offset.
+	local function kerbStretchesForSlice(sliceStart: number, sliceEnd: number): { Markings.KerbStretch }?
+		if not options.KerbStretches then
+			return nil
+		end
+		local remapped = {}
+		for _, stretch in options.KerbStretches :: { Markings.KerbStretch } do
+			local from = math.max(stretch.FromStationStuds, sliceStart)
+			local to = math.min(stretch.ToStationStuds, sliceEnd)
+			if to > from then
+				table.insert(remapped, {
+					Side = stretch.Side,
+					FromStationStuds = from - sliceStart,
+					ToStationStuds = to - sliceStart,
+					Restriction = stretch.Restriction,
+				})
+			end
+		end
+		return if #remapped > 0 then remapped else nil
+	end
+
 	-- Base road: the unaffected zones build normally; the bay's footprint
 	-- excludes the nearside component (rebuilt below, shifted outward) so
 	-- its original position doesn't coexist with the new one.
@@ -822,6 +849,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			Settings = settings,
 			Preview = preview,
 			MarkingStretches = stretchesForSlice(0, taperInStart),
+			KerbStretches = kerbStretchesForSlice(0, taperInStart),
 		}))
 	end
 	mergeIn(RoadBuilder.Build({
@@ -832,6 +860,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		Preview = preview,
 		ExcludeComponentIndices = { nearsideIndex },
 		MarkingStretches = stretchesForSlice(taperInStart, taperOutEnd),
+		KerbStretches = kerbStretchesForSlice(taperInStart, taperOutEnd),
 	}))
 	if length - taperOutEnd > 1e-3 then
 		mergeIn(RoadBuilder.Build({
@@ -842,6 +871,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			Settings = settings,
 			Preview = preview,
 			MarkingStretches = stretchesForSlice(taperOutEnd, length),
+			KerbStretches = kerbStretchesForSlice(taperOutEnd, length),
 		}))
 	end
 

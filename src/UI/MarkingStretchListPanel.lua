@@ -28,22 +28,32 @@ local LINE_TYPE_LABELS: { [string]: string } = {
 	DashSolid = "Dash/solid",
 }
 
+local RESTRICTION_LABELS: { [string]: string } = {
+	None = "No restriction",
+	SingleYellow = "Single yellow",
+	DoubleYellow = "Double yellow",
+	NoLine = "No line at all",
+}
+
 local function MarkingStretchListPanel(props: {
 	Stretches: { Markings.MarkingStretch },
 	OnRemove: (index: number) -> (),
+	KerbStretches: { Markings.KerbStretch }?,
+	OnRemoveKerbStretch: ((index: number) -> ())?,
 })
 	local children: { [string]: any } = {}
 	RoadDesigner.DecorateCard(children)
 	children.Header = e(Components.Section, { Text = "Marking Stretches", First = true, LayoutOrder = 1 })
 
+	local order = 1
 	if #props.Stretches == 0 then
+		order += 1
 		children.Empty = e(Components.Label, {
 			Text = "No marking stretches on this road yet - use Stretch Marking on the segment menu to add one.",
 			Dim = true,
-			LayoutOrder = 2,
+			LayoutOrder = order,
 		})
 	else
-		local order = 2
 		for index, stretch in props.Stretches do
 			order += 1
 			children["Label" .. index] = e(Components.Label, {
@@ -63,6 +73,37 @@ local function MarkingStretchListPanel(props: {
 				LayoutOrder = order,
 				OnClick = function()
 					props.OnRemove(index)
+				end,
+			})
+		end
+	end
+
+	local kerbStretches = props.KerbStretches or {}
+	if #kerbStretches > 0 then
+		order += 1
+		children.KerbHeader = e(Components.Section, { Text = "Kerb Stretches", LayoutOrder = order })
+		for index, stretch in kerbStretches do
+			order += 1
+			children["KerbLabel" .. index] = e(Components.Label, {
+				Text = string.format(
+					"%s: %d-%d studs (%s)",
+					stretch.Side,
+					math.floor(stretch.FromStationStuds),
+					math.floor(stretch.ToStationStuds),
+					RESTRICTION_LABELS[stretch.Restriction] or stretch.Restriction
+				),
+				LayoutOrder = order,
+			})
+			order += 1
+			children["KerbRemove" .. index] = e(Components.Button, {
+				Text = "Remove",
+				Danger = true,
+				Size = UDim2.new(0, 90, 0, Theme.ROW_HEIGHT),
+				LayoutOrder = order,
+				OnClick = function()
+					if props.OnRemoveKerbStretch then
+						props.OnRemoveKerbStretch(index)
+					end
 				end,
 			})
 		end

@@ -32,6 +32,32 @@ out rather than solved, and should get their own pass later:
   (transition + bay + stretch all on the same road); flagging rather than
   fixing blind.
 
+## Kerb stretch v1 follow-ups (deliberately deferred, not forgotten)
+
+The kerb-stretch feature (drag the road's own left/right kerb line to
+override its restriction over a free-form sub-range - see `SHIPPED.md`)
+shipped a real v1, scoped to just the two outermost roadway edges of the
+whole cross-section:
+
+- **Internal kerb-adjacent boundaries aren't spliceable.** A profile with
+  an internal median or divider can have MORE than two kerb-restriction
+  positions (one on each side of the median too), but `KerbStretch.Side`
+  only supports `"Left" | "Right"` - the road's true outermost edges. An
+  internal kerb boundary still renders correctly, it just always uses the
+  whole-road `KerbRestriction` unspliced, with no way to target it with a
+  stretch. Scoping to just two sides sidesteps a real disambiguation
+  problem (which internal edge does "Left"/"Right" even mean once there
+  are more than two), matching the bus bay tool's own existing Left/
+  Right-only precedent - revisit if that turns out to matter in practice.
+- **Not verified in a live Studio session.** Built as a full parallel
+  feature (data model, hit-testing, drag/ghost/confirm state machine, list
+  UI) in one pass, following the lane-marking stretch tool's own
+  architecture closely - but that architecture only reached its current
+  correct/stable state after several live-tested rounds catching real
+  bugs (ghost roll drift, dashed-marking wobble, overwrite semantics).
+  Nothing here is assumed correct simply because it mirrors a
+  since-proven pattern.
+
 ## Next up — needs a decision or real design work
 
 **Roundabout icon - deliberately not built.** The queued CS2-style UI polish

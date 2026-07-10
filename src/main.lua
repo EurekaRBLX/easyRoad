@@ -45,6 +45,7 @@ local BayDraftPanel = require("./UI/BayDraftPanel")
 local MarkingStretchPanel = require("./UI/MarkingStretchPanel")
 local MarkingStretchListPanel = require("./UI/MarkingStretchListPanel")
 local MarkingSelectionModePod = require("./UI/MarkingSelectionModePod")
+local KerbStretchPanel = require("./UI/KerbStretchPanel")
 
 return function(
 	plugin: Plugin,
@@ -172,6 +173,8 @@ return function(
 			editSession.CancelBayPlacement()
 		elseif editSession.IsPlacingMarkingStretch() or editSession.IsConfirmingMarkingStretch() then
 			editSession.CancelMarkingStretchPlacement()
+		elseif editSession.IsPlacingKerbStretch() or editSession.IsConfirmingKerbStretch() then
+			editSession.CancelKerbStretchPlacement()
 		end
 	end)
 
@@ -271,6 +274,7 @@ return function(
 		-- stop). Both are no-ops if no such drag is in progress.
 		editSession.CancelBayPlacement()
 		editSession.CancelMarkingStretchPlacement()
+		editSession.CancelKerbStretchPlacement()
 		designProfile = nil -- Tools and Editor are exclusive modes
 		pluginOpen = true
 		setButtonActive(true)
@@ -299,6 +303,7 @@ return function(
 		-- the Explorer with nothing left placing it).
 		editSession.CancelBayPlacement()
 		editSession.CancelMarkingStretchPlacement()
+		editSession.CancelKerbStretchPlacement()
 		plugin:Deactivate()
 		pluginOpen = true
 		setButtonActive(true)
@@ -651,12 +656,32 @@ return function(
 			bottomContent = React.createElement(MarkingStretchListPanel, {
 				Stretches = editSession.GetMarkingStretches(),
 				OnRemove = editSession.RemoveMarkingStretch,
+				KerbStretches = editSession.GetKerbStretches(),
+				OnRemoveKerbStretch = editSession.RemoveKerbStretch,
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
 				Position = UDim2.new(0, 12, 1, -12),
 				Size = UDim2.new(0, 280, 0, 260),
 			}
+		elseif editSession.GetSelectedRoad() and editSession.IsConfirmingKerbStretch() then
+			local draft = editSession.GetKerbStretchDraft()
+			if draft then
+				bottomContent = React.createElement(KerbStretchPanel, {
+					Side = draft.Side,
+					FromStationStuds = draft.FromStationStuds,
+					ToStationStuds = draft.ToStationStuds,
+					Restriction = draft.Restriction,
+					OnFromChanged = editSession.SetKerbStretchDraftFrom,
+					OnToChanged = editSession.SetKerbStretchDraftTo,
+					OnRestrictionChanged = editSession.SetKerbStretchDraftRestriction,
+				})
+				bottomFrameProps = {
+					AnchorPoint = Vector2.new(0, 1),
+					Position = UDim2.new(0, 12, 1, -12),
+					Size = UDim2.new(0, 280, 0, 240),
+				}
+			end
 		elseif
 			editSession.GetSelectedRoad()
 			and not editSession.IsShowingMenu()
@@ -666,6 +691,8 @@ return function(
 			and not editSession.IsPlacingMarkingStretch()
 			and not editSession.IsConfirmingMarkingStretch()
 			and not editSession.IsViewingStretches()
+			and not editSession.IsPlacingKerbStretch()
+			and not editSession.IsConfirmingKerbStretch()
 		then
 			bottomContent = React.createElement(RoadInspector, {
 				PluginObj = plugin,
@@ -742,6 +769,8 @@ return function(
 				or editSession.IsPlacingMarkingStretch()
 				or editSession.IsConfirmingMarkingStretch()
 				or editSession.IsViewingStretches()
+				or editSession.IsPlacingKerbStretch()
+				or editSession.IsConfirmingKerbStretch()
 			)
 		if showPieMenu then
 			local anchor = editSession.GetAnchorWorldPosition()
@@ -777,6 +806,8 @@ return function(
 					elseif editSession.IsConfirmingBay() then "ConfirmingBay"
 					elseif editSession.IsPlacingMarkingStretch() then "PlacingMarkingStretch"
 					elseif editSession.IsConfirmingMarkingStretch() then "ConfirmingMarkingStretch"
+					elseif editSession.IsPlacingKerbStretch() then "PlacingKerbStretch"
+					elseif editSession.IsConfirmingKerbStretch() then "ConfirmingKerbStretch"
 					else "ViewingStretches"
 				if pieMenuMode ~= lastPieMenuMode then
 					lastPieMenuMode = pieMenuMode
@@ -856,7 +887,7 @@ return function(
 					local profile = editSession.GetProfile()
 					-- Highways don't have bus bays in real life.
 					local canAddBay = profile == nil or profile.Category ~= "Highways"
-					local hasStretches = #editSession.GetMarkingStretches() > 0
+					local hasStretches = #editSession.GetMarkingStretches() > 0 or #editSession.GetKerbStretches() > 0
 					pieMenuElement = React.createElement(PieMenu, {
 						WorldPosition = anchor,
 						SetGlobalHover = setGlobalHover,
@@ -868,14 +899,26 @@ return function(
 								end,
 							}
 							else nil,
+						-- Covers both stretch kinds in one action rather than a
+						-- separate pill each - PieMenu's ring is already full
+						-- (all six slots in use) once Stretch Kerb Marking
+						-- joined Stretch Marking, and both underlying Clear
+						-- calls are no-ops on an empty list anyway.
 						TopLeft = if hasStretches
 							then {
-								Text = "Clear Marking Stretches",
+								Text = "Clear Stretches",
 								OnClick = function()
 									editSession.ClearMarkingStretches()
+									editSession.ClearKerbStretches()
 								end,
 							}
 							else nil,
+						TopRight = {
+							Text = "Stretch Kerb Marking",
+							OnClick = function()
+								editSession.StartKerbStretchPlacement()
+							end,
+						},
 						Left = {
 							Text = "Edit Lane Markings",
 							OnClick = function()
@@ -949,6 +992,35 @@ return function(
 							Text = "Cancel",
 							OnClick = function()
 								editSession.CancelMarkingStretchPlacement()
+							end,
+						},
+					})
+				elseif editSession.IsPlacingKerbStretch() then
+					pieMenuElement = React.createElement(PieMenu, {
+						WorldPosition = anchor,
+						SetGlobalHover = setGlobalHover,
+						Bottom = {
+							Text = "Click the road's left or right kerb line, then drag along the road (Esc to cancel)",
+							OnClick = function()
+								editSession.CancelKerbStretchPlacement()
+							end,
+						},
+					})
+				elseif editSession.IsConfirmingKerbStretch() then
+					-- Range/restriction panel is the bottom HUD below
+					pieMenuElement = React.createElement(PieMenu, {
+						WorldPosition = anchor,
+						SetGlobalHover = setGlobalHover,
+						Top = {
+							Text = "Apply Stretch",
+							OnClick = function()
+								editSession.ConfirmKerbStretch()
+							end,
+						},
+						Bottom = {
+							Text = "Cancel",
+							OnClick = function()
+								editSession.CancelKerbStretchPlacement()
 							end,
 						},
 					})

@@ -56,6 +56,17 @@ local Superelevation = require("./Geometry/Superelevation")
 --                  edit rather than a whole-profile one - a full
 --                  cross-section editor isn't the right destination for
 --                  "show me the stretches on this road."
+--   PlacingKerbStretch - click the road's own left or right kerb line, then
+--                  drag along the road to pick the free-form sub-range
+--                  where its restriction (single/double yellow/none/no
+--                  line) should be overridden. Same click-a-target-then-
+--                  drag-a-range shape as marking stretches, but scoped to
+--                  just the road's two outermost edges (Left/Right) rather
+--                  than an arbitrary set of lane-boundary indices - there's
+--                  no "which one" ambiguity to resolve since a click always
+--                  resolves to whichever of the two sides it landed nearer.
+--   ConfirmingKerbStretch - adjust the dragged range/restriction before
+--                  committing.
 --   Designer     - the full RoadInspector designer
 type Mode =
 	"Menu"
@@ -65,6 +76,8 @@ type Mode =
 	| "PlacingMarkingStretch"
 	| "ConfirmingMarkingStretch"
 	| "ViewingStretches"
+	| "PlacingKerbStretch"
+	| "ConfirmingKerbStretch"
 	| "Designer"
 
 export type BayDraft = {
@@ -142,6 +155,22 @@ export type RoadEditSession = {
 	GetMarkingStretches: () -> { Markings.MarkingStretch },
 	ClearMarkingStretches: () -> (),
 	RemoveMarkingStretch: (index: number) -> (),
+	-- Kerb stretch: click the road's own left/right kerb line and drag
+	-- free-form along the road to override its restriction over that
+	-- sub-range - same shape as marking stretch, scoped to the road's two
+	-- outermost edges instead of an arbitrary lane-boundary index set.
+	IsPlacingKerbStretch: () -> boolean,
+	StartKerbStretchPlacement: () -> (),
+	CancelKerbStretchPlacement: () -> (),
+	IsConfirmingKerbStretch: () -> boolean,
+	GetKerbStretchDraft: () -> Markings.KerbStretch?,
+	SetKerbStretchDraftFrom: (studs: number) -> (),
+	SetKerbStretchDraftTo: (studs: number) -> (),
+	SetKerbStretchDraftRestriction: (restriction: string) -> (),
+	ConfirmKerbStretch: () -> (),
+	GetKerbStretches: () -> { Markings.KerbStretch },
+	ClearKerbStretches: () -> (),
+	RemoveKerbStretch: (index: number) -> (),
 	Destroy: () -> (),
 }
 
@@ -186,6 +215,12 @@ local function createRoadEditSession(
 	-- confirm/mode-switch, never carried between placements.
 	local stretchSelectedIndices: { [number]: boolean } = {}
 	local stretchSelectGhosts: { Part } = {}
+	local kerbStretchConnections: { RBXScriptConnection } = {}
+	local kerbStretchDraft: Markings.KerbStretch? = nil
+	-- Click-drag-to-draw state, same convention as the lane stretch's.
+	local kerbStretchDragStartStation: number? = nil
+	local kerbStretchDragSide: ("Left" | "Right")? = nil
+	local kerbStretchGhosts: { Part } = {}
 
 	-- Frame at a station INCLUDING the same superelevation (bank) roll
 	-- RoadBuilder.Build actually uses for the real geometry - a plain
@@ -262,6 +297,34 @@ local function createRoadEditSession(
 		changeSignal:Fire()
 	end
 
+	local function clearKerbStretchGhosts()
+		for _, ghost in kerbStretchGhosts do
+			ghost:Destroy()
+		end
+		table.clear(kerbStretchGhosts)
+	end
+
+	-- Cancels either step of kerb-stretch placement, same shape as
+	-- stopMarkingStretchPlacement above.
+	local function stopKerbStretchPlacement()
+		if mode ~= "PlacingKerbStretch" and mode ~= "ConfirmingKerbStretch" then
+			return
+		end
+		if mode == "PlacingKerbStretch" then
+			plugin:Deactivate()
+		end
+		for _, connection in kerbStretchConnections do
+			connection:Disconnect()
+		end
+		table.clear(kerbStretchConnections)
+		clearKerbStretchGhosts()
+		kerbStretchDragStartStation = nil
+		kerbStretchDragSide = nil
+		kerbStretchDraft = nil
+		mode = "SegmentMenu"
+		changeSignal:Fire()
+	end
+
 	-- Finds the same-direction Drive/Drive boundary nearest the click's
 	-- lateral position - mirrors exactly the condition Markings.lua uses to
 	-- decide a boundary is a lane-changing rule candidate at all (kerb/edge
@@ -289,6 +352,32 @@ local function createRoadEditSession(
 			end
 		end
 		return bestIndex
+	end
+
+	-- Finds whichever of the road's genuine kerb-line sides (see
+	-- Markings.KerbSides) the click's lateral position lands nearer to -
+	-- nil if the profile has neither (no roadway component at all, or the
+	-- outermost component on both sides is itself non-roadway/non-raised).
+	local function resolveKerbSideFromHit(station: number, hitPosition: Vector3): ("Left" | "Right")?
+		if not originalData then
+			return nil
+		end
+		local profile = editingProfile or originalData.ProfileStart
+		local sides = Markings.KerbSides(profile.Components)
+		if not sides.Left and not sides.Right then
+			return nil
+		end
+		local frame = originalData.Curve:FrameAt(station)
+		local lateralOffsetM = (hitPosition - frame.Position):Dot(frame.RightVector) / settings.MetersToStuds
+		local offsets = RoadProfile.ComponentOffsetsM(profile)
+		local leftOffsetM = if offsets[1] then offsets[1].Right else 0
+		local rightOffsetM = if offsets[#offsets] then offsets[#offsets].Left else 0
+		local distLeft = if sides.Left then math.abs(lateralOffsetM - leftOffsetM) else math.huge
+		local distRight = if sides.Right then math.abs(lateralOffsetM - rightOffsetM) else math.huge
+		if distLeft == math.huge and distRight == math.huge then
+			return nil
+		end
+		return if distLeft <= distRight then "Left" else "Right"
 	end
 
 	-- What a drag starting on clickedIndex will actually apply to, given
@@ -500,12 +589,160 @@ local function createRoadEditSession(
 		changeSignal:Fire()
 	end
 
-	-- Rebuilds the selected road's geometry with the given marking
-	-- stretches (replacing whatever was stamped before), then re-stamps
-	-- everything - the same "clone-and-mutate, rebuild as one undo step"
-	-- pattern session.Apply/ConfirmBay use, shared here since
-	-- ConfirmMarkingStretch and ClearMarkingStretches both need it.
-	local function rebuildWithMarkingStretches(stretches: { Markings.MarkingStretch }, historyLabel: string)
+	-- Ghost strip for a kerb-stretch drag preview, same curve-following
+	-- facet-chain approach as buildGhostStrips above but for a single fixed
+	-- lateral offset (the kerb line's own position, same convention the bus
+	-- bay ghost's kerbOffsetM already uses) instead of a list of
+	-- lane-boundary indices.
+	local function buildKerbGhostStrips(
+		side: "Left" | "Right",
+		s0: number,
+		s1: number,
+		color: Color3,
+		transparency: number,
+		into: { Part }
+	)
+		if not selectedRoad or not originalData then
+			return
+		end
+		local lo = math.min(s0, s1)
+		local hi = math.max(s0, s1)
+		if hi - lo < 1e-3 then
+			return
+		end
+		local curve = originalData.Curve
+		local profile = editingProfile or originalData.ProfileStart
+		local offsets = RoadProfile.ComponentOffsetsM(profile)
+		local scale = settings.MetersToStuds
+		local style = getStyle()
+		local y = 0.15
+		local width = math.max(style.MarkingWidthM * scale, 0.3)
+		local offsetM = if side == "Left"
+			then (if offsets[1] then offsets[1].Right else 0)
+			else (if offsets[#offsets] then offsets[#offsets].Left else 0)
+		local offsetStuds = offsetM * scale
+		local segments = math.min(GHOST_MAX_SEGMENTS, math.max(1, math.floor((hi - lo) / 4)))
+		for i = 0, segments - 1 do
+			local segLo = lo + (hi - lo) * (i / segments)
+			local segHi = lo + (hi - lo) * ((i + 1) / segments)
+			local frameA = frameAtWithRoll(curve, segLo)
+			local frameB = frameAtWithRoll(curve, segHi)
+			local pA = (frameA * CFrame.new(offsetStuds, y, 0)).Position
+			local pB = (frameB * CFrame.new(offsetStuds, y, 0)).Position
+			local segLength = (pB - pA).Magnitude
+			if segLength > 1e-3 then
+				local ghost = Instance.new("Part")
+				ghost.Name = "EasyRoadKerbStretchGhost"
+				ghost.Anchored = true
+				ghost.CanCollide = false
+				ghost.CanQuery = false
+				ghost.CanTouch = false
+				ghost.CastShadow = false
+				ghost.Material = Enum.Material.Neon
+				ghost.Color = color
+				ghost.Transparency = transparency
+				ghost.Size = Vector3.new(width, 0.2, segLength)
+				ghost.CFrame = CFrame.lookAt((pA + pB) / 2, pB, frameA.UpVector)
+				ghost.Parent = workspace
+				table.insert(into, ghost)
+			end
+		end
+	end
+
+	local function updateKerbStretchGhost(side: "Left" | "Right", s0: number, s1: number)
+		clearKerbStretchGhosts()
+		buildKerbGhostStrips(side, s0, s1, getStyle().YellowMarking, 0.2, kerbStretchGhosts)
+	end
+
+	local function onKerbStretchDragBegin()
+		if mode ~= "PlacingKerbStretch" or not selectedRoad or not originalData then
+			return
+		end
+		if uiState.Hovered then
+			return
+		end
+		local station = originalData.Curve:ClosestS(mouse.Hit.Position)
+		local side = resolveKerbSideFromHit(station, mouse.Hit.Position)
+		if not side then
+			return
+		end
+		kerbStretchDragStartStation = station
+		kerbStretchDragSide = side
+	end
+
+	local function onKerbStretchDragMove()
+		if
+			mode ~= "PlacingKerbStretch"
+			or not kerbStretchDragStartStation
+			or not kerbStretchDragSide
+			or not originalData
+		then
+			return
+		end
+		local currentStation = originalData.Curve:ClosestS(mouse.Hit.Position)
+		updateKerbStretchGhost(kerbStretchDragSide, kerbStretchDragStartStation, currentStation)
+	end
+
+	local function onKerbStretchDragEnd()
+		if
+			mode ~= "PlacingKerbStretch"
+			or not kerbStretchDragStartStation
+			or not kerbStretchDragSide
+			or not originalData
+		then
+			return
+		end
+		local currentStation = originalData.Curve:ClosestS(mouse.Hit.Position)
+		local lo = math.min(kerbStretchDragStartStation, currentStation)
+		local hi = math.max(kerbStretchDragStartStation, currentStation)
+		local side = kerbStretchDragSide
+
+		if hi - lo < 1 then
+			-- Too short to be an intentional range drag - stay in
+			-- PlacingKerbStretch so a misclick doesn't abort the whole
+			-- flow, matching the lane-stretch/bay tools' own near-zero-
+			-- drag handling.
+			kerbStretchDragStartStation = nil
+			kerbStretchDragSide = nil
+			clearKerbStretchGhosts()
+			changeSignal:Fire()
+			return
+		end
+
+		-- Restriction starts at the road's own current whole-road
+		-- KerbRestriction (editing FROM the current state, not an
+		-- arbitrary fixed default) - adjustable in the confirm panel.
+		local currentRestriction = (editingProfile or originalData.ProfileStart).KerbRestriction or "None"
+		kerbStretchDraft = {
+			Side = side,
+			FromStationStuds = lo,
+			ToStationStuds = hi,
+			Restriction = currentRestriction,
+		}
+		kerbStretchDragStartStation = nil
+		kerbStretchDragSide = nil
+		clearKerbStretchGhosts()
+		for _, connection in kerbStretchConnections do
+			connection:Disconnect()
+		end
+		table.clear(kerbStretchConnections)
+		plugin:Deactivate()
+		mode = "ConfirmingKerbStretch"
+		changeSignal:Fire()
+	end
+
+	-- Rebuilds the selected road's geometry with the given marking/kerb
+	-- stretches (replacing whatever was stamped before for BOTH - always
+	-- pass the road's current list back unchanged for whichever one isn't
+	-- being touched, or it gets silently wiped), then re-stamps everything -
+	-- the same "clone-and-mutate, rebuild as one undo step" pattern
+	-- session.Apply/ConfirmBay use, shared here since both the lane-stretch
+	-- and kerb-stretch confirm/clear/remove actions need it.
+	local function rebuildRoad(
+		markingStretches: { Markings.MarkingStretch },
+		kerbStretches: { Markings.KerbStretch },
+		historyLabel: string
+	)
 		if not selectedRoad or not originalData then
 			return
 		end
@@ -519,7 +756,8 @@ local function createRoadEditSession(
 			Style = getStyle(),
 			Settings = settings,
 			Preview = false,
-			MarkingStretches = if #stretches > 0 then stretches else nil,
+			MarkingStretches = if #markingStretches > 0 then markingStretches else nil,
+			KerbStretches = if #kerbStretches > 0 then kerbStretches else nil,
 		}
 		local built = if data.Bay
 			then RoadBuilder.BuildWithBay(buildOptions, {
@@ -538,9 +776,11 @@ local function createRoadEditSession(
 		built:Destroy()
 		RoadInstance.StampModel(road, data.Curve.Segments[1], editingProfile or data.ProfileStart, data.ProfileEnd)
 		RoadInstance.StampBay(road, data.Bay)
-		RoadInstance.StampMarkingStretches(road, stretches)
+		RoadInstance.StampMarkingStretches(road, markingStretches)
+		RoadInstance.StampKerbStretches(road, kerbStretches)
 		BusStops.Render(road)
-		data.MarkingStretches = stretches
+		data.MarkingStretches = markingStretches
+		data.KerbStretches = kerbStretches
 		if recording then
 			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
 		end
@@ -707,6 +947,8 @@ local function createRoadEditSession(
 			stopBayPlacement()
 		elseif mode == "PlacingMarkingStretch" then
 			stopMarkingStretchPlacement()
+		elseif mode == "PlacingKerbStretch" then
+			stopKerbStretchPlacement()
 		end
 		selectedRoad = road
 		originalData = if road then RoadInstance.Read(road) else nil
@@ -716,6 +958,7 @@ local function createRoadEditSession(
 		stretchDraft = nil
 		stretchSelectionMode = "All"
 		stretchSelectedIndices = {}
+		kerbStretchDraft = nil
 		mode = "Menu"
 		changeSignal:Fire()
 	end
@@ -738,6 +981,11 @@ local function createRoadEditSession(
 				and Keybinds.Matches(settings.Keybinds.CancelPlacement, input)
 			then
 				stopMarkingStretchPlacement()
+			elseif
+				(mode == "PlacingKerbStretch" or mode == "ConfirmingKerbStretch")
+				and Keybinds.Matches(settings.Keybinds.CancelPlacement, input)
+			then
+				stopKerbStretchPlacement()
 			end
 		end)
 	)
@@ -748,7 +996,11 @@ local function createRoadEditSession(
 	-- Cheap (runs once, at plugin load) and matches the ghost Parts' own
 	-- naming exactly, so it can't touch anything else.
 	for _, child in workspace:GetChildren() do
-		if child.Name == "EasyRoadMarkingStretchGhost" or child.Name == "EasyRoadBayGhost" then
+		if
+			child.Name == "EasyRoadMarkingStretchGhost"
+			or child.Name == "EasyRoadBayGhost"
+			or child.Name == "EasyRoadKerbStretchGhost"
+		then
 			child:Destroy()
 		end
 	end
@@ -808,6 +1060,7 @@ local function createRoadEditSession(
 			Settings = settings,
 			Preview = false,
 			MarkingStretches = if #originalData.MarkingStretches > 0 then originalData.MarkingStretches else nil,
+			KerbStretches = if #originalData.KerbStretches > 0 then originalData.KerbStretches else nil,
 		}
 		-- If this road has a bus bay, rebuild it through the bay-aware
 		-- builder instead - otherwise an unrelated edit here (colour, kerb
@@ -834,6 +1087,7 @@ local function createRoadEditSession(
 		RoadInstance.StampModel(selectedRoad, originalData.Curve.Segments[1], editingProfile, originalData.ProfileEnd)
 		RoadInstance.StampBay(selectedRoad, originalData.Bay)
 		RoadInstance.StampMarkingStretches(selectedRoad, originalData.MarkingStretches)
+		RoadInstance.StampKerbStretches(selectedRoad, originalData.KerbStretches)
 		BusStops.Render(selectedRoad)
 		originalData = {
 			Curve = originalData.Curve,
@@ -841,6 +1095,7 @@ local function createRoadEditSession(
 			ProfileEnd = originalData.ProfileEnd,
 			Bay = originalData.Bay,
 			MarkingStretches = originalData.MarkingStretches,
+			KerbStretches = originalData.KerbStretches,
 		}
 		if recording then
 			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
@@ -961,6 +1216,7 @@ local function createRoadEditSession(
 			Settings = settings,
 			Preview = false,
 			MarkingStretches = if #originalData.MarkingStretches > 0 then originalData.MarkingStretches else nil,
+			KerbStretches = if #originalData.KerbStretches > 0 then originalData.KerbStretches else nil,
 		}, bay)
 		for _, child in selectedRoad:GetChildren() do
 			child:Destroy()
@@ -977,6 +1233,7 @@ local function createRoadEditSession(
 		)
 		RoadInstance.StampBay(selectedRoad, bay)
 		RoadInstance.StampMarkingStretches(selectedRoad, originalData.MarkingStretches)
+		RoadInstance.StampKerbStretches(selectedRoad, originalData.KerbStretches)
 		BusStops.Render(selectedRoad)
 		originalData.Bay = bay
 		bayStation = nil
@@ -1158,7 +1415,7 @@ local function createRoadEditSession(
 		local stretches = applyStretchOverwrite(originalData.MarkingStretches, stretchDraft)
 		stretchDraft = nil
 		mode = "SegmentMenu"
-		rebuildWithMarkingStretches(stretches, "Stretch marking")
+		rebuildRoad(stretches, originalData.KerbStretches, "Stretch marking")
 	end
 
 	function session.GetMarkingStretches(): { Markings.MarkingStretch }
@@ -1169,7 +1426,7 @@ local function createRoadEditSession(
 		if not originalData or #originalData.MarkingStretches == 0 then
 			return
 		end
-		rebuildWithMarkingStretches({}, "Clear marking stretches")
+		rebuildRoad({}, originalData.KerbStretches, "Clear marking stretches")
 	end
 
 	-- Removes a single stretch by its position in GetMarkingStretches()'s
@@ -1182,7 +1439,124 @@ local function createRoadEditSession(
 		end
 		local stretches = table.clone(originalData.MarkingStretches)
 		table.remove(stretches, index)
-		rebuildWithMarkingStretches(stretches, "Remove marking stretch")
+		rebuildRoad(stretches, originalData.KerbStretches, "Remove marking stretch")
+	end
+
+	function session.IsPlacingKerbStretch(): boolean
+		return mode == "PlacingKerbStretch"
+	end
+
+	function session.StartKerbStretchPlacement()
+		if mode ~= "SegmentMenu" or not selectedRoad then
+			return
+		end
+		mode = "PlacingKerbStretch"
+		plugin:Activate(true)
+		table.insert(kerbStretchConnections, mouse.Button1Down:Connect(onKerbStretchDragBegin))
+		table.insert(kerbStretchConnections, mouse.Move:Connect(onKerbStretchDragMove))
+		table.insert(kerbStretchConnections, mouse.Button1Up:Connect(onKerbStretchDragEnd))
+		changeSignal:Fire()
+	end
+
+	session.CancelKerbStretchPlacement = stopKerbStretchPlacement
+
+	function session.IsConfirmingKerbStretch(): boolean
+		return mode == "ConfirmingKerbStretch"
+	end
+
+	function session.GetKerbStretchDraft(): Markings.KerbStretch?
+		return kerbStretchDraft
+	end
+
+	function session.SetKerbStretchDraftFrom(studs: number)
+		if kerbStretchDraft then
+			kerbStretchDraft.FromStationStuds = math.clamp(studs, 0, kerbStretchDraft.ToStationStuds - 1)
+			changeSignal:Fire()
+		end
+	end
+
+	function session.SetKerbStretchDraftTo(studs: number)
+		if kerbStretchDraft and originalData then
+			kerbStretchDraft.ToStationStuds =
+				math.clamp(studs, kerbStretchDraft.FromStationStuds + 1, originalData.Curve.Length)
+			changeSignal:Fire()
+		end
+	end
+
+	function session.SetKerbStretchDraftRestriction(restriction: string)
+		if kerbStretchDraft then
+			kerbStretchDraft.Restriction = restriction
+			changeSignal:Fire()
+		end
+	end
+
+	-- Overwrites any existing kerb stretch on the SAME side whose range
+	-- overlaps the new one - the road only has two possible sides, so
+	-- there's no boundary-intersection step like applyStretchOverwrite's
+	-- (every stretch on a given side always "shares" that side); only the
+	-- overlapping sub-range needs splitting/dropping.
+	local function applyKerbStretchOverwrite(
+		existing: { Markings.KerbStretch },
+		newStretch: Markings.KerbStretch
+	): { Markings.KerbStretch }
+		local result: { Markings.KerbStretch } = {}
+		for _, e in existing do
+			local overlaps = e.Side == newStretch.Side
+				and e.FromStationStuds < newStretch.ToStationStuds
+				and e.ToStationStuds > newStretch.FromStationStuds
+			if not overlaps then
+				table.insert(result, e)
+			else
+				if e.FromStationStuds < newStretch.FromStationStuds then
+					table.insert(result, {
+						Side = e.Side,
+						FromStationStuds = e.FromStationStuds,
+						ToStationStuds = newStretch.FromStationStuds,
+						Restriction = e.Restriction,
+					})
+				end
+				if e.ToStationStuds > newStretch.ToStationStuds then
+					table.insert(result, {
+						Side = e.Side,
+						FromStationStuds = newStretch.ToStationStuds,
+						ToStationStuds = e.ToStationStuds,
+						Restriction = e.Restriction,
+					})
+				end
+			end
+		end
+		table.insert(result, newStretch)
+		return result
+	end
+
+	function session.ConfirmKerbStretch()
+		if mode ~= "ConfirmingKerbStretch" or not originalData or not kerbStretchDraft then
+			return
+		end
+		local stretches = applyKerbStretchOverwrite(originalData.KerbStretches, kerbStretchDraft)
+		kerbStretchDraft = nil
+		mode = "SegmentMenu"
+		rebuildRoad(originalData.MarkingStretches, stretches, "Stretch kerb marking")
+	end
+
+	function session.GetKerbStretches(): { Markings.KerbStretch }
+		return if originalData then originalData.KerbStretches else {}
+	end
+
+	function session.ClearKerbStretches()
+		if not originalData or #originalData.KerbStretches == 0 then
+			return
+		end
+		rebuildRoad(originalData.MarkingStretches, {}, "Clear kerb stretches")
+	end
+
+	function session.RemoveKerbStretch(index: number)
+		if not originalData or not originalData.KerbStretches[index] then
+			return
+		end
+		local stretches = table.clone(originalData.KerbStretches)
+		table.remove(stretches, index)
+		rebuildRoad(originalData.MarkingStretches, stretches, "Remove kerb stretch")
 	end
 
 	function session.GetAnchorWorldPosition(): Vector3?
@@ -1221,7 +1595,7 @@ local function createRoadEditSession(
 	end
 
 	function session.Destroy()
-		if mode == "PlacingBay" or mode == "PlacingMarkingStretch" then
+		if mode == "PlacingBay" or mode == "PlacingMarkingStretch" or mode == "PlacingKerbStretch" then
 			plugin:Deactivate()
 		end
 		for _, connection in bayConnections do
@@ -1238,6 +1612,11 @@ local function createRoadEditSession(
 		table.clear(stretchConnections)
 		clearStretchGhosts()
 		clearStretchSelectGhosts()
+		for _, connection in kerbStretchConnections do
+			connection:Disconnect()
+		end
+		table.clear(kerbStretchConnections)
+		clearKerbStretchGhosts()
 		for _, connection in connections do
 			connection:Disconnect()
 		end

@@ -34,6 +34,7 @@ export type RoadData = {
 	ProfileEnd: RoadProfile.RoadProfile?,
 	Bay: BayData?,
 	MarkingStretches: { Markings.MarkingStretch },
+	KerbStretches: { Markings.KerbStretch },
 }
 
 local RoadInstance = {}
@@ -162,6 +163,41 @@ local function stretchesFromModel(model: Model): { Markings.MarkingStretch }
 	return stretches
 end
 
+-- Kerb stretches, same stamped-separately convention as marking stretches
+-- above.
+function RoadInstance.StampKerbStretches(model: Model, stretches: { Markings.KerbStretch })
+	model:SetAttribute("RW_KerbStretchesJson", if #stretches > 0 then HttpService:JSONEncode(stretches) else nil)
+end
+
+local function kerbStretchesFromModel(model: Model): { Markings.KerbStretch }
+	local raw = model:GetAttribute("RW_KerbStretchesJson")
+	if typeof(raw) ~= "string" then
+		return {}
+	end
+	local ok, decoded = pcall(HttpService.JSONDecode, HttpService, raw)
+	if not ok or typeof(decoded) ~= "table" then
+		return {}
+	end
+	local stretches: { Markings.KerbStretch } = {}
+	for _, entry in decoded :: { any } do
+		if
+			typeof(entry) == "table"
+			and (entry.Side == "Left" or entry.Side == "Right")
+			and typeof(entry.FromStationStuds) == "number"
+			and typeof(entry.ToStationStuds) == "number"
+			and typeof(entry.Restriction) == "string"
+		then
+			table.insert(stretches, {
+				Side = entry.Side :: any,
+				FromStationStuds = entry.FromStationStuds,
+				ToStationStuds = entry.ToStationStuds,
+				Restriction = entry.Restriction,
+			})
+		end
+	end
+	return stretches
+end
+
 local function segmentFromModel(model: Model): CurveSegment.Segment?
 	local kind = model:GetAttribute("RW_CurveKind")
 	local p0 = model:GetAttribute("RW_P0")
@@ -222,6 +258,7 @@ function RoadInstance.Read(model: Model): RoadData?
 		ProfileEnd = profileEnd,
 		Bay = bayFromModel(model),
 		MarkingStretches = stretchesFromModel(model),
+		KerbStretches = kerbStretchesFromModel(model),
 	}
 end
 

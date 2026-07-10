@@ -4,6 +4,82 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Kerb marking "stretch" - the lane-marking stretch tool's own kerb-line counterpart
+
+- **Kerb restriction lines (single/double yellow, no line at all) can now
+  be overridden over a free-form sub-range** of the road's own left or
+  right kerb line, the same click-a-target-then-drag-a-range interaction
+  the lane-marking stretch tool already established - a new "Stretch Kerb
+  Marking" pill on the segment menu. Deliberately scoped to just the
+  road's two OUTERMOST edges (`Markings.KerbStretch.Side: "Left" |
+  "Right"`), not every individual kerb-adjacent boundary a profile might
+  have (e.g. around an internal median) - matches the same Left/Right-only
+  scope the bus bay tool already uses for "which side of the road," and
+  sidesteps a much bigger disambiguation problem (which internal kerb edge
+  does "Left"/"Right" even refer to with more than two). An internal
+  kerb-adjacent boundary still renders correctly, just always at the
+  whole-road `KerbRestriction`, unspliced - flagged in `TODO.md` rather
+  than solved blind, mirroring the existing `BuildWithBay`-transition
+  caveat already logged for lane stretches.
+  - **`Mesh/Markings.lua`**: new `KerbStretch` type + `MarkingOptions.
+    KerbStretches`; new exported `Markings.KerbSides(components)` (mirrors
+    the render loop's own leftIsKerb/rightIsKerb condition for the
+    cross-section's outermost roadway component specifically, so a click
+    can't target a "kerb" that doesn't actually render); the kerb-line
+    emission loop refactored into `emitKerbEdge`/`emitKerbSide` helpers
+    that splice stretches sorted by station exactly like
+    `emitBoundaryLine` does for lane markings - each spliced piece
+    independently re-derives its own line type AND lateral offset from
+    its own effective restriction (kerb-restriction offset vs. plain
+    edge-line offset are genuinely different lateral positions, unlike
+    the lane-boundary case where only the line type changes).
+  - **`RoadEditSession.lua`**: new `PlacingKerbStretch`/
+    `ConfirmingKerbStretch` modes, built as a deliberately PARALLEL (not
+    intertwined) state machine to the lane-stretch one - separate draft/
+    drag state, separate ghost list (`EasyRoadKerbStretchGhost`), to avoid
+    risking a regression in the lane-stretch flow that took many rounds
+    to stabilize this session. `resolveKerbSideFromHit` picks whichever
+    kerb side a click lands nearer to (gated on `Markings.KerbSides` so a
+    profile with no roadway component at all can't be clicked). The two
+    stretch kinds DO share one rebuild helper now
+    (`rebuildWithMarkingStretches` generalized to `rebuildRoad(marking
+    Stretches, kerbStretches, historyLabel)`) since that part was already
+    a pure mechanical "rebuild in place and re-stamp both lists" step with
+    no drag/hit-test logic to entangle. `applyKerbStretchOverwrite`
+    mirrors the lane tool's overwrite-on-overlap semantics, simplified
+    since a kerb stretch only ever has one `Side`, not an arbitrary
+    `ComponentIndices` set to intersect.
+  - **`RoadInstance.lua`**: `RoadData.KerbStretches` (stamped/read via
+    `RW_KerbStretchesJson`, same pattern as `RW_MarkingStretchesJson`).
+    Every place a `RoadData`/build-options table gets reconstructed
+    (`session.Apply`, `session.ConfirmBay`) now explicitly threads
+    `KerbStretches` through too, or it would silently wipe on the next
+    unrelated edit - the exact bug class the `MarkingStretches` comment
+    already warned about for that same reconstruction site.
+  - **`Mesh/RoadBuilder.lua`**: `BuildOptions.KerbStretches`, plus a
+    `kerbStretchesForSlice` mirroring `BuildWithBay`'s existing
+    `stretchesForSlice` (simpler - no `ComponentIndices` to remap, `Side`
+    is stable across slices, just the station clip/offset).
+  - **UI**: new `KerbStretchPanel.lua` (confirm-step: From/To/Restriction,
+    mirrors `MarkingStretchPanel.lua`); `MarkingStretchListPanel.lua`
+    gained a second "Kerb Stretches" section so "Edit Lane Markings"
+    surfaces both kinds in one place rather than needing a separate list
+    view; `PieMenu.lua` gained a sixth ring slot (`TopRight`, already
+    added this session for "Place More (Start)") to fit "Stretch Kerb
+    Marking" alongside the existing five segment-menu pills; the
+    segment-menu's "Clear Marking Stretches" pill now clears both kinds
+    in one action (`ClearMarkingStretches` + `ClearKerbStretches`
+    together) rather than needing a second dedicated pill on an
+    already-full ring.
+  - **Not verified in a live Studio session** - this is a large amount of
+    new geometry/state-machine code built in one pass without live
+    testing, following the same architecture (and reusing the same
+    helpers: `frameAtWithRoll`, `GHOST_MAX_SEGMENTS` facet-chain ghosts,
+    the click-then-drag-then-confirm pie-menu flow) that took several
+    live-tested rounds to get fully right for lane-marking stretches.
+    Flagging this explicitly rather than claiming confidence a first pass
+    at this scale doesn't warrant.
+
 ## Per-stretch dash length/gap override
 
 - **Marking stretches can now override dash length/gap independently of
