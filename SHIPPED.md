@@ -4,6 +4,21 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## "Place More" can now continue from either end of the road
+
+- **"Place More" always continued from the road's far end** regardless of
+  which end the user actually wanted to build onward from -
+  `RoadEditSession.GetContinuation()` hardcoded `curve.Length`. Split into
+  two pills on the selection pie menu: "Place More (End)" (the original
+  behaviour, unchanged) and a new "Place More (Start)", which continues
+  from station 0 instead - using the OPPOSITE of the curve's own tangent
+  there, since the curve's forward tangent at its own start point points
+  into the existing road, not away from it. `GetContinuation` now takes a
+  `fromEnd: "Start" | "End"` parameter instead of always assuming the far
+  end. `PieMenu.lua` gained a sixth slot (`TopRight`, at the +45 degree ring
+  position the existing five-slot layout left open) to fit the new pill
+  without restructuring the menu.
+
 ## Scoped in-plugin keybind capture to mouse buttons only, per user confirmation
 
 - **User confirmed directly**: "PluginActions is the way to create keybinds

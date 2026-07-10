@@ -94,6 +94,7 @@ end
 local OFFSETS = {
 	Top = ringOffset(0),
 	TopLeft = ringOffset(-45),
+	TopRight = ringOffset(45),
 	Left = ringOffset(-90),
 	Right = ringOffset(90),
 	Bottom = ringOffset(180),
@@ -103,6 +104,7 @@ local function PieMenu(props: {
 	WorldPosition: Vector3,
 	Top: PieMenuAction?,
 	TopLeft: PieMenuAction?,
+	TopRight: PieMenuAction?,
 	Left: PieMenuAction?,
 	Right: PieMenuAction?,
 	Bottom: PieMenuAction?,
@@ -145,6 +147,14 @@ local function PieMenu(props: {
 			Action = props.TopLeft :: PieMenuAction,
 			Primary = false,
 			Offset = OFFSETS.TopLeft,
+			SetGlobalHover = props.SetGlobalHover,
+		})
+	end
+	if props.TopRight then
+		children.TopRight = e(PillButton, {
+			Action = props.TopRight :: PieMenuAction,
+			Primary = false,
+			Offset = OFFSETS.TopRight,
 			SetGlobalHover = props.SetGlobalHover,
 		})
 	end

@@ -99,7 +99,7 @@ export type RoadEditSession = {
 	IsShowingMenu: () -> boolean,
 	OpenEditor: () -> (),
 	GetAnchorWorldPosition: () -> Vector3?,
-	GetContinuation: () -> Continuation?,
+	GetContinuation: (fromEnd: "Start" | "End") -> Continuation?,
 	-- "Edit Road Segment" second-level submenu (Add Bus Bay / Edit Lane
 	-- Markings / Stretch Marking / Back).
 	IsShowingSegmentMenu: () -> boolean,
@@ -1163,11 +1163,25 @@ local function createRoadEditSession(
 		return curve:PosAt(curve.Length / 2)
 	end
 
-	function session.GetContinuation(): Continuation?
+	-- "End" continues in the curve's own forward direction from its far tip
+	-- (the original, only behaviour "Place More" had); "Start" continues
+	-- from the near tip instead, in the OPPOSITE direction (the curve's
+	-- tangent at station 0 points forward INTO the existing road, so a new
+	-- segment built from there has to point the other way to extend the
+	-- network outward rather than back over the road that's already there).
+	function session.GetContinuation(fromEnd: "Start" | "End"): Continuation?
 		if not originalData then
 			return nil
 		end
 		local curve = originalData.Curve
+		if fromEnd == "Start" then
+			local profile = originalData.ProfileStart or originalData.ProfileEnd
+			return {
+				Position = curve:PosAt(0),
+				Tangent = -curve:TangentAt(0),
+				Profile = RoadProfile.Clone(profile),
+			}
+		end
 		local profile = originalData.ProfileEnd or originalData.ProfileStart
 		return {
 			Position = curve:PosAt(curve.Length),

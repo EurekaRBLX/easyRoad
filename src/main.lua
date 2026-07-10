@@ -796,10 +796,27 @@ return function(
 								editSession.OpenSegmentMenu()
 							end,
 						},
-						Left = {
-							Text = "Place More",
+						-- Two separate pills rather than one "Place More" -
+						-- it used to always continue from the road's far end
+						-- regardless of which end the user actually wanted
+						-- to extend from.
+						TopRight = {
+							Text = "Place More (Start)",
 							OnClick = function()
-								local continuation = editSession.GetContinuation()
+								local continuation = editSession.GetContinuation("Start")
+								editSession.Deselect()
+								if continuation then
+									startSession({
+										Position = continuation.Position,
+										Tangent = continuation.Tangent,
+									}, continuation.Profile)
+								end
+							end,
+						},
+						Left = {
+							Text = "Place More (End)",
+							OnClick = function()
+								local continuation = editSession.GetContinuation("End")
 								editSession.Deselect()
 								if continuation then
 									startSession({
