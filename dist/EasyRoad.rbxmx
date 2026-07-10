@@ -1146,6 +1146,14 @@ export type MarkingStretch = {
 	FromStationStuds: number,
 	ToStationStuds: number,
 	Line: RegionStyles.LineType,
+	-- Optional per-stretch dash rhythm override, independent of the
+	-- region's own DashLengthM/DashGapM (or the whole-road DashLengthM/
+	-- DashGapM override) - nil falls back to those exactly like any other
+	-- dashed line. Only meaningful when Line has a dashed component
+	-- (Dashed/DoubleDashed/SolidDash/DashSolid); harmless (simply unused)
+	-- otherwise.
+	DashLengthM: number?,
+	DashGapM: number?,
 }
 
 local Markings = {}
@@ -1344,8 +1352,8 @@ function Markings.Compute(
 				offsetEnd,
 				stretch.Line,
 				trafficLineColor(style.WhiteMarking),
-				nil,
-				nil,
+				stretch.DashLengthM,
+				stretch.DashGapM,
 				stretch.FromStationStuds,
 				stretch.ToStationStuds
 			)
@@ -2328,6 +2336,8 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 					FromStationStuds = from - sliceStart,
 					ToStationStuds = to - sliceStart,
 					Line = stretch.Line,
+					DashLengthM = stretch.DashLengthM,
+					DashGapM = stretch.DashGapM,
 				})
 			end
 		end
@@ -3276,6 +3286,8 @@ export type RoadEditSession = {
 	SetMarkingStretchDraftFrom: (studs: number) -&gt; (),
 	SetMarkingStretchDraftTo: (studs: number) -&gt; (),
 	SetMarkingStretchDraftLine: (line: RegionStyles.LineType) -&gt; (),
+	SetMarkingStretchDraftDashLength: (dashLengthM: number) -&gt; (),
+	SetMarkingStretchDraftDashGap: (dashGapM: number) -&gt; (),
 	ConfirmMarkingStretch: () -&gt; (),
 	GetMarkingStretches: () -&gt; { Markings.MarkingStretch },
 	ClearMarkingStretches: () -&gt; (),
@@ -3610,11 +3622,19 @@ local function createRoadEditSession(
 			return
 		end
 
+		-- Dash Length/Gap start pre-filled with the region's own current
+		-- defaults (not nil) so the confirm panel's number fields always
+		-- show a real, editable value instead of a blank/undefined one;
+		-- untouched, they simply reproduce the region default exactly, same
+		-- as leaving them nil would.
+		local style = getStyle()
 		stretchDraft = {
 			ComponentIndices = resolvePreviewIndices(clickedIndex),
 			FromStationStuds = lo,
 			ToStationStuds = hi,
 			Line = "Solid",
+			DashLengthM = style.DashLengthM,
+			DashGapM = style.DashGapM,
 		}
 		stretchDragStartStation = nil
 		stretchDragComponentIndex = nil
@@ -4180,6 +4200,20 @@ local function createRoadEditSession(
 		end
 	end
 
+	function session.SetMarkingStretchDraftDashLength(dashLengthM: number)
+		if stretchDraft then
+			stretchDraft.DashLengthM = math.max(dashLengthM, 0.1)
+			changeSignal:Fire()
+		end
+	end
+
+	function session.SetMarkingStretchDraftDashGap(dashGapM: number)
+		if stretchDraft then
+			stretchDraft.DashGapM = math.max(dashGapM, 0.1)
+			changeSignal:Fire()
+		end
+	end
+
 	local function intersectIndices(a: { number }, b: { number }): { number }
 		local bSet: { [number]: boolean } = {}
 		for _, i in b do
@@ -4237,6 +4271,8 @@ local function createRoadEditSession(
 						FromStationStuds = e.FromStationStuds,
 						ToStationStuds = e.ToStationStuds,
 						Line = e.Line,
+						DashLengthM = e.DashLengthM,
+						DashGapM = e.DashGapM,
 					})
 				end
 				if e.FromStationStuds &lt; newStretch.FromStationStuds then
@@ -4245,6 +4281,8 @@ local function createRoadEditSession(
 						FromStationStuds = e.FromStationStuds,
 						ToStationStuds = newStretch.FromStationStuds,
 						Line = e.Line,
+						DashLengthM = e.DashLengthM,
+						DashGapM = e.DashGapM,
 					})
 				end
 				if e.ToStationStuds &gt; newStretch.ToStationStuds then
@@ -4253,6 +4291,8 @@ local function createRoadEditSession(
 						FromStationStuds = newStretch.ToStationStuds,
 						ToStationStuds = e.ToStationStuds,
 						Line = e.Line,
+						DashLengthM = e.DashLengthM,
+						DashGapM = e.DashGapM,
 					})
 				end
 			end
@@ -4514,6 +4554,8 @@ local function stretchesFromModel(model: Model): { Markings.MarkingStretch }
 					FromStationStuds = entry.FromStationStuds,
 					ToStationStuds = entry.ToStationStuds,
 					Line = entry.Line :: any,
+					DashLengthM = if typeof(entry.DashLengthM) == "number" then entry.DashLengthM else nil,
+					DashGapM = if typeof(entry.DashGapM) == "number" then entry.DashGapM else nil,
 				})
 			end
 		end
@@ -6836,13 +6878,27 @@ local LINE_OPTIONS = {
 	{ Id = "DashSolid", Text = "Dash / solid" },
 }
 
+-- Line types with an actual dashed component - only these make the Dash
+-- length/gap fields below meaningful (a value stored on the other types
+-- is simply never read by Markings.lua's renderer).
+local LINE_HAS_DASH: { [string]: boolean } = {
+	Dashed = true,
+	DoubleDashed = true,
+	SolidDash = true,
+	DashSolid = true,
+}
+
 local function MarkingStretchPanel(props: {
 	FromStationStuds: number,
 	ToStationStuds: number,
 	Line: string,
+	DashLengthM: number,
+	DashGapM: number,
 	OnFromChanged: (value: number) -&gt; (),
 	OnToChanged: (value: number) -&gt; (),
 	OnLineChanged: (id: string) -&gt; (),
+	OnDashLengthChanged: (value: number) -&gt; (),
+	OnDashGapChanged: (value: number) -&gt; (),
 })
 	local children: { [string]: any } = {}
 	RoadDesigner.DecorateCard(children)
@@ -6877,10 +6933,34 @@ local function MarkingStretchPanel(props: {
 			Grow = true,
 		}),
 	})
+	if LINE_HAS_DASH[props.Line] then
+		children.DashLength = e(Components.Row, { LayoutOrder = 5 }, {
+			Label = e(Components.Label, { Text = "Dash length", LayoutOrder = 1, Width = 90 }),
+			Field = e(Components.NumberField, {
+				Value = props.DashLengthM,
+				Min = 0.1,
+				Max = 20,
+				OnChanged = props.OnDashLengthChanged,
+				LayoutOrder = 2,
+			}),
+			Unit = e(Components.Label, { Text = "m", Dim = true, LayoutOrder = 3 }),
+		})
+		children.DashGap = e(Components.Row, { LayoutOrder = 6 }, {
+			Label = e(Components.Label, { Text = "Dash gap", LayoutOrder = 1, Width = 90 }),
+			Field = e(Components.NumberField, {
+				Value = props.DashGapM,
+				Min = 0.1,
+				Max = 20,
+				OnChanged = props.OnDashGapChanged,
+				LayoutOrder = 2,
+			}),
+			Unit = e(Components.Label, { Text = "m", Dim = true, LayoutOrder = 3 }),
+		})
+	end
 	children.Hint = e(Components.Label, {
 		Text = "Applies to every same-direction lane boundary together. Apply Stretch above to accept.",
 		Dim = true,
-		LayoutOrder = 5,
+		LayoutOrder = 7,
 	})
 
 	local scrollProps = Components.ScrollBar()
@@ -11103,16 +11183,20 @@ return function(
 					FromStationStuds = draft.FromStationStuds,
 					ToStationStuds = draft.ToStationStuds,
 					Line = draft.Line,
+					DashLengthM = draft.DashLengthM,
+					DashGapM = draft.DashGapM,
 					OnFromChanged = editSession.SetMarkingStretchDraftFrom,
 					OnToChanged = editSession.SetMarkingStretchDraftTo,
 					OnLineChanged = function(id: string)
 						editSession.SetMarkingStretchDraftLine(id :: RegionStyles.LineType)
 					end,
+					OnDashLengthChanged = editSession.SetMarkingStretchDraftDashLength,
+					OnDashGapChanged = editSession.SetMarkingStretchDraftDashGap,
 				})
 				bottomFrameProps = {
 					AnchorPoint = Vector2.new(0, 1),
 					Position = UDim2.new(0, 12, 1, -12),
-					Size = UDim2.new(0, 280, 0, 240),
+					Size = UDim2.new(0, 280, 0, 300),
 				}
 			end
 		elseif editSession.GetSelectedRoad() and editSession.IsPlacingMarkingStretch() then

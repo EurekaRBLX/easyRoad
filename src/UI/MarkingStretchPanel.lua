@@ -23,13 +23,27 @@ local LINE_OPTIONS = {
 	{ Id = "DashSolid", Text = "Dash / solid" },
 }
 
+-- Line types with an actual dashed component - only these make the Dash
+-- length/gap fields below meaningful (a value stored on the other types
+-- is simply never read by Markings.lua's renderer).
+local LINE_HAS_DASH: { [string]: boolean } = {
+	Dashed = true,
+	DoubleDashed = true,
+	SolidDash = true,
+	DashSolid = true,
+}
+
 local function MarkingStretchPanel(props: {
 	FromStationStuds: number,
 	ToStationStuds: number,
 	Line: string,
+	DashLengthM: number,
+	DashGapM: number,
 	OnFromChanged: (value: number) -> (),
 	OnToChanged: (value: number) -> (),
 	OnLineChanged: (id: string) -> (),
+	OnDashLengthChanged: (value: number) -> (),
+	OnDashGapChanged: (value: number) -> (),
 })
 	local children: { [string]: any } = {}
 	RoadDesigner.DecorateCard(children)
@@ -64,10 +78,34 @@ local function MarkingStretchPanel(props: {
 			Grow = true,
 		}),
 	})
+	if LINE_HAS_DASH[props.Line] then
+		children.DashLength = e(Components.Row, { LayoutOrder = 5 }, {
+			Label = e(Components.Label, { Text = "Dash length", LayoutOrder = 1, Width = 90 }),
+			Field = e(Components.NumberField, {
+				Value = props.DashLengthM,
+				Min = 0.1,
+				Max = 20,
+				OnChanged = props.OnDashLengthChanged,
+				LayoutOrder = 2,
+			}),
+			Unit = e(Components.Label, { Text = "m", Dim = true, LayoutOrder = 3 }),
+		})
+		children.DashGap = e(Components.Row, { LayoutOrder = 6 }, {
+			Label = e(Components.Label, { Text = "Dash gap", LayoutOrder = 1, Width = 90 }),
+			Field = e(Components.NumberField, {
+				Value = props.DashGapM,
+				Min = 0.1,
+				Max = 20,
+				OnChanged = props.OnDashGapChanged,
+				LayoutOrder = 2,
+			}),
+			Unit = e(Components.Label, { Text = "m", Dim = true, LayoutOrder = 3 }),
+		})
+	end
 	children.Hint = e(Components.Label, {
 		Text = "Applies to every same-direction lane boundary together. Apply Stretch above to accept.",
 		Dim = true,
-		LayoutOrder = 5,
+		LayoutOrder = 7,
 	})
 
 	local scrollProps = Components.ScrollBar()

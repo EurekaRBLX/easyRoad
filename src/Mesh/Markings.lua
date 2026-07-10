@@ -73,6 +73,14 @@ export type MarkingStretch = {
 	FromStationStuds: number,
 	ToStationStuds: number,
 	Line: RegionStyles.LineType,
+	-- Optional per-stretch dash rhythm override, independent of the
+	-- region's own DashLengthM/DashGapM (or the whole-road DashLengthM/
+	-- DashGapM override) - nil falls back to those exactly like any other
+	-- dashed line. Only meaningful when Line has a dashed component
+	-- (Dashed/DoubleDashed/SolidDash/DashSolid); harmless (simply unused)
+	-- otherwise.
+	DashLengthM: number?,
+	DashGapM: number?,
 }
 
 local Markings = {}
@@ -271,8 +279,8 @@ function Markings.Compute(
 				offsetEnd,
 				stretch.Line,
 				trafficLineColor(style.WhiteMarking),
-				nil,
-				nil,
+				stretch.DashLengthM,
+				stretch.DashGapM,
 				stretch.FromStationStuds,
 				stretch.ToStationStuds
 			)

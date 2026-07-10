@@ -136,6 +136,8 @@ export type RoadEditSession = {
 	SetMarkingStretchDraftFrom: (studs: number) -> (),
 	SetMarkingStretchDraftTo: (studs: number) -> (),
 	SetMarkingStretchDraftLine: (line: RegionStyles.LineType) -> (),
+	SetMarkingStretchDraftDashLength: (dashLengthM: number) -> (),
+	SetMarkingStretchDraftDashGap: (dashGapM: number) -> (),
 	ConfirmMarkingStretch: () -> (),
 	GetMarkingStretches: () -> { Markings.MarkingStretch },
 	ClearMarkingStretches: () -> (),
@@ -470,11 +472,19 @@ local function createRoadEditSession(
 			return
 		end
 
+		-- Dash Length/Gap start pre-filled with the region's own current
+		-- defaults (not nil) so the confirm panel's number fields always
+		-- show a real, editable value instead of a blank/undefined one;
+		-- untouched, they simply reproduce the region default exactly, same
+		-- as leaving them nil would.
+		local style = getStyle()
 		stretchDraft = {
 			ComponentIndices = resolvePreviewIndices(clickedIndex),
 			FromStationStuds = lo,
 			ToStationStuds = hi,
 			Line = "Solid",
+			DashLengthM = style.DashLengthM,
+			DashGapM = style.DashGapM,
 		}
 		stretchDragStartStation = nil
 		stretchDragComponentIndex = nil
@@ -1040,6 +1050,20 @@ local function createRoadEditSession(
 		end
 	end
 
+	function session.SetMarkingStretchDraftDashLength(dashLengthM: number)
+		if stretchDraft then
+			stretchDraft.DashLengthM = math.max(dashLengthM, 0.1)
+			changeSignal:Fire()
+		end
+	end
+
+	function session.SetMarkingStretchDraftDashGap(dashGapM: number)
+		if stretchDraft then
+			stretchDraft.DashGapM = math.max(dashGapM, 0.1)
+			changeSignal:Fire()
+		end
+	end
+
 	local function intersectIndices(a: { number }, b: { number }): { number }
 		local bSet: { [number]: boolean } = {}
 		for _, i in b do
@@ -1097,6 +1121,8 @@ local function createRoadEditSession(
 						FromStationStuds = e.FromStationStuds,
 						ToStationStuds = e.ToStationStuds,
 						Line = e.Line,
+						DashLengthM = e.DashLengthM,
+						DashGapM = e.DashGapM,
 					})
 				end
 				if e.FromStationStuds < newStretch.FromStationStuds then
@@ -1105,6 +1131,8 @@ local function createRoadEditSession(
 						FromStationStuds = e.FromStationStuds,
 						ToStationStuds = newStretch.FromStationStuds,
 						Line = e.Line,
+						DashLengthM = e.DashLengthM,
+						DashGapM = e.DashGapM,
 					})
 				end
 				if e.ToStationStuds > newStretch.ToStationStuds then
@@ -1113,6 +1141,8 @@ local function createRoadEditSession(
 						FromStationStuds = newStretch.ToStationStuds,
 						ToStationStuds = e.ToStationStuds,
 						Line = e.Line,
+						DashLengthM = e.DashLengthM,
+						DashGapM = e.DashGapM,
 					})
 				end
 			end

@@ -607,16 +607,20 @@ return function(
 					FromStationStuds = draft.FromStationStuds,
 					ToStationStuds = draft.ToStationStuds,
 					Line = draft.Line,
+					DashLengthM = draft.DashLengthM,
+					DashGapM = draft.DashGapM,
 					OnFromChanged = editSession.SetMarkingStretchDraftFrom,
 					OnToChanged = editSession.SetMarkingStretchDraftTo,
 					OnLineChanged = function(id: string)
 						editSession.SetMarkingStretchDraftLine(id :: RegionStyles.LineType)
 					end,
+					OnDashLengthChanged = editSession.SetMarkingStretchDraftDashLength,
+					OnDashGapChanged = editSession.SetMarkingStretchDraftDashGap,
 				})
 				bottomFrameProps = {
 					AnchorPoint = Vector2.new(0, 1),
 					Position = UDim2.new(0, 12, 1, -12),
-					Size = UDim2.new(0, 280, 0, 240),
+					Size = UDim2.new(0, 280, 0, 300),
 				}
 			end
 		elseif editSession.GetSelectedRoad() and editSession.IsPlacingMarkingStretch() then

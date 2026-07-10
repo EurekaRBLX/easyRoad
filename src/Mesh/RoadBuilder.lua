@@ -794,6 +794,8 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 					FromStationStuds = from - sliceStart,
 					ToStationStuds = to - sliceStart,
 					Line = stretch.Line,
+					DashLengthM = stretch.DashLengthM,
+					DashGapM = stretch.DashGapM,
 				})
 			end
 		end

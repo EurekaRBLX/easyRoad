@@ -153,6 +153,8 @@ local function stretchesFromModel(model: Model): { Markings.MarkingStretch }
 					FromStationStuds = entry.FromStationStuds,
 					ToStationStuds = entry.ToStationStuds,
 					Line = entry.Line :: any,
+					DashLengthM = if typeof(entry.DashLengthM) == "number" then entry.DashLengthM else nil,
+					DashGapM = if typeof(entry.DashGapM) == "number" then entry.DashGapM else nil,
 				})
 			end
 		end

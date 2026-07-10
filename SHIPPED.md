@@ -4,6 +4,28 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Per-stretch dash length/gap override
+
+- **Marking stretches can now override dash length/gap independently of
+  the region default**, not just the line type. `Markings.MarkingStretch`
+  gained optional `DashLengthM`/`DashGapM` fields, threaded through
+  `emitBoundaryLine`'s stretch-piece `addLine` call (previously hardcoded
+  `nil, nil`, always falling back to the region/whole-road default no
+  matter what). `RoadEditSession`'s stretch draft pre-fills both from the
+  region's own current defaults the moment a range is dragged out (so the
+  confirm panel's number fields always show a real, editable value rather
+  than a blank one) via two new setters,
+  `SetMarkingStretchDraftDashLength`/`DashGap`. `MarkingStretchPanel.lua`
+  shows the two new fields only when the selected line type actually has a
+  dashed component (Dashed/DoubleDashed/SolidDash/DashSolid) - stored but
+  unused on solid-only types.
+- Threaded the two new fields through every place a `MarkingStretch` gets
+  reconstructed rather than passed through whole, so they can't get
+  silently dropped: `RoadInstance.lua`'s JSON stamp/read,
+  `RoadBuilder.lua`'s `BuildWithBay` slice-remapping, and
+  `RoadEditSession.lua`'s `applyStretchOverwrite` (all three of its
+  existing-stretch remainder pieces).
+
 ## Superelevation transition length: fixed a real scale bug, added a slider
 
 - **Root-caused "at 6.667stud=>1m instead of 3.57 it is more abrupt."**
