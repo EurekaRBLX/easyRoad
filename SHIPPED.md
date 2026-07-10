@@ -4,6 +4,45 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junctions Phase 1b cleanup: orphan cleanup, selection UI, real fillet polygon
+
+- **Ground-picking for new road placements now ignores existing roads and
+  junctions entirely.** Reported live: placing a road across an existing
+  one used to "stack" on top of its deck instead of measuring true ground
+  height, because `raycastGround` didn't exclude the Roads/Junctions
+  folders from its raycast - crossing over something was never actually
+  routed around ("we have a intersection node handler anyway, there's
+  already an elevation control"), it just looked like it was because the
+  raycast picked up whatever was physically highest under the cursor.
+  Fixed by excluding both folders; elevation stays an explicit, separate
+  control for the cases that genuinely want a different height.
+- **Deleting a connected road no longer leaves a stale junction pad.** A
+  `workspace.DescendantRemoving` listener in `main.lua` (owned at the
+  top level so it doesn't come and go with tool activation, unlike a
+  per-session hook) fires just before a Road model is actually removed -
+  while its `RW_StartJunctionId`/`RW_EndJunctionId` attributes are still
+  readable - and either rebuilds that junction's pad against whatever
+  roads are left, or deletes the junction outright if this was its last
+  connection.
+- **A junction can now be selected and deleted directly.**
+  `JunctionEditSession.lua` mirrors `RoadEditSession`'s own
+  Selection-service-driven pattern (click a junction's pad in the
+  viewport or Explorer, no tool activation needed) but stays its own
+  small module rather than folding into the already-large road-specific
+  state machine - a road and a junction are never selected by the same
+  click. `JunctionPanel.lua` shows how many roads meet there and a Delete
+  button that unlinks them (clears their `Start`/`EndJunctionId`
+  attributes) without touching the roads' own geometry.
+- **The pad is now a real fillet polygon, not a circle.** Each connected
+  road contributes its own left/right pavement-edge points at the exact
+  station it meets the junction; sorted by angle around the junction
+  centre and fan-triangulated from there using `FillTriangle` (the same
+  "exact shared edges, no padding" technique already proven for curve
+  joints and superelevation wedges), so the pad's outline actually
+  follows the roads that meet there instead of an arbitrary generously-
+  sized circle. Falls back to the old circular pad only if no road
+  contributed usable edge points at all (an empty profile).
+
 ## Junctions Phase 1b: mid-span connect + skip pads for pass-throughs
 
 - **Drawing a new road across an existing one now actually connects them**,

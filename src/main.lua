@@ -30,6 +30,9 @@ local createRoadLibrary = require("./RoadLibrary")
 local createRegionLibrary = require("./RegionLibrary")
 local createRoadSession = require("./createRoadSession")
 local createRoadEditSession = require("./RoadEditSession")
+local createJunctionEditSession = require("./JunctionEditSession")
+local JunctionInstance = require("./JunctionInstance")
+local JunctionBuilder = require("./Mesh/JunctionBuilder")
 local RoadDesigner = require("./UI/RoadDesigner")
 local RoadInspector = require("./UI/RoadInspector")
 local BuildBar = require("./UI/BuildBar")
@@ -44,6 +47,7 @@ local MarkingStretchPanel = require("./UI/MarkingStretchPanel")
 local MarkingStretchListPanel = require("./UI/MarkingStretchListPanel")
 local MarkingSelectionModePod = require("./UI/MarkingSelectionModePod")
 local KerbStretchPanel = require("./UI/KerbStretchPanel")
+local JunctionPanel = require("./UI/JunctionPanel")
 
 return function(
 	plugin: Plugin,
@@ -102,6 +106,50 @@ return function(
 	local editSession = createRoadEditSession(plugin, settings, getStyle, uiState)
 	local editSessionChangedCn = editSession.ChangeSignal:Connect(function()
 		updateUI()
+	end)
+
+	-- Same always-listening convention as editSession above, for
+	-- JunctionNodes (see JunctionEditSession.lua) - a road and a junction
+	-- are never selected by the same click, so the two sessions never need
+	-- to coordinate with each other.
+	local junctionEditSession = createJunctionEditSession()
+	local junctionEditSessionChangedCn = junctionEditSession.ChangeSignal:Connect(function()
+		updateUI()
+	end)
+
+	-- Deleting a road (Studio's own Delete key, or anything else that
+	-- removes it from the Roads folder) doesn't go through RoadEditSession
+	-- or createRoadSession at all, so a junction it was connected to would
+	-- otherwise keep a stale pad forever - fires just before the removal
+	-- actually happens, while the road's attributes are still readable, and
+	-- for either end it referenced: rebuilds that junction's pad against
+	-- whatever's left connected, or removes the junction outright if this
+	-- was its last road.
+	local roadRemovingCn = workspace.DescendantRemoving:Connect(function(instance)
+		if instance:GetAttribute("RW_Road") ~= true then
+			return
+		end
+		local startId = instance:GetAttribute("RW_StartJunctionId")
+		local endId = instance:GetAttribute("RW_EndJunctionId")
+		for _, id in { startId, endId } do
+			if typeof(id) ~= "string" then
+				continue
+			end
+			local remaining = 0
+			for _, road in JunctionInstance.ConnectedRoads(id) do
+				if road ~= instance then
+					remaining += 1
+				end
+			end
+			if remaining == 0 then
+				local junctionModel = JunctionInstance.FindById(id)
+				if junctionModel then
+					JunctionInstance.Delete(junctionModel)
+				end
+			else
+				JunctionBuilder.Rebuild(id, getStyle(), settings)
+			end
+		end
 	end)
 
 	local function persist()
@@ -642,6 +690,16 @@ return function(
 				Position = UDim2.new(0, 12, 1, -12),
 				Size = UDim2.new(1, -24, 0, 420),
 			}
+		elseif junctionEditSession.GetSelectedJunction() then
+			bottomContent = React.createElement(JunctionPanel, {
+				ConnectedRoadCount = junctionEditSession.GetConnectedRoadCount(),
+				OnDelete = junctionEditSession.DeleteJunction,
+			})
+			bottomFrameProps = {
+				AnchorPoint = Vector2.new(0, 1),
+				Position = UDim2.new(0, 12, 1, -12),
+				Size = UDim2.new(0, 280, 0, 180),
+			}
 		end
 
 		if bottomContent then
@@ -1107,6 +1165,9 @@ return function(
 		end
 		editSession.Destroy()
 		editSessionChangedCn:Disconnect()
+		junctionEditSession.Destroy()
+		junctionEditSessionChangedCn:Disconnect()
+		roadRemovingCn:Disconnect()
 		persist()
 		clickedCn:Disconnect()
 		elevationUpAction:Destroy()

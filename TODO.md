@@ -43,7 +43,7 @@ building one now would be orphaned geometry with no consumer. Revisit once
 roundabouts (see Intersections & roundabouts below) or some other roundabout-
 adjacent UI actually exists to use it.
 
-## Junctions & intersections — phased plan (Phase 1a+1b shipped, rest in progress)
+## Junctions & intersections — phased plan (Phase 1 shipped, Phase 2/3 next)
 
 CS2-style node model: a `JunctionNode` (`JunctionInstance.lua`) is a real,
 first-class entity roads reference by Id (`RW_StartJunctionId`/
@@ -53,24 +53,26 @@ positional endpoint-snap coincidence. A road ending at a junction is just
 mechanism already used for bus-bay tapers/marking stretches) - the
 junction's own pad/fillet surface is a separate module that stitches the
 seam, so ordinary road geometry needed no surgery. See `SHIPPED.md` for
-what Phase 1a/1b actually built.
+the full round-by-round detail.
 
-**Phase 1a (shipped):** node data model, auto-create-on-snap at both
-placement endpoints (not just the chained-continuation case), a v1
-circular asphalt pad sized to the widest connected road.
+**Phase 1a:** node data model, auto-create-on-snap at both placement
+endpoints (not just the chained-continuation case).
 
-**Phase 1b (shipped):** mid-span connect - a new road whose endpoint lands
-on an EXISTING road's curve (not just its stored endpoints) now splits
-that road at the closest station (`CurveSegment.Sub`, genuine Bézier
-subdivision via `RoadSplit.lua`, not just a `PolyCurve:Slice` view) and
-inserts a junction there, so "draw a new road crossing an existing one"
-actually connects instead of just visually overlapping. Also: the pad now
-skips itself for a plain 2-road pass-through (matching profiles, roughly
-opposite outward tangents) - confirmed live in Studio as wanted, since a
-chained straight/gently-curving continuation doesn't read as an
-intersection at all.
+**Phase 1b:** mid-span connect (crossing an existing road actually splits
+and links it, not just visual overlap - `RoadSplit.lua`, genuine Bézier
+subdivision via `CurveSegment.Sub`); pads skip themselves for a plain
+2-road pass-through; ground-picking for new placements now ignores
+existing roads/junctions entirely (ground-relative by default, no
+snap-up-onto-whatever's-underneath); orphan cleanup when a connected road
+is deleted (`workspace.DescendantRemoving` in `main.lua`); a junction can
+be selected (Studio's ordinary Selection, same as a road) and deleted
+directly (`JunctionEditSession.lua` + `JunctionPanel.lua` - unlinks the
+roads, doesn't delete them); the pad is now a real fan-triangulated
+polygon tracing each connected road's own pavement edges
+(`FillTriangle`-based, angular sort around the junction centre), not an
+arbitrary circle.
 
-Deliberately scoped out of Phase 1a/1b, in rough priority order:
+Deliberately still out of scope after Phase 1, in rough priority order:
 
 - **`RoadSplit` refuses to split a road with a transition or bus bay.**
   Interpolating the exact profile at an arbitrary cut station, or deciding
@@ -81,23 +83,11 @@ Deliberately scoped out of Phase 1a/1b, in rough priority order:
   than remapping their station ranges into each piece's own local
   coordinate space - the same class of complexity already flagged for
   marking stretches surviving a structural profile edit, above.
-- **No orphan cleanup on road deletion.** Deleting a road via Studio's
-  native Delete key doesn't currently shrink or remove the junction it was
-  connected to (there's no plugin-level delete hook to react to today -
-  would need a `workspace.Roads.ChildRemoved` listener, owned at the
-  `main.lua` level rather than per-session so it doesn't come and go with
-  placement tool activation).
-- **No junction selection/editing UI.** Can't currently select a placed
-  junction, see what's connected to it, or delete one directly (only
-  indirectly, by deleting all its roads and never rebuilding the pad - see
-  above).
-- **Pad is a crude circular disc, not an exact fillet polygon.** Unlike
-  curve joints and superelevation wedges elsewhere in `Mesh/`, which
-  converged on exact corner geometry via `FillTriangle` after a padding
-  scheme proved insufficient, the junction pad doesn't yet compute the
-  real per-corner fillet outline from each connected road's edge
-  geometry - it's sized generously enough to always cover the seam, but
-  won't look like a proper rounded-corner intersection.
+- **The fillet polygon ignores superelevation roll.** Edge points are
+  computed via a plain `FrameAt(station)` (roll defaults to 0); a road
+  banked right at the point it meets a junction will have its pad edge
+  slightly off from the true tilted deck surface. Uncommon in practice
+  (banking transitions run mid-segment, not usually right at an endpoint).
 - **No lane markings drawn through the junction.** Stop lines, give-way
   markings, crosswalks, lane-guidance paint - `Markings.Compute` is
   fundamentally "one road, station 0 to Length" and deliberately wasn't
@@ -125,8 +115,6 @@ in-place machinery already built, unrelated to the junction work above.
 
 - **Crossings.** Zebra crossings and HK/UK-style uncontrolled cautionary
   crossings (zigzag give-way markings).
-- **Crossings.** Zebra crossings and HK/UK-style uncontrolled cautionary
-  crossings (zigzag give-way markings).
 - **Tunnels / bridges standard.** Auto-generated barriers/parapets on
   elevated or sunken segments, pillars for bridges. Reference: the user's
   Commonwealth expressway assets in their Studio environment.
@@ -136,8 +124,6 @@ in-place machinery already built, unrelated to the junction work above.
   km / mi / kilostuds. Currently everything is hardcoded metric internally.
 - **Shoulder-optional highway presets.** Built-in highway profiles always
   include a shoulder; should be a toggle.
-- **Snapping beyond endpoints.** Mid-segment snap, automatic junction
-  creation when a new road crosses an existing one.
 - **Bus Lane as a per-instance road-click option.** The old "Bus Bay"
   module is being retired from the general Modules palette on purpose -
   the user wants it (renamed "Bus Lane") to instead appear when clicking an

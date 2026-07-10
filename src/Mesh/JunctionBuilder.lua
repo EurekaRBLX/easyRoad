@@ -2,25 +2,31 @@
 -- Builds the visible geometry for a JunctionNode (see JunctionInstance.lua):
 -- a flat pad covering the seam where its connected roads' decks meet.
 --
--- v1 deliberately keeps this simple: a single circular asphalt pad sized to
--- the widest connected road, flush with the roads' own deck height. It
--- doesn't yet compute an exact per-corner fillet polygon (the way curve
--- joints and superelevation wedges do elsewhere in Mesh/ via FillTriangle),
--- and doesn't re-derive lane markings through the junction - see TODO.md's
--- "Junctions & roundabouts" section for the follow-up work this is scoped
--- out of. It DOES skip itself for a plain two-road pass-through (matching
--- profiles, roughly opposite outward directions) - a chained straight or
--- gently-curving continuation doesn't need a seam pad at all.
+-- The pad is a fan of exact wedges (FillTriangle, the same "no padding,
+-- exact shared edges" technique already used for curve joints and
+-- superelevation wedges elsewhere in Mesh/) tracing each connected road's
+-- own left/right pavement edge at the point it meets the junction - a real
+-- shaped fillet outline, not an arbitrary circle. Every connected road
+-- contributes two edge points; sorted by angle around the junction centre
+-- and fan-triangulated from there, so the polygon naturally follows
+-- whatever roads actually meet here regardless of how many or at what
+-- angles. Doesn't yet re-derive lane markings through the junction (stop
+-- lines, give-way markings, lane-guidance paint) - see TODO.md's
+-- "Junctions & roundabouts" section for that follow-up work. Skips itself
+-- entirely for a plain two-road pass-through (matching profiles, roughly
+-- opposite outward directions) - a chained straight or gently-curving
+-- continuation doesn't need a seam pad at all.
 
 local RoadProfile = require("../RoadProfile")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
 local RoadInstance = require("../RoadInstance")
 local JunctionInstance = require("../JunctionInstance")
+local FillTriangle = require("./FillTriangle")
 
 local JunctionBuilder = {}
 
-local PAD_MARGIN_STUDS = 2 -- Extra reach beyond the widest connected road's half-width
+local PAD_MARGIN_STUDS = 2 -- Extra reach beyond the widest connected road's half-width (fallback pad only)
 
 -- The profile actually present at the end of `road` that connects to this
 -- junction - ProfileEnd for a widen/narrow transition's far end, ProfileStart
@@ -52,6 +58,38 @@ local function outwardTangentAt(road: Model, junctionId: string): Vector3?
 		return -data.Curve:TangentAt(data.Curve.Length)
 	end
 	return nil
+end
+
+-- `road`'s own left/right pavement edge points at the exact station where
+-- it connects to this junction (world space, at deck-top height, matching
+-- the road's own FrameAt convention) - the fillet polygon's raw material.
+-- nil if the road can't be read or its profile has no components at all.
+local function edgePointsForRoad(road: Model, junctionId: string, settings: Settings.EasyRoadSettings): { Vector3 }?
+	local data = RoadInstance.Read(road)
+	if not data then
+		return nil
+	end
+	local station: number
+	if data.StartJunctionId == junctionId then
+		station = 0
+	elseif data.EndJunctionId == junctionId then
+		station = data.Curve.Length
+	else
+		return nil
+	end
+	local profile = profileAtJunctionEnd(road, junctionId)
+	if not profile then
+		return nil
+	end
+	local offsets = RoadProfile.ComponentOffsetsM(profile)
+	if #offsets == 0 then
+		return nil
+	end
+	local frame = data.Curve:FrameAt(station)
+	local scale = settings.MetersToStuds
+	local leftPoint = (frame * CFrame.new(offsets[1].Left * scale, 0, 0)).Position
+	local rightPoint = (frame * CFrame.new(offsets[#offsets].Right * scale, 0, 0)).Position
+	return { leftPoint, rightPoint }
 end
 
 -- Roughly opposite outward directions (within ~32 degrees of dead
@@ -113,38 +151,77 @@ function JunctionBuilder.Rebuild(
 	if not junctionData then
 		return
 	end
-
-	local maxHalfWidthM = 0
-	for _, road in roads do
-		local profile = profileAtJunctionEnd(road, junctionId)
-		if profile then
-			maxHalfWidthM = math.max(maxHalfWidthM, RoadProfile.TotalWidthM(profile) / 2)
-		end
-	end
-	if maxHalfWidthM <= 0 then
-		return
-	end
-
-	local radiusStuds = maxHalfWidthM * settings.MetersToStuds + PAD_MARGIN_STUDS
+	local center = junctionData.Position
 	local thickness = settings.RoadThicknessStuds
+
+	local function makePart(): Part
+		local part = Instance.new("Part")
+		part.Name = "Pad"
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanTouch = false
+		part.CanQuery = false
+		part.CastShadow = false
+		part.TopSurface = Enum.SurfaceType.Smooth
+		part.BottomSurface = Enum.SurfaceType.Smooth
+		part.Material = Enum.Material.Asphalt
+		part.Color = style.AsphaltColor
+		return part
+	end
 
 	local folder = Instance.new("Folder")
 	folder.Name = "Geometry"
 
-	local pad = Instance.new("Part")
-	pad.Name = "Pad"
-	pad.Shape = Enum.PartType.Cylinder
-	pad.Size = Vector3.new(thickness, radiusStuds * 2, radiusStuds * 2)
-	pad.CFrame = CFrame.new(junctionData.Position + Vector3.new(0, -thickness / 2, 0))
-		* CFrame.Angles(0, 0, math.rad(90))
-	pad.Anchored = true
-	pad.CanCollide = false
-	pad.CanTouch = false
-	pad.CanQuery = false
-	pad.CastShadow = false
-	pad.Material = Enum.Material.Asphalt
-	pad.Color = style.AsphaltColor
-	pad.Parent = folder
+	local edgePoints: { Vector3 } = {}
+	for _, road in roads do
+		local points = edgePointsForRoad(road, junctionId, settings)
+		if points then
+			for _, point in points do
+				table.insert(edgePoints, point)
+			end
+		end
+	end
+
+	if #edgePoints >= 3 then
+		-- Fan-triangulate around the junction centre, in angular order, so
+		-- adjacent roads' edges are joined by the wedge between them rather
+		-- than the fan winding back on itself.
+		table.sort(edgePoints, function(a: Vector3, b: Vector3): boolean
+			local angleA = math.atan2(a.Z - center.Z, a.X - center.X)
+			local angleB = math.atan2(b.Z - center.Z, b.X - center.X)
+			return angleA < angleB
+		end)
+		for i = 1, #edgePoints do
+			local nextIndex = if i < #edgePoints then i + 1 else 1
+			FillTriangle(
+				center,
+				edgePoints[i],
+				edgePoints[nextIndex],
+				thickness,
+				Vector3.new(0, -1, 0),
+				makePart,
+				folder
+			)
+		end
+	else
+		-- Fallback for the rare case no road contributed a usable edge pair
+		-- (an empty profile) - a plain circular pad still beats no pad.
+		local maxHalfWidthM = 0
+		for _, road in roads do
+			local profile = profileAtJunctionEnd(road, junctionId)
+			if profile then
+				maxHalfWidthM = math.max(maxHalfWidthM, RoadProfile.TotalWidthM(profile) / 2)
+			end
+		end
+		if maxHalfWidthM > 0 then
+			local radiusStuds = maxHalfWidthM * settings.MetersToStuds + PAD_MARGIN_STUDS
+			local pad = makePart()
+			pad.Shape = Enum.PartType.Cylinder
+			pad.Size = Vector3.new(thickness, radiusStuds * 2, radiusStuds * 2)
+			pad.CFrame = CFrame.new(center + Vector3.new(0, -thickness / 2, 0)) * CFrame.Angles(0, 0, math.rad(90))
+			pad.Parent = folder
+		end
+	end
 
 	folder.Parent = junctionModel
 end

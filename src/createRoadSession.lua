@@ -135,6 +135,14 @@ local function createRoadSession(
 		return nil
 	end
 
+	-- Ground-picking deliberately ignores existing roads/junctions (crossing
+	-- over one is allowed by default, not something to route around) - the
+	-- old behaviour of hitting an existing road's own deck instead of the
+	-- terrain beneath it made a new placement silently "stack" on top of
+	-- whatever it crossed. Mid-network crossings are now handled properly
+	-- by the junction/split system (see RoadSplit.lua), and elevation is
+	-- already an explicit, separate control (R/F keys, the elevation
+	-- field) for the cases that genuinely want a different height.
 	local function raycastGround(): Vector3?
 		local unitRay = mouse.UnitRay
 		local params = RaycastParams.new()
@@ -145,6 +153,14 @@ local function createRoadSession(
 		end
 		if markerFolder then
 			table.insert(excluded, markerFolder)
+		end
+		local roadsFolder = getRoadsFolder(false)
+		if roadsFolder then
+			table.insert(excluded, roadsFolder)
+		end
+		local junctionsFolder = workspace:FindFirstChild("Junctions")
+		if junctionsFolder then
+			table.insert(excluded, junctionsFolder)
 		end
 		params.FilterDescendantsInstances = excluded
 		local result = workspace:Raycast(unitRay.Origin, unitRay.Direction * 10000, params)
