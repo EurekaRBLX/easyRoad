@@ -4,6 +4,29 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Scoped in-plugin keybind capture to mouse buttons only, per user confirmation
+
+- **User confirmed directly**: "PluginActions is the way to create keybinds
+  for plugins... currently the register system for plugin does not work
+  other than mouse click in the viewport." This settles what three earlier
+  rounds (plus this session's `WindowFocused` attempt) circled around
+  without fully landing on: Studio's own `PluginAction` + Customize
+  Shortcuts is the correct, reliable mechanism for KEYBOARD rebinding - it
+  doesn't route through `UserInputService` inside a plugin GUI at all,
+  which is exactly why it's reliable where a custom capture listener here
+  provably isn't (keyboard input just doesn't arrive, confirmed live).
+  `main.lua`'s capture `InputBegan` listener is now explicitly filtered to
+  the three mouse-button `UserInputType`s only, rather than accepting
+  whatever `Keybinds.CaptureLabel` recognizes - it's the one input class
+  this flow can actually capture reliably from inside the dock.
+- **`KeybindsGui.lua` now tells the truth about which mechanism does what**:
+  "+ Add mouse binding" (was "+ Add binding") for the live capture flow,
+  plus a per-action note naming the exact `PluginAction` to search for in
+  Studio's Customize Shortcuts for a keyboard shortcut - restoring the
+  `ACTION_NAMES` reference table from the original read-only panel (dropped
+  when this session first rebuilt the panel as fully live) instead of
+  implying a single in-plugin flow covers both input classes.
+
 ## Found the actual palette-drop crash; fixed Keybinds Remove button overlap
 
 - **The real reason drops never inserted anything** ("nah cant drop still" -

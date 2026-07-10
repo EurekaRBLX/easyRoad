@@ -1,25 +1,24 @@
 --!strict
--- Keybinds: live "click + Add binding, then act in the 3D viewport" rebind
--- UI - each action as its own labeled list of bindings (one per row, a
--- Remove button on the right), not chips crammed onto one horizontal row -
--- the previous chips-in-a-row layout overflowed the docked panel's width
--- the moment an action had 2+ bindings with longer names ("Right Click",
--- "Middle Click").
+-- Keybinds: two separate, honest mechanisms, not one unified illusion.
 --
--- Earlier rounds tried capturing the very next InputBegan the instant "Add
--- binding" was clicked, reasoning that's equivalent to a normal key-capture
--- field - but a DockWidgetPluginGui is a genuinely separate native window,
--- and while it has focus, input doesn't reliably reach UserInputService at
--- all (a documented Studio platform limitation, confirmed across several
--- rounds of this exact bug recurring). Capture now happens in `main.lua`
--- (the only place that can hold a persistent UserInputService connection
--- independent of this panel's own lifetime) and is gated on
--- `UserInputService.WindowFocused` firing first - i.e. the user must
--- actually click (or otherwise refocus) into the 3D viewport before the
--- NEXT input is treated as the binding, so the refocusing click itself
--- doesn't get bound as "MouseButton1" by accident. This panel is purely
--- presentational: it shows current bindings, an Add/Cancel button per
--- action, and a small hint once capture is armed/listening.
+-- KEYBOARD shortcuts go through Studio's own PluginAction + Customize
+-- Shortcuts dialog (main.lua registers one PluginAction per action below) -
+-- confirmed via live testing that this in-plugin panel receiving a keyboard
+-- press reliably "does not work other than mouse click in the viewport."
+-- Studio's own shortcut system doesn't route through UserInputService
+-- inside a plugin GUI at all, which is exactly why it's reliable where a
+-- custom capture listener here isn't. This panel can't display what key the
+-- user assigned there either (no API to query a PluginAction's assigned
+-- shortcut from a plugin), so it just names the action to search for.
+--
+-- MOUSE-BUTTON bindings (e.g. an extra cancel-placement button) CAN be
+-- captured live from here, since `main.lua`'s InputBegan listener - gated on
+-- `UserInputService.WindowFocused` firing first, so the click that refocuses
+-- into the 3D viewport isn't itself bound - only ever receives mouse clicks
+-- reliably. Each action's current bindings (built-in keyboard defaults that
+-- work out of the box with zero setup, plus whatever mouse buttons have been
+-- added) are listed with a Remove button; "+ Add mouse binding" arms
+-- capture for a new one.
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -30,6 +29,16 @@ local e = React.createElement
 local Theme = require("./Theme")
 local Components = require("./Components")
 local KeybindsModule = require("../Keybinds")
+
+-- PluginAction names registered in main.lua, matching KeybindsModule.Actions
+-- 1:1 - shown so the user knows what to search for in Studio's Customize
+-- Shortcuts dialog (File > Advanced > Customize Shortcuts, or right-click
+-- any toolbar button) to change a KEYBOARD shortcut.
+local ACTION_NAMES: { [string]: string } = {
+	ElevationUp = "easyRoad: Raise Elevation",
+	ElevationDown = "easyRoad: Lower Elevation",
+	CancelPlacement = "easyRoad: Cancel Placement",
+}
 
 local function BindingRow(props: {
 	Text: string,
@@ -95,9 +104,9 @@ local function ActionGroup(props: {
 	end
 
 	children["Add"] = e(Components.Button, {
-		Text = if props.Capturing then "Cancel" else "+ Add binding",
+		Text = if props.Capturing then "Cancel" else "+ Add mouse binding",
 		Danger = props.Capturing,
-		Size = UDim2.new(0, 130, 0, Theme.ROW_HEIGHT),
+		Size = UDim2.new(0, 150, 0, Theme.ROW_HEIGHT),
 		OnClick = if props.Capturing then props.OnCancelCapture else props.OnStartCapture,
 		LayoutOrder = order,
 	})
@@ -106,8 +115,18 @@ local function ActionGroup(props: {
 	if props.Capturing then
 		children["Hint"] = e(Components.Label, {
 			Text = if props.CapturingReady
-				then "Listening - press a key or click a mouse button in the 3D viewport..."
+				then "Listening - click a mouse button in the 3D viewport..."
 				else "Click anywhere in the 3D viewport to begin...",
+			Dim = true,
+			LayoutOrder = order,
+		})
+		order += 1
+	end
+
+	local actionName = ACTION_NAMES[props.ActionId]
+	if actionName then
+		children["KeyNote"] = e(Components.Label, {
+			Text = "Keyboard shortcut: Studio's Customize Shortcuts, search \"" .. actionName .. '"',
 			Dim = true,
 			LayoutOrder = order,
 		})
@@ -132,7 +151,8 @@ local function KeybindsGui(props: {
 })
 	local children: { [string]: any } = {}
 	children.Hint = e(Components.Label, {
-		Text = "Click Add, then click or press a key in the 3D viewport to bind it.",
+		Text = "Mouse-button bindings can be added below. For keyboard shortcuts, use Studio's own "
+			.. "Customize Shortcuts (right-click any toolbar button, or File > Advanced > Customize Shortcuts).",
 		Dim = true,
 		LayoutOrder = 1,
 	})

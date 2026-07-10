@@ -175,24 +175,27 @@ return function(
 		end
 	end)
 
-	-- In-plugin keybind rebinding (Keybinds settings dock's "Add binding"
-	-- flow) - the PluginAction/Customize Shortcuts route above is the
-	-- reliable fallback that keeps working regardless, but the user wants an
-	-- in-plugin "click Add, press a key, done" experience too. Three earlier
-	-- rounds tried capturing the very next InputBegan the instant "Add
-	-- binding" was clicked and failed, because a DockWidgetPluginGui is a
-	-- genuinely separate native window - input doesn't reliably reach
-	-- UserInputService at all while it has focus. The difference here:
-	-- capture is two-phase. Clicking "Add binding" only arms
-	-- `capturingAction`; the InputBegan listener below additionally requires
-	-- `capturingReady`, which only flips true once
-	-- UserInputService.WindowFocused fires - i.e. once the user has actually
-	-- clicked (or otherwise refocused) into the 3D viewport. That first
-	-- refocusing interaction is consumed as "becoming ready", not as the
-	-- binding itself, so a plain click-to-refocus-then-press-a-key gesture
-	-- doesn't accidentally bind MouseButton1 every time. This listener pair
-	-- is connected once, for the plugin's whole lifetime, independent of
-	-- session/editSession state or the Keybinds dock's own React lifecycle.
+	-- In-plugin MOUSE-BUTTON binding capture (Keybinds settings dock's "Add
+	-- binding" flow). PluginAction + Studio's native Customize Shortcuts
+	-- (above) is the correct, reliable mechanism for KEYBOARD rebinding -
+	-- confirmed via live testing that keyboard input reaching
+	-- UserInputService from this capture flow "does not work other than
+	-- mouse click in the viewport," matching the well-known reason: Studio
+	-- routes actual keyboard focus away from the 3D viewport while a
+	-- DockWidgetPluginGui is involved, in a way plain UserInputService
+	-- listening can't see around, whereas Customize Shortcuts is Studio's
+	-- own native shortcut system and isn't built on UserInputService at all.
+	-- So this capture flow is deliberately scoped to mouse buttons only -
+	-- useful for adding an alternate mouse-button trigger (e.g. a second
+	-- cancel-placement button) without leaving the plugin. Two-phase gate:
+	-- clicking "Add binding" only arms `capturingAction`; the InputBegan
+	-- listener below additionally requires `capturingReady`, which only
+	-- flips true once UserInputService.WindowFocused fires - i.e. once the
+	-- user has actually clicked into the 3D viewport - so that first
+	-- refocusing click is consumed as "becoming ready," not as the binding
+	-- itself. This listener pair is connected once, for the plugin's whole
+	-- lifetime, independent of session/editSession state or the Keybinds
+	-- dock's own React lifecycle.
 	local capturingAction: Keybinds.ActionId? = nil
 	local capturingReady = false
 	local function cancelCapture()
@@ -208,8 +211,18 @@ return function(
 			updateUI()
 		end
 	end)
+	local MOUSE_BUTTON_TYPES = {
+		[Enum.UserInputType.MouseButton1] = true,
+		[Enum.UserInputType.MouseButton2] = true,
+		[Enum.UserInputType.MouseButton3] = true,
+	}
 	local captureInputCn = UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
-		if not capturingAction or not capturingReady or gameProcessed then
+		if
+			not capturingAction
+			or not capturingReady
+			or gameProcessed
+			or not MOUSE_BUTTON_TYPES[input.UserInputType]
+		then
 			return
 		end
 		local label = Keybinds.CaptureLabel(input)
