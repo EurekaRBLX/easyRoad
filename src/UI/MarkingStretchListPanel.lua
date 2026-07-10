@@ -86,8 +86,8 @@ local function MarkingStretchListPanel(props: {
 			order += 1
 			children["KerbLabel" .. index] = e(Components.Label, {
 				Text = string.format(
-					"%s: %d-%d studs (%s)",
-					stretch.Side,
+					"Edge %d: %d-%d studs (%s)",
+					stretch.EdgeIndex,
 					math.floor(stretch.FromStationStuds),
 					math.floor(stretch.ToStationStuds),
 					RESTRICTION_LABELS[stretch.Restriction] or stretch.Restriction

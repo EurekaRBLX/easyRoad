@@ -4,6 +4,45 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Fixed kerb-stretch selectability/rendering (EdgeIndex) + category autofocus
+
+- **All kerb lines are now selectable, and stretches actually render.**
+  Two bug reports traced to one root cause: `KerbStretch.Side` only ever
+  supported `"Left" | "Right"` (the road's two true outermost edges), but
+  the render loop's own gate for "is this position a genuine kerb line
+  eligible for splicing" was `previousComponent == nil` / `nextComponent
+  == nil` - literally "is this array index 1 or n" - while the hit-test
+  helper (`Markings.KerbSides`) correctly checked "is the neighbouring
+  component nil-or-raised". Those two conditions only agree when the
+  roadway component is the very first/last element of the whole profile,
+  which is false for almost every real profile (`Sidewalk, Drive, Drive,
+  Sidewalk` puts the kerb line at the boundary between components 1 and
+  2). Confirming a stretch always saved correctly; the renderer just
+  silently never spliced it in for a typical road, reading as "pressing
+  change kerb type does not work."
+  - Generalised `KerbStretch.Side` to `KerbStretch.EdgeIndex: number` - a
+    boundary-index scheme matching lane boundaries (`0` = the road's true
+    left edge, `i` = the boundary between `components[i]` and
+    `components[i+1]`, `#components` = the true right edge), so a profile
+    with an internal median now has every one of its kerb lines
+    independently selectable and overridable, not just the outer two.
+  - `Markings.KerbSides` replaced with `Markings.KerbEdges`, which mirrors
+    the render loop's own `leftIsKerb`/`rightIsKerb` condition exactly
+    (single source of truth, same pattern already used for
+    `IsSameDirectionBoundary`/`SiblingBoundaries`) - hit-testing and
+    rendering can no longer disagree about what counts as a kerb line.
+  - Threaded through `RoadEditSession.lua` (drag/hit-test/ghost/draft/
+    overwrite), `RoadInstance.lua` (stamped-attribute decode),
+    `RoadBuilder.lua` (per-slice remap), `KerbStretchPanel.lua` and
+    `MarkingStretchListPanel.lua` (dropped the now-meaningless Left/Right
+    wording in favour of an Edge-index label).
+- **Fixed "adding new category doesn't actually add category."** The
+  "+ New Category..." text field never received focus when it appeared,
+  so typing immediately after selecting it (the natural expectation) went
+  nowhere - clicking away then fired `FocusLost` with empty text, which
+  silently reverted back to the dropdown. Now calls `:CaptureFocus()` on
+  mount via a ref + effect.
+
 ## Custom roads can be categorised into Road Library tabs
 
 - **Road Editor gained a Category field**, letting a custom road be filed

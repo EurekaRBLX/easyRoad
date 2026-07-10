@@ -606,7 +606,6 @@ return function(
 			local draft = editSession.GetKerbStretchDraft()
 			if draft then
 				bottomContent = React.createElement(KerbStretchPanel, {
-					Side = draft.Side,
 					FromStationStuds = draft.FromStationStuds,
 					ToStationStuds = draft.ToStationStuds,
 					Restriction = draft.Restriction,

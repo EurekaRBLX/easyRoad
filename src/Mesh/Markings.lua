@@ -84,20 +84,21 @@ export type MarkingStretch = {
 	DashGapM: number?,
 }
 
--- A user-placed override on the road's own left/right kerb-restriction
--- line over part of the road's length (e.g. double yellow everywhere
--- except a short loading-bay stretch marked "None") - see
--- RoadEditSession's PlacingKerbStretch/ConfirmingKerbStretch modes.
+-- A user-placed override on ONE of the road's kerb-restriction lines over
+-- part of the road's length (e.g. double yellow everywhere except a short
+-- loading-bay stretch marked "None") - see RoadEditSession's
+-- PlacingKerbStretch/ConfirmingKerbStretch modes.
 --
--- Deliberately scoped to just the two OUTERMOST roadway edges of the whole
--- cross-section (Side), not every individual kerb-adjacent boundary a
--- profile might have (e.g. around an internal median) - matches the same
--- Left/Right-only scope RoadEditSession's bus bay tool already uses for
--- "which side of the road." An internal kerb-adjacent boundary (rare) is
--- rendered using only the whole-road KerbRestriction, unspliced - flagged
--- in TODO.md rather than solved blind.
+-- EdgeIndex identifies WHICH kerb line, using the same "boundary index"
+-- numbering `RoadProfile.ComponentOffsetsM` implies: 0 = the road's true
+-- left edge (before components[1]), i (1 <= i < #components) = the
+-- boundary between components[i] and components[i+1], #components = the
+-- road's true right edge. A profile can have more than two kerb lines
+-- (e.g. either side of an internal median splitting two carriageways) -
+-- every one of them is a valid, independently overridable EdgeIndex, not
+-- just the outermost two.
 export type KerbStretch = {
-	Side: "Left" | "Right",
+	EdgeIndex: number,
 	FromStationStuds: number,
 	ToStationStuds: number,
 	Restriction: string, -- "None" | "SingleYellow" | "DoubleYellow" | "NoLine"
@@ -152,36 +153,37 @@ function Markings.SiblingBoundaries(components: { RoadProfile.ProfileComponent }
 	return members
 end
 
--- Whether the road's own left/right edges are genuine "meets a kerb"
--- positions at all - i.e. whether Compute's render loop would actually
--- paint a kerb-restriction line (or suppress a plain edge line for
--- "NoLine") there. Mirrors exactly the leftIsKerb/rightIsKerb condition
--- the render loop below uses for the FIRST/LAST roadway component in the
--- whole cross-section specifically (see KerbStretch's own doc comment on
--- why only those two, not every internal kerb-adjacent boundary) - shared
--- so a click can't target a "kerb" that doesn't really exist (a profile
--- with no roadway component at all, or one where the outermost component
--- is itself non-roadway and non-raised).
-function Markings.KerbSides(components: { RoadProfile.ProfileComponent }): { Left: boolean, Right: boolean }
-	local firstRoadway: number? = nil
+-- Every EdgeIndex where Compute's render loop would actually paint a kerb-
+-- restriction line (or suppress a plain edge line for "NoLine") - i.e.
+-- every valid KerbStretch target on this profile, not just the road's two
+-- outermost edges. Mirrors EXACTLY the leftIsKerb/rightIsKerb condition
+-- the render loop below uses, for every roadway component's run, not only
+-- the first/last one - shared so a click can't target a "kerb" that
+-- doesn't really exist, and so a profile with an internal median (giving
+-- it more than two kerb lines) can have every one of them selected.
+function Markings.KerbEdges(components: { RoadProfile.ProfileComponent }): { number }
+	local edges: { number } = {}
 	for i = 1, #components do
 		if RoadProfile.IsRoadway(components[i].Kind) then
-			firstRoadway = i
-			break
+			local previousComponent = components[i - 1]
+			local previousIsRoadway = previousComponent ~= nil and RoadProfile.IsRoadway(previousComponent.Kind)
+			if not previousIsRoadway then
+				local leftIsKerb = previousComponent == nil or RoadProfile.IsRaised(previousComponent.Kind)
+				if leftIsKerb then
+					table.insert(edges, i - 1)
+				end
+			end
+			local nextComponent = components[i + 1]
+			local nextIsRoadway = nextComponent ~= nil and RoadProfile.IsRoadway(nextComponent.Kind)
+			if not nextIsRoadway then
+				local rightIsKerb = nextComponent == nil or RoadProfile.IsRaised(nextComponent.Kind)
+				if rightIsKerb then
+					table.insert(edges, i)
+				end
+			end
 		end
 	end
-	local lastRoadway: number? = nil
-	for i = #components, 1, -1 do
-		if RoadProfile.IsRoadway(components[i].Kind) then
-			lastRoadway = i
-			break
-		end
-	end
-	local left = firstRoadway ~= nil
-		and (firstRoadway == 1 or RoadProfile.IsRaised(components[(firstRoadway :: number) - 1].Kind))
-	local right = lastRoadway ~= nil
-		and (lastRoadway == #components or RoadProfile.IsRaised(components[(lastRoadway :: number) + 1].Kind))
-	return { Left = left, Right = right }
+	return edges
 end
 
 local function offsetsFor(components: { RoadProfile.ProfileComponent }): { { Left: number, Right: number } }
@@ -343,12 +345,6 @@ function Markings.Compute(
 
 	-- Kerb (no parking / no stopping) lines: painted just inside a roadway
 	-- edge that meets a kerb - a raised component or the edge of the road.
-	local kerbLineType: RegionStyles.LineType? = nil
-	if kerbRestriction == "SingleYellow" then
-		kerbLineType = "Solid"
-	elseif kerbRestriction == "DoubleYellow" then
-		kerbLineType = "DoubleSolid"
-	end
 	local kerbIndent = if options then options.KerbIndent else nil
 	local kerbInset = if kerbIndent == false then inset else style.MarkingWidthM * 2.5
 
@@ -361,10 +357,15 @@ function Markings.Compute(
 		return nil
 	end
 
-	local kerbStretchesBySide: { [string]: { KerbStretch } } = { Left = {}, Right = {} }
+	local kerbStretchesByEdge: { [number]: { KerbStretch } } = {}
 	if options and options.KerbStretches then
 		for _, stretch in options.KerbStretches :: { KerbStretch } do
-			table.insert(kerbStretchesBySide[stretch.Side], stretch)
+			local list = kerbStretchesByEdge[stretch.EdgeIndex]
+			if not list then
+				list = {}
+				kerbStretchesByEdge[stretch.EdgeIndex] = list
+			end
+			table.insert(list, stretch)
 		end
 	end
 
@@ -411,23 +412,23 @@ function Markings.Compute(
 		end
 	end
 
-	-- Emits a true outermost left/right roadway edge, splicing any
-	-- KerbStretches for that side (sorted by station) exactly like
+	-- Emits a kerb-adjacent roadway edge at the given EdgeIndex, splicing
+	-- any KerbStretches targeting it (sorted by station) exactly like
 	-- emitBoundaryLine splices lane-boundary stretches: before/stretch/
 	-- between/stretch/.../after, each piece independently picking its own
 	-- line type and offset from its own effective restriction (the
 	-- whole-road KerbRestriction outside any stretch, the stretch's own
-	-- Restriction inside one). Degenerates to exactly the single
-	-- unspliced call below when there are no stretches for this side.
-	local function emitKerbSide(
-		side: "Left" | "Right",
+	-- Restriction inside one). Degenerates to exactly the single unspliced
+	-- call below when there are no stretches for this edge.
+	local function emitKerbEdgeAt(
+		edgeIndex: number,
 		plainOffsetStart: number,
 		plainOffsetEnd: number,
 		kerbOffsetStart: number,
 		kerbOffsetEnd: number
 	)
-		local stretches = kerbStretchesBySide[side]
-		if #stretches == 0 then
+		local stretches = kerbStretchesByEdge[edgeIndex]
+		if not stretches or #stretches == 0 then
 			emitKerbEdge(plainOffsetStart, plainOffsetEnd, kerbOffsetStart, kerbOffsetEnd, nil, nil, kerbRestriction)
 			return
 		end
@@ -484,26 +485,14 @@ function Markings.Compute(
 			-- all); a non-kerb roadway edge (e.g. a median boundary) always
 			-- keeps its plain edge line regardless of KerbRestriction.
 			if not previousIsRoadway then
-				if previousComponent == nil then
-					-- The true left edge of the whole cross-section - the
-					-- only position KerbStretches can target (see
-					-- KerbStretch's doc comment).
-					emitKerbSide(
-						"Left",
+				if leftIsKerb then
+					emitKerbEdgeAt(
+						i - 1,
 						startOffsets[i].Left + inset,
 						endOffsets[i].Left + inset,
 						startOffsets[i].Left + kerbInset,
 						endOffsets[i].Left + kerbInset
 					)
-				elseif kerbLineType and leftIsKerb then
-					addLine(
-						startOffsets[i].Left + kerbInset,
-						endOffsets[i].Left + kerbInset,
-						kerbLineType,
-						style.YellowMarking
-					)
-				elseif kerbRestriction == "NoLine" and leftIsKerb then
-					-- no marking at all
 				else
 					addSpec(
 						startOffsets[i].Left + inset,
@@ -515,24 +504,14 @@ function Markings.Compute(
 			end
 			-- Right edge of a roadway run: same rule
 			if not nextIsRoadway then
-				if nextComponent == nil then
-					-- The true right edge of the whole cross-section.
-					emitKerbSide(
-						"Right",
+				if rightIsKerb then
+					emitKerbEdgeAt(
+						i,
 						startOffsets[i].Right - inset,
 						endOffsets[i].Right - inset,
 						startOffsets[i].Right - kerbInset,
 						endOffsets[i].Right - kerbInset
 					)
-				elseif kerbLineType and rightIsKerb then
-					addLine(
-						startOffsets[i].Right - kerbInset,
-						endOffsets[i].Right - kerbInset,
-						kerbLineType,
-						style.YellowMarking
-					)
-				elseif kerbRestriction == "NoLine" and rightIsKerb then
-					-- no marking at all
 				else
 					addSpec(
 						startOffsets[i].Right - inset,

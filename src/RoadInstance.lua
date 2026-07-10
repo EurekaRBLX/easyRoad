@@ -182,13 +182,13 @@ local function kerbStretchesFromModel(model: Model): { Markings.KerbStretch }
 	for _, entry in decoded :: { any } do
 		if
 			typeof(entry) == "table"
-			and (entry.Side == "Left" or entry.Side == "Right")
+			and typeof(entry.EdgeIndex) == "number"
 			and typeof(entry.FromStationStuds) == "number"
 			and typeof(entry.ToStationStuds) == "number"
 			and typeof(entry.Restriction) == "string"
 		then
 			table.insert(stretches, {
-				Side = entry.Side :: any,
+				EdgeIndex = entry.EdgeIndex,
 				FromStationStuds = entry.FromStationStuds,
 				ToStationStuds = entry.ToStationStuds,
 				Restriction = entry.Restriction,

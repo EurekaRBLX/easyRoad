@@ -56,15 +56,15 @@ local Superelevation = require("./Geometry/Superelevation")
 --                  edit rather than a whole-profile one - a full
 --                  cross-section editor isn't the right destination for
 --                  "show me the stretches on this road."
---   PlacingKerbStretch - click the road's own left or right kerb line, then
---                  drag along the road to pick the free-form sub-range
---                  where its restriction (single/double yellow/none/no
---                  line) should be overridden. Same click-a-target-then-
---                  drag-a-range shape as marking stretches, but scoped to
---                  just the road's two outermost edges (Left/Right) rather
---                  than an arbitrary set of lane-boundary indices - there's
---                  no "which one" ambiguity to resolve since a click always
---                  resolves to whichever of the two sides it landed nearer.
+--   PlacingKerbStretch - click any of the road's kerb lines (the outer
+--                  edges, or an internal one bordering a median/raised
+--                  component), then drag along the road to pick the
+--                  free-form sub-range where its restriction (single/
+--                  double yellow/none/no line) should be overridden. Same
+--                  click-a-target-then-drag-a-range shape as marking
+--                  stretches, targeting an EdgeIndex rather than a lane-
+--                  boundary index - a click always resolves to whichever
+--                  kerb-line EdgeIndex it landed nearest.
 --   ConfirmingKerbStretch - adjust the dragged range/restriction before
 --                  committing.
 --   Designer     - the full RoadInspector designer
@@ -219,7 +219,7 @@ local function createRoadEditSession(
 	local kerbStretchDraft: Markings.KerbStretch? = nil
 	-- Click-drag-to-draw state, same convention as the lane stretch's.
 	local kerbStretchDragStartStation: number? = nil
-	local kerbStretchDragSide: ("Left" | "Right")? = nil
+	local kerbStretchDragEdgeIndex: number? = nil
 	local kerbStretchGhosts: { Part } = {}
 
 	-- Frame at a station INCLUDING the same superelevation (bank) roll
@@ -319,7 +319,7 @@ local function createRoadEditSession(
 		table.clear(kerbStretchConnections)
 		clearKerbStretchGhosts()
 		kerbStretchDragStartStation = nil
-		kerbStretchDragSide = nil
+		kerbStretchDragEdgeIndex = nil
 		kerbStretchDraft = nil
 		mode = "SegmentMenu"
 		changeSignal:Fire()
@@ -354,30 +354,45 @@ local function createRoadEditSession(
 		return bestIndex
 	end
 
-	-- Finds whichever of the road's genuine kerb-line sides (see
-	-- Markings.KerbSides) the click's lateral position lands nearer to -
-	-- nil if the profile has neither (no roadway component at all, or the
-	-- outermost component on both sides is itself non-roadway/non-raised).
-	local function resolveKerbSideFromHit(station: number, hitPosition: Vector3): ("Left" | "Right")?
+	-- The lateral offset (metres from centreline) of a given EdgeIndex -
+	-- 0 and #components are the true outer edges, anything in between is
+	-- the boundary between components[edgeIndex] and components[edgeIndex+1]
+	-- (that boundary's Right offset and the next component's Left offset
+	-- are the same physical position, so either works).
+	local function kerbEdgeOffsetM(offsets: { { Left: number, Right: number } }, edgeIndex: number): number
+		if edgeIndex <= 0 then
+			return if offsets[1] then offsets[1].Left else 0
+		elseif edgeIndex >= #offsets then
+			return if offsets[#offsets] then offsets[#offsets].Right else 0
+		end
+		return offsets[edgeIndex].Right
+	end
+
+	-- Finds whichever of the road's genuine kerb-line edges (see
+	-- Markings.KerbEdges) the click's lateral position lands nearest to -
+	-- nil if the profile has none at all.
+	local function resolveKerbEdgeFromHit(station: number, hitPosition: Vector3): number?
 		if not originalData then
 			return nil
 		end
 		local profile = editingProfile or originalData.ProfileStart
-		local sides = Markings.KerbSides(profile.Components)
-		if not sides.Left and not sides.Right then
+		local edges = Markings.KerbEdges(profile.Components)
+		if #edges == 0 then
 			return nil
 		end
 		local frame = originalData.Curve:FrameAt(station)
 		local lateralOffsetM = (hitPosition - frame.Position):Dot(frame.RightVector) / settings.MetersToStuds
 		local offsets = RoadProfile.ComponentOffsetsM(profile)
-		local leftOffsetM = if offsets[1] then offsets[1].Right else 0
-		local rightOffsetM = if offsets[#offsets] then offsets[#offsets].Left else 0
-		local distLeft = if sides.Left then math.abs(lateralOffsetM - leftOffsetM) else math.huge
-		local distRight = if sides.Right then math.abs(lateralOffsetM - rightOffsetM) else math.huge
-		if distLeft == math.huge and distRight == math.huge then
-			return nil
+		local best: number? = nil
+		local bestDistance = math.huge
+		for _, edgeIndex in edges do
+			local distance = math.abs(lateralOffsetM - kerbEdgeOffsetM(offsets, edgeIndex))
+			if distance < bestDistance then
+				bestDistance = distance
+				best = edgeIndex
+			end
 		end
-		return if distLeft <= distRight then "Left" else "Right"
+		return best
 	end
 
 	-- What a drag starting on clickedIndex will actually apply to, given
@@ -595,7 +610,7 @@ local function createRoadEditSession(
 	-- bay ghost's kerbOffsetM already uses) instead of a list of
 	-- lane-boundary indices.
 	local function buildKerbGhostStrips(
-		side: "Left" | "Right",
+		edgeIndex: number,
 		s0: number,
 		s1: number,
 		color: Color3,
@@ -617,9 +632,7 @@ local function createRoadEditSession(
 		local style = getStyle()
 		local y = 0.15
 		local width = math.max(style.MarkingWidthM * scale, 0.3)
-		local offsetM = if side == "Left"
-			then (if offsets[1] then offsets[1].Right else 0)
-			else (if offsets[#offsets] then offsets[#offsets].Left else 0)
+		local offsetM = kerbEdgeOffsetM(offsets, edgeIndex)
 		local offsetStuds = offsetM * scale
 		local segments = math.min(GHOST_MAX_SEGMENTS, math.max(1, math.floor((hi - lo) / 4)))
 		for i = 0, segments - 1 do
@@ -649,9 +662,9 @@ local function createRoadEditSession(
 		end
 	end
 
-	local function updateKerbStretchGhost(side: "Left" | "Right", s0: number, s1: number)
+	local function updateKerbStretchGhost(edgeIndex: number, s0: number, s1: number)
 		clearKerbStretchGhosts()
-		buildKerbGhostStrips(side, s0, s1, getStyle().YellowMarking, 0.2, kerbStretchGhosts)
+		buildKerbGhostStrips(edgeIndex, s0, s1, getStyle().YellowMarking, 0.2, kerbStretchGhosts)
 	end
 
 	local function onKerbStretchDragBegin()
@@ -662,32 +675,32 @@ local function createRoadEditSession(
 			return
 		end
 		local station = originalData.Curve:ClosestS(mouse.Hit.Position)
-		local side = resolveKerbSideFromHit(station, mouse.Hit.Position)
-		if not side then
+		local edgeIndex = resolveKerbEdgeFromHit(station, mouse.Hit.Position)
+		if not edgeIndex then
 			return
 		end
 		kerbStretchDragStartStation = station
-		kerbStretchDragSide = side
+		kerbStretchDragEdgeIndex = edgeIndex
 	end
 
 	local function onKerbStretchDragMove()
 		if
 			mode ~= "PlacingKerbStretch"
 			or not kerbStretchDragStartStation
-			or not kerbStretchDragSide
+			or not kerbStretchDragEdgeIndex
 			or not originalData
 		then
 			return
 		end
 		local currentStation = originalData.Curve:ClosestS(mouse.Hit.Position)
-		updateKerbStretchGhost(kerbStretchDragSide, kerbStretchDragStartStation, currentStation)
+		updateKerbStretchGhost(kerbStretchDragEdgeIndex, kerbStretchDragStartStation, currentStation)
 	end
 
 	local function onKerbStretchDragEnd()
 		if
 			mode ~= "PlacingKerbStretch"
 			or not kerbStretchDragStartStation
-			or not kerbStretchDragSide
+			or not kerbStretchDragEdgeIndex
 			or not originalData
 		then
 			return
@@ -695,7 +708,7 @@ local function createRoadEditSession(
 		local currentStation = originalData.Curve:ClosestS(mouse.Hit.Position)
 		local lo = math.min(kerbStretchDragStartStation, currentStation)
 		local hi = math.max(kerbStretchDragStartStation, currentStation)
-		local side = kerbStretchDragSide
+		local edgeIndex = kerbStretchDragEdgeIndex
 
 		if hi - lo < 1 then
 			-- Too short to be an intentional range drag - stay in
@@ -703,7 +716,7 @@ local function createRoadEditSession(
 			-- flow, matching the lane-stretch/bay tools' own near-zero-
 			-- drag handling.
 			kerbStretchDragStartStation = nil
-			kerbStretchDragSide = nil
+			kerbStretchDragEdgeIndex = nil
 			clearKerbStretchGhosts()
 			changeSignal:Fire()
 			return
@@ -714,13 +727,13 @@ local function createRoadEditSession(
 		-- arbitrary fixed default) - adjustable in the confirm panel.
 		local currentRestriction = (editingProfile or originalData.ProfileStart).KerbRestriction or "None"
 		kerbStretchDraft = {
-			Side = side,
+			EdgeIndex = edgeIndex,
 			FromStationStuds = lo,
 			ToStationStuds = hi,
 			Restriction = currentRestriction,
 		}
 		kerbStretchDragStartStation = nil
-		kerbStretchDragSide = nil
+		kerbStretchDragEdgeIndex = nil
 		clearKerbStretchGhosts()
 		for _, connection in kerbStretchConnections do
 			connection:Disconnect()
@@ -1490,10 +1503,10 @@ local function createRoadEditSession(
 		end
 	end
 
-	-- Overwrites any existing kerb stretch on the SAME side whose range
-	-- overlaps the new one - the road only has two possible sides, so
-	-- there's no boundary-intersection step like applyStretchOverwrite's
-	-- (every stretch on a given side always "shares" that side); only the
+	-- Overwrites any existing kerb stretch on the SAME edge whose range
+	-- overlaps the new one - each EdgeIndex is independent, so there's no
+	-- boundary-intersection step like applyStretchOverwrite's (every
+	-- stretch on a given edge always "shares" that edge); only the
 	-- overlapping sub-range needs splitting/dropping.
 	local function applyKerbStretchOverwrite(
 		existing: { Markings.KerbStretch },
@@ -1501,7 +1514,7 @@ local function createRoadEditSession(
 	): { Markings.KerbStretch }
 		local result: { Markings.KerbStretch } = {}
 		for _, e in existing do
-			local overlaps = e.Side == newStretch.Side
+			local overlaps = e.EdgeIndex == newStretch.EdgeIndex
 				and e.FromStationStuds < newStretch.ToStationStuds
 				and e.ToStationStuds > newStretch.FromStationStuds
 			if not overlaps then
@@ -1509,7 +1522,7 @@ local function createRoadEditSession(
 			else
 				if e.FromStationStuds < newStretch.FromStationStuds then
 					table.insert(result, {
-						Side = e.Side,
+						EdgeIndex = e.EdgeIndex,
 						FromStationStuds = e.FromStationStuds,
 						ToStationStuds = newStretch.FromStationStuds,
 						Restriction = e.Restriction,
@@ -1517,7 +1530,7 @@ local function createRoadEditSession(
 				end
 				if e.ToStationStuds > newStretch.ToStationStuds then
 					table.insert(result, {
-						Side = e.Side,
+						EdgeIndex = e.EdgeIndex,
 						FromStationStuds = newStretch.ToStationStuds,
 						ToStationStuds = e.ToStationStuds,
 						Restriction = e.Restriction,

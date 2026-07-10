@@ -924,6 +924,17 @@ local function Panel(
 	local sel: number? = if selectedIndex >= 1 and selectedIndex <= count then selectedIndex else nil
 	local rootRef = React.useRef(nil :: Frame?)
 	local addingCategory, setAddingCategory = React.useState(false)
+	local newCategoryFieldRef = React.useRef(nil :: TextBox?)
+
+	-- Roblox doesn't auto-focus a freshly-created TextBox, so a user who
+	-- immediately starts typing after choosing "+ New Category..." would
+	-- otherwise type into nothing - CaptureFocus on mount fixes that.
+	React.useEffect(function()
+		if addingCategory and newCategoryFieldRef.current then
+			newCategoryFieldRef.current:CaptureFocus()
+		end
+		return nil
+	end, { addingCategory } :: { any })
 
 	local function insertKind(kind: RoadProfile.ComponentKind, atIndex: number?)
 		local at = if atIndex then math.clamp(atIndex, 1, count + 1)
@@ -1035,6 +1046,7 @@ local function Panel(
 				Grow = true,
 			}),
 			NewField = addingCategory and e("TextBox", {
+				ref = newCategoryFieldRef,
 				Text = "",
 				PlaceholderText = "New category name",
 				TextColor3 = Theme.WHITE,

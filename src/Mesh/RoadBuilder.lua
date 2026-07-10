@@ -807,8 +807,9 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 	end
 
 	-- Same remapping as stretchesForSlice above, for KerbStretches - no
-	-- ComponentIndices to carry through (Side is stable across slices,
-	-- unlike a lane boundary's index), just the station clip/offset.
+	-- ComponentIndices to carry through (EdgeIndex is stable across
+	-- slices, unlike a lane boundary's index), just the station clip/
+	-- offset.
 	local function kerbStretchesForSlice(sliceStart: number, sliceEnd: number): { Markings.KerbStretch }?
 		if not options.KerbStretches then
 			return nil
@@ -819,7 +820,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			local to = math.min(stretch.ToStationStuds, sliceEnd)
 			if to > from then
 				table.insert(remapped, {
-					Side = stretch.Side,
+					EdgeIndex = stretch.EdgeIndex,
 					FromStationStuds = from - sliceStart,
 					ToStationStuds = to - sliceStart,
 					Restriction = stretch.Restriction,

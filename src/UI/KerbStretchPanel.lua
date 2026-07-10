@@ -22,7 +22,6 @@ local RESTRICTION_OPTIONS = {
 }
 
 local function KerbStretchPanel(props: {
-	Side: string,
 	FromStationStuds: number,
 	ToStationStuds: number,
 	Restriction: string,
@@ -32,8 +31,7 @@ local function KerbStretchPanel(props: {
 })
 	local children: { [string]: any } = {}
 	RoadDesigner.DecorateCard(children)
-	children.Header =
-		e(Components.Section, { Text = "Stretch " .. props.Side .. " Kerb Marking", First = true, LayoutOrder = 1 })
+	children.Header = e(Components.Section, { Text = "Stretch Kerb Marking", First = true, LayoutOrder = 1 })
 	children.From = e(Components.Row, { LayoutOrder = 2 }, {
 		Label = e(Components.Label, { Text = "From", LayoutOrder = 1, Width = 60 }),
 		Field = e(Components.NumberField, {
@@ -65,7 +63,7 @@ local function KerbStretchPanel(props: {
 		}),
 	})
 	children.Hint = e(Components.Label, {
-		Text = "Overrides the " .. string.lower(props.Side) .. " kerb line only. Apply Stretch above to accept.",
+		Text = "Overrides this kerb line only. Apply Stretch above to accept.",
 		Dim = true,
 		LayoutOrder = 5,
 	})
