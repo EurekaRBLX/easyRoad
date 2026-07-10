@@ -4,6 +4,43 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Slider actually follows the mouse; transition length in Road Tools; keybinds panel back to keyboard-first
+
+- **Fixed the slider not following the mouse during a press-and-slide**
+  (reported live with a screenshot of the transition-length slider).
+  `Components.Slider` was built on HueBar's track-local `InputChanged`
+  convention, which only receives events while the cursor is physically
+  inside the 16px-tall track - drift a few pixels above or below mid-drag
+  (which always happens) and the handle froze. Rewritten: pressing the
+  track starts a drag that a GLOBAL `UserInputService.InputChanged`
+  connection tracks until release, wherever the cursor goes (the same
+  pattern `useLaneDrag` uses). Also decoupled drag visuals from the
+  commit: while dragging, position/readout update from cheap local React
+  state only, and `props.OnChanged` fires ONCE on release - both callers
+  wire `OnChanged` into genuinely heavy work (settings persistence plus
+  rebuilding the built-in road library via `OnSettingsChanged`), which
+  was far too slow to run per mouse-move and the second half of why
+  dragging felt rough.
+- **Superelevation transition length is now editable from Road Tools
+  too** - the same `SuperelevationRunoffM` slider Regional Preference
+  got last round, surfaced in the BuildBar under the Speed field whenever
+  banking isn't Off, so the transition feel can be dialled in while
+  actually placing roads without leaving for a settings dock.
+- **Keybinds panel reworked back to keyboard-first, mouse capture
+  removed** ("We dont need mouse binding bro, we need keybinds"). The
+  live-capture flow shipped earlier this session could only ever capture
+  mouse buttons (keyboard input from the capture flow confirmed dead by
+  live testing), which isn't what was wanted from a keybinds panel.
+  Removed the whole capture apparatus from `main.lua` (WindowFocused
+  gate, InputBegan listener, per-action capture state);
+  `KeybindsGui.lua` is now a clean read-only reference again: each
+  action's always-working built-in keys plus the exact PluginAction name
+  ("easyRoad: ...") to search for in Studio's Customize Shortcuts dialog,
+  which the user confirmed is the right mechanism for plugin keybinds
+  ("PluginActions is the way... PluginAction keybind can be set by
+  user"). The PluginAction registrations themselves were already in
+  place and are unchanged.
+
 ## Kerb marking "stretch" - the lane-marking stretch tool's own kerb-line counterpart
 
 - **Kerb restriction lines (single/double yellow, no line at all) can now

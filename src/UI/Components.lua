@@ -568,13 +568,24 @@ end
 
 -- Slider ---------------------------------------------------------------------------
 
--- A draggable value slider (track + fill + handle) plus a numeric readout,
--- same drag-within-bounds convention as HueBar above (InputBegan jumps to
--- the click position, InputChanged tracks while the button stays held via
--- UserInputService:IsMouseButtonPressed rather than a separate global
--- connection). Distinct from Components.NumberField (a type-to-edit text
--- field with +/- stepper) - use this where dragging to feel out a value
--- matters more than typing an exact one.
+-- A draggable value slider (track + fill + handle) plus a numeric readout.
+-- Distinct from Components.NumberField (a type-to-edit text field with
+-- +/- stepper) - use this where dragging to feel out a value matters more
+-- than typing an exact one.
+--
+-- Drag handling deliberately does NOT reuse HueBar's track-local
+-- InputChanged convention: that only receives events while the cursor is
+-- physically inside the (16px tall) track, so the handle froze the moment
+-- a press-and-slide drifted a few pixels above or below it - reported
+-- live as the slider "not following my mouse when i press and slide."
+-- Instead, pressing the track starts a drag that a GLOBAL
+-- UserInputService.InputChanged connection tracks until the button is
+-- released, wherever the cursor goes (the same pattern the module
+-- palette's useLaneDrag uses). While dragging, the position/readout update
+-- from cheap local state only; props.OnChanged fires ONCE on release -
+-- callers wire OnChanged to genuinely heavy work (settings persistence,
+-- rebuilding the built-in road library), which is far too slow to run per
+-- mouse-move and was the second half of why dragging felt rough.
 function Components.Slider(props: {
 	Value: number,
 	Min: number,
@@ -584,17 +595,59 @@ function Components.Slider(props: {
 	ValueSuffix: string?,
 	Decimals: number?,
 })
-	local function updateFromInput(rbx: Frame, input: InputObject)
-		local size = rbx.AbsoluteSize
-		if size.X <= 0 then
-			return
+	local dragging, setDragging = React.useState(false)
+	local dragValue, setDragValue = React.useState(nil :: number?)
+	local dragValueRef = React.useRef(nil :: number?)
+	local trackRef = React.useRef(nil :: Frame?)
+
+	local function valueFromX(x: number): number?
+		local track = trackRef.current
+		if not track then
+			return nil
 		end
-		local pos = rbx.AbsolutePosition
-		local alpha = math.clamp((input.Position.X - pos.X) / size.X, 0, 1)
-		props.OnChanged(props.Min + (props.Max - props.Min) * alpha)
+		local size = track.AbsoluteSize
+		if size.X <= 0 then
+			return nil
+		end
+		local alpha = math.clamp((x - track.AbsolutePosition.X) / size.X, 0, 1)
+		return props.Min + (props.Max - props.Min) * alpha
 	end
+
+	React.useEffect(function()
+		if not dragging then
+			return nil
+		end
+		local moveCn = UserInputService.InputChanged:Connect(function(input: InputObject)
+			if input.UserInputType ~= Enum.UserInputType.MouseMovement then
+				return
+			end
+			local value = valueFromX(input.Position.X)
+			if value then
+				dragValueRef.current = value
+				setDragValue(value)
+			end
+		end)
+		local endedCn = UserInputService.InputEnded:Connect(function(input: InputObject)
+			if input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+				return
+			end
+			local committed = dragValueRef.current
+			dragValueRef.current = nil
+			setDragValue(nil)
+			setDragging(false)
+			if committed then
+				props.OnChanged(committed)
+			end
+		end)
+		return function()
+			moveCn:Disconnect()
+			endedCn:Disconnect()
+		end
+	end, { dragging } :: { any })
+
+	local shownValue = dragValue or props.Value
 	local range = props.Max - props.Min
-	local alpha = if range > 1e-6 then math.clamp((props.Value - props.Min) / range, 0, 1) else 0
+	local alpha = if range > 1e-6 then math.clamp((shownValue - props.Min) / range, 0, 1) else 0
 	local decimals = props.Decimals or 1
 
 	-- A plain Components.Row defaults to 100% of ITS OWN parent's width,
@@ -619,22 +672,20 @@ function Components.Slider(props: {
 			Padding = UDim.new(0, 4),
 		}),
 		Track = e("Frame", {
+			ref = trackRef,
 			Size = UDim2.new(1, -56, 0, 16),
 			BackgroundColor3 = Theme.FIELD,
 			BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,
 			BorderSizePixel = 0,
 			LayoutOrder = 1,
-			[React.Event.InputBegan] = function(rbx: Frame, input: InputObject)
+			[React.Event.InputBegan] = function(_, input: InputObject)
 				if input.UserInputType == Enum.UserInputType.MouseButton1 then
-					updateFromInput(rbx, input)
-				end
-			end,
-			[React.Event.InputChanged] = function(rbx: Frame, input: InputObject)
-				if
-					input.UserInputType == Enum.UserInputType.MouseMovement
-					and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
-				then
-					updateFromInput(rbx, input)
+					local value = valueFromX(input.Position.X)
+					if value then
+						dragValueRef.current = value
+						setDragValue(value)
+						setDragging(true)
+					end
 				end
 			end,
 		}, {
@@ -659,7 +710,7 @@ function Components.Slider(props: {
 			}),
 		}),
 		Value = e("TextLabel", {
-			Text = string.format("%." .. decimals .. "f", props.Value) .. (props.ValueSuffix or ""),
+			Text = string.format("%." .. decimals .. "f", shownValue) .. (props.ValueSuffix or ""),
 			TextColor3 = Theme.OFFWHITE,
 			BackgroundTransparency = 1,
 			Size = UDim2.new(0, 52, 0, Theme.ROW_HEIGHT),

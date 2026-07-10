@@ -185,7 +185,25 @@ local function BuildBar(props: {
 				LayoutOrder = 2,
 			}),
 		})
-	children.Elevation = e(Components.Row, { LayoutOrder = 7 }, {
+	-- Same setting Regional Preference's Superelevation section exposes -
+	-- surfaced here too so the transition feel can be dialled in while
+	-- actually placing roads, without leaving the tool for a settings dock.
+	children.Transition = props.Settings.SuperelevationMode ~= "Off"
+		and e(Components.Row, { LayoutOrder = 7 }, {
+			Label = e(Components.Label, { Text = "Transition (m)", LayoutOrder = 1, Width = 90 }),
+			Slider = e(Components.Slider, {
+				Value = props.Settings.SuperelevationRunoffM,
+				Min = 2,
+				Max = 30,
+				ValueSuffix = " m",
+				OnChanged = function(value: number)
+					props.Settings.SuperelevationRunoffM = value
+					props.OnSettingsChanged()
+				end,
+				LayoutOrder = 2,
+			}),
+		})
+	children.Elevation = e(Components.Row, { LayoutOrder = 8 }, {
 		Label = e(Components.Label, { Text = "Elevation", LayoutOrder = 1, Width = 64 }),
 		Down = e(Components.Button, {
 			Text = "",
@@ -220,7 +238,7 @@ local function BuildBar(props: {
 	-- CS2-style step adjustment: how far each R/F press or arrow click
 	-- moves the elevation, editable right next to the elevation control
 	-- instead of buried in a separate settings dock.
-	children.ElevationStep = e(Components.Row, { LayoutOrder = 8 }, {
+	children.ElevationStep = e(Components.Row, { LayoutOrder = 9 }, {
 		Label = e(Components.Label, { Text = "Step", Dim = true, LayoutOrder = 1, Width = 64 }),
 		Field = e(Components.NumberField, {
 			Value = props.Settings.ElevationStepStuds,
@@ -241,7 +259,7 @@ local function BuildBar(props: {
 			keyHint(props.Settings.Keybinds.ElevationDown)
 		),
 		Dim = true,
-		LayoutOrder = 9,
+		LayoutOrder = 10,
 	})
 	children.Hint = e("TextLabel", {
 		Text = props.Hint,
@@ -253,13 +271,13 @@ local function BuildBar(props: {
 		TextSize = Theme.TEXT_SIZE,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = true,
-		LayoutOrder = 10,
+		LayoutOrder = 11,
 	})
 	children.Stop = e(Components.Button, {
 		Text = "Stop Building",
 		Danger = true,
 		OnClick = props.OnStop,
-		LayoutOrder = 11,
+		LayoutOrder = 12,
 	})
 
 	local scrollProps = Components.ScrollBar()

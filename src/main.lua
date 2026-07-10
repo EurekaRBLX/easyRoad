@@ -17,7 +17,6 @@
 -- same designer bottom bar bound to that road, with Apply/Revert.
 
 local CoreGui = game:GetService("CoreGui")
-local UserInputService = game:GetService("UserInputService")
 
 local Packages = script.Parent.Parent.Packages
 local React = require(Packages.React)
@@ -25,7 +24,6 @@ local ReactRoblox = require(Packages.ReactRoblox)
 local Signal = require(Packages.Signal)
 
 local Settings = require("./Settings")
-local Keybinds = require("./Keybinds")
 local RegionStyles = require("./RegionStyles")
 local RoadProfile = require("./RoadProfile")
 local createRoadLibrary = require("./RoadLibrary")
@@ -176,71 +174,6 @@ return function(
 		elseif editSession.IsPlacingKerbStretch() or editSession.IsConfirmingKerbStretch() then
 			editSession.CancelKerbStretchPlacement()
 		end
-	end)
-
-	-- In-plugin MOUSE-BUTTON binding capture (Keybinds settings dock's "Add
-	-- binding" flow). PluginAction + Studio's native Customize Shortcuts
-	-- (above) is the correct, reliable mechanism for KEYBOARD rebinding -
-	-- confirmed via live testing that keyboard input reaching
-	-- UserInputService from this capture flow "does not work other than
-	-- mouse click in the viewport," matching the well-known reason: Studio
-	-- routes actual keyboard focus away from the 3D viewport while a
-	-- DockWidgetPluginGui is involved, in a way plain UserInputService
-	-- listening can't see around, whereas Customize Shortcuts is Studio's
-	-- own native shortcut system and isn't built on UserInputService at all.
-	-- So this capture flow is deliberately scoped to mouse buttons only -
-	-- useful for adding an alternate mouse-button trigger (e.g. a second
-	-- cancel-placement button) without leaving the plugin. Two-phase gate:
-	-- clicking "Add binding" only arms `capturingAction`; the InputBegan
-	-- listener below additionally requires `capturingReady`, which only
-	-- flips true once UserInputService.WindowFocused fires - i.e. once the
-	-- user has actually clicked into the 3D viewport - so that first
-	-- refocusing click is consumed as "becoming ready," not as the binding
-	-- itself. This listener pair is connected once, for the plugin's whole
-	-- lifetime, independent of session/editSession state or the Keybinds
-	-- dock's own React lifecycle.
-	local capturingAction: Keybinds.ActionId? = nil
-	local capturingReady = false
-	local function cancelCapture()
-		if capturingAction then
-			capturingAction = nil
-			capturingReady = false
-			updateUI()
-		end
-	end
-	local windowFocusedCn = UserInputService.WindowFocused:Connect(function()
-		if capturingAction and not capturingReady then
-			capturingReady = true
-			updateUI()
-		end
-	end)
-	local MOUSE_BUTTON_TYPES = {
-		[Enum.UserInputType.MouseButton1] = true,
-		[Enum.UserInputType.MouseButton2] = true,
-		[Enum.UserInputType.MouseButton3] = true,
-	}
-	local captureInputCn = UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
-		if
-			not capturingAction
-			or not capturingReady
-			or gameProcessed
-			or not MOUSE_BUTTON_TYPES[input.UserInputType]
-		then
-			return
-		end
-		local label = Keybinds.CaptureLabel(input)
-		if not label then
-			return
-		end
-		local actionId = capturingAction :: Keybinds.ActionId
-		local list = settings.Keybinds[actionId]
-		if not table.find(list, label) then
-			table.insert(list, label)
-		end
-		capturingAction = nil
-		capturingReady = false
-		persist()
-		updateUI()
 	end)
 
 	local function destroySession()
@@ -1097,23 +1030,6 @@ return function(
 				keybindsRoot = ReactRoblox.createRoot(keybindsDock)
 			end
 			assert(keybindsRoot):render(React.createElement(KeybindsGui, {
-				Keybinds = settings.Keybinds,
-				CapturingAction = capturingAction,
-				CapturingReady = capturingReady,
-				OnStartCapture = function(actionId: string)
-					capturingAction = actionId :: Keybinds.ActionId
-					capturingReady = false
-					updateUI()
-				end,
-				OnCancelCapture = cancelCapture,
-				OnRemoveBinding = function(actionId: string, index: number)
-					local list = settings.Keybinds[actionId]
-					if list and #list > 1 then
-						table.remove(list, index)
-						persist()
-						updateUI()
-					end
-				end,
 				OnClose = function()
 					keybindsDock.Enabled = false
 				end,
@@ -1139,9 +1055,6 @@ return function(
 		updateUI()
 	end)
 	keybindsDock:GetPropertyChangedSignal("Enabled"):Connect(function()
-		if not keybindsDock.Enabled then
-			cancelCapture()
-		end
 		updateUI()
 	end)
 
@@ -1192,8 +1105,6 @@ return function(
 		editSessionChangedCn:Disconnect()
 		persist()
 		clickedCn:Disconnect()
-		windowFocusedCn:Disconnect()
-		captureInputCn:Disconnect()
 		elevationUpAction:Destroy()
 		elevationDownAction:Destroy()
 		cancelPlacementAction:Destroy()

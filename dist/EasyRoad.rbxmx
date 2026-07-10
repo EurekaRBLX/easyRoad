@@ -6151,7 +6151,25 @@ local function BuildBar(props: {
 				LayoutOrder = 2,
 			}),
 		})
-	children.Elevation = e(Components.Row, { LayoutOrder = 7 }, {
+	-- Same setting Regional Preference's Superelevation section exposes -
+	-- surfaced here too so the transition feel can be dialled in while
+	-- actually placing roads, without leaving the tool for a settings dock.
+	children.Transition = props.Settings.SuperelevationMode ~= "Off"
+		and e(Components.Row, { LayoutOrder = 7 }, {
+			Label = e(Components.Label, { Text = "Transition (m)", LayoutOrder = 1, Width = 90 }),
+			Slider = e(Components.Slider, {
+				Value = props.Settings.SuperelevationRunoffM,
+				Min = 2,
+				Max = 30,
+				ValueSuffix = " m",
+				OnChanged = function(value: number)
+					props.Settings.SuperelevationRunoffM = value
+					props.OnSettingsChanged()
+				end,
+				LayoutOrder = 2,
+			}),
+		})
+	children.Elevation = e(Components.Row, { LayoutOrder = 8 }, {
 		Label = e(Components.Label, { Text = "Elevation", LayoutOrder = 1, Width = 64 }),
 		Down = e(Components.Button, {
 			Text = "",
@@ -6186,7 +6204,7 @@ local function BuildBar(props: {
 	-- CS2-style step adjustment: how far each R/F press or arrow click
 	-- moves the elevation, editable right next to the elevation control
 	-- instead of buried in a separate settings dock.
-	children.ElevationStep = e(Components.Row, { LayoutOrder = 8 }, {
+	children.ElevationStep = e(Components.Row, { LayoutOrder = 9 }, {
 		Label = e(Components.Label, { Text = "Step", Dim = true, LayoutOrder = 1, Width = 64 }),
 		Field = e(Components.NumberField, {
 			Value = props.Settings.ElevationStepStuds,
@@ -6207,7 +6225,7 @@ local function BuildBar(props: {
 			keyHint(props.Settings.Keybinds.ElevationDown)
 		),
 		Dim = true,
-		LayoutOrder = 9,
+		LayoutOrder = 10,
 	})
 	children.Hint = e("TextLabel", {
 		Text = props.Hint,
@@ -6219,13 +6237,13 @@ local function BuildBar(props: {
 		TextSize = Theme.TEXT_SIZE,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = true,
-		LayoutOrder = 10,
+		LayoutOrder = 11,
 	})
 	children.Stop = e(Components.Button, {
 		Text = "Stop Building",
 		Danger = true,
 		OnClick = props.OnStop,
-		LayoutOrder = 11,
+		LayoutOrder = 12,
 	})
 
 	local scrollProps = Components.ScrollBar()
@@ -6810,13 +6828,24 @@ end
 
 -- Slider ---------------------------------------------------------------------------
 
--- A draggable value slider (track + fill + handle) plus a numeric readout,
--- same drag-within-bounds convention as HueBar above (InputBegan jumps to
--- the click position, InputChanged tracks while the button stays held via
--- UserInputService:IsMouseButtonPressed rather than a separate global
--- connection). Distinct from Components.NumberField (a type-to-edit text
--- field with +/- stepper) - use this where dragging to feel out a value
--- matters more than typing an exact one.
+-- A draggable value slider (track + fill + handle) plus a numeric readout.
+-- Distinct from Components.NumberField (a type-to-edit text field with
+-- +/- stepper) - use this where dragging to feel out a value matters more
+-- than typing an exact one.
+--
+-- Drag handling deliberately does NOT reuse HueBar's track-local
+-- InputChanged convention: that only receives events while the cursor is
+-- physically inside the (16px tall) track, so the handle froze the moment
+-- a press-and-slide drifted a few pixels above or below it - reported
+-- live as the slider "not following my mouse when i press and slide."
+-- Instead, pressing the track starts a drag that a GLOBAL
+-- UserInputService.InputChanged connection tracks until the button is
+-- released, wherever the cursor goes (the same pattern the module
+-- palette's useLaneDrag uses). While dragging, the position/readout update
+-- from cheap local state only; props.OnChanged fires ONCE on release -
+-- callers wire OnChanged to genuinely heavy work (settings persistence,
+-- rebuilding the built-in road library), which is far too slow to run per
+-- mouse-move and was the second half of why dragging felt rough.
 function Components.Slider(props: {
 	Value: number,
 	Min: number,
@@ -6826,17 +6855,59 @@ function Components.Slider(props: {
 	ValueSuffix: string?,
 	Decimals: number?,
 })
-	local function updateFromInput(rbx: Frame, input: InputObject)
-		local size = rbx.AbsoluteSize
-		if size.X &lt;= 0 then
-			return
+	local dragging, setDragging = React.useState(false)
+	local dragValue, setDragValue = React.useState(nil :: number?)
+	local dragValueRef = React.useRef(nil :: number?)
+	local trackRef = React.useRef(nil :: Frame?)
+
+	local function valueFromX(x: number): number?
+		local track = trackRef.current
+		if not track then
+			return nil
 		end
-		local pos = rbx.AbsolutePosition
-		local alpha = math.clamp((input.Position.X - pos.X) / size.X, 0, 1)
-		props.OnChanged(props.Min + (props.Max - props.Min) * alpha)
+		local size = track.AbsoluteSize
+		if size.X &lt;= 0 then
+			return nil
+		end
+		local alpha = math.clamp((x - track.AbsolutePosition.X) / size.X, 0, 1)
+		return props.Min + (props.Max - props.Min) * alpha
 	end
+
+	React.useEffect(function()
+		if not dragging then
+			return nil
+		end
+		local moveCn = UserInputService.InputChanged:Connect(function(input: InputObject)
+			if input.UserInputType ~= Enum.UserInputType.MouseMovement then
+				return
+			end
+			local value = valueFromX(input.Position.X)
+			if value then
+				dragValueRef.current = value
+				setDragValue(value)
+			end
+		end)
+		local endedCn = UserInputService.InputEnded:Connect(function(input: InputObject)
+			if input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+				return
+			end
+			local committed = dragValueRef.current
+			dragValueRef.current = nil
+			setDragValue(nil)
+			setDragging(false)
+			if committed then
+				props.OnChanged(committed)
+			end
+		end)
+		return function()
+			moveCn:Disconnect()
+			endedCn:Disconnect()
+		end
+	end, { dragging } :: { any })
+
+	local shownValue = dragValue or props.Value
 	local range = props.Max - props.Min
-	local alpha = if range &gt; 1e-6 then math.clamp((props.Value - props.Min) / range, 0, 1) else 0
+	local alpha = if range &gt; 1e-6 then math.clamp((shownValue - props.Min) / range, 0, 1) else 0
 	local decimals = props.Decimals or 1
 
 	-- A plain Components.Row defaults to 100% of ITS OWN parent's width,
@@ -6861,22 +6932,20 @@ function Components.Slider(props: {
 			Padding = UDim.new(0, 4),
 		}),
 		Track = e("Frame", {
+			ref = trackRef,
 			Size = UDim2.new(1, -56, 0, 16),
 			BackgroundColor3 = Theme.FIELD,
 			BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,
 			BorderSizePixel = 0,
 			LayoutOrder = 1,
-			[React.Event.InputBegan] = function(rbx: Frame, input: InputObject)
+			[React.Event.InputBegan] = function(_, input: InputObject)
 				if input.UserInputType == Enum.UserInputType.MouseButton1 then
-					updateFromInput(rbx, input)
-				end
-			end,
-			[React.Event.InputChanged] = function(rbx: Frame, input: InputObject)
-				if
-					input.UserInputType == Enum.UserInputType.MouseMovement
-					and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
-				then
-					updateFromInput(rbx, input)
+					local value = valueFromX(input.Position.X)
+					if value then
+						dragValueRef.current = value
+						setDragValue(value)
+						setDragging(true)
+					end
 				end
 			end,
 		}, {
@@ -6901,7 +6970,7 @@ function Components.Slider(props: {
 			}),
 		}),
 		Value = e("TextLabel", {
-			Text = string.format("%." .. decimals .. "f", props.Value) .. (props.ValueSuffix or ""),
+			Text = string.format("%." .. decimals .. "f", shownValue) .. (props.ValueSuffix or ""),
 			TextColor3 = Theme.OFFWHITE,
 			BackgroundTransparency = 1,
 			Size = UDim2.new(0, 52, 0, Theme.ROW_HEIGHT),
@@ -7193,26 +7262,22 @@ end
 
 return KerbStretchPanel
 </ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX27"><Properties><string name="Name">KeybindsGui</string><ProtectedString name="Source">--!strict
--- Keybinds: two separate, honest mechanisms, not one unified illusion.
+-- Keybinds: keyboard shortcuts for the plugin's actions.
 --
--- KEYBOARD shortcuts go through Studio's own PluginAction + Customize
--- Shortcuts dialog (main.lua registers one PluginAction per action below) -
--- confirmed via live testing that this in-plugin panel receiving a keyboard
--- press reliably "does not work other than mouse click in the viewport."
--- Studio's own shortcut system doesn't route through UserInputService
--- inside a plugin GUI at all, which is exactly why it's reliable where a
--- custom capture listener here isn't. This panel can't display what key the
--- user assigned there either (no API to query a PluginAction's assigned
--- shortcut from a plugin), so it just names the action to search for.
---
--- MOUSE-BUTTON bindings (e.g. an extra cancel-placement button) CAN be
--- captured live from here, since `main.lua`'s InputBegan listener - gated on
--- `UserInputService.WindowFocused` firing first, so the click that refocuses
--- into the 3D viewport isn't itself bound - only ever receives mouse clicks
--- reliably. Each action's current bindings (built-in keyboard defaults that
--- work out of the box with zero setup, plus whatever mouse buttons have been
--- added) are listed with a Remove button; "+ Add mouse binding" arms
--- capture for a new one.
+-- The built-in defaults below always work with zero setup (each session's
+-- own live listener matches them while the 3D viewport has focus, which is
+-- the only time they're relevant). Custom KEYBOARD shortcuts go through
+-- Studio's own PluginAction system - `main.lua` registers one PluginAction
+-- per action, and Studio's native Customize Shortcuts dialog assigns keys
+-- to them reliably regardless of focus, because it's Studio's own shortcut
+-- system rather than anything built on UserInputService inside a plugin
+-- GUI. Confirmed live: input capture from inside this plugin "does not
+-- work other than mouse click in the viewport," so an in-panel
+-- press-a-key-to-bind flow is a dead end by platform limitation (four
+-- attempts across this project's history, including a WindowFocused-gated
+-- one, all hit the same wall). There's also no API to QUERY what shortcut
+-- the user assigned to a PluginAction, so this panel lists the action
+-- names to search for rather than pretending to show live values.
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -7225,107 +7290,42 @@ local Components = require("./Components")
 local KeybindsModule = require("../Keybinds")
 
 -- PluginAction names registered in main.lua, matching KeybindsModule.Actions
--- 1:1 - shown so the user knows what to search for in Studio's Customize
--- Shortcuts dialog (File &gt; Advanced &gt; Customize Shortcuts, or right-click
--- any toolbar button) to change a KEYBOARD shortcut.
+-- 1:1 - what to search for in Studio's Customize Shortcuts dialog.
 local ACTION_NAMES: { [string]: string } = {
 	ElevationUp = "easyRoad: Raise Elevation",
 	ElevationDown = "easyRoad: Lower Elevation",
 	CancelPlacement = "easyRoad: Cancel Placement",
 }
 
-local function BindingRow(props: {
-	Text: string,
-	OnRemove: (() -&gt; ())?,
-	LayoutOrder: number,
-})
-	-- Components.Button only reads a fixed set of known props (Text, Icon,
-	-- OnClick, Selected, Danger, LayoutOrder, Size, Grow) - it builds its
-	-- own TextButton prop table rather than spreading arbitrary props
-	-- through, so passing AnchorPoint/Position to it (an earlier version of
-	-- this row did, to right-anchor Remove) is silently a no-op. Both ended
-	-- up at the same default (0,0,0,0) position, stacking Remove directly
-	-- on top of the label text instead of beside it. Using Components.Row's
-	-- UIListLayout instead - the same left-to-right flow every other button
-	-- row in this UI already uses - makes overlap impossible by
-	-- construction.
-	return e(Components.Row, { LayoutOrder = props.LayoutOrder }, {
-		Label = e(Components.Label, { Text = props.Text, LayoutOrder = 1 }),
-		Remove = props.OnRemove and e(Components.Button, {
-			Text = "Remove",
-			Danger = true,
-			Size = UDim2.new(0, 74, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 2,
-			OnClick = props.OnRemove,
-		}),
-	})
-end
-
 local function ActionGroup(props: {
 	ActionId: string,
 	Label: string,
 	Bindings: { string },
 	First: boolean,
-	Capturing: boolean,
-	CapturingReady: boolean,
-	OnStartCapture: () -&gt; (),
-	OnCancelCapture: () -&gt; (),
-	OnRemoveBinding: (index: number) -&gt; (),
 	LayoutOrder: number,
 })
+	local described = {}
+	for _, bound in props.Bindings do
+		table.insert(described, KeybindsModule.Describe(bound))
+	end
 	local children: { [string]: any } = {
 		Layout = e("UIListLayout", {
 			SortOrder = Enum.SortOrder.LayoutOrder,
 			Padding = UDim.new(0, 2),
 		}),
 		Header = e(Components.Section, { Text = props.Label, First = props.First, LayoutOrder = 1 }),
+		Defaults = e(Components.Row, { LayoutOrder = 2 }, {
+			Label = e(Components.Label, { Text = "Built-in", LayoutOrder = 1, Width = 90 }),
+			Value = e(Components.Label, { Text = table.concat(described, " / "), LayoutOrder = 2 }),
+		}),
 	}
-
-	local order = 2
-	for index, bound in props.Bindings do
-		children["Binding" .. index] = e(BindingRow, {
-			Text = KeybindsModule.Describe(bound),
-			-- Always leave at least one binding so the action never becomes
-			-- completely unreachable from within this panel.
-			OnRemove = if #props.Bindings &gt; 1
-				then function()
-					props.OnRemoveBinding(index)
-				end
-				else nil,
-			LayoutOrder = order,
-		})
-		order += 1
-	end
-
-	children["Add"] = e(Components.Button, {
-		Text = if props.Capturing then "Cancel" else "+ Add mouse binding",
-		Danger = props.Capturing,
-		Size = UDim2.new(0, 150, 0, Theme.ROW_HEIGHT),
-		OnClick = if props.Capturing then props.OnCancelCapture else props.OnStartCapture,
-		LayoutOrder = order,
-	})
-	order += 1
-
-	if props.Capturing then
-		children["Hint"] = e(Components.Label, {
-			Text = if props.CapturingReady
-				then "Listening - click a mouse button in the 3D viewport..."
-				else "Click anywhere in the 3D viewport to begin...",
-			Dim = true,
-			LayoutOrder = order,
-		})
-		order += 1
-	end
-
 	local actionName = ACTION_NAMES[props.ActionId]
 	if actionName then
-		children["KeyNote"] = e(Components.Label, {
-			Text = "Keyboard shortcut: Studio's Customize Shortcuts, search \"" .. actionName .. '"',
-			Dim = true,
-			LayoutOrder = order,
+		children.ActionName = e(Components.Row, { LayoutOrder = 3 }, {
+			Label = e(Components.Label, { Text = "Rebindable as", Dim = true, LayoutOrder = 1, Width = 90 }),
+			Value = e(Components.Label, { Text = actionName, Dim = true, LayoutOrder = 2 }),
 		})
 	end
-
 	return e("Frame", {
 		Size = UDim2.new(1, 0, 0, 0),
 		AutomaticSize = Enum.AutomaticSize.Y,
@@ -7335,18 +7335,13 @@ local function ActionGroup(props: {
 end
 
 local function KeybindsGui(props: {
-	Keybinds: KeybindsModule.KeybindMap,
-	CapturingAction: string?,
-	CapturingReady: boolean,
-	OnStartCapture: (actionId: string) -&gt; (),
-	OnCancelCapture: () -&gt; (),
-	OnRemoveBinding: (actionId: string, index: number) -&gt; (),
 	OnClose: () -&gt; (),
 })
 	local children: { [string]: any } = {}
 	children.Hint = e(Components.Label, {
-		Text = "Mouse-button bindings can be added below. For keyboard shortcuts, use Studio's own "
-			.. "Customize Shortcuts (right-click any toolbar button, or File &gt; Advanced &gt; Customize Shortcuts).",
+		Text = "The built-in keys always work during placement. To add or change a keyboard shortcut, use "
+			.. "Studio's Customize Shortcuts (right-click any toolbar button, or File &gt; Advanced &gt; "
+			.. "Customize Shortcuts) and search for the action names below.",
 		Dim = true,
 		LayoutOrder = 1,
 	})
@@ -7356,17 +7351,8 @@ local function KeybindsGui(props: {
 		children["Group" .. order] = e(ActionGroup, {
 			ActionId = action.Id,
 			Label = action.Label,
-			Bindings = props.Keybinds[action.Id] or KeybindsModule.Defaults[action.Id],
+			Bindings = KeybindsModule.Defaults[action.Id],
 			First = order == 2,
-			Capturing = props.CapturingAction == action.Id,
-			CapturingReady = props.CapturingReady,
-			OnStartCapture = function()
-				props.OnStartCapture(action.Id)
-			end,
-			OnCancelCapture = props.OnCancelCapture,
-			OnRemoveBinding = function(index: number)
-				props.OnRemoveBinding(action.Id, index)
-			end,
 			LayoutOrder = order,
 		})
 		order += 1
@@ -11345,7 +11331,6 @@ return createRoadSession
 -- same designer bottom bar bound to that road, with Apply/Revert.
 
 local CoreGui = game:GetService("CoreGui")
-local UserInputService = game:GetService("UserInputService")
 
 local Packages = script.Parent.Parent.Packages
 local React = require(Packages.React)
@@ -11353,7 +11338,6 @@ local ReactRoblox = require(Packages.ReactRoblox)
 local Signal = require(Packages.Signal)
 
 local Settings = require("./Settings")
-local Keybinds = require("./Keybinds")
 local RegionStyles = require("./RegionStyles")
 local RoadProfile = require("./RoadProfile")
 local createRoadLibrary = require("./RoadLibrary")
@@ -11504,71 +11488,6 @@ return function(
 		elseif editSession.IsPlacingKerbStretch() or editSession.IsConfirmingKerbStretch() then
 			editSession.CancelKerbStretchPlacement()
 		end
-	end)
-
-	-- In-plugin MOUSE-BUTTON binding capture (Keybinds settings dock's "Add
-	-- binding" flow). PluginAction + Studio's native Customize Shortcuts
-	-- (above) is the correct, reliable mechanism for KEYBOARD rebinding -
-	-- confirmed via live testing that keyboard input reaching
-	-- UserInputService from this capture flow "does not work other than
-	-- mouse click in the viewport," matching the well-known reason: Studio
-	-- routes actual keyboard focus away from the 3D viewport while a
-	-- DockWidgetPluginGui is involved, in a way plain UserInputService
-	-- listening can't see around, whereas Customize Shortcuts is Studio's
-	-- own native shortcut system and isn't built on UserInputService at all.
-	-- So this capture flow is deliberately scoped to mouse buttons only -
-	-- useful for adding an alternate mouse-button trigger (e.g. a second
-	-- cancel-placement button) without leaving the plugin. Two-phase gate:
-	-- clicking "Add binding" only arms `capturingAction`; the InputBegan
-	-- listener below additionally requires `capturingReady`, which only
-	-- flips true once UserInputService.WindowFocused fires - i.e. once the
-	-- user has actually clicked into the 3D viewport - so that first
-	-- refocusing click is consumed as "becoming ready," not as the binding
-	-- itself. This listener pair is connected once, for the plugin's whole
-	-- lifetime, independent of session/editSession state or the Keybinds
-	-- dock's own React lifecycle.
-	local capturingAction: Keybinds.ActionId? = nil
-	local capturingReady = false
-	local function cancelCapture()
-		if capturingAction then
-			capturingAction = nil
-			capturingReady = false
-			updateUI()
-		end
-	end
-	local windowFocusedCn = UserInputService.WindowFocused:Connect(function()
-		if capturingAction and not capturingReady then
-			capturingReady = true
-			updateUI()
-		end
-	end)
-	local MOUSE_BUTTON_TYPES = {
-		[Enum.UserInputType.MouseButton1] = true,
-		[Enum.UserInputType.MouseButton2] = true,
-		[Enum.UserInputType.MouseButton3] = true,
-	}
-	local captureInputCn = UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
-		if
-			not capturingAction
-			or not capturingReady
-			or gameProcessed
-			or not MOUSE_BUTTON_TYPES[input.UserInputType]
-		then
-			return
-		end
-		local label = Keybinds.CaptureLabel(input)
-		if not label then
-			return
-		end
-		local actionId = capturingAction :: Keybinds.ActionId
-		local list = settings.Keybinds[actionId]
-		if not table.find(list, label) then
-			table.insert(list, label)
-		end
-		capturingAction = nil
-		capturingReady = false
-		persist()
-		updateUI()
 	end)
 
 	local function destroySession()
@@ -12425,23 +12344,6 @@ return function(
 				keybindsRoot = ReactRoblox.createRoot(keybindsDock)
 			end
 			assert(keybindsRoot):render(React.createElement(KeybindsGui, {
-				Keybinds = settings.Keybinds,
-				CapturingAction = capturingAction,
-				CapturingReady = capturingReady,
-				OnStartCapture = function(actionId: string)
-					capturingAction = actionId :: Keybinds.ActionId
-					capturingReady = false
-					updateUI()
-				end,
-				OnCancelCapture = cancelCapture,
-				OnRemoveBinding = function(actionId: string, index: number)
-					local list = settings.Keybinds[actionId]
-					if list and #list &gt; 1 then
-						table.remove(list, index)
-						persist()
-						updateUI()
-					end
-				end,
 				OnClose = function()
 					keybindsDock.Enabled = false
 				end,
@@ -12467,9 +12369,6 @@ return function(
 		updateUI()
 	end)
 	keybindsDock:GetPropertyChangedSignal("Enabled"):Connect(function()
-		if not keybindsDock.Enabled then
-			cancelCapture()
-		end
 		updateUI()
 	end)
 
@@ -12520,8 +12419,6 @@ return function(
 		editSessionChangedCn:Disconnect()
 		persist()
 		clickedCn:Disconnect()
-		windowFocusedCn:Disconnect()
-		captureInputCn:Disconnect()
 		elevationUpAction:Destroy()
 		elevationDownAction:Destroy()
 		cancelPlacementAction:Destroy()
