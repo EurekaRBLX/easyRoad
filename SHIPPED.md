@@ -4,6 +4,35 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junction corners rewritten as straight chamfers (dropped the arc entirely)
+
+- **Confirmed live a third time (screenshot, reference to
+  github.com/MicroGSD/RoadArchitect) that the corner geometry is still
+  broken** - after two rounds of capping the rounded-corner Bézier
+  construction (angular gap threshold, then chord-relative control-point
+  distance) it kept resurfacing on the same class of junction. Rather
+  than add a fourth threshold, replaced the whole rounded-corner
+  construction with a straight chamfer: `FillTriangle(center, a.Kerb,
+  b.Kerb, ...)` directly, no Bézier, no control point, no distance cap.
+  Two fixed points joined by a straight line can't spike, self-intersect,
+  or need bounding - the entire bug class is gone by construction instead
+  of by another patch. Removed `cornerControlPoint`/`sampleCornerArc` and
+  the now-dead `MAX_CONTROL_DISTANCE_STUDS`/`_CHORD_RATIO`/
+  `CORNER_ARC_SAMPLES` constants and the unused `EdgePoint.Tangent`
+  field. Trades the rounded curb-return look (matching the Google Maps
+  references from earlier this session) for reliability - noted in
+  TODO.md as still worth doing properly later via a fixed-radius fillet
+  tangent to both kerb lines, which doesn't have the same unbounded-reach
+  failure mode a tangent-line intersection does.
+- **Clarified the "curved road tool sometimes needs only 1 click instead
+  of 2" report** - not a bug: when the start point snaps onto an existing
+  road's own end, its tangent is locked and the Curve/Freeform tools
+  genuinely need one fewer click (no separate guide point - the shape is
+  derived from the locked tangent instead). `GetHint()` didn't explain
+  why, so it read as the guide-point step randomly vanishing. Now says so
+  explicitly, and points at the new "Snap to existing road" toggle (see
+  above) as the way to always get the full click sequence.
+
 ## Road Editor layout overflow fix + junction corner opposing-pair check
 
 - **"There is still a window below my road cross section" - the Lane

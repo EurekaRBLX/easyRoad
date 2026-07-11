@@ -1510,34 +1510,49 @@ end
 return fillTriangle
 </ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX14"><Properties><string name="Name">JunctionBuilder</string><ProtectedString name="Source">--!strict
 -- Builds the visible geometry for a JunctionNode (see JunctionInstance.lua):
--- real curb-return corners between the roads that meet here, not just a
--- flat pad covering the seam.
+-- a straight-chamfered pad between the roads that meet here, not just a
+-- flat circular pad covering the seam.
 --
 -- Every connected road contributes, at the station where it meets the
 -- junction, its own KERB points (the roadway/non-roadway boundary - where a
 -- real kerb physically sits) and OUTER points (the profile's true outer
 -- edge, typically a sidewalk's outer/property edge - the same position as
 -- the kerb point when the road has no sidewalk). Sorted by angle around the
--- junction centre: between two ADJACENT roads' kerb points, a
--- tangent-continuous rounded corner (a quadratic Bézier, built from the
--- classic "intersect the two tangent lines for the control point"
--- construction - degrades to a straight blend for near-parallel roads) is
--- fanned from the centre as the drivable asphalt surface, and the strip
--- between that arc and each road's own outer edge is filled separately as
--- the pedestrian corner (sidewalk material) - the actual curb-return shape,
--- not just an unshaped flat pad. A road's OWN kerb-to-kerb span (both
--- points from the same road) needs no corner treatment - that's just its
--- own pavement, fanned directly.
+-- junction centre: between two ADJACENT roads' kerb points, the corner is
+-- filled with a STRAIGHT chamfer (a plain triangle fan from the centre
+-- through a.Kerb/b.Kerb directly) as the drivable asphalt surface, and the
+-- strip between that chamfer and each road's own outer edge is filled
+-- separately as the pedestrian corner (sidewalk material). A road's OWN
+-- kerb-to-kerb span (both points from the same road) gets the same
+-- treatment - that's just its own pavement, fanned directly.
 --
--- A between-road gap wider than MAX_CORNER_SPAN_RADIANS is skipped
--- entirely (no arc, no fill) rather than treated as a corner - confirmed
--- live (screenshots of a 2-road bend and a T-junction) that bridging a
--- gap that wraps most of the way around produced a wildly oversized,
--- self-intersecting spike. That wide gap isn't a real intersection
--- surface: it's the far side of a bend, or (for a T-junction) the
--- "through" span between the two separate road Models that visually form
--- one straight through road on either side of the branch - there's
--- nothing to pave there, just open space beside the road.
+-- Previously this rounded each corner with a tangent-continuous quadratic
+-- Bézier (the classic "intersect the two tangent lines for the control
+-- point" construction) instead of a straight chamfer - closer to how a
+-- real kerb looks, but the construction's core weakness (an unbounded
+-- control point for near-parallel tangent pairs) kept resurfacing as a
+-- self-intersecting spike even after two rounds of capping it (first by
+-- angular gap size, then by distance relative to chord length) - each fix
+-- closed one specific case without addressing why the construction itself
+-- needed a cap at all. Reverted to the straight chamfer this round after a
+-- third live report of broken geometry on the same class of junction:
+-- two fixed points connected by a straight line can never spike,
+-- self-intersect, or need a distance cap, so the entire bug class is gone
+-- by construction rather than by another threshold. Real per-corner
+-- rounding (a proper fixed-radius fillet tangent to both kerb lines,
+-- rather than an unbounded tangent-line intersection) is still worth
+-- doing later - see TODO.md.
+--
+-- A between-road gap wider than MAX_CORNER_SPAN_RADIANS, or between two
+-- roads whose outward tangents are roughly opposite (isOpposingPair), is
+-- skipped entirely (no fill) rather than chamfered - confirmed live
+-- (screenshots of a 2-road bend and multiple T-junctions) that bridging a
+-- gap that wraps most of the way around, or connecting what's actually
+-- the same through-road split by a branch, isn't a real intersection
+-- surface: it's the far side of a bend, or the "through" span between two
+-- separate road Models that visually form one straight through road on
+-- either side of the branch - there's nothing to pave there, just open
+-- space beside the road.
 --
 -- Still doesn't re-derive lane markings through the junction (stop lines,
 -- give-way markings, lane-guidance paint) - see TODO.md's "Junctions &amp;
@@ -1556,27 +1571,9 @@ local FillTriangle = require("./FillTriangle")
 local JunctionBuilder = {}
 
 local PAD_MARGIN_STUDS = 2 -- Extra reach beyond the widest connected road's half-width (fallback pad only)
-local CORNER_ARC_SAMPLES = 5
-local MAX_CONTROL_DISTANCE_STUDS = 200 -- Absolute cap - beyond this, treat the corner as a straight blend instead
--- A REAL curb-return corner is always small relative to how far apart its
--- two endpoints are - the control point should never need to reach further
--- than a few chord-lengths away to keep the blend tangent-continuous. The
--- absolute MAX_CONTROL_DISTANCE_STUDS cap above was the only guard for a
--- while, but 200 studs is enormous next to a typical junction's actual
--- scale (kerb points are usually only 10-30 studs from the centre), so a
--- near-parallel pair could still produce a control point (and therefore an
--- arc) many times larger than the junction itself - confirmed live with a
--- screenshot of a wildly oversized diamond-shaped spike at a T-junction
--- where one of the "through" pieces was itself gently curved (so its
--- outward tangent wasn't quite opposite the other piece's, meaning the
--- angular-span guard below didn't catch it either). Capping relative to
--- the chord length between the two points closes that gap regardless of
--- why the tangents ended up near-parallel.
-local MAX_CONTROL_DISTANCE_CHORD_RATIO = 3
--- Beyond this, it's not a corner - leave it unfilled. Tightened from 160 deg
--- (still too permissive - see MAX_CONTROL_DISTANCE_CHORD_RATIO above for
--- the case that slipped through it) to a bound closer to what a genuine
--- curb-return corner actually spans in practice.
+-- Beyond this, it's not a corner - leave it unfilled (see isOpposingPair
+-- below for the other, tangent-based guard against the same class of
+-- non-corner gap).
 local MAX_CORNER_SPAN_RADIANS = math.rad(130)
 local DOWN = Vector3.new(0, -1, 0)
 
@@ -1638,7 +1635,6 @@ type EdgePoint = {
 	Road: Model,
 	Kerb: Vector3,
 	Outer: Vector3,
-	Tangent: Vector3, -- outward (away-from-junction) direction at this point
 }
 
 -- `road`'s own left and right edge points at the station where it meets
@@ -1679,8 +1675,8 @@ local function edgePointsForRoad(road: Model, junctionId: string, settings: Sett
 		return (frame * CFrame.new(offsetM * scale, 0, 0)).Position
 	end
 	return {
-		{ Road = road, Kerb = worldPoint(kerbLeftM), Outer = worldPoint(outerLeftM), Tangent = outward },
-		{ Road = road, Kerb = worldPoint(kerbRightM), Outer = worldPoint(outerRightM), Tangent = outward },
+		{ Road = road, Kerb = worldPoint(kerbLeftM), Outer = worldPoint(outerLeftM) },
+		{ Road = road, Kerb = worldPoint(kerbRightM), Outer = worldPoint(outerRightM) },
 	}
 end
 
@@ -1738,50 +1734,6 @@ local function isOpposingPair(roadA: Model, roadB: Model, junctionId: string): b
 		return false
 	end
 	return tangentA:Dot(tangentB) &lt; OPPOSING_DOT_THRESHOLD
-end
-
--- The quadratic Bézier control point for a corner from `a` (tangent
--- `tangentA`, already pointing INTO the corner) to `b` (tangent `tangentB`,
--- likewise) - the classic "intersect the two tangent lines" construction,
--- so the resulting curve continues smoothly out of each road's own kerb
--- line rather than kinking. Falls back to the straight-line midpoint if
--- the tangent lines are parallel, or the intersection lands unreasonably
--- far away (near-parallel roads) - degrades to a gentle blend instead of
--- an absurdly oversized arc.
-local function cornerControlPoint(a: Vector3, tangentA: Vector3, b: Vector3, tangentB: Vector3): Vector3
-	local ax, az = tangentA.X, tangentA.Z
-	local bx, bz = tangentB.X, tangentB.Z
-	local det = ax * -bz - az * -bx
-	if math.abs(det) &lt; 1e-6 then
-		return (a + b) / 2
-	end
-	local dx, dz = b.X - a.X, b.Z - a.Z
-	local t1 = (dx * -bz - dz * -bx) / det
-	local chordLength = (b - a).Magnitude
-	local maxDistance = math.min(MAX_CONTROL_DISTANCE_STUDS, chordLength * MAX_CONTROL_DISTANCE_CHORD_RATIO)
-	if t1 &lt; 0 or t1 &gt; maxDistance then
-		return (a + b) / 2
-	end
-	return a + tangentA * t1
-end
-
--- Samples `samples` interior points (excluding the endpoints themselves)
--- along the rounded corner from `a` to `b`.
-local function sampleCornerArc(
-	a: Vector3,
-	tangentA: Vector3,
-	b: Vector3,
-	tangentB: Vector3,
-	samples: number
-): { Vector3 }
-	local control = cornerControlPoint(a, tangentA.Unit, b, tangentB.Unit)
-	local points: { Vector3 } = {}
-	for i = 1, samples do
-		local t = i / (samples + 1)
-		local u = 1 - t
-		table.insert(points, a * (u * u) + control * (2 * u * t) + b * (t * t))
-	end
-	return points
 end
 
 -- Rebuilds the junction's geometry from scratch based on whichever roads
@@ -1882,25 +1834,14 @@ function JunctionBuilder.Rebuild(
 				-- (two separate road Models forming one visually-straight
 				-- through road, on either side of a branch) - there's no
 				-- real intersection surface out there, just open space
-				-- beside the road. Bridging it with a corner arc anyway
-				-- produced a wildly oversized, self-intersecting spike
-				-- (reported live) - past this span, just leave it unfilled.
-				local arc = sampleCornerArc(a.Kerb, -a.Tangent, b.Kerb, -b.Tangent, CORNER_ARC_SAMPLES)
-				-- Asphalt: fan from the centre through the rounded corner.
-				local previous = a.Kerb
-				for _, point in arc do
-					FillTriangle(center, previous, point, thickness, DOWN, makeAsphaltPart, folder)
-					previous = point
-				end
-				FillTriangle(center, previous, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
-				-- Sidewalk corner: the strip between the arc and each
-				-- road's own outer edge, fanned from a.Outer.
-				previous = a.Kerb
-				for _, point in arc do
-					FillTriangle(a.Outer, previous, point, thickness, DOWN, makeSidewalkPart, folder)
-					previous = point
-				end
-				FillTriangle(a.Outer, previous, b.Kerb, thickness, DOWN, makeSidewalkPart, folder)
+				-- beside the road. Bridging it anyway produced a wildly
+				-- oversized, self-intersecting spike (reported live,
+				-- repeatedly) - past this span, just leave it unfilled.
+				--
+				-- The corner itself is a straight chamfer, not a rounded
+				-- arc - see this file's header for why.
+				FillTriangle(center, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
+				FillTriangle(a.Outer, a.Kerb, b.Kerb, thickness, DOWN, makeSidewalkPart, folder)
 				FillTriangle(a.Outer, b.Kerb, b.Outer, thickness, DOWN, makeSidewalkPart, folder)
 			end
 		end
@@ -13072,6 +13013,16 @@ local function createRoadSession(
 		if count == 0 then
 			return "Click to place the start point (snaps to existing road ends)"
 		elseif count == needed - 1 then
+			if lockedTangent and toolMode ~= "Straight" then
+				-- One fewer click than usual: the start point snapped onto
+				-- an existing road's own end, so its tangent is already
+				-- known and there's no separate guide point to place - only
+				-- called out explicitly here because it otherwise reads as
+				-- "the guide-point step just vanished" (reported live as a
+				-- bug). Turn off "Snap to existing road" in Road Tools to
+				-- always get the full guide-point click.
+				return "Start snapped to an existing road end - click to place the end point (no separate guide point needed)"
+			end
 			return "Click to place the end point"
 		else
 			return "Click to place a guide point"

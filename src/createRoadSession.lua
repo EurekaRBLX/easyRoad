@@ -800,6 +800,16 @@ local function createRoadSession(
 		if count == 0 then
 			return "Click to place the start point (snaps to existing road ends)"
 		elseif count == needed - 1 then
+			if lockedTangent and toolMode ~= "Straight" then
+				-- One fewer click than usual: the start point snapped onto
+				-- an existing road's own end, so its tangent is already
+				-- known and there's no separate guide point to place - only
+				-- called out explicitly here because it otherwise reads as
+				-- "the guide-point step just vanished" (reported live as a
+				-- bug). Turn off "Snap to existing road" in Road Tools to
+				-- always get the full guide-point click.
+				return "Start snapped to an existing road end - click to place the end point (no separate guide point needed)"
+			end
 			return "Click to place the end point"
 		else
 			return "Click to place a guide point"

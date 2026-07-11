@@ -73,52 +73,42 @@ polygon tracing each connected road's own pavement edges
 (`FillTriangle`-based, angular sort around the junction centre), not an
 arbitrary circle.
 
-**Curb-return corners (shipped):** confirmed live that the flat fillet
-pad "genuinely doesn't change the roads" - `JunctionBuilder.lua` now
-builds real curb-return corners instead. Each connected road contributes
-its own KERB points (roadway/non-roadway boundary) and OUTER points
-(profile's true outer edge, e.g. a sidewalk's outer edge); between
-angularly-adjacent roads, a tangent-continuous quadratic-Bézier corner
-(the classic "intersect the two tangent lines" construction) is fanned
-from the junction centre as the asphalt surface, and the strip between
-that arc and each road's outer edge is filled separately as the
-pedestrian corner (sidewalk material) - a real curb-return shape, not an
-unshaped flat pad. Fixed a follow-up bug (reported live, 2-road bend and
-T-junction screenshots): a between-road gap wider than ~160° (the far
-side of a bend, or the "through" span at a T-junction between the two
-separate road Models forming one visually-straight through road either
-side of the branch) isn't a real corner and was producing a wildly
-oversized, self-intersecting spike when bridged anyway - now skipped
-entirely rather than filled. **Still recurred** (reported live again with
-a screenshot - same diamond-spike symptom at a T-junction whose "through"
-piece curved slightly right at the junction, so the gap slipped under the
-160° guard) - see `SHIPPED.md`'s "bound the control point relative to
-chord length" entry for the actual fix: the angular guard alone wasn't
-the real problem, the corner control point's distance cap was a flat 200
-studs regardless of the junction's actual scale. Tightened the angle to
-130° and added a chord-relative distance cap so the arc can't
-disproportionately bulge regardless of why two tangents end up
-near-parallel. General user feedback after this round: "the algorithm
-has a lot more work to be worked on" - noted, this is the third distinct
-fix for the same visual symptom (spike/diamond geometry), which suggests
-the underlying tangent-line-intersection construction is fundamentally
-fragile for wide-angle/near-parallel pairs rather than each case being an
-isolated bug. **Recurred a third time** (confirmed live again with a
-screenshot on the same T-junction shape) - both prior fixes only ever
-looked at where the two KERB POINTS ended up (angular gap size, then the
-control point's distance), never at whether the two ROADS themselves are
-actually opposing; a through-piece curved right at the junction can shift
-its points just enough to dodge any point-geometry-based threshold while
-the roads are still obviously "the same through-road, split by a branch."
-Added `isOpposingPair` (see `SHIPPED.md`) - skips corner-fill between two
-different roads whenever their own outward TANGENTS (not their kerb
-points) are more than ~120° apart, independent of profile matching and
-independent of the resulting point-angular-gap size. If this recurs a
-FOURTH time, stop patching thresholds entirely and switch to explicitly
-detecting "these two roads are actually one road split by a junction" via
-`RoadSplit` provenance (would need `RoadSplit.SplitAt` to actually record
-which two output Models came from the same input, which it doesn't
-today) rather than inferring it from any geometric heuristic.
+**Curb-return corners - history and current state.** `JunctionBuilder.lua`
+originally replaced the flat fillet pad with real curb-return corners: a
+tangent-continuous quadratic-Bézier arc (the "intersect the two tangent
+lines for a control point" construction), fanned from the junction centre.
+This construction's core weakness - an unbounded control point for
+near-parallel tangent pairs - produced a self-intersecting spike on
+certain junction shapes, and kept resurfacing through three separate
+patch attempts even after each one closed the SPECIFIC case reported:
+skip corner-fill past a ~160° angular gap; tighten that to 130° and cap
+the control point relative to chord length when it still recurred with a
+curved "through" piece; add `isOpposingPair` (skip corner-fill between
+roads whose own tangents are >~120° apart, independent of where their
+kerb points ended up) when it recurred a third time. **Rewritten this
+round** (confirmed live a third time that it was still broken, with a
+reference to `github.com/MicroGSD/RoadArchitect`): dropped the rounded
+arc entirely in favour of a straight chamfer directly between `a.Kerb`
+and `b.Kerb` - two fixed points joined by a straight line can't spike,
+self-intersect, or need a distance cap, so this closes the whole bug
+class by construction instead of by a fourth threshold. `isOpposingPair`
+and the angular-span guard are kept (they decide WHICH gaps get filled at
+all - real corner vs. the far side of a bend / a T-junction's through
+span), only the arc CONSTRUCTION itself was replaced.
+**Trade-off:** corners are now sharp chamfers, not rounded curb returns -
+a step back from the Google Maps reference look requested earlier this
+session, kept for reliability after three rounds of the rounded version
+breaking. Proper rounding is still worth doing later, but via a
+DIFFERENT construction that doesn't have the same failure mode: a
+fixed-radius fillet tangent to both kerb lines (tangent length =
+`radius / tan(angle/2)`, only blows up for angles very close to 0° or
+180° - both already excluded by the existing guards) rather than an
+unbounded tangent-line intersection. A more durable alternative worth
+considering instead of (or alongside) that: explicitly detect "these two
+roads are actually one road split by a junction" via `RoadSplit`
+provenance rather than inferring it from tangent angle - would need
+`RoadSplit.SplitAt` to actually record which two output Models came from
+the same input road, which it doesn't today.
 
 Deliberately still out of scope, in rough priority order:
 
