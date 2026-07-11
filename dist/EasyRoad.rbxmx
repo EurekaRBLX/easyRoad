@@ -1807,11 +1807,30 @@ function JunctionBuilder.Rebuild(
 	end
 
 	if #edgePoints &gt;= 3 then
-		-- Angular order around the junction centre, so adjacent roads'
-		-- kerb points are joined by the corner between them rather than the
+		-- Fan from the CENTROID of the actual kerb points, not the
+		-- junction's stored RW_Position - that position is recorded once,
+		-- from wherever the first two roads happened to snap together
+		-- (JunctionInstance.Create), and never recomputed as more roads
+		-- connect later. For a tight-angle fork (confirmed live with a
+		-- screenshot: two roads diverging at a narrow angle plus a third
+		-- crossing road), the stored position can end up outside the true
+		-- kerb-point footprint entirely - fanning triangles from an apex
+		-- that isn't actually inside the region they're meant to cover
+		-- produces exactly the self-intersecting, jagged-star geometry
+		-- reported (as opposed to the earlier spike bugs, which were
+		-- oversized but not self-crossing in this way). The centroid of a
+		-- point set always lies inside its convex hull, which is what a
+		-- fan triangulation actually needs to stay simple (non-crossing).
+		local fanCenter = Vector3.zero
+		for _, point in edgePoints do
+			fanCenter += point.Kerb
+		end
+		fanCenter /= #edgePoints
+		-- Angular order around the fan centre, so adjacent roads' kerb
+		-- points are joined by the corner between them rather than the
 		-- fan winding back on itself.
 		local function angleOf(point: Vector3): number
-			return math.atan2(point.Z - center.Z, point.X - center.X)
+			return math.atan2(point.Z - fanCenter.Z, point.X - fanCenter.X)
 		end
 		table.sort(edgePoints, function(a: EdgePoint, b: EdgePoint): boolean
 			return angleOf(a.Kerb) &lt; angleOf(b.Kerb)
@@ -1824,7 +1843,7 @@ function JunctionBuilder.Rebuild(
 				-- Same road's own kerb-to-kerb span - already its own
 				-- pavement, no corner needed; fan it directly (mostly
 				-- redundant underlay, but harmless).
-				FillTriangle(center, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
+				FillTriangle(fanCenter, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
 			elseif
 				not isOpposingPair(a.Road, b.Road, junctionId)
 				and (angleOf(b.Kerb) - angleOf(a.Kerb)) % (2 * math.pi) &lt;= MAX_CORNER_SPAN_RADIANS
@@ -1840,7 +1859,7 @@ function JunctionBuilder.Rebuild(
 				--
 				-- The corner itself is a straight chamfer, not a rounded
 				-- arc - see this file's header for why.
-				FillTriangle(center, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
+				FillTriangle(fanCenter, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
 				FillTriangle(a.Outer, a.Kerb, b.Kerb, thickness, DOWN, makeSidewalkPart, folder)
 				FillTriangle(a.Outer, b.Kerb, b.Outer, thickness, DOWN, makeSidewalkPart, folder)
 			end

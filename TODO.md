@@ -110,6 +110,28 @@ provenance rather than inferring it from tangent angle - would need
 `RoadSplit.SplitAt` to actually record which two output Models came from
 the same input road, which it doesn't today.
 
+**Recurred a fourth time, different symptom** - confirmed live with a
+deselected screenshot (no self-intersecting spike this time, but a
+jagged star of small overlapping triangles with a visible hole, on a
+tight-angle fork). Root cause was unrelated to the corner CONSTRUCTION
+this time: the fan was built from `junctionData.Position` - the
+junction's stored position, set once when the junction was first
+created from wherever two roads happened to snap together, never
+recomputed as more roads join later. A fan triangulation is only
+guaranteed simple (non-self-intersecting) when the apex is actually
+inside the boundary it's fanning - for a tight fork the stored position
+can land outside that boundary entirely. Fixed by fanning from the
+CENTROID of the current rebuild's own kerb points instead (see
+`SHIPPED.md`) - always inside the point set's convex hull by
+definition. Kept as a live TODO because centroid is a strong practical
+default, not a mathematical guarantee for every conceivable road
+arrangement (a real intersection whose true kerb-point polygon is
+non-convex, e.g. an unusually complex multi-way junction, could still
+have a centroid the fan can't see all the boundary points from cleanly)
+- if THIS recurs, replace the whole "sort by angle, walk pairs" scheme
+with a proper 2D polygon triangulation (ear-clipping or similar) that
+doesn't depend on picking a single valid fan apex at all.
+
 Deliberately still out of scope, in rough priority order:
 
 - **`RoadSplit` refuses to split a road with a transition or bus bay.**

@@ -4,6 +4,28 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junction pad: fan from the kerb-point centroid, not the stored junction position
+
+- **Confirmed live with a deselected screenshot that the straight-chamfer
+  rewrite (previous round) was STILL broken** - not another oversized
+  spike this time, but a jagged, self-intersecting star of small
+  overlapping triangles with a visible hole in the middle of the actual
+  asphalt, on a tight-angle fork (two roads diverging at a narrow angle
+  plus a third crossing road). Root cause: the fan was built from
+  `junctionData.Position` - the junction's stored `RW_Position`, set ONCE
+  in `JunctionInstance.Create` from wherever the first two roads
+  happened to snap together, and never recomputed as more roads connect
+  later. A fan triangulation is only guaranteed non-self-intersecting
+  when its apex is actually inside the region the boundary points
+  enclose; for a tight fork the stored position can end up outside that
+  region entirely, and fanning triangles from an apex outside their own
+  boundary produces exactly this kind of self-crossing mess. Fixed by
+  computing the fan apex fresh on every rebuild as the CENTROID of the
+  actual kerb points being used - the centroid of a point set always
+  lies inside its convex hull, which is what a fan needs to stay simple.
+  `junctionData.Position` is untouched for everything else (the fallback
+  circular pad, roundabout centre, spoke trimming).
+
 ## Junction corners rewritten as straight chamfers (dropped the arc entirely)
 
 - **Confirmed live a third time (screenshot, reference to
