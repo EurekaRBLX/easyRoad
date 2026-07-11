@@ -201,6 +201,35 @@ local function isSmoothPassThrough(roads: { Model }, junctionId: string): boolea
 	return tangentA:Dot(tangentB) < PASS_THROUGH_DOT_THRESHOLD
 end
 
+-- Tangents more than ~120 degrees apart - looser than
+-- PASS_THROUGH_DOT_THRESHOLD above (which additionally requires matching
+-- profiles and skips the WHOLE junction) and evaluated per ROAD PAIR
+-- rather than as a global junction-wide check. Two roads leaving the
+-- junction in roughly opposite directions read as "the same through-road,
+-- split into two separate Models by a branch here" - there's no real
+-- curb-return corner between them - even when their profiles differ (e.g.
+-- a highway narrowing into a street) so isSmoothPassThrough can't skip the
+-- junction outright, and even when one piece is curved enough right at the
+-- junction that the raw angular gap between their KERB POINTS happens to
+-- land under MAX_CORNER_SPAN_RADIANS anyway. That gap-size-only check
+-- alone still produced an oversized spike (reported live, twice) because
+-- it only measures where the two POINTS ended up, not whether the ROADS
+-- themselves are actually opposing - this checks the roads' own tangents
+-- directly instead of inferring it from point geometry.
+local OPPOSING_DOT_THRESHOLD = -0.5
+
+local function isOpposingPair(roadA: Model, roadB: Model, junctionId: string): boolean
+	if roadA == roadB then
+		return false
+	end
+	local tangentA = outwardTangentAt(roadA, junctionId)
+	local tangentB = outwardTangentAt(roadB, junctionId)
+	if not tangentA or not tangentB then
+		return false
+	end
+	return tangentA:Dot(tangentB) < OPPOSING_DOT_THRESHOLD
+end
+
 -- The quadratic Bézier control point for a corner from `a` (tangent
 -- `tangentA`, already pointing INTO the corner) to `b` (tangent `tangentB`,
 -- likewise) - the classic "intersect the two tangent lines" construction,
@@ -334,7 +363,10 @@ function JunctionBuilder.Rebuild(
 				-- pavement, no corner needed; fan it directly (mostly
 				-- redundant underlay, but harmless).
 				FillTriangle(center, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
-			elseif (angleOf(b.Kerb) - angleOf(a.Kerb)) % (2 * math.pi) <= MAX_CORNER_SPAN_RADIANS then
+			elseif
+				not isOpposingPair(a.Road, b.Road, junctionId)
+				and (angleOf(b.Kerb) - angleOf(a.Kerb)) % (2 * math.pi) <= MAX_CORNER_SPAN_RADIANS
+			then
 				-- A gap this wide isn't a genuine corner - it's the far
 				-- side of a bend or the "through" span of a T-junction
 				-- (two separate road Models forming one visually-straight

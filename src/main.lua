@@ -472,8 +472,8 @@ return function(
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
-				Position = UDim2.new(0, 12, 1, -12),
-				Size = UDim2.new(1, -24, 0, 420),
+				Position = UDim2.new(0, 12, 1, -40),
+				Size = UDim2.new(1, -24, 0, 470),
 			}
 		elseif session then
 			local currentSession = session :: createRoadSession.RoadSession
@@ -502,7 +502,7 @@ return function(
 			bottomContent = React.createElement(React.Fragment, nil, {
 				ToolMode = React.createElement("Frame", {
 					AnchorPoint = Vector2.new(0, 1),
-					Position = UDim2.new(0, 16, 1, -12),
+					Position = UDim2.new(0, 16, 1, -40),
 					Size = UDim2.new(0, 260, 0, 430),
 					BackgroundTransparency = 1,
 					[React.Event.MouseEnter] = function()
@@ -560,7 +560,7 @@ return function(
 				}),
 				RoadLibrary = React.createElement("Frame", {
 					AnchorPoint = Vector2.new(1, 1),
-					Position = UDim2.new(1, -16, 1, -12),
+					Position = UDim2.new(1, -16, 1, -40),
 					Size = UDim2.new(0, 340, 0, 260),
 					BackgroundTransparency = 1,
 					[React.Event.MouseEnter] = function()
@@ -601,7 +601,7 @@ return function(
 				})
 				bottomFrameProps = {
 					AnchorPoint = Vector2.new(0, 1),
-					Position = UDim2.new(0, 12, 1, -12),
+					Position = UDim2.new(0, 12, 1, -40),
 					Size = UDim2.new(0, 260, 0, 180),
 				}
 			end
@@ -624,7 +624,7 @@ return function(
 				})
 				bottomFrameProps = {
 					AnchorPoint = Vector2.new(0, 1),
-					Position = UDim2.new(0, 12, 1, -12),
+					Position = UDim2.new(0, 12, 1, -40),
 					Size = UDim2.new(0, 280, 0, 300),
 				}
 			end
@@ -661,7 +661,7 @@ return function(
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
-				Position = UDim2.new(0, 12, 1, -12),
+				Position = UDim2.new(0, 12, 1, -40),
 				Size = UDim2.new(0, 280, 0, 260),
 			}
 		elseif editSession.GetSelectedRoad() and editSession.IsConfirmingKerbStretch() then
@@ -677,7 +677,7 @@ return function(
 				})
 				bottomFrameProps = {
 					AnchorPoint = Vector2.new(0, 1),
-					Position = UDim2.new(0, 12, 1, -12),
+					Position = UDim2.new(0, 12, 1, -40),
 					Size = UDim2.new(0, 280, 0, 240),
 				}
 			end
@@ -701,7 +701,7 @@ return function(
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
-				Position = UDim2.new(0, 12, 1, -12),
+				Position = UDim2.new(0, 12, 1, -40),
 				Size = UDim2.new(1, -24, 0, 420),
 			}
 		elseif junctionEditSession.GetSelectedJunction() then
@@ -733,7 +733,7 @@ return function(
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
-				Position = UDim2.new(0, 12, 1, -12),
+				Position = UDim2.new(0, 12, 1, -40),
 				Size = UDim2.new(0, 280, 0, 360),
 			}
 		end

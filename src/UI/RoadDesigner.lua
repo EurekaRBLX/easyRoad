@@ -51,7 +51,16 @@ export type DesignerAction = {
 	OnClick: () -> (),
 }
 
-local STRIP_HEIGHT = 140
+-- Tall enough for every row LaneStripCard can show at once: Header + the
+-- 78-stud tile Strip + the Controls row (width/direction/reorder/remove) +
+-- the conditional Marking row (shown whenever the selected lane isn't the
+-- rightmost one) + card padding/list-layout gaps between them. Previously
+-- only sized for Header+Strip+Controls (no Marking row) - selecting a lane
+-- that also showed the Marking row pushed the card's total content past
+-- this fixed-height Frame's own bottom edge, spilling out below the whole
+-- panel (reported live: "there is still a window below my road cross
+-- section" - that overflow, not a separate window).
+local STRIP_HEIGHT = 190
 local TILE_WIDTH = 58
 
 local LINE_TYPE_LABELS: { [string]: string } = {

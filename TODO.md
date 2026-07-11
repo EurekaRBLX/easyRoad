@@ -103,12 +103,22 @@ has a lot more work to be worked on" - noted, this is the third distinct
 fix for the same visual symptom (spike/diamond geometry), which suggests
 the underlying tangent-line-intersection construction is fundamentally
 fragile for wide-angle/near-parallel pairs rather than each case being an
-isolated bug. If this recurs again, the more durable fix is probably
-replacing the "intersect two tangent lines, cap the distance" heuristic
-with something that doesn't need a distance cap at all (e.g. a
-fillet-radius-based construction, or explicitly detecting "these two
-roads are actually one road split by a junction" via `RoadSplit`
-provenance instead of inferring it from tangent angle).
+isolated bug. **Recurred a third time** (confirmed live again with a
+screenshot on the same T-junction shape) - both prior fixes only ever
+looked at where the two KERB POINTS ended up (angular gap size, then the
+control point's distance), never at whether the two ROADS themselves are
+actually opposing; a through-piece curved right at the junction can shift
+its points just enough to dodge any point-geometry-based threshold while
+the roads are still obviously "the same through-road, split by a branch."
+Added `isOpposingPair` (see `SHIPPED.md`) - skips corner-fill between two
+different roads whenever their own outward TANGENTS (not their kerb
+points) are more than ~120° apart, independent of profile matching and
+independent of the resulting point-angular-gap size. If this recurs a
+FOURTH time, stop patching thresholds entirely and switch to explicitly
+detecting "these two roads are actually one road split by a junction" via
+`RoadSplit` provenance (would need `RoadSplit.SplitAt` to actually record
+which two output Models came from the same input, which it doesn't
+today) rather than inferring it from any geometric heuristic.
 
 Deliberately still out of scope, in rough priority order:
 

@@ -4,6 +4,41 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Road Editor layout overflow fix + junction corner opposing-pair check
+
+- **"There is still a window below my road cross section" - the Lane
+  Strip card's own content was overflowing its container.** Confirmed
+  from a screenshot: selecting a lane tile shows a Controls row (width/
+  direction/reorder/remove) AND, when that lane isn't the rightmost one,
+  a Marking row - together taller than `STRIP_HEIGHT`'s fixed 140-stud
+  budget (only ever sized for Header + Strip + Controls, never accounting
+  for the Marking row appearing at the same time). The overflow spilled
+  out the bottom of the card's fixed-height Frame, past the whole panel's
+  own bounds, landing near the true screen edge - which is also why an
+  earlier report ("tile editor now renders below the road cross section")
+  couldn't be reproduced from its screenshot: it's the same overflow,
+  just caught with a different lane selected. Raised `STRIP_HEIGHT` to
+  190 and the Road Editor panel's own height from 420 to 470 to match.
+  Also bumped every bottom-anchored panel's screen margin from 12 to 40
+  studs (`main.lua`, 9 call sites) for headroom against Studio's own
+  command bar, which sits in the region our `IgnoreGuiInset = true`
+  ScreenGuis extend into.
+- **Junction corner spike - still recurring after two prior fixes,
+  confirmed live again with a screenshot.** Root cause, finally: both
+  previous fixes (skip wide angular gaps, cap the control point relative
+  to chord length) only look at where the two KERB POINTS ended up, never
+  at whether the two ROADS are actually opposing. A through-piece that's
+  even slightly curved right at the junction shifts its kerb points just
+  enough that the angular gap between them can land under any reasonable
+  threshold while the roads themselves are still clearly "the same
+  through-road, split by a branch" - no threshold on the point geometry
+  alone was ever going to catch every case. Added `isOpposingPair`: skips
+  corner-fill between two DIFFERENT roads whenever their own outward
+  tangents (not their kerb points) are more than ~120 degrees apart,
+  independent of profile matching (so a highway narrowing into a street
+  is still caught, unlike `isSmoothPassThrough`'s whole-junction skip)
+  and independent of the resulting point-angular-gap size.
+
 ## Snap toggles + standalone Roundabout tool in Road Tools
 
 - **Requested live: "there is currently no button on road tools to: Snap

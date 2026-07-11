@@ -1711,6 +1711,35 @@ local function isSmoothPassThrough(roads: { Model }, junctionId: string): boolea
 	return tangentA:Dot(tangentB) &lt; PASS_THROUGH_DOT_THRESHOLD
 end
 
+-- Tangents more than ~120 degrees apart - looser than
+-- PASS_THROUGH_DOT_THRESHOLD above (which additionally requires matching
+-- profiles and skips the WHOLE junction) and evaluated per ROAD PAIR
+-- rather than as a global junction-wide check. Two roads leaving the
+-- junction in roughly opposite directions read as "the same through-road,
+-- split into two separate Models by a branch here" - there's no real
+-- curb-return corner between them - even when their profiles differ (e.g.
+-- a highway narrowing into a street) so isSmoothPassThrough can't skip the
+-- junction outright, and even when one piece is curved enough right at the
+-- junction that the raw angular gap between their KERB POINTS happens to
+-- land under MAX_CORNER_SPAN_RADIANS anyway. That gap-size-only check
+-- alone still produced an oversized spike (reported live, twice) because
+-- it only measures where the two POINTS ended up, not whether the ROADS
+-- themselves are actually opposing - this checks the roads' own tangents
+-- directly instead of inferring it from point geometry.
+local OPPOSING_DOT_THRESHOLD = -0.5
+
+local function isOpposingPair(roadA: Model, roadB: Model, junctionId: string): boolean
+	if roadA == roadB then
+		return false
+	end
+	local tangentA = outwardTangentAt(roadA, junctionId)
+	local tangentB = outwardTangentAt(roadB, junctionId)
+	if not tangentA or not tangentB then
+		return false
+	end
+	return tangentA:Dot(tangentB) &lt; OPPOSING_DOT_THRESHOLD
+end
+
 -- The quadratic Bézier control point for a corner from `a` (tangent
 -- `tangentA`, already pointing INTO the corner) to `b` (tangent `tangentB`,
 -- likewise) - the classic "intersect the two tangent lines" construction,
@@ -1844,7 +1873,10 @@ function JunctionBuilder.Rebuild(
 				-- pavement, no corner needed; fan it directly (mostly
 				-- redundant underlay, but harmless).
 				FillTriangle(center, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
-			elseif (angleOf(b.Kerb) - angleOf(a.Kerb)) % (2 * math.pi) &lt;= MAX_CORNER_SPAN_RADIANS then
+			elseif
+				not isOpposingPair(a.Road, b.Road, junctionId)
+				and (angleOf(b.Kerb) - angleOf(a.Kerb)) % (2 * math.pi) &lt;= MAX_CORNER_SPAN_RADIANS
+			then
 				-- A gap this wide isn't a genuine corner - it's the far
 				-- side of a bend or the "through" span of a T-junction
 				-- (two separate road Models forming one visually-straight
@@ -10370,7 +10402,16 @@ export type DesignerAction = {
 	OnClick: () -&gt; (),
 }
 
-local STRIP_HEIGHT = 140
+-- Tall enough for every row LaneStripCard can show at once: Header + the
+-- 78-stud tile Strip + the Controls row (width/direction/reorder/remove) +
+-- the conditional Marking row (shown whenever the selected lane isn't the
+-- rightmost one) + card padding/list-layout gaps between them. Previously
+-- only sized for Header+Strip+Controls (no Marking row) - selecting a lane
+-- that also showed the Marking row pushed the card's total content past
+-- this fixed-height Frame's own bottom edge, spilling out below the whole
+-- panel (reported live: "there is still a window below my road cross
+-- section" - that overflow, not a separate window).
+local STRIP_HEIGHT = 190
 local TILE_WIDTH = 58
 
 local LINE_TYPE_LABELS: { [string]: string } = {
@@ -13535,8 +13576,8 @@ return function(
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
-				Position = UDim2.new(0, 12, 1, -12),
-				Size = UDim2.new(1, -24, 0, 420),
+				Position = UDim2.new(0, 12, 1, -40),
+				Size = UDim2.new(1, -24, 0, 470),
 			}
 		elseif session then
 			local currentSession = session :: createRoadSession.RoadSession
@@ -13565,7 +13606,7 @@ return function(
 			bottomContent = React.createElement(React.Fragment, nil, {
 				ToolMode = React.createElement("Frame", {
 					AnchorPoint = Vector2.new(0, 1),
-					Position = UDim2.new(0, 16, 1, -12),
+					Position = UDim2.new(0, 16, 1, -40),
 					Size = UDim2.new(0, 260, 0, 430),
 					BackgroundTransparency = 1,
 					[React.Event.MouseEnter] = function()
@@ -13623,7 +13664,7 @@ return function(
 				}),
 				RoadLibrary = React.createElement("Frame", {
 					AnchorPoint = Vector2.new(1, 1),
-					Position = UDim2.new(1, -16, 1, -12),
+					Position = UDim2.new(1, -16, 1, -40),
 					Size = UDim2.new(0, 340, 0, 260),
 					BackgroundTransparency = 1,
 					[React.Event.MouseEnter] = function()
@@ -13664,7 +13705,7 @@ return function(
 				})
 				bottomFrameProps = {
 					AnchorPoint = Vector2.new(0, 1),
-					Position = UDim2.new(0, 12, 1, -12),
+					Position = UDim2.new(0, 12, 1, -40),
 					Size = UDim2.new(0, 260, 0, 180),
 				}
 			end
@@ -13687,7 +13728,7 @@ return function(
 				})
 				bottomFrameProps = {
 					AnchorPoint = Vector2.new(0, 1),
-					Position = UDim2.new(0, 12, 1, -12),
+					Position = UDim2.new(0, 12, 1, -40),
 					Size = UDim2.new(0, 280, 0, 300),
 				}
 			end
@@ -13724,7 +13765,7 @@ return function(
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
-				Position = UDim2.new(0, 12, 1, -12),
+				Position = UDim2.new(0, 12, 1, -40),
 				Size = UDim2.new(0, 280, 0, 260),
 			}
 		elseif editSession.GetSelectedRoad() and editSession.IsConfirmingKerbStretch() then
@@ -13740,7 +13781,7 @@ return function(
 				})
 				bottomFrameProps = {
 					AnchorPoint = Vector2.new(0, 1),
-					Position = UDim2.new(0, 12, 1, -12),
+					Position = UDim2.new(0, 12, 1, -40),
 					Size = UDim2.new(0, 280, 0, 240),
 				}
 			end
@@ -13764,7 +13805,7 @@ return function(
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
-				Position = UDim2.new(0, 12, 1, -12),
+				Position = UDim2.new(0, 12, 1, -40),
 				Size = UDim2.new(1, -24, 0, 420),
 			}
 		elseif junctionEditSession.GetSelectedJunction() then
@@ -13796,7 +13837,7 @@ return function(
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
-				Position = UDim2.new(0, 12, 1, -12),
+				Position = UDim2.new(0, 12, 1, -40),
 				Size = UDim2.new(0, 280, 0, 360),
 			}
 		end

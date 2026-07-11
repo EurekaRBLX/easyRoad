@@ -43,21 +43,21 @@ internal planning only. See `TODO.md` for planned new features and
   footprint (not a wrapper around several - #1, #2), or its hover state
   must be reset on whatever transition could cause it to unmount while
   still hovered (#3).
-- **"Tile editor now renders below the road cross section so i cant see
-  it" - reported live, could not reproduce from the screenshot given.**
-  The screenshot showed the Road Editor's "Modules" tile palette (top
-  right) sitting clearly ABOVE the "Road Layout" cross-section strip
-  (bottom), which is the intended stacking (`RoadDesigner.lua`'s `Top`
-  frame at `LayoutOrder = 1`, `StripCard` at `LayoutOrder = 2`, both
-  children of one `UIListLayout`d `Stack` frame) - nothing in that image
-  showed the tile palette hidden or out of order. Possible it only shows
-  up at a specific window/viewport size (the `Top` frame's height is
-  `1 - (STRIP_HEIGHT + 8)` scale-relative, so a short enough viewport
-  could compress the Modules card until it's squeezed out or overlapped -
-  not verified), or "tile editor" refers to something else entirely (a
-  kerb/marking-stretch overlay panel, perhaps). Needs a screenshot that
-  actually shows the Modules palette missing/covered, plus window size at
-  the time, before this can be root-caused.
+- **"Actually does not snap" - reported live alongside a screenshot of the
+  junction corner spike still showing up (from a build that predates the
+  opposing-pair fix above), no repro steps of its own given yet.**
+  Re-read `createRoadSession.lua`'s `Settings.SnapToRoad` gate in
+  `findEndpointSnap`/`findConnectableEndpoint`/`findMidSpanMatch` - all
+  three correctly early-return only when the setting is explicitly false,
+  and `Settings.lua`'s `loadSettings` defaults it to `true` for both
+  fresh installs and existing persisted settings blobs that predate the
+  field (`raw.SnapToRoad == nil` -> `true`). No other code path
+  constructs a Settings table. Given the corner-spike half of the same
+  report was confirmed to be from a stale build, this is most likely the
+  same explanation - but not confirmed, since no specific "I clicked here
+  and it didn't connect" repro was given. Revisit if it persists on a
+  build that includes both this fix's commit and the layout-overflow fix
+  above.
 - **Bus bay's displaced pavement doesn't drag its own kerb-restriction line
   marking along with it.** `BuildWithBay`'s nearside-pavement overlay (see
   `SHIPPED.md`) correctly moves the physical sidewalk/verge Parts outward
