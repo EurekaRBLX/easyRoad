@@ -4,6 +4,15 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Highway shoulders no longer get a kerb/edge line by default
+
+- Both built-in Highway profiles (`builtin_highway`, `builtin_highway_3`)
+  now default `KerbRestriction = "NoLine"` - requested a while back
+  ("by default lets not include the outer edge kerb marking for
+  highways") but never actually applied to the profile data, only logged.
+  Still overridable per-road via the existing "Kerb lines" dropdown in the
+  Road Editor (`ProfileFields.lua`) for anyone who wants it back.
+
 ## Fix stale elevation preview (root cause of the "elevation doesn't work" report)
 
 - **Root-caused the elevation report from the previous round**: typing a

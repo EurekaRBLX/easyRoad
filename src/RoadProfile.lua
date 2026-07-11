@@ -383,6 +383,10 @@ function RoadProfile.BuiltInProfiles(style: RegionStyles.RegionStyle): { RoadPro
 				{ median(style.MedianWidthM * 1.5) },
 				true
 			),
+			-- Real motorway shoulders aren't marked with a kerb/edge line the
+			-- way an ordinary street's kerb is - requested explicitly, off by
+			-- default for highways (still toggleable per-road in the editor).
+			KerbRestriction = "NoLine",
 		},
 		{
 			Id = "builtin_highway_3",
@@ -394,6 +398,7 @@ function RoadProfile.BuiltInProfiles(style: RegionStyles.RegionStyle): { RoadPro
 				{ median(style.MedianWidthM * 1.5) },
 				true
 			),
+			KerbRestriction = "NoLine",
 		},
 		{
 			Id = "builtin_path",

@@ -239,7 +239,7 @@ proves the shape a future traffic-light plugin would consume (all
 connections green at once), not a real conflict-aware phase-grouping
 algorithm.
 
-## Kerb marking editor + highway shoulder default (not started)
+## Kerb marking editor (not started) - default fix shipped
 
 Reported live: highway profiles currently draw a plain edge-line "kerb"
 marking on the outer edge of the shoulder, where real highway marking
@@ -249,12 +249,16 @@ line generation (`Markings.KerbEdges`/`Compute`) treats a profile's
 `KerbRestriction` as ONE setting applying uniformly to every kerb-eligible
 edge - there's no way for a profile to say "no line on the outer edge,
 but the usual restriction elsewhere." Two related asks:
-- **Default fix**: built-in Highway-category profiles should default to
-  no marking on the outer shoulder edge. Smallest correct fix is probably
-  making `RoadProfile.BuiltInProfiles`'s highway entries default
-  `KerbRestriction = "NoLine"` - but confirm this doesn't also suppress a
-  wanted restriction on an inner (median-adjacent) edge first, since
-  today's model can't distinguish the two.
+- **Default fix - shipped.** Both built-in highway profiles now default
+  `KerbRestriction = "NoLine"` (see `SHIPPED.md`). Confirmed this doesn't
+  suppress anything on an inner/median-adjacent edge for the built-in
+  two-lane-each-way highway profiles specifically (their only two
+  kerb-eligible edges ARE the two outer shoulder edges - the median
+  doesn't register as kerb-eligible since `Markings.KerbEdges` only
+  treats `IsRaised` components as a kerb boundary, and `median` isn't
+  raised). A custom highway profile with a raised median could still want
+  a restriction on one edge and not the other - that's the "real fix"
+  below, still not built.
 - **Real fix / feature**: extend the single whole-profile
   `KerbRestriction` into a per-edge override map (same `EdgeIndex`
   numbering `KerbStretch` already uses), and add a UI section to
