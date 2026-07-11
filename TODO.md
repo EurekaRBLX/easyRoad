@@ -72,7 +72,19 @@ polygon tracing each connected road's own pavement edges
 (`FillTriangle`-based, angular sort around the junction centre), not an
 arbitrary circle.
 
-Deliberately still out of scope after Phase 1, in rough priority order:
+**Curb-return corners (shipped):** confirmed live that the flat fillet
+pad "genuinely doesn't change the roads" - `JunctionBuilder.lua` now
+builds real curb-return corners instead. Each connected road contributes
+its own KERB points (roadway/non-roadway boundary) and OUTER points
+(profile's true outer edge, e.g. a sidewalk's outer edge); between
+angularly-adjacent roads, a tangent-continuous quadratic-Bézier corner
+(the classic "intersect the two tangent lines" construction) is fanned
+from the junction centre as the asphalt surface, and the strip between
+that arc and each road's outer edge is filled separately as the
+pedestrian corner (sidewalk material) - a real curb-return shape, not an
+unshaped flat pad.
+
+Deliberately still out of scope, in rough priority order:
 
 - **`RoadSplit` refuses to split a road with a transition or bus bay.**
   Interpolating the exact profile at an arbitrary cut station, or deciding
@@ -83,15 +95,64 @@ Deliberately still out of scope after Phase 1, in rough priority order:
   than remapping their station ranges into each piece's own local
   coordinate space - the same class of complexity already flagged for
   marking stretches surviving a structural profile edit, above.
-- **The fillet polygon ignores superelevation roll.** Edge points are
+- **Corner geometry ignores superelevation roll.** Edge points are
   computed via a plain `FrameAt(station)` (roll defaults to 0); a road
-  banked right at the point it meets a junction will have its pad edge
+  banked right at the point it meets a junction will have its edge
   slightly off from the true tilted deck surface. Uncommon in practice
   (banking transitions run mid-segment, not usually right at an endpoint).
+- **Sidewalk corner fill always uses plain sidewalk material/colour**,
+  regardless of what the road's actual outermost non-roadway component
+  is (doesn't inspect Median vs Sidewalk, or a future median-variety
+  sub-kind once that's built).
 - **No lane markings drawn through the junction.** Stop lines, give-way
   markings, crosswalks, lane-guidance paint - `Markings.Compute` is
   fundamentally "one road, station 0 to Length" and deliberately wasn't
   touched; junction marking geometry needs its own module.
+- **Roundabout ring's own pavement/sidewalk still doesn't align cleanly**
+  with the trimmed spokes' sidewalks - reported live with a screenshot
+  (visible gaps/misalignment where each spoke's sidewalk meets the ring).
+  The spoke trim (see Phase 2 above) cuts the whole cross-section at the
+  ring boundary, but nothing yet builds a matching corner/verge piece
+  bridging a spoke's sidewalk into the ring's own edge, the way ordinary
+  junction corners now do (just above) - the ring doesn't have a
+  `JunctionBuilder`-style corner-fill pass of its own.
+- **No mid-span-to-mid-span crossing detection.** `RoadSplit`'s existing
+  mid-span connect (Phase 1b) only fires when a NEW road's endpoint lands
+  on an EXISTING road - not when a new road is drawn crossing an existing
+  one with both roads continuing past the crossing point on every side (a
+  genuine "X" where neither road's own endpoint is at the intersection).
+  Reported live: "i cannot create a new road that intersects with the
+  road in question and extend it beyond ... I have to first explicitly
+  connect them." Needs curve-curve intersection detection between the
+  new road being placed and every existing road (no closed-form solution
+  for Bézier-Bézier intersection - likely sampling/bisection, similar in
+  spirit to `RoundaboutBuilder`'s ring-crossing bisection), then splitting
+  BOTH roads at the crossing point (today's `RoadSplit.SplitAt` only
+  splits one).
+- **No snap-to-road / snap-to-grid toggle in Road Tools.** Both already
+  exist as always-on background behaviour (`findEndpointSnap`,
+  `applyGridSnap` in `createRoadSession.lua`, gated by
+  `Settings.SnapToGrid`/`GridSizeStuds` for the grid case but with no UI
+  surface to change it, and road-endpoint snapping isn't toggleable at
+  all) - requested as an explicit, visible tool/toggle in the Road Tools
+  panel rather than silent background behaviour.
+- **No box-junction ("keep clear") markings.** Real intersections
+  (reference: Google Maps screenshots of live HK/TW intersections)
+  commonly paint a yellow cross-hatch box over the intersection interior
+  where a vehicle mustn't stop even with right of way, blocking the
+  junction - `JunctionBuilder`'s asphalt fill has nowhere to paint
+  markings at all yet (see "no lane markings drawn through the junction"
+  above, which this falls under). Same references also show large,
+  distinctly-paved plaza-style corners at bigger intersections (not just
+  a narrow curb-return strip) - the current sidewalk-corner fill always
+  uses the same plain material regardless of how much area the corner
+  spans; worth a variant for larger corners once this is revisited.
+
+Standing constraint for all of the above (confirmed explicitly): stick to
+plain `BasePart`s (`Part` with `Wedge`/`Block`/`Cylinder` shapes, same
+`FillTriangle` convention already used everywhere in `Mesh/`) for
+performance - no `UnionOperation`/`MeshPart`/`EditableMesh` unless a
+shape genuinely can't be built any other way.
 
 **Phase 2 - roundabouts (v1, still rough on purpose).** `RoundaboutBuilder.lua`
 generates a real one-way ring (configurable lane count/width) - not a new

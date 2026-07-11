@@ -4,6 +4,32 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junctions: real curb-return corners, not a flat pad
+
+- **Confirmed live that the ordinary junction fillet "genuinely doesn't
+  change the roads"** - same class of complaint that led to the
+  roundabout spoke-trim fix, now addressed for plain intersections.
+  `JunctionBuilder.lua`'s pad is now real curb-return geometry: each
+  connected road contributes its own KERB points (the roadway/
+  non-roadway boundary, where a kerb physically sits) and OUTER points
+  (the profile's true outer edge, e.g. a sidewalk's outer edge). Between
+  two angularly-adjacent roads, a tangent-continuous quadratic-Bézier
+  corner - built via the classic "intersect the two roads' own tangent
+  lines for the control point" construction, degrading to a straight
+  blend for near-parallel roads or unreasonable intersection distances -
+  is fanned from the junction centre as the asphalt surface, and the
+  strip between that arc and each road's outer edge is filled separately
+  with sidewalk material as the actual pedestrian corner. A road's own
+  kerb-to-kerb span (both points from the same road, not a gap between
+  two different roads) still just fans directly - no corner needed
+  there, that's the road's own pavement.
+- Known remaining gaps (superelevation roll ignored, sidewalk corner
+  material doesn't inspect what's actually there, no lane markings
+  through the junction) and newly-reported issues (roundabout
+  sidewalk/pavement alignment at the ring boundary, no mid-span-to-
+  mid-span crossing detection, no snap-to-road/grid UI toggle) are
+  logged in `TODO.md`.
+
 ## Roundabouts: configurable lanes + trims spokes to the ring boundary
 
 - **Confirmed live that generating the ring as a free-standing object with
