@@ -4,6 +4,39 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junction pad rewritten as a convex hull fan - the actual fix
+
+- **The centroid fix (previous round) was NOT enough** - confirmed live
+  with a Google Maps reference for comparison: the same tight-angle fork
+  still produced a jagged, self-intersecting star. Root cause this time:
+  even fanning from a point guaranteed to be INSIDE the boundary doesn't
+  make the fan simple unless the points are walked in their true boundary
+  order - the "sort by raw angle around a point" scheme can still
+  interleave two different roads' kerb points in the wrong sequence for a
+  tight fork, producing overlapping triangles regardless of where the
+  apex sits.
+- **Replaced the whole per-pair scheme with a proper convex hull.**
+  `JunctionBuilder.lua` now computes the actual convex hull of every
+  connected road's kerb points (`convexHull`, standard Andrew's
+  monotone-chain construction) and fan-triangulates THAT from one of its
+  own vertices. A convex polygon can always be validly fan-triangulated
+  from any of its own vertices - this isn't "a better heuristic," it's a
+  property of convex polygons, so there is no remaining case where this
+  can produce self-intersecting geometry. This removes `isOpposingPair`
+  and the angular-span threshold entirely - a convex hull's own boundary
+  IS the correct answer to "which gaps are real corners," no separate
+  judgement call needed.
+- **This also fixes something that was arguably wrong even in the
+  "working" cases**: real intersections (see the Google Maps references
+  from earlier this project) are one continuous connected pad, not a set
+  of pieces with gaps left open on the far side of a T-junction or a
+  gentle bend. The old "skip gaps wider than ~130°" logic was cutting
+  those away specifically to prevent spikes; the convex hull naturally
+  produces the same continuous, gap-free pad a real intersection has,
+  without needing that special case at all.
+- Corners are still straight chamfers (hull edges), not rounded curb
+  returns - see TODO.md for why, and what proper rounding would need.
+
 ## Junction pad: fan from the kerb-point centroid, not the stored junction position
 
 - **Confirmed live with a deselected screenshot that the straight-chamfer

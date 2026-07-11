@@ -73,64 +73,42 @@ polygon tracing each connected road's own pavement edges
 (`FillTriangle`-based, angular sort around the junction centre), not an
 arbitrary circle.
 
-**Curb-return corners - history and current state.** `JunctionBuilder.lua`
-originally replaced the flat fillet pad with real curb-return corners: a
-tangent-continuous quadratic-Bézier arc (the "intersect the two tangent
-lines for a control point" construction), fanned from the junction centre.
-This construction's core weakness - an unbounded control point for
-near-parallel tangent pairs - produced a self-intersecting spike on
-certain junction shapes, and kept resurfacing through three separate
-patch attempts even after each one closed the SPECIFIC case reported:
-skip corner-fill past a ~160° angular gap; tighten that to 130° and cap
-the control point relative to chord length when it still recurred with a
-curved "through" piece; add `isOpposingPair` (skip corner-fill between
-roads whose own tangents are >~120° apart, independent of where their
-kerb points ended up) when it recurred a third time. **Rewritten this
-round** (confirmed live a third time that it was still broken, with a
-reference to `github.com/MicroGSD/RoadArchitect`): dropped the rounded
-arc entirely in favour of a straight chamfer directly between `a.Kerb`
-and `b.Kerb` - two fixed points joined by a straight line can't spike,
-self-intersect, or need a distance cap, so this closes the whole bug
-class by construction instead of by a fourth threshold. `isOpposingPair`
-and the angular-span guard are kept (they decide WHICH gaps get filled at
-all - real corner vs. the far side of a bend / a T-junction's through
-span), only the arc CONSTRUCTION itself was replaced.
-**Trade-off:** corners are now sharp chamfers, not rounded curb returns -
-a step back from the Google Maps reference look requested earlier this
-session, kept for reliability after three rounds of the rounded version
-breaking. Proper rounding is still worth doing later, but via a
-DIFFERENT construction that doesn't have the same failure mode: a
-fixed-radius fillet tangent to both kerb lines (tangent length =
-`radius / tan(angle/2)`, only blows up for angles very close to 0° or
-180° - both already excluded by the existing guards) rather than an
-unbounded tangent-line intersection. A more durable alternative worth
-considering instead of (or alongside) that: explicitly detect "these two
-roads are actually one road split by a junction" via `RoadSplit`
-provenance rather than inferring it from tangent angle - would need
-`RoadSplit.SplitAt` to actually record which two output Models came from
-the same input road, which it doesn't today.
-
-**Recurred a fourth time, different symptom** - confirmed live with a
-deselected screenshot (no self-intersecting spike this time, but a
-jagged star of small overlapping triangles with a visible hole, on a
-tight-angle fork). Root cause was unrelated to the corner CONSTRUCTION
-this time: the fan was built from `junctionData.Position` - the
-junction's stored position, set once when the junction was first
-created from wherever two roads happened to snap together, never
-recomputed as more roads join later. A fan triangulation is only
-guaranteed simple (non-self-intersecting) when the apex is actually
-inside the boundary it's fanning - for a tight fork the stored position
-can land outside that boundary entirely. Fixed by fanning from the
-CENTROID of the current rebuild's own kerb points instead (see
-`SHIPPED.md`) - always inside the point set's convex hull by
-definition. Kept as a live TODO because centroid is a strong practical
-default, not a mathematical guarantee for every conceivable road
-arrangement (a real intersection whose true kerb-point polygon is
-non-convex, e.g. an unusually complex multi-way junction, could still
-have a centroid the fan can't see all the boundary points from cleanly)
-- if THIS recurs, replace the whole "sort by angle, walk pairs" scheme
-with a proper 2D polygon triangulation (ear-clipping or similar) that
-doesn't depend on picking a single valid fan apex at all.
+**Curb-return corners - current state: convex hull fan (see `SHIPPED.md`
+for the full history of what didn't work before this).** `JunctionBuilder.lua`
+computes the actual convex hull of every connected road's kerb points and
+fan-triangulates it from one of its own hull vertices. This is provably
+safe - a convex polygon can always be fan-triangulated from any of its own
+vertices without self-intersecting - which is why it was reached for
+after four separate rounds of narrower fixes (a Bézier corner with an
+unbounded control point, then a straight chamfer, then fanning from the
+point-set centroid instead of the junction's stale stored position) each
+patched one specific reported symptom without addressing that a per-pair
+"is this gap a real corner" judgement call, walked in a possibly-wrong
+order, can produce self-intersecting geometry no matter how the individual
+corner is drawn or where the fan apex sits. The convex hull sidesteps the
+whole class: there's no per-pair decision left to get wrong.
+**Trade-offs, both deliberate:**
+- **Corners are sharp chamfers (hull edges), not rounded curb returns** -
+  a step back from the Google Maps reference look requested earlier this
+  session, kept for reliability. Proper rounding later needs a DIFFERENT
+  construction that doesn't reintroduce the old failure mode: a
+  fixed-radius fillet tangent to both kerb lines (tangent length =
+  `radius / tan(angle/2)`, bounded for any angle that isn't extremely
+  close to 0° or 180°) rather than an unbounded tangent-line intersection.
+- **The pad is now one continuous surface with no unfilled gaps** - the
+  old "skip gaps wider than ~130°" logic (meant to avoid bridging the far
+  side of a bend or a T-junction's through span with a spike) is gone;
+  the convex hull just includes that area now, same as a real intersection
+  actually looks (continuous pavement, not a shape with a bite taken out
+  of one side). This is a genuine behavior change worth watching for
+  reports of "extra pavement where I didn't expect it," not just a
+  side-effect to shrug off.
+- A road whose kerb point ends up hull-interior (dominated by other,
+  wider/farther roads' points) contributes nothing to the boundary - its
+  own pavement is unaffected (already built by `RoadBuilder`), but it also
+  gets no dedicated corner treatment at the pad edge. Not expected to be
+  common (needs one road much narrower/closer to centre than the others),
+  not yet seen live.
 
 Deliberately still out of scope, in rough priority order:
 

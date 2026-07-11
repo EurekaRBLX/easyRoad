@@ -1510,56 +1510,46 @@ end
 return fillTriangle
 </ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX14"><Properties><string name="Name">JunctionBuilder</string><ProtectedString name="Source">--!strict
 -- Builds the visible geometry for a JunctionNode (see JunctionInstance.lua):
--- a straight-chamfered pad between the roads that meet here, not just a
--- flat circular pad covering the seam.
+-- a solid pad covering the CONVEX HULL of every connected road's kerb
+-- points, not a per-corner decision about which gaps to bridge.
 --
 -- Every connected road contributes, at the station where it meets the
 -- junction, its own KERB points (the roadway/non-roadway boundary - where a
 -- real kerb physically sits) and OUTER points (the profile's true outer
 -- edge, typically a sidewalk's outer/property edge - the same position as
--- the kerb point when the road has no sidewalk). Sorted by angle around the
--- junction centre: between two ADJACENT roads' kerb points, the corner is
--- filled with a STRAIGHT chamfer (a plain triangle fan from the centre
--- through a.Kerb/b.Kerb directly) as the drivable asphalt surface, and the
--- strip between that chamfer and each road's own outer edge is filled
--- separately as the pedestrian corner (sidewalk material). A road's OWN
--- kerb-to-kerb span (both points from the same road) gets the same
--- treatment - that's just its own pavement, fanned directly.
+-- the kerb point when the road has no sidewalk). `convexHull` computes the
+-- true outer boundary of all the KERB points (2D, on the ground plane) via
+-- the standard monotone-chain construction; that boundary is fan-
+-- triangulated from one of its own vertices for the asphalt, and the strip
+-- between each cross-road hull edge and the corresponding OUTER points is
+-- filled as the pedestrian corner (sidewalk material).
 --
--- Previously this rounded each corner with a tangent-continuous quadratic
--- Bézier (the classic "intersect the two tangent lines for the control
--- point" construction) instead of a straight chamfer - closer to how a
--- real kerb looks, but the construction's core weakness (an unbounded
--- control point for near-parallel tangent pairs) kept resurfacing as a
--- self-intersecting spike even after two rounds of capping it (first by
--- angular gap size, then by distance relative to chord length) - each fix
--- closed one specific case without addressing why the construction itself
--- needed a cap at all. Reverted to the straight chamfer this round after a
--- third live report of broken geometry on the same class of junction:
--- two fixed points connected by a straight line can never spike,
--- self-intersect, or need a distance cap, so the entire bug class is gone
--- by construction rather than by another threshold. Real per-corner
--- rounding (a proper fixed-radius fillet tangent to both kerb lines,
--- rather than an unbounded tangent-line intersection) is still worth
--- doing later - see TODO.md.
+-- A convex polygon can ALWAYS be validly fan-triangulated from any of its
+-- own vertices - no self-intersection is possible, by construction. This
+-- replaces an entire lineage of per-pair heuristics (a tangent-continuous
+-- Bézier corner, then a straight chamfer, in both cases deciding case by
+-- case whether a given gap between two points was "a real corner" via an
+-- angular-span threshold and/or a tangent-opposition check, then fanning
+-- from a single junction-wide apex point) that kept producing broken
+-- geometry through five separate rounds of live reports and fixes: an
+-- unbounded Bézier control point for near-parallel pairs (twice), a fan
+-- apex outside the true boundary on a tight fork, and - even after
+-- switching to a straight chamfer - the same self-intersection risk any
+-- time the per-pair "walk consecutive angle-sorted points" ordering didn't
+-- match the true boundary ordering. A convex hull sidesteps all of that:
+-- there's no per-pair judgement call left to get wrong, and no apex-choice
+-- problem, because "fan from any hull vertex" is unconditionally safe for
+-- a convex shape. See TODO.md for the trade-off this makes (every
+-- connected road's kerb points end up inside one continuous pad, matching
+-- how a real intersection actually looks - see the Google Maps references
+-- from earlier in this project - rather than leaving gaps unfilled for
+-- roads meeting at a very oblique angle) and what's still worth doing
+-- later (rounded corners via a proper fixed-radius fillet, and per-lane
+-- markings through the junction).
 --
--- A between-road gap wider than MAX_CORNER_SPAN_RADIANS, or between two
--- roads whose outward tangents are roughly opposite (isOpposingPair), is
--- skipped entirely (no fill) rather than chamfered - confirmed live
--- (screenshots of a 2-road bend and multiple T-junctions) that bridging a
--- gap that wraps most of the way around, or connecting what's actually
--- the same through-road split by a branch, isn't a real intersection
--- surface: it's the far side of a bend, or the "through" span between two
--- separate road Models that visually form one straight through road on
--- either side of the branch - there's nothing to pave there, just open
--- space beside the road.
---
--- Still doesn't re-derive lane markings through the junction (stop lines,
--- give-way markings, lane-guidance paint) - see TODO.md's "Junctions &amp;
--- roundabouts" section for that and other follow-up work. Skips itself
--- entirely for a plain two-road pass-through (matching profiles, roughly
--- opposite outward directions) - a chained straight or gently-curving
--- continuation doesn't need any of this.
+-- Skips itself entirely for a plain two-road pass-through (matching
+-- profiles, roughly opposite outward directions) - a chained straight or
+-- gently-curving continuation doesn't need any pad at all.
 
 local RoadProfile = require("../RoadProfile")
 local RegionStyles = require("../RegionStyles")
@@ -1571,10 +1561,6 @@ local FillTriangle = require("./FillTriangle")
 local JunctionBuilder = {}
 
 local PAD_MARGIN_STUDS = 2 -- Extra reach beyond the widest connected road's half-width (fallback pad only)
--- Beyond this, it's not a corner - leave it unfilled (see isOpposingPair
--- below for the other, tangent-based guard against the same class of
--- non-corner gap).
-local MAX_CORNER_SPAN_RADIANS = math.rad(130)
 local DOWN = Vector3.new(0, -1, 0)
 
 -- The profile actually present at the end of `road` that connects to this
@@ -1707,33 +1693,57 @@ local function isSmoothPassThrough(roads: { Model }, junctionId: string): boolea
 	return tangentA:Dot(tangentB) &lt; PASS_THROUGH_DOT_THRESHOLD
 end
 
--- Tangents more than ~120 degrees apart - looser than
--- PASS_THROUGH_DOT_THRESHOLD above (which additionally requires matching
--- profiles and skips the WHOLE junction) and evaluated per ROAD PAIR
--- rather than as a global junction-wide check. Two roads leaving the
--- junction in roughly opposite directions read as "the same through-road,
--- split into two separate Models by a branch here" - there's no real
--- curb-return corner between them - even when their profiles differ (e.g.
--- a highway narrowing into a street) so isSmoothPassThrough can't skip the
--- junction outright, and even when one piece is curved enough right at the
--- junction that the raw angular gap between their KERB POINTS happens to
--- land under MAX_CORNER_SPAN_RADIANS anyway. That gap-size-only check
--- alone still produced an oversized spike (reported live, twice) because
--- it only measures where the two POINTS ended up, not whether the ROADS
--- themselves are actually opposing - this checks the roads' own tangents
--- directly instead of inferring it from point geometry.
-local OPPOSING_DOT_THRESHOLD = -0.5
+-- 2D cross product (XZ plane, ground plane) of (a - o) and (b - o) - the
+-- standard turn test: positive means b is to the left of the line o-&gt;a
+-- extended, negative means right, zero means collinear.
+local function cross2D(o: Vector3, a: Vector3, b: Vector3): number
+	return (a.X - o.X) * (b.Z - o.Z) - (a.Z - o.Z) * (b.X - o.X)
+end
 
-local function isOpposingPair(roadA: Model, roadB: Model, junctionId: string): boolean
-	if roadA == roadB then
-		return false
+-- The convex hull of `points`' Kerb positions (2D, ground plane), via the
+-- standard Andrew's monotone chain construction: sort by X (ties by Z),
+-- then sweep building a lower and upper chain, popping the last point
+-- whenever the turn it makes isn't a left turn. Returns hull vertices in
+-- order (their EdgePoint records, not just positions) - a point that ends
+-- up strictly inside the hull (dominated by its neighbours) is dropped
+-- entirely, same as any convex hull algorithm. Degenerates to returning
+-- `points` unchanged when there are 3 or fewer (always already convex).
+local function convexHull(points: { EdgePoint }): { EdgePoint }
+	if #points &lt;= 3 then
+		return points
 	end
-	local tangentA = outwardTangentAt(roadA, junctionId)
-	local tangentB = outwardTangentAt(roadB, junctionId)
-	if not tangentA or not tangentB then
-		return false
+	local sorted = table.clone(points)
+	table.sort(sorted, function(a: EdgePoint, b: EdgePoint): boolean
+		if a.Kerb.X ~= b.Kerb.X then
+			return a.Kerb.X &lt; b.Kerb.X
+		end
+		return a.Kerb.Z &lt; b.Kerb.Z
+	end)
+	local lower: { EdgePoint } = {}
+	for _, p in sorted do
+		while #lower &gt;= 2 and cross2D(lower[#lower - 1].Kerb, lower[#lower].Kerb, p.Kerb) &lt;= 0 do
+			table.remove(lower)
+		end
+		table.insert(lower, p)
 	end
-	return tangentA:Dot(tangentB) &lt; OPPOSING_DOT_THRESHOLD
+	local upper: { EdgePoint } = {}
+	for i = #sorted, 1, -1 do
+		local p = sorted[i]
+		while #upper &gt;= 2 and cross2D(upper[#upper - 1].Kerb, upper[#upper].Kerb, p.Kerb) &lt;= 0 do
+			table.remove(upper)
+		end
+		table.insert(upper, p)
+	end
+	table.remove(lower) -- last point of each chain is the first of the other
+	table.remove(upper)
+	local hull: { EdgePoint } = {}
+	for _, p in lower do
+		table.insert(hull, p)
+	end
+	for _, p in upper do
+		table.insert(hull, p)
+	end
+	return hull
 end
 
 -- Rebuilds the junction's geometry from scratch based on whichever roads
@@ -1807,59 +1817,30 @@ function JunctionBuilder.Rebuild(
 	end
 
 	if #edgePoints &gt;= 3 then
-		-- Fan from the CENTROID of the actual kerb points, not the
-		-- junction's stored RW_Position - that position is recorded once,
-		-- from wherever the first two roads happened to snap together
-		-- (JunctionInstance.Create), and never recomputed as more roads
-		-- connect later. For a tight-angle fork (confirmed live with a
-		-- screenshot: two roads diverging at a narrow angle plus a third
-		-- crossing road), the stored position can end up outside the true
-		-- kerb-point footprint entirely - fanning triangles from an apex
-		-- that isn't actually inside the region they're meant to cover
-		-- produces exactly the self-intersecting, jagged-star geometry
-		-- reported (as opposed to the earlier spike bugs, which were
-		-- oversized but not self-crossing in this way). The centroid of a
-		-- point set always lies inside its convex hull, which is what a
-		-- fan triangulation actually needs to stay simple (non-crossing).
-		local fanCenter = Vector3.zero
-		for _, point in edgePoints do
-			fanCenter += point.Kerb
+		local hull = convexHull(edgePoints)
+		-- A convex polygon can always be fan-triangulated from any of its
+		-- own vertices without self-intersecting - unlike a fixed external
+		-- apex (the junction's stored position, or even the point set's
+		-- own centroid), which can end up outside the true boundary for an
+		-- oddly-shaped set of roads and produce exactly the crossing,
+		-- jagged geometry reported live through several earlier rounds.
+		local apex = hull[1].Kerb
+		for i = 2, #hull - 1 do
+			FillTriangle(apex, hull[i].Kerb, hull[i + 1].Kerb, thickness, DOWN, makeAsphaltPart, folder)
 		end
-		fanCenter /= #edgePoints
-		-- Angular order around the fan centre, so adjacent roads' kerb
-		-- points are joined by the corner between them rather than the
-		-- fan winding back on itself.
-		local function angleOf(point: Vector3): number
-			return math.atan2(point.Z - fanCenter.Z, point.X - fanCenter.X)
-		end
-		table.sort(edgePoints, function(a: EdgePoint, b: EdgePoint): boolean
-			return angleOf(a.Kerb) &lt; angleOf(b.Kerb)
-		end)
-		for i = 1, #edgePoints do
-			local nextIndex = if i &lt; #edgePoints then i + 1 else 1
-			local a = edgePoints[i]
-			local b = edgePoints[nextIndex]
-			if a.Road == b.Road then
-				-- Same road's own kerb-to-kerb span - already its own
-				-- pavement, no corner needed; fan it directly (mostly
-				-- redundant underlay, but harmless).
-				FillTriangle(fanCenter, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
-			elseif
-				not isOpposingPair(a.Road, b.Road, junctionId)
-				and (angleOf(b.Kerb) - angleOf(a.Kerb)) % (2 * math.pi) &lt;= MAX_CORNER_SPAN_RADIANS
-			then
-				-- A gap this wide isn't a genuine corner - it's the far
-				-- side of a bend or the "through" span of a T-junction
-				-- (two separate road Models forming one visually-straight
-				-- through road, on either side of a branch) - there's no
-				-- real intersection surface out there, just open space
-				-- beside the road. Bridging it anyway produced a wildly
-				-- oversized, self-intersecting spike (reported live,
-				-- repeatedly) - past this span, just leave it unfilled.
-				--
-				-- The corner itself is a straight chamfer, not a rounded
-				-- arc - see this file's header for why.
-				FillTriangle(fanCenter, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
+		-- Sidewalk corners: walk every boundary edge of the hull (not just
+		-- the ones the fan above used as diagonals - the two edges
+		-- touching the apex vertex are boundary edges too, just never
+		-- explicitly visited by the fan loop). A hull edge between two
+		-- DIFFERENT roads is a real corner - fill the pedestrian strip
+		-- between it and each road's own outer (e.g. sidewalk) edge. A
+		-- hull edge between the SAME road's own two kerb points needs no
+		-- corner treatment (that's just its own pavement, already built
+		-- by RoadBuilder).
+		for i = 1, #hull do
+			local a = hull[i]
+			local b = hull[if i &lt; #hull then i + 1 else 1]
+			if a.Road ~= b.Road then
 				FillTriangle(a.Outer, a.Kerb, b.Kerb, thickness, DOWN, makeSidewalkPart, folder)
 				FillTriangle(a.Outer, b.Kerb, b.Outer, thickness, DOWN, makeSidewalkPart, folder)
 			end
