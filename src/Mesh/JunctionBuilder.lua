@@ -19,6 +19,16 @@
 -- points from the same road) needs no corner treatment - that's just its
 -- own pavement, fanned directly.
 --
+-- A between-road gap wider than MAX_CORNER_SPAN_RADIANS is skipped
+-- entirely (no arc, no fill) rather than treated as a corner - confirmed
+-- live (screenshots of a 2-road bend and a T-junction) that bridging a
+-- gap that wraps most of the way around produced a wildly oversized,
+-- self-intersecting spike. That wide gap isn't a real intersection
+-- surface: it's the far side of a bend, or (for a T-junction) the
+-- "through" span between the two separate road Models that visually form
+-- one straight through road on either side of the branch - there's
+-- nothing to pave there, just open space beside the road.
+--
 -- Still doesn't re-derive lane markings through the junction (stop lines,
 -- give-way markings, lane-guidance paint) - see TODO.md's "Junctions &
 -- roundabouts" section for that and other follow-up work. Skips itself
@@ -38,6 +48,7 @@ local JunctionBuilder = {}
 local PAD_MARGIN_STUDS = 2 -- Extra reach beyond the widest connected road's half-width (fallback pad only)
 local CORNER_ARC_SAMPLES = 5
 local MAX_CONTROL_DISTANCE_STUDS = 200 -- Beyond this, treat the corner as a straight blend instead
+local MAX_CORNER_SPAN_RADIANS = math.rad(160) -- Beyond this, it's not a corner - leave it unfilled
 local DOWN = Vector3.new(0, -1, 0)
 
 -- The profile actually present at the end of `road` that connects to this
@@ -287,10 +298,11 @@ function JunctionBuilder.Rebuild(
 		-- Angular order around the junction centre, so adjacent roads'
 		-- kerb points are joined by the corner between them rather than the
 		-- fan winding back on itself.
+		local function angleOf(point: Vector3): number
+			return math.atan2(point.Z - center.Z, point.X - center.X)
+		end
 		table.sort(edgePoints, function(a: EdgePoint, b: EdgePoint): boolean
-			local angleA = math.atan2(a.Kerb.Z - center.Z, a.Kerb.X - center.X)
-			local angleB = math.atan2(b.Kerb.Z - center.Z, b.Kerb.X - center.X)
-			return angleA < angleB
+			return angleOf(a.Kerb) < angleOf(b.Kerb)
 		end)
 		for i = 1, #edgePoints do
 			local nextIndex = if i < #edgePoints then i + 1 else 1
@@ -301,7 +313,15 @@ function JunctionBuilder.Rebuild(
 				-- pavement, no corner needed; fan it directly (mostly
 				-- redundant underlay, but harmless).
 				FillTriangle(center, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
-			else
+			elseif (angleOf(b.Kerb) - angleOf(a.Kerb)) % (2 * math.pi) <= MAX_CORNER_SPAN_RADIANS then
+				-- A gap this wide isn't a genuine corner - it's the far
+				-- side of a bend or the "through" span of a T-junction
+				-- (two separate road Models forming one visually-straight
+				-- through road, on either side of a branch) - there's no
+				-- real intersection surface out there, just open space
+				-- beside the road. Bridging it with a corner arc anyway
+				-- produced a wildly oversized, self-intersecting spike
+				-- (reported live) - past this span, just leave it unfilled.
 				local arc = sampleCornerArc(a.Kerb, -a.Tangent, b.Kerb, -b.Tangent, CORNER_ARC_SAMPLES)
 				-- Asphalt: fan from the centre through the rounded corner.
 				local previous = a.Kerb

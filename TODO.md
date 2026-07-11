@@ -82,7 +82,13 @@ angularly-adjacent roads, a tangent-continuous quadratic-Bézier corner
 from the junction centre as the asphalt surface, and the strip between
 that arc and each road's outer edge is filled separately as the
 pedestrian corner (sidewalk material) - a real curb-return shape, not an
-unshaped flat pad.
+unshaped flat pad. Fixed a follow-up bug (reported live, 2-road bend and
+T-junction screenshots): a between-road gap wider than ~160° (the far
+side of a bend, or the "through" span at a T-junction between the two
+separate road Models forming one visually-straight through road either
+side of the branch) isn't a real corner and was producing a wildly
+oversized, self-intersecting spike when bridged anyway - now skipped
+entirely rather than filled.
 
 Deliberately still out of scope, in rough priority order:
 
@@ -176,11 +182,28 @@ with radius/lane-count/lane-width fields.
   yield/give-way markings, nothing modelling how many ring lanes a given
   approach's lanes should feed into. This is the single biggest remaining
   gap between v1 and a real roundabout.
+- **Ring pavement/sidewalk doesn't align with the trimmed spokes**
+  (confirmed live with a screenshot: visible notches where each spoke's
+  sidewalk cuts into the ring). The spoke trim cuts the whole
+  cross-section at a flat perpendicular station, but the ring boundary is
+  curved - a sidewalk's laterally-offset outer edge ends up inside or
+  outside the ring's actual radius at that same station. Needs a
+  `JunctionBuilder`-style corner-fill pass of its own, bridging each
+  trimmed spoke's sidewalk into the ring's own edge. Now that the ring
+  and spoke trim both work mechanically, this is probably the single
+  highest-priority remaining roundabout gap.
 - **No live preview.** Unlike ordinary road placement (which ghosts the
   road as you aim), there's no preview of the ring or the trimmed spokes
   before clicking "Make Roundabout" - you only see the result after
-  committing. Same gap exists for the ordinary junction fillet pad itself
-  (no preview while approach roads are still being placed).
+  committing. Same gap exists for the ordinary junction fillet/corner
+  geometry itself (no preview while approach roads are still being
+  placed) - requested explicitly for both.
+- **No way to edit a roundabout's own form after creating it.** Radius/
+  lane-count/lane-width are one-shot inputs at creation time
+  (`RoundaboutBuilder.CreateAtJunction`) - requested explicitly. Blocked
+  on the same "not wired into the data model" gap below (nothing to
+  select/re-open), so likely needs solving together rather than
+  separately.
 - **The ring still isn't wired into the junction/road data model.** Not
   stamped `RW_Road` (so `RoadEditSession`'s selection UI and the mid-span
   split scan ignore it - neither is built to handle a closed

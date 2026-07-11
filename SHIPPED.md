@@ -4,6 +4,29 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Fixed junction corner spike bug (2-road bends and T-junctions)
+
+- **Confirmed live with screenshots (a curving 2-road bend, then a
+  T-junction) that the new curb-return corner code produced a wildly
+  broken, self-intersecting spike.** Root cause: every between-road gap
+  in the sorted kerb-point list was getting a corner-arc treatment,
+  including gaps that wrap most of the way around the far side of a bend,
+  or - for a T-junction - the "through" span between the two separate
+  road Models that visually form one straight through road on either
+  side of the branch. Bridging a 170°+ gap with a single quadratic-Bézier
+  corner produced exactly the oversized spike reported. Fixed by
+  computing each gap's actual angular span and skipping corner treatment
+  entirely past ~160° - there's no real intersection surface out there,
+  just open space beside the road. Verified the fix against a worked
+  T-junction example by hand (a ~174° "through" gap correctly skipped,
+  two genuine ~84° corners correctly built).
+- Confirmed the standing "plain `BasePart`s, no Union/MeshPart/
+  EditableMesh" constraint is already satisfied everywhere in the
+  codebase - audited every `Shape =` assignment; `Wedge` only appears
+  inside `FillTriangle.lua` itself (the shared exact-angled-fill utility),
+  everything else defaults to `Block` or uses `Cylinder` for genuinely
+  circular shapes. No code changes needed for this one.
+
 ## Junctions: real curb-return corners, not a flat pad
 
 - **Confirmed live that the ordinary junction fillet "genuinely doesn't
