@@ -4,6 +4,33 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junction corner geometry: bound the control point relative to chord length
+
+- **Reported live with a screenshot: a T-junction still produced a wildly
+  oversized diamond-shaped spike**, despite the previous round's fix
+  (skip a between-road gap wider than ~160deg). Root cause: the 160deg
+  angular-span guard only caught gaps that were ALREADY very wide - it
+  didn't help when the two "through" pieces at a T-junction weren't
+  perfectly opposite (e.g. one piece curves right where it meets the
+  junction), landing the gap somewhere under 160deg but still nowhere
+  near a real corner. Once a gap passed that guard, the corner control
+  point (`cornerControlPoint`'s tangent-line intersection) was only
+  capped by a flat `MAX_CONTROL_DISTANCE_STUDS = 200` - a fixed distance
+  that dwarfs a typical junction's actual scale (kerb points usually sit
+  10-30 studs from the centre), so a near-parallel pair could still push
+  the control point (and therefore the whole arc) many times larger than
+  the junction itself. Fixed two ways: tightened the angular guard from
+  160deg to 130deg (closer to what a genuine curb-return corner spans in
+  practice), and added a SECOND cap on the control point - relative to
+  the chord length between the two points (`MAX_CONTROL_DISTANCE_CHORD_RATIO
+  = 3`), not just an absolute stud count - so even a pair that slips past
+  the angular guard can't bulge disproportionately; it degrades to a
+  bounded straight blend instead. This is a general fix (bounds the
+  geometry by construction) rather than another special-cased threshold
+  tuned to one screenshot, since the previous two rounds' fixes for this
+  same "spike" symptom (skip pass-throughs, then skip wide angular gaps)
+  each turned out to have a gap of their own.
+
 ## Highway shoulders no longer get a kerb/edge line by default
 
 - Both built-in Highway profiles (`builtin_highway`, `builtin_highway_3`)

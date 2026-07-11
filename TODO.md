@@ -88,7 +88,26 @@ side of a bend, or the "through" span at a T-junction between the two
 separate road Models forming one visually-straight through road either
 side of the branch) isn't a real corner and was producing a wildly
 oversized, self-intersecting spike when bridged anyway - now skipped
-entirely rather than filled.
+entirely rather than filled. **Still recurred** (reported live again with
+a screenshot - same diamond-spike symptom at a T-junction whose "through"
+piece curved slightly right at the junction, so the gap slipped under the
+160° guard) - see `SHIPPED.md`'s "bound the control point relative to
+chord length" entry for the actual fix: the angular guard alone wasn't
+the real problem, the corner control point's distance cap was a flat 200
+studs regardless of the junction's actual scale. Tightened the angle to
+130° and added a chord-relative distance cap so the arc can't
+disproportionately bulge regardless of why two tangents end up
+near-parallel. General user feedback after this round: "the algorithm
+has a lot more work to be worked on" - noted, this is the third distinct
+fix for the same visual symptom (spike/diamond geometry), which suggests
+the underlying tangent-line-intersection construction is fundamentally
+fragile for wide-angle/near-parallel pairs rather than each case being an
+isolated bug. If this recurs again, the more durable fix is probably
+replacing the "intersect two tangent lines, cap the distance" heuristic
+with something that doesn't need a distance cap at all (e.g. a
+fillet-radius-based construction, or explicitly detecting "these two
+roads are actually one road split by a junction" via `RoadSplit`
+provenance instead of inferring it from tangent angle).
 
 Deliberately still out of scope, in rough priority order:
 

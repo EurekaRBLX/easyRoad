@@ -47,8 +47,27 @@ local JunctionBuilder = {}
 
 local PAD_MARGIN_STUDS = 2 -- Extra reach beyond the widest connected road's half-width (fallback pad only)
 local CORNER_ARC_SAMPLES = 5
-local MAX_CONTROL_DISTANCE_STUDS = 200 -- Beyond this, treat the corner as a straight blend instead
-local MAX_CORNER_SPAN_RADIANS = math.rad(160) -- Beyond this, it's not a corner - leave it unfilled
+local MAX_CONTROL_DISTANCE_STUDS = 200 -- Absolute cap - beyond this, treat the corner as a straight blend instead
+-- A REAL curb-return corner is always small relative to how far apart its
+-- two endpoints are - the control point should never need to reach further
+-- than a few chord-lengths away to keep the blend tangent-continuous. The
+-- absolute MAX_CONTROL_DISTANCE_STUDS cap above was the only guard for a
+-- while, but 200 studs is enormous next to a typical junction's actual
+-- scale (kerb points are usually only 10-30 studs from the centre), so a
+-- near-parallel pair could still produce a control point (and therefore an
+-- arc) many times larger than the junction itself - confirmed live with a
+-- screenshot of a wildly oversized diamond-shaped spike at a T-junction
+-- where one of the "through" pieces was itself gently curved (so its
+-- outward tangent wasn't quite opposite the other piece's, meaning the
+-- angular-span guard below didn't catch it either). Capping relative to
+-- the chord length between the two points closes that gap regardless of
+-- why the tangents ended up near-parallel.
+local MAX_CONTROL_DISTANCE_CHORD_RATIO = 3
+-- Beyond this, it's not a corner - leave it unfilled. Tightened from 160 deg
+-- (still too permissive - see MAX_CONTROL_DISTANCE_CHORD_RATIO above for
+-- the case that slipped through it) to a bound closer to what a genuine
+-- curb-return corner actually spans in practice.
+local MAX_CORNER_SPAN_RADIANS = math.rad(130)
 local DOWN = Vector3.new(0, -1, 0)
 
 -- The profile actually present at the end of `road` that connects to this
@@ -199,7 +218,9 @@ local function cornerControlPoint(a: Vector3, tangentA: Vector3, b: Vector3, tan
 	end
 	local dx, dz = b.X - a.X, b.Z - a.Z
 	local t1 = (dx * -bz - dz * -bx) / det
-	if t1 < 0 or t1 > MAX_CONTROL_DISTANCE_STUDS then
+	local chordLength = (b - a).Magnitude
+	local maxDistance = math.min(MAX_CONTROL_DISTANCE_STUDS, chordLength * MAX_CONTROL_DISTANCE_CHORD_RATIO)
+	if t1 < 0 or t1 > maxDistance then
 		return (a + b) / 2
 	end
 	return a + tangentA * t1
