@@ -86,6 +86,13 @@ local function createRoadSession(
 	local points: { Vector3 } = if seed then { seed.Position } else {}
 	local lockedTangent: Vector3? = if seed then seed.Tangent else nil
 	local hoverPos: Vector3? = nil
+	-- The raw ground point (pre grid-snap, pre elevation) from the last
+	-- mouse-move raycast - kept so adjustElevation/setElevation can rebuild
+	-- hoverPos immediately using the CURRENT elevation without waiting for
+	-- another mouse-move event, which only fires on actual cursor motion
+	-- (typing a new value into the elevation textbox, or pressing R/F while
+	-- the mouse sits still, doesn't move the mouse).
+	local lastGroundPos: Vector3? = nil
 	-- Remembers where the user left off instead of always resetting to
 	-- ground level on a fresh session.
 	local elevation = settings.LastElevationStuds
@@ -94,25 +101,6 @@ local function createRoadSession(
 	local markerFolder: Folder? = nil
 	local previewDirty = false
 	local lastPreviewTime = 0
-
-	-- Shared by the R/F keys and the build bar's up/down elevation buttons:
-	-- whichever point is placed next gets whatever elevation is current at
-	-- the moment it's clicked.
-	local function adjustElevation(delta: number)
-		elevation += delta
-		settings.LastElevationStuds = elevation
-		previewDirty = true
-		changeSignal:Fire()
-	end
-
-	-- Direct entry from the build bar's elevation textbox (typing a height
-	-- instead of nudging it by ElevationStepStuds).
-	local function setElevation(value: number)
-		elevation = value
-		settings.LastElevationStuds = elevation
-		previewDirty = true
-		changeSignal:Fire()
-	end
 
 	local connections: { RBXScriptConnection } = {}
 
@@ -358,6 +346,43 @@ local function createRoadSession(
 		)
 	end
 
+	-- Recomputes hoverPos from the last known ground point using whatever
+	-- elevation is current right now - shared by the mouse-move handler and
+	-- by adjustElevation/setElevation below, so a height change is visible
+	-- immediately instead of only on the next physical mouse movement.
+	local function refreshHoverPos()
+		local ground = lastGroundPos
+		if not ground then
+			return
+		end
+		if #points == 0 then
+			local snapPos = findEndpointSnap(ground)
+			hoverPos = snapPos or (applyGridSnap(ground) + Vector3.new(0, elevation, 0))
+		else
+			hoverPos = applyGridSnap(ground) + Vector3.new(0, elevation, 0)
+		end
+		previewDirty = true
+	end
+
+	-- Shared by the R/F keys and the build bar's up/down elevation buttons:
+	-- whichever point is placed next gets whatever elevation is current at
+	-- the moment it's clicked.
+	local function adjustElevation(delta: number)
+		elevation += delta
+		settings.LastElevationStuds = elevation
+		refreshHoverPos()
+		changeSignal:Fire()
+	end
+
+	-- Direct entry from the build bar's elevation textbox (typing a height
+	-- instead of nudging it by ElevationStepStuds).
+	local function setElevation(value: number)
+		elevation = value
+		settings.LastElevationStuds = elevation
+		refreshHoverPos()
+		changeSignal:Fire()
+	end
+
 	local function pickPoint(): (Vector3?, Vector3?)
 		local ground = raycastGround()
 		if not ground then
@@ -588,13 +613,8 @@ local function createRoadSession(
 	table.insert(connections, mouse.Move:Connect(function()
 		local ground = raycastGround()
 		if ground then
-			if #points == 0 then
-				local snapPos = findEndpointSnap(ground)
-				hoverPos = snapPos or (applyGridSnap(ground) + Vector3.new(0, elevation, 0))
-			else
-				hoverPos = applyGridSnap(ground) + Vector3.new(0, elevation, 0)
-			end
-			previewDirty = true
+			lastGroundPos = ground
+			refreshHoverPos()
 		end
 	end))
 

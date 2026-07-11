@@ -4,6 +4,25 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Fix stale elevation preview (root cause of the "elevation doesn't work" report)
+
+- **Root-caused the elevation report from the previous round**: typing a
+  new value into the Elevation textbox, pressing R/F, or clicking the
+  up/down arrows all changed the session's `elevation` number correctly,
+  but the live placement ghost didn't move - it stayed at whatever height
+  was current the last time the mouse itself physically moved.
+  `createRoadSession.lua`'s `hoverPos` was only ever recomputed from
+  inside the `mouse.Move` handler, so any height change made without also
+  nudging the mouse (typing a number, pressing a keybind while aiming) had
+  no visible effect until the cursor happened to move again - which reads
+  exactly like "the elevation control stopped working." Fixed by caching
+  the last raw ground point (`lastGroundPos`) on every mouse-move and
+  extracting the snap/elevation-offset logic into `refreshHoverPos()`,
+  called both from `mouse.Move` and from `adjustElevation`/`setElevation`
+  directly, so a height change is reflected in the ghost immediately.
+  (The `BuildBar.lua` row-collision bug fixed last round was real but
+  turned out to be a different, unrelated issue - kept fixed regardless.)
+
 ## Roundabout ring pavement notch fix + BuildBar row-collision bug
 
 - **Fixed the roundabout ring/spoke pavement misalignment** (reported live
