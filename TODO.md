@@ -73,6 +73,26 @@ polygon tracing each connected road's own pavement edges
 (`FillTriangle`-based, angular sort around the junction centre), not an
 arbitrary circle.
 
+**Approach trimming (shipped) - the RoadArchitect model.** Connected roads
+now TERMINATE at the pad boundary instead of running full-profile
+(sidewalks, markings, kerb lines) through to the junction centre -
+`JunctionBuilder.TrimApproaches`, called from the placement flow's
+`connectAt`/`connectAtSplit` before `Rebuild`. See `SHIPPED.md` for the
+full write-up. Follow-ups deliberately left open:
+- Roads with a transition or bay can't be trimmed (`RoadSplit.CanSplit`
+  guard) - they still overlap the junction interior the old way.
+- Trims never grow back: if the widest connected road is deleted, the
+  remaining approaches keep the larger pad radius (inner material was
+  discarded). Same one-way limitation the roundabout spoke trim has.
+- The trim radius is circular (centre + widest half-width + margin); two
+  roads crossing at a very oblique angle can still overlap slightly
+  beyond it. A per-pair footprint (halfwidth / sin of crossing angle)
+  would fix that if it shows up in practice.
+- After a commit whose end connected to a junction, the placement chain
+  still seeds from the PRE-trim endpoint (the junction centre), so
+  "continue building" starts inside the pad. Cosmetic; cancel + snap to
+  the trimmed end works.
+
 **Curb-return corners - current state: convex hull fan (see `SHIPPED.md`
 for the full history of what didn't work before this).** `JunctionBuilder.lua`
 computes the actual convex hull of every connected road's kerb points and

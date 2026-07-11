@@ -4,6 +4,49 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junctions: approaches now TERMINATE at the pad boundary (RoadArchitect model)
+
+- **The deeper root cause behind every "faulty intersection" report,
+  finally identified by stepping back instead of re-patching the pad:**
+  the pad was never the whole problem - the approach roads were. Each
+  connected road was built FULL-PROFILE (sidewalks, kerb lines, edge
+  markings) all the way to the junction's centre point, so every
+  intersection interior had 2-4 complete road cross-sections overlapping
+  each other with a pad drawn over the pile. That's what the pale
+  sidewalk bands and white edge lines crossing the interior in every
+  screenshot were - no pad shape could ever have looked right on top.
+  The user's RoadArchitect reference (and our own RoundaboutBuilder, via
+  trimSpokeToRing) both use the opposite model: roads STOP at the
+  intersection boundary and the intersection owns the interior.
+- **`JunctionBuilder.TrimApproaches` (new):** cuts every connected road
+  back to the pad boundary (widest connected half-width + margin from
+  the junction centre; ground-plane bisection for the crossing station,
+  `CurveSegment.Sub` to truncate - same mechanism as the roundabout's
+  spoke trim, except the trimmed end keeps its junction link). The
+  rebuilt shorter geometry is TRANSPLANTED into the existing Model
+  (children + attributes swapped in place) rather than destroy+replace,
+  so commitRoad's still-held reference for the road's other-end
+  connection stays valid and main.lua's removal listener doesn't fire
+  mid-connect. Idempotent: an end already at the boundary is skipped, so
+  repeat connects only trim further if a new wider road grew the pad.
+  Called from `connectAt`/`connectAtSplit` right before `Rebuild` -
+  deliberately NOT from Rebuild itself, which also runs from the
+  road-deletion listener (including undo-driven removals) where
+  re-trimming restored roads would fight the user's undo.
+- **`connectAt` now reuses the junction an end is already linked to**
+  before falling back to the position search: a trimmed end sits a
+  half-road-width from its junction's centre - outside the snap-radius
+  position search - and treating it as unlinked would have stamped a
+  fresh junction over the existing link.
+- Result: pad interior is clean continuous asphalt; each road's own
+  markings, kerb lines, and sidewalks stop at the pad edge, and the pad's
+  sidewalk corner fills connect neighbouring roads' pavement ends.
+  Known gaps logged in TODO.md: roads with a transition/bay can't be
+  trimmed (CanSplit guard - still overlap the old way), trims don't grow
+  back if the widest road is later deleted, very oblique crossings can
+  still overlap slightly beyond the circular trim radius, and the
+  placement chain still seeds from the pre-trim endpoint.
+
 ## Junction pad rewritten as a convex hull fan - the actual fix
 
 - **The centroid fix (previous round) was NOT enough** - confirmed live

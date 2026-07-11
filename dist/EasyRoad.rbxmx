@@ -1509,58 +1509,67 @@ end
 
 return fillTriangle
 </ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX14"><Properties><string name="Name">JunctionBuilder</string><ProtectedString name="Source">--!strict
--- Builds the visible geometry for a JunctionNode (see JunctionInstance.lua):
--- a solid pad covering the CONVEX HULL of every connected road's kerb
--- points, not a per-corner decision about which gaps to bridge.
+-- Builds the visible geometry for a JunctionNode (see JunctionInstance.lua),
+-- following the same model RoadArchitect-style tools (and our own
+-- RoundaboutBuilder) use: the roads TERMINATE at the intersection boundary,
+-- and the intersection owns the interior surface.
 --
--- Every connected road contributes, at the station where it meets the
--- junction, its own KERB points (the roadway/non-roadway boundary - where a
--- real kerb physically sits) and OUTER points (the profile's true outer
--- edge, typically a sidewalk's outer/property edge - the same position as
--- the kerb point when the road has no sidewalk). `convexHull` computes the
--- true outer boundary of all the KERB points (2D, on the ground plane) via
--- the standard monotone-chain construction; that boundary is fan-
--- triangulated from one of its own vertices for the asphalt, and the strip
--- between each cross-road hull edge and the corresponding OUTER points is
--- filled as the pedestrian corner (sidewalk material).
+-- Two halves, called in order by the placement flow (createRoadSession):
 --
--- A convex polygon can ALWAYS be validly fan-triangulated from any of its
--- own vertices - no self-intersection is possible, by construction. This
--- replaces an entire lineage of per-pair heuristics (a tangent-continuous
--- Bézier corner, then a straight chamfer, in both cases deciding case by
--- case whether a given gap between two points was "a real corner" via an
--- angular-span threshold and/or a tangent-opposition check, then fanning
--- from a single junction-wide apex point) that kept producing broken
--- geometry through five separate rounds of live reports and fixes: an
--- unbounded Bézier control point for near-parallel pairs (twice), a fan
--- apex outside the true boundary on a tight fork, and - even after
--- switching to a straight chamfer - the same self-intersection risk any
--- time the per-pair "walk consecutive angle-sorted points" ordering didn't
--- match the true boundary ordering. A convex hull sidesteps all of that:
--- there's no per-pair judgement call left to get wrong, and no apex-choice
--- problem, because "fan from any hull vertex" is unconditionally safe for
--- a convex shape. See TODO.md for the trade-off this makes (every
--- connected road's kerb points end up inside one continuous pad, matching
--- how a real intersection actually looks - see the Google Maps references
--- from earlier in this project - rather than leaving gaps unfilled for
--- roads meeting at a very oblique angle) and what's still worth doing
--- later (rounded corners via a proper fixed-radius fillet, and per-lane
--- markings through the junction).
+-- 1. TrimApproaches: every connected road is cut back so it STOPS at the
+--    pad boundary (max connected half-width + margin from the junction
+--    centre) instead of running full-profile to the junction centre point.
+--    Untrimmed approaches were the root cause of the long-standing "faulty
+--    intersection" reports: each road's sidewalks, kerb lines, and edge
+--    markings plowed straight through the intersection interior, overlapping
+--    each other and whatever pad was drawn - no pad shape could ever look
+--    right on top of that. Same mechanism as RoundaboutBuilder's
+--    trimSpokeToRing (bisection for the boundary crossing, CurveSegment.Sub
+--    to truncate, rebuild + restamp, destroy the original), except the
+--    trimmed end KEEPS its junction link. Idempotent: an end already at the
+--    boundary is skipped, so re-running when another road joins later only
+--    trims further if the pad radius actually grew.
+--
+-- 2. Rebuild: the pad itself - the CONVEX HULL of every connected road's
+--    KERB points (the roadway/non-roadway boundary at each trimmed end),
+--    fan-triangulated from one of its own hull vertices as the asphalt
+--    surface. A convex polygon can ALWAYS be fanned from any of its own
+--    vertices without self-intersection - a property, not a heuristic,
+--    adopted after several rounds of per-pair corner constructions
+--    (Bézier arcs, chamfers, angle-sorted point walks) each producing
+--    broken geometry on some junction shape. The strip between each
+--    cross-road hull edge and the roads' OUTER points (sidewalk outer
+--    edge) is filled as the pedestrian corner (sidewalk material).
 --
 -- Skips itself entirely for a plain two-road pass-through (matching
 -- profiles, roughly opposite outward directions) - a chained straight or
--- gently-curving continuation doesn't need any pad at all.
+-- gently-curving continuation needs neither trimming nor a pad.
+--
+-- Still missing (TODO.md): rounded curb-return corners (hull edges are
+-- straight chamfers), stop lines/crosswalks/lane guidance through the pad,
+-- and approach trimming for roads with a transition or bay (RoadSplit's
+-- CanSplit guard - those roads still overlap the old way).
 
+local CurveSegment = require("../Geometry/CurveSegment")
+local PolyCurve = require("../Geometry/PolyCurve")
 local RoadProfile = require("../RoadProfile")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
 local RoadInstance = require("../RoadInstance")
+local RoadSplit = require("../RoadSplit")
 local JunctionInstance = require("../JunctionInstance")
+local RoadBuilder = require("./RoadBuilder")
 local FillTriangle = require("./FillTriangle")
 
 local JunctionBuilder = {}
 
-local PAD_MARGIN_STUDS = 2 -- Extra reach beyond the widest connected road's half-width (fallback pad only)
+local PAD_MARGIN_STUDS = 2 -- Pad reach beyond the widest connected road's half-width
+-- An approach end already this close to the pad boundary counts as trimmed
+-- (makes TrimApproaches idempotent across repeated connect/rebuild rounds).
+local TRIM_EPSILON_STUDS = 0.5
+-- Don't trim if the piece left over would be shorter than this - a road
+-- stub that barely pokes out of the pad reads worse than a small overlap.
+local MIN_APPROACH_REMAINDER_STUDS = 2
 local DOWN = Vector3.new(0, -1, 0)
 
 -- The profile actually present at the end of `road` that connects to this
@@ -1691,6 +1700,161 @@ local function isSmoothPassThrough(roads: { Model }, junctionId: string): boolea
 		return false
 	end
 	return tangentA:Dot(tangentB) &lt; PASS_THROUGH_DOT_THRESHOLD
+end
+
+-- Ground-plane distance - the pad is a ground-plane construct, and a 3D
+-- magnitude would under-trim an approach arriving on a grade.
+local function distanceXZ(a: Vector3, b: Vector3): number
+	local dx, dz = a.X - b.X, a.Z - b.Z
+	return math.sqrt(dx * dx + dz * dz)
+end
+
+-- The station along `curve`, searched between `fromStation` (the junction
+-- end, assumed inside the pad) and `towardStation` (the far end), where
+-- ground-plane distance from `center` first reaches `radiusStuds` - nil if
+-- the whole road stays inside the pad (too short to trim meaningfully).
+-- Same bisection RoundaboutBuilder.findRingCrossing uses for its spokes.
+local function findPadCrossing(
+	curve: PolyCurve.PolyCurve,
+	fromStation: number,
+	towardStation: number,
+	center: Vector3,
+	radiusStuds: number
+): number?
+	local function distanceAt(s: number): number
+		return distanceXZ(curve:PosAt(s), center)
+	end
+	if distanceAt(towardStation) &lt; radiusStuds then
+		return nil
+	end
+	local lo, hi = fromStation, towardStation
+	for _ = 1, 30 do
+		local mid = (lo + hi) / 2
+		if distanceAt(mid) &lt; radiusStuds then
+			lo = mid
+		else
+			hi = mid
+		end
+	end
+	return (lo + hi) / 2
+end
+
+-- Cuts `road` back so its junction-side end sits at the pad boundary
+-- instead of running through to the junction centre. The rebuilt, shorter
+-- geometry is TRANSPLANTED into the existing Model (children and attributes
+-- swapped in place) rather than destroy-and-replace: callers up the stack
+-- (createRoadSession's commitRoad) still hold this Model reference for the
+-- road's other-end connection, Studio's selection stays valid, and main.lua's
+-- road-removal listener doesn't fire mid-connect. Unlike RoundaboutBuilder's
+-- spoke trim, the trimmed end KEEPS its junction link, since the junction
+-- still exists and still needs to know its approaches. Leaves the road
+-- untouched if it has an active transition/bay (RoadSplit's own guard),
+-- its end is already at the boundary, or trimming would leave a sliver.
+-- Any MarkingStretches/KerbStretches are dropped by the rebuild (their
+-- station ranges wouldn't survive the cut) - same limitation RoadSplit has.
+local function trimApproach(
+	road: Model,
+	junctionId: string,
+	center: Vector3,
+	radiusStuds: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+)
+	if not RoadSplit.CanSplit(road) then
+		return
+	end
+	local data = RoadInstance.Read(road)
+	if not data then
+		return
+	end
+	local atStart = data.StartJunctionId == junctionId
+	local atEnd = data.EndJunctionId == junctionId
+	if not atStart and not atEnd then
+		return
+	end
+	local curve = data.Curve
+	local fromStation = if atStart then 0 else curve.Length
+	local towardStation = if atStart then curve.Length else 0
+	if distanceXZ(curve:PosAt(fromStation), center) &gt;= radiusStuds - TRIM_EPSILON_STUDS then
+		return -- already at/outside the boundary: nothing to trim
+	end
+	local crossing = findPadCrossing(curve, fromStation, towardStation, center, radiusStuds)
+	if not crossing then
+		return
+	end
+	local remaining = if atStart then curve.Length - crossing else crossing
+	if remaining &lt; MIN_APPROACH_REMAINDER_STUDS then
+		return
+	end
+	local segment = curve.Segments[1]
+	local outerSegment = if atStart
+		then CurveSegment.Sub(segment, crossing, curve.Length)
+		else CurveSegment.Sub(segment, 0, crossing)
+	local rebuilt = RoadBuilder.Build({
+		Curve = PolyCurve.new({ outerSegment }),
+		ProfileStart = data.ProfileStart,
+		Style = style,
+		Settings = settings,
+		Preview = false,
+	})
+	road:ClearAllChildren()
+	for name in road:GetAttributes() do
+		road:SetAttribute(name, nil)
+	end
+	for name, value in rebuilt:GetAttributes() do
+		road:SetAttribute(name, value)
+	end
+	for _, child in rebuilt:GetChildren() do
+		child.Parent = road
+	end
+	rebuilt:Destroy()
+	if atStart then
+		RoadInstance.StampJunctions(road, junctionId, data.EndJunctionId)
+	else
+		RoadInstance.StampJunctions(road, data.StartJunctionId, junctionId)
+	end
+end
+
+-- Trims every connected approach back to this junction's pad boundary -
+-- call from the placement flow right before Rebuild, whenever a road is
+-- connected to the junction. Deliberately NOT called from Rebuild itself:
+-- Rebuild also runs from the road-deletion listener in main.lua (including
+-- removals driven by undo), and trimming from there would re-cut roads the
+-- user is trying to restore. Idempotent per pad radius - re-running only
+-- trims further when a new, wider road has grown the pad.
+function JunctionBuilder.TrimApproaches(
+	junctionId: string,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+)
+	local junctionModel = JunctionInstance.FindById(junctionId)
+	if not junctionModel then
+		return
+	end
+	local junctionData = JunctionInstance.Read(junctionModel)
+	if not junctionData then
+		return
+	end
+	local roads = JunctionInstance.ConnectedRoads(junctionId)
+	if #roads &lt; 2 or isSmoothPassThrough(roads, junctionId) then
+		return
+	end
+	local center = junctionData.Position
+	local scale = settings.MetersToStuds
+	local maxHalfWidthStuds = 0
+	for _, road in roads do
+		local profile = profileAtJunctionEnd(road, junctionId)
+		if profile then
+			maxHalfWidthStuds = math.max(maxHalfWidthStuds, RoadProfile.TotalWidthM(profile) / 2 * scale)
+		end
+	end
+	if maxHalfWidthStuds &lt;= 0 then
+		return
+	end
+	local padRadiusStuds = maxHalfWidthStuds + PAD_MARGIN_STUDS
+	for _, road in roads do
+		trimApproach(road, junctionId, center, padRadiusStuds, style, settings)
+	end
 end
 
 -- 2D cross product (XZ plane, ground plane) of (a - o) and (b - o) - the
@@ -12510,7 +12674,26 @@ local function createRoadSession(
 		otherModel: Model?,
 		otherEnd: ("Start" | "End")?
 	)
-		local junctionModel = JunctionInstance.FindNear(pos, settings.SnapRadiusStuds) or JunctionInstance.Create(pos)
+		-- Reuse the junction the other road's end is ALREADY linked to before
+		-- searching by position: approaches get trimmed back to the pad
+		-- boundary (JunctionBuilder.TrimApproaches), so a trimmed end sits a
+		-- road-half-width away from its junction's centre - farther than the
+		-- position search radius - and treating it as unlinked would stamp a
+		-- fresh junction over the existing link, silently disconnecting the
+		-- road from its real junction.
+		local existingJunctionModel: Model? = nil
+		if otherModel and otherEnd then
+			local otherData = RoadInstance.Read(otherModel)
+			local existingId = if otherData
+				then (if otherEnd == "Start" then otherData.StartJunctionId else otherData.EndJunctionId)
+				else nil
+			if existingId then
+				existingJunctionModel = JunctionInstance.FindById(existingId)
+			end
+		end
+		local junctionModel = existingJunctionModel
+			or JunctionInstance.FindNear(pos, settings.SnapRadiusStuds)
+			or JunctionInstance.Create(pos)
 		local junctionData = JunctionInstance.Read(junctionModel)
 		if not junctionData then
 			return
@@ -12519,6 +12702,7 @@ local function createRoadSession(
 		if otherModel and otherEnd then
 			stampEndJunction(otherModel, otherEnd, junctionData.Id)
 		end
+		JunctionBuilder.TrimApproaches(junctionData.Id, getStyle(), settings)
 		JunctionBuilder.Rebuild(junctionData.Id, getStyle(), settings)
 	end
 
@@ -12573,6 +12757,7 @@ local function createRoadSession(
 			return
 		end
 		stampEndJunction(model, modelEnd, junctionId)
+		JunctionBuilder.TrimApproaches(junctionId, getStyle(), settings)
 		JunctionBuilder.Rebuild(junctionId, getStyle(), settings)
 	end
 

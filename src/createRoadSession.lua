@@ -297,7 +297,26 @@ local function createRoadSession(
 		otherModel: Model?,
 		otherEnd: ("Start" | "End")?
 	)
-		local junctionModel = JunctionInstance.FindNear(pos, settings.SnapRadiusStuds) or JunctionInstance.Create(pos)
+		-- Reuse the junction the other road's end is ALREADY linked to before
+		-- searching by position: approaches get trimmed back to the pad
+		-- boundary (JunctionBuilder.TrimApproaches), so a trimmed end sits a
+		-- road-half-width away from its junction's centre - farther than the
+		-- position search radius - and treating it as unlinked would stamp a
+		-- fresh junction over the existing link, silently disconnecting the
+		-- road from its real junction.
+		local existingJunctionModel: Model? = nil
+		if otherModel and otherEnd then
+			local otherData = RoadInstance.Read(otherModel)
+			local existingId = if otherData
+				then (if otherEnd == "Start" then otherData.StartJunctionId else otherData.EndJunctionId)
+				else nil
+			if existingId then
+				existingJunctionModel = JunctionInstance.FindById(existingId)
+			end
+		end
+		local junctionModel = existingJunctionModel
+			or JunctionInstance.FindNear(pos, settings.SnapRadiusStuds)
+			or JunctionInstance.Create(pos)
 		local junctionData = JunctionInstance.Read(junctionModel)
 		if not junctionData then
 			return
@@ -306,6 +325,7 @@ local function createRoadSession(
 		if otherModel and otherEnd then
 			stampEndJunction(otherModel, otherEnd, junctionData.Id)
 		end
+		JunctionBuilder.TrimApproaches(junctionData.Id, getStyle(), settings)
 		JunctionBuilder.Rebuild(junctionData.Id, getStyle(), settings)
 	end
 
@@ -360,6 +380,7 @@ local function createRoadSession(
 			return
 		end
 		stampEndJunction(model, modelEnd, junctionId)
+		JunctionBuilder.TrimApproaches(junctionId, getStyle(), settings)
 		JunctionBuilder.Rebuild(junctionId, getStyle(), settings)
 	end
 
