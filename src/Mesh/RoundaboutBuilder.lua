@@ -32,6 +32,7 @@ local RoundaboutBuilder = {}
 
 local ROUNDABOUTS_FOLDER_NAME = "Roundabouts"
 local BEZIER_CIRCLE_K = 0.5522847498307936
+local RING_TRIM_MARGIN_STUDS = 2
 
 -- True circulates clockwise (viewed from above, +Y up) for DriveOnLeft
 -- regions, counter-clockwise otherwise - not yet verified against real
@@ -152,6 +153,18 @@ end
 -- the junction data model). Leaves `road` untouched if it has an active
 -- transition/bay (same guard `RoadSplit` itself uses) or is shorter than
 -- the ring's radius.
+--
+-- findRingCrossing walks the spoke's CENTERLINE, but the crossing needs to
+-- keep the spoke's full cross-section (its sidewalk/kerb edges, which sit
+-- `halfWidthStuds` either side of the centerline) inside the ring - not
+-- just the centerline point itself. At a centerline point `d` studs from
+-- `center`, the laterally-offset edge is `sqrt(d^2 + halfWidthStuds^2)`
+-- from `center` (Pythagoras), which is farther out than `d`. Trimming the
+-- centerline exactly at `radiusStuds` therefore let the edges poke past
+-- the ring's true boundary, showing up as rectangular notches where each
+-- spoke's sidewalk cut into the ring. Solving `sqrt(d^2 + h^2) <=
+-- radiusStuds` for `d` gives the centerline trim radius below, plus a
+-- small margin so the seam sits just inside rather than exactly on it.
 local function trimSpokeToRing(
 	road: Model,
 	junctionId: string,
@@ -172,10 +185,13 @@ local function trimSpokeToRing(
 	if not atStart and not atEnd then
 		return
 	end
+	local halfWidthStuds = RoadProfile.TotalWidthM(data.ProfileStart) / 2 * settings.MetersToStuds
+	local trimRadiusStuds =
+		math.max(0, math.sqrt(math.max(0, radiusStuds ^ 2 - halfWidthStuds ^ 2)) - RING_TRIM_MARGIN_STUDS)
 	local curve = data.Curve
 	local fromStation = if atStart then 0 else curve.Length
 	local towardStation = if atStart then curve.Length else 0
-	local crossing = findRingCrossing(curve, fromStation, towardStation, center, radiusStuds)
+	local crossing = findRingCrossing(curve, fromStation, towardStation, center, trimRadiusStuds)
 	if not crossing then
 		return
 	end

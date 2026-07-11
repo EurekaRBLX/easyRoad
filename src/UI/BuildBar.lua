@@ -188,7 +188,10 @@ local function BuildBar(props: {
 	-- Same setting Regional Preference's Superelevation section exposes -
 	-- surfaced here too so the transition feel can be dialled in while
 	-- actually placing roads, without leaving the tool for a settings dock.
-	children.Transition = props.Settings.SuperelevationMode ~= "Off"
+	-- Named distinctly from children.Transition above (the "Widen to" row) -
+	-- both used the same key at one point, which silently dropped whichever
+	-- rendered second from the panel entirely.
+	children.BankTransition = props.Settings.SuperelevationMode ~= "Off"
 		and e(Components.Row, { LayoutOrder = 7 }, {
 			Label = e(Components.Label, { Text = "Transition (m)", LayoutOrder = 1, Width = 90 }),
 			Slider = e(Components.Slider, {

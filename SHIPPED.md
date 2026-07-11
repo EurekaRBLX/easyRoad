@@ -4,6 +4,28 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout ring pavement notch fix + BuildBar row-collision bug
+
+- **Fixed the roundabout ring/spoke pavement misalignment** (reported live
+  with a screenshot: rectangular notches where each trimmed spoke's
+  sidewalk cut into the ring). Root cause: `trimSpokeToRing` searched for
+  where the spoke's *centerline* crosses the ring's radius, but the
+  sidewalk/kerb edges sit laterally offset from the centerline, so at that
+  same station their true distance from the junction centre is
+  `sqrt(d^2 + halfWidth^2)` (Pythagoras) - farther out than the centerline
+  point, poking past the ring's true circular boundary. Fixed by searching
+  for the crossing at an adjusted radius (`sqrt(radius^2 - halfWidth^2)`,
+  minus a small `RING_TRIM_MARGIN_STUDS` safety margin) instead of the
+  ring's raw radius, so the spoke's widest cross-section point stays just
+  inside the ring instead of outside it.
+- **Found and fixed a real, unrelated bug while investigating a separate
+  "superelevation breaks elevation" report** (see `KNOWN_ISSUES.md` - that
+  one's still unconfirmed): `BuildBar.lua` had two different rows both
+  assigned to `children.Transition` - the "Widen to" dropdown and the
+  superelevation "Transition (m)" slider - so the second silently dropped
+  the first from the panel whenever Superelevation was on. Renamed the
+  superelevation one to `children.BankTransition`.
+
 ## Fixed junction corner spike bug (2-road bends and T-junctions)
 
 - **Confirmed live with screenshots (a curving 2-road bend, then a

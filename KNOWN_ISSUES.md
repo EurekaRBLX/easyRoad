@@ -43,6 +43,28 @@ internal planning only. See `TODO.md` for planned new features and
   footprint (not a wrapper around several - #1, #2), or its hover state
   must be reset on whatever transition could cause it to unmount while
   still hovered (#3).
+- **"Superelevation triggers elevation not working" - reported live, not
+  yet root-caused.** User report: toggling/using Superelevation (banking)
+  seems to make the Elevation control stop having an effect on placed
+  roads. Investigated without a live Studio repro and could not confirm a
+  mechanism: `Superelevation.RollAt` only rotates the cross-section frame
+  about the tangent (`PolyCurve.FrameAt`'s `CFrame.Angles(0, 0, roll)`
+  multiply) and never touches the centerline position itself, so banking
+  shouldn't be able to move a road's height; `createRoadSession.lua`'s
+  `pickPoint`/mouse-move handler add the current `elevation` value to every
+  placed point regardless of `SuperelevationMode`; toggling the banking
+  checkbox (`BuildBar.lua`) only calls `OnSettingsChanged` (persist +
+  `updateUI`), which doesn't touch or reset the session's `elevation`
+  state. Did find and fix one real, related bug while looking (see
+  `SHIPPED.md`): `BuildBar.lua` had two different rows both writing to
+  `children.Transition` (the "Widen to" dropdown and the superelevation
+  "Transition (m)" slider), so enabling banking silently dropped the
+  Widen-to row from the panel - fixed by renaming the second to
+  `children.BankTransition`. Not confirmed this was the actual bug the
+  user saw. Revisit with specifics: does the *committed* road sit flat
+  regardless of the Elevation field's value, or only the live preview; does
+  it happen with Superelevation on, or specifically when toggling it
+  off/on mid-placement; does R/F still nudge the number in the panel.
 - **Bus bay's displaced pavement doesn't drag its own kerb-restriction line
   marking along with it.** `BuildWithBay`'s nearside-pavement overlay (see
   `SHIPPED.md`) correctly moves the physical sidewalk/verge Parts outward

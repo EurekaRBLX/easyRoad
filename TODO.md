@@ -182,16 +182,20 @@ with radius/lane-count/lane-width fields.
   yield/give-way markings, nothing modelling how many ring lanes a given
   approach's lanes should feed into. This is the single biggest remaining
   gap between v1 and a real roundabout.
-- **Ring pavement/sidewalk doesn't align with the trimmed spokes**
-  (confirmed live with a screenshot: visible notches where each spoke's
-  sidewalk cuts into the ring). The spoke trim cuts the whole
-  cross-section at a flat perpendicular station, but the ring boundary is
-  curved - a sidewalk's laterally-offset outer edge ends up inside or
-  outside the ring's actual radius at that same station. Needs a
-  `JunctionBuilder`-style corner-fill pass of its own, bridging each
-  trimmed spoke's sidewalk into the ring's own edge. Now that the ring
-  and spoke trim both work mechanically, this is probably the single
-  highest-priority remaining roundabout gap.
+- **Ring pavement/sidewalk notch at the trim point - fixed.** The spoke
+  trim cuts the whole cross-section at a flat perpendicular station, but
+  the ring boundary is curved, so a sidewalk's laterally-offset outer edge
+  used to end up inside or outside the ring's actual radius at that same
+  station (confirmed live with a screenshot: visible rectangular notches
+  where each spoke's sidewalk cut into the ring). `trimSpokeToRing` now
+  searches for the crossing at a Pythagorean-adjusted centerline radius
+  (`sqrt(radius^2 - halfWidth^2)`, minus `RING_TRIM_MARGIN_STUDS`) instead
+  of the ring's raw radius, so the spoke's widest cross-section point (its
+  outer sidewalk edge, not just the centerline) lands just inside the
+  ring's true boundary rather than poking through it. Still not a proper
+  `JunctionBuilder`-style corner-fill bridging each spoke's sidewalk into
+  the ring's own edge - there's a small margin gap by design, not a
+  seamless join - but the notch itself is gone.
 - **No live preview.** Unlike ordinary road placement (which ghosts the
   road as you aim), there's no preview of the ring or the trimmed spokes
   before clicking "Make Roundabout" - you only see the result after
