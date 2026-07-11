@@ -4,6 +4,33 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Snap toggles + standalone Roundabout tool in Road Tools
+
+- **Requested live: "there is currently no button on road tools to: Snap
+  to existing road, Snap to grid, Build roundabout."** All three now have
+  a home in `BuildBar.lua`:
+  - New `Settings.SnapToRoad` (default true) gates
+    `findEndpointSnap`/`findConnectableEndpoint`/`findMidSpanMatch` in
+    `createRoadSession.lua` - previously always-on with no way to turn it
+    off. `Settings.SnapToGrid` already existed but only had a checkbox in
+    the Regional Preference settings dock, not in Road Tools itself where
+    it's actually used while placing - both now have checkboxes right in
+    the tool panel.
+  - New "Roundabout" tool mode alongside Straight/Curve/Freeform - a
+    single click drops a standalone ring (`RoundaboutBuilder.Create`)
+    centred at the clicked point, with the same Radius/Lane-count/
+    Lane-width fields the junction panel's "Make Roundabout" already
+    used. Previously the ONLY way to place a roundabout was to first
+    connect roads into a junction, select it, and use its panel - this
+    adds a direct path that doesn't require an existing junction at all.
+    Shares the junction-triggered ring's known limitation: the ring isn't
+    wired into the road/junction data model, so a road drawn to cross it
+    afterwards won't auto-connect (see TODO.md).
+  - Icon note: the new Roundabout tool button has no dedicated icon yet
+    (falls back to blank, identified by its hover label like the other
+    tool buttons) - the icon-asset pipeline that built the category tab
+    icons wasn't re-run this round.
+
 ## Junction corner geometry: bound the control point relative to chord length
 
 - **Reported live with a screenshot: a T-junction still produced a wildly

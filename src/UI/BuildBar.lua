@@ -109,6 +109,12 @@ local function BuildBar(props: {
 	Elevation: number,
 	AdjustElevation: (delta: number) -> (),
 	SetElevation: (value: number) -> (),
+	RoundaboutRadius: number,
+	SetRoundaboutRadius: (value: number) -> (),
+	RoundaboutLaneCount: number,
+	SetRoundaboutLaneCount: (value: number) -> (),
+	RoundaboutLaneWidth: number,
+	SetRoundaboutLaneWidth: (value: number) -> (),
 	OnStop: () -> (),
 })
 	local endProfileOptions: { Components.DropdownOption } = {
@@ -149,8 +155,69 @@ local function BuildBar(props: {
 			end,
 			LayoutOrder = 3,
 		}),
+		Roundabout = e(ToolButton, {
+			Mode = "Roundabout",
+			Label = "Roundabout",
+			Selected = props.ToolMode == "Roundabout",
+			OnClick = function()
+				props.SetToolMode("Roundabout")
+			end,
+			LayoutOrder = 4,
+		}),
 	})
-	children.Transition = e(Components.Row, { LayoutOrder = 4 }, {
+	if props.ToolMode == "Roundabout" then
+		children.RoundaboutRadius = e(Components.Row, { LayoutOrder = 3 }, {
+			Label = e(Components.Label, { Text = "Radius", LayoutOrder = 1, Width = 60 }),
+			Field = e(Components.NumberField, {
+				Value = props.RoundaboutRadius,
+				Min = 5,
+				OnChanged = props.SetRoundaboutRadius,
+				LayoutOrder = 2,
+			}),
+			Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 3 }),
+		})
+		children.RoundaboutLaneCount = e(Components.Row, { LayoutOrder = 4 }, {
+			Label = e(Components.Label, { Text = "Lanes", LayoutOrder = 1, Width = 60 }),
+			Field = e(Components.NumberField, {
+				Value = props.RoundaboutLaneCount,
+				Min = 1,
+				Max = 6,
+				OnChanged = function(value: number)
+					props.SetRoundaboutLaneCount(math.floor(value))
+				end,
+				LayoutOrder = 2,
+			}),
+		})
+		children.RoundaboutLaneWidth = e(Components.Row, { LayoutOrder = 5 }, {
+			Label = e(Components.Label, { Text = "Lane width", LayoutOrder = 1, Width = 60 }),
+			Field = e(Components.NumberField, {
+				Value = props.RoundaboutLaneWidth,
+				Min = 1,
+				OnChanged = props.SetRoundaboutLaneWidth,
+				LayoutOrder = 2,
+			}),
+			Unit = e(Components.Label, { Text = "meters", Dim = true, LayoutOrder = 3 }),
+		})
+	end
+	children.SnapToRoadToggle = e(Components.Checkbox, {
+		Label = "Snap to existing road",
+		Checked = props.Settings.SnapToRoad,
+		OnToggled = function(checked: boolean)
+			props.Settings.SnapToRoad = checked
+			props.OnSettingsChanged()
+		end,
+		LayoutOrder = 6,
+	})
+	children.SnapToGridToggle = e(Components.Checkbox, {
+		Label = "Snap to grid",
+		Checked = props.Settings.SnapToGrid,
+		OnToggled = function(checked: boolean)
+			props.Settings.SnapToGrid = checked
+			props.OnSettingsChanged()
+		end,
+		LayoutOrder = 7,
+	})
+	children.Transition = e(Components.Row, { LayoutOrder = 8 }, {
 		Label = e(Components.Label, { Text = "Widen to", LayoutOrder = 1, Width = 60 }),
 		Dropdown = e(Components.Dropdown, {
 			Options = endProfileOptions,
@@ -169,10 +236,10 @@ local function BuildBar(props: {
 			props.Settings.SuperelevationMode = if checked then "Auto" else "Off"
 			props.OnSettingsChanged()
 		end,
-		LayoutOrder = 5,
+		LayoutOrder = 9,
 	})
 	children.Speed = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 6 }, {
+		and e(Components.Row, { LayoutOrder = 10 }, {
 			Label = e(Components.Label, { Text = "Speed (km/h)", LayoutOrder = 1, Width = 90 }),
 			Field = e(Components.NumberField, {
 				Value = props.Settings.DesignSpeedKph,
@@ -192,7 +259,7 @@ local function BuildBar(props: {
 	-- both used the same key at one point, which silently dropped whichever
 	-- rendered second from the panel entirely.
 	children.BankTransition = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 7 }, {
+		and e(Components.Row, { LayoutOrder = 11 }, {
 			Label = e(Components.Label, { Text = "Transition (m)", LayoutOrder = 1, Width = 90 }),
 			Slider = e(Components.Slider, {
 				Value = props.Settings.SuperelevationRunoffM,
@@ -206,7 +273,7 @@ local function BuildBar(props: {
 				LayoutOrder = 2,
 			}),
 		})
-	children.Elevation = e(Components.Row, { LayoutOrder = 8 }, {
+	children.Elevation = e(Components.Row, { LayoutOrder = 12 }, {
 		Label = e(Components.Label, { Text = "Elevation", LayoutOrder = 1, Width = 64 }),
 		Down = e(Components.Button, {
 			Text = "",
@@ -241,7 +308,7 @@ local function BuildBar(props: {
 	-- CS2-style step adjustment: how far each R/F press or arrow click
 	-- moves the elevation, editable right next to the elevation control
 	-- instead of buried in a separate settings dock.
-	children.ElevationStep = e(Components.Row, { LayoutOrder = 9 }, {
+	children.ElevationStep = e(Components.Row, { LayoutOrder = 13 }, {
 		Label = e(Components.Label, { Text = "Step", Dim = true, LayoutOrder = 1, Width = 64 }),
 		Field = e(Components.NumberField, {
 			Value = props.Settings.ElevationStepStuds,
@@ -262,7 +329,7 @@ local function BuildBar(props: {
 			keyHint(props.Settings.Keybinds.ElevationDown)
 		),
 		Dim = true,
-		LayoutOrder = 10,
+		LayoutOrder = 14,
 	})
 	children.Hint = e("TextLabel", {
 		Text = props.Hint,
@@ -274,13 +341,13 @@ local function BuildBar(props: {
 		TextSize = Theme.TEXT_SIZE,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = true,
-		LayoutOrder = 11,
+		LayoutOrder = 15,
 	})
 	children.Stop = e(Components.Button, {
 		Text = "Stop Building",
 		Danger = true,
 		OnClick = props.OnStop,
-		LayoutOrder = 12,
+		LayoutOrder = 16,
 	})
 
 	local scrollProps = Components.ScrollBar()

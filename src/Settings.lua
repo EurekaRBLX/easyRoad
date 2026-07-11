@@ -47,6 +47,14 @@ export type EasyRoadSettings = {
 	SnapRadiusStuds: number,
 	GridSizeStuds: number,
 	SnapToGrid: boolean,
+	-- Whether placement endpoints/mid-span clicks snap onto an existing
+	-- road's own end or pavement (see createRoadSession.lua's
+	-- findEndpointSnap/findConnectableEndpoint/findMidSpanMatch) - on by
+	-- default since that's what makes a network of roads actually connect
+	-- into junctions instead of silently overlapping. Off skips all of it,
+	-- for a road that's deliberately meant to run free of the existing
+	-- network (an overpass with no at-grade connection, etc).
+	SnapToRoad: boolean,
 	ElevationStepStuds: number,
 	-- Remembered so the next building session starts where the last one
 	-- left off instead of always resetting to ground level.
@@ -89,6 +97,7 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		SnapRadiusStuds = raw.SnapRadiusStuds or 8,
 		GridSizeStuds = raw.GridSizeStuds or 4,
 		SnapToGrid = if raw.SnapToGrid == nil then false else raw.SnapToGrid,
+		SnapToRoad = if raw.SnapToRoad == nil then true else raw.SnapToRoad,
 		ElevationStepStuds = raw.ElevationStepStuds or 1,
 		LastElevationStuds = raw.LastElevationStuds or 0,
 		RoadThicknessStuds = raw.RoadThicknessStuds or 1,
@@ -115,6 +124,7 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		SnapRadiusStuds = settings.SnapRadiusStuds,
 		GridSizeStuds = settings.GridSizeStuds,
 		SnapToGrid = settings.SnapToGrid,
+		SnapToRoad = settings.SnapToRoad,
 		ElevationStepStuds = settings.ElevationStepStuds,
 		LastElevationStuds = settings.LastElevationStuds,
 		RoadThicknessStuds = settings.RoadThicknessStuds,

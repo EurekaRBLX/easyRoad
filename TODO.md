@@ -34,14 +34,15 @@ out rather than solved, and should get their own pass later:
 
 ## Next up — needs a decision or real design work
 
-**Roundabout icon - deliberately not built.** The queued CS2-style UI polish
-request (left-align Tool Mode, grid Road Library, icon-based category tabs)
-is now fully shipped except for a "generate a roundabout icon similar to
-CS2's" item - skipped because roundabouts aren't an implemented feature and
-there's currently no UI slot that would display a roundabout icon, so
-building one now would be orphaned geometry with no consumer. Revisit once
-roundabouts (see Intersections & roundabouts below) or some other roundabout-
-adjacent UI actually exists to use it.
+**Roundabout icon - still not built, but there's now a slot for it.** The
+"Roundabout" tool button in `BuildBar.lua`'s Tools row (see "Snap toggles +
+standalone Roundabout tool" in `SHIPPED.md`) currently falls back to a blank
+image (`TOOL_ICONS[props.Mode] or ""`) since there's no dedicated icon asset
+yet - identifiable only by its hover label like the other tool buttons.
+Originally skipped because there was no UI slot to use it (see prior note,
+kept for history below); that's no longer true. Needs the same icon-asset
+process the category tabs used (`Build icon-only reference scenes for
+category icons`, task #102).
 
 ## Junctions & intersections — phased plan (Phase 1 shipped, Phase 2/3 v0)
 
@@ -154,13 +155,12 @@ Deliberately still out of scope, in rough priority order:
   spirit to `RoundaboutBuilder`'s ring-crossing bisection), then splitting
   BOTH roads at the crossing point (today's `RoadSplit.SplitAt` only
   splits one).
-- **No snap-to-road / snap-to-grid toggle in Road Tools.** Both already
-  exist as always-on background behaviour (`findEndpointSnap`,
-  `applyGridSnap` in `createRoadSession.lua`, gated by
-  `Settings.SnapToGrid`/`GridSizeStuds` for the grid case but with no UI
-  surface to change it, and road-endpoint snapping isn't toggleable at
-  all) - requested as an explicit, visible tool/toggle in the Road Tools
-  panel rather than silent background behaviour.
+- **Snap-to-road / snap-to-grid toggles in Road Tools - shipped.** See
+  `SHIPPED.md`. `Settings.SnapToRoad` (new) gates
+  `findEndpointSnap`/`findConnectableEndpoint`/`findMidSpanMatch` in
+  `createRoadSession.lua`; `Settings.SnapToGrid` already existed but had
+  no Road Tools surface, only the Regional Preference dock. Both now have
+  checkboxes in `BuildBar.lua` next to the tool buttons.
 - **No box-junction ("keep clear") markings.** Real intersections
   (reference: Google Maps screenshots of live HK/TW intersections)
   commonly paint a yellow cross-hatch box over the intersection interior
@@ -193,7 +193,15 @@ itself, since the ring replaces its fillet pad as the intersection
 surface - confirmed live that leaving spokes running straight through an
 untouched ring read as broken, not just rough. Triggered from a selected
 junction's panel ("Make Roundabout," shown once 3+ roads are connected)
-with radius/lane-count/lane-width fields.
+with radius/lane-count/lane-width fields. **Also now triggerable directly
+from Road Tools** - a new "Roundabout" tool mode (`createRoadSession.lua`'s
+`commitRoundabout`) drops a standalone ring at a single click, calling
+`RoundaboutBuilder.Create` directly (not `CreateAtJunction`, since there's
+no junction) - requested explicitly ("no button on road tools to ... Build
+roundabout"). Same radius/lane-count/lane-width fields, shown in
+`BuildBar.lua` while that tool is selected. Has the exact same "not wired
+into the data model" limitation as the junction-triggered ring (below) -
+any road drawn to cross it afterwards won't auto-connect.
 **What's still deliberately missing:**
 - **No per-lane merge tapering at each approach.** A trimmed spoke's
   pavement just stops at the ring boundary - there's no shaped merge lane

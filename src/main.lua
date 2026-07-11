@@ -540,6 +540,18 @@ return function(
 						SetElevation = function(value: number)
 							currentSession.SetElevation(value)
 						end,
+						RoundaboutRadius = currentSession.GetRoundaboutRadius(),
+						SetRoundaboutRadius = function(value: number)
+							currentSession.SetRoundaboutRadius(value)
+						end,
+						RoundaboutLaneCount = currentSession.GetRoundaboutLaneCount(),
+						SetRoundaboutLaneCount = function(value: number)
+							currentSession.SetRoundaboutLaneCount(value)
+						end,
+						RoundaboutLaneWidth = currentSession.GetRoundaboutLaneWidth(),
+						SetRoundaboutLaneWidth = function(value: number)
+							currentSession.SetRoundaboutLaneWidth(value)
+						end,
 						OnStop = function()
 							stopSession()
 							plugin:Deactivate()

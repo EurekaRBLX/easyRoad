@@ -7012,6 +7012,14 @@ export type EasyRoadSettings = {
 	SnapRadiusStuds: number,
 	GridSizeStuds: number,
 	SnapToGrid: boolean,
+	-- Whether placement endpoints/mid-span clicks snap onto an existing
+	-- road's own end or pavement (see createRoadSession.lua's
+	-- findEndpointSnap/findConnectableEndpoint/findMidSpanMatch) - on by
+	-- default since that's what makes a network of roads actually connect
+	-- into junctions instead of silently overlapping. Off skips all of it,
+	-- for a road that's deliberately meant to run free of the existing
+	-- network (an overpass with no at-grade connection, etc).
+	SnapToRoad: boolean,
 	ElevationStepStuds: number,
 	-- Remembered so the next building session starts where the last one
 	-- left off instead of always resetting to ground level.
@@ -7054,6 +7062,7 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		SnapRadiusStuds = raw.SnapRadiusStuds or 8,
 		GridSizeStuds = raw.GridSizeStuds or 4,
 		SnapToGrid = if raw.SnapToGrid == nil then false else raw.SnapToGrid,
+		SnapToRoad = if raw.SnapToRoad == nil then true else raw.SnapToRoad,
 		ElevationStepStuds = raw.ElevationStepStuds or 1,
 		LastElevationStuds = raw.LastElevationStuds or 0,
 		RoadThicknessStuds = raw.RoadThicknessStuds or 1,
@@ -7080,6 +7089,7 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		SnapRadiusStuds = settings.SnapRadiusStuds,
 		GridSizeStuds = settings.GridSizeStuds,
 		SnapToGrid = settings.SnapToGrid,
+		SnapToRoad = settings.SnapToRoad,
 		ElevationStepStuds = settings.ElevationStepStuds,
 		LastElevationStuds = settings.LastElevationStuds,
 		RoadThicknessStuds = settings.RoadThicknessStuds,
@@ -7270,6 +7280,12 @@ local function BuildBar(props: {
 	Elevation: number,
 	AdjustElevation: (delta: number) -&gt; (),
 	SetElevation: (value: number) -&gt; (),
+	RoundaboutRadius: number,
+	SetRoundaboutRadius: (value: number) -&gt; (),
+	RoundaboutLaneCount: number,
+	SetRoundaboutLaneCount: (value: number) -&gt; (),
+	RoundaboutLaneWidth: number,
+	SetRoundaboutLaneWidth: (value: number) -&gt; (),
 	OnStop: () -&gt; (),
 })
 	local endProfileOptions: { Components.DropdownOption } = {
@@ -7310,8 +7326,69 @@ local function BuildBar(props: {
 			end,
 			LayoutOrder = 3,
 		}),
+		Roundabout = e(ToolButton, {
+			Mode = "Roundabout",
+			Label = "Roundabout",
+			Selected = props.ToolMode == "Roundabout",
+			OnClick = function()
+				props.SetToolMode("Roundabout")
+			end,
+			LayoutOrder = 4,
+		}),
 	})
-	children.Transition = e(Components.Row, { LayoutOrder = 4 }, {
+	if props.ToolMode == "Roundabout" then
+		children.RoundaboutRadius = e(Components.Row, { LayoutOrder = 3 }, {
+			Label = e(Components.Label, { Text = "Radius", LayoutOrder = 1, Width = 60 }),
+			Field = e(Components.NumberField, {
+				Value = props.RoundaboutRadius,
+				Min = 5,
+				OnChanged = props.SetRoundaboutRadius,
+				LayoutOrder = 2,
+			}),
+			Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 3 }),
+		})
+		children.RoundaboutLaneCount = e(Components.Row, { LayoutOrder = 4 }, {
+			Label = e(Components.Label, { Text = "Lanes", LayoutOrder = 1, Width = 60 }),
+			Field = e(Components.NumberField, {
+				Value = props.RoundaboutLaneCount,
+				Min = 1,
+				Max = 6,
+				OnChanged = function(value: number)
+					props.SetRoundaboutLaneCount(math.floor(value))
+				end,
+				LayoutOrder = 2,
+			}),
+		})
+		children.RoundaboutLaneWidth = e(Components.Row, { LayoutOrder = 5 }, {
+			Label = e(Components.Label, { Text = "Lane width", LayoutOrder = 1, Width = 60 }),
+			Field = e(Components.NumberField, {
+				Value = props.RoundaboutLaneWidth,
+				Min = 1,
+				OnChanged = props.SetRoundaboutLaneWidth,
+				LayoutOrder = 2,
+			}),
+			Unit = e(Components.Label, { Text = "meters", Dim = true, LayoutOrder = 3 }),
+		})
+	end
+	children.SnapToRoadToggle = e(Components.Checkbox, {
+		Label = "Snap to existing road",
+		Checked = props.Settings.SnapToRoad,
+		OnToggled = function(checked: boolean)
+			props.Settings.SnapToRoad = checked
+			props.OnSettingsChanged()
+		end,
+		LayoutOrder = 6,
+	})
+	children.SnapToGridToggle = e(Components.Checkbox, {
+		Label = "Snap to grid",
+		Checked = props.Settings.SnapToGrid,
+		OnToggled = function(checked: boolean)
+			props.Settings.SnapToGrid = checked
+			props.OnSettingsChanged()
+		end,
+		LayoutOrder = 7,
+	})
+	children.Transition = e(Components.Row, { LayoutOrder = 8 }, {
 		Label = e(Components.Label, { Text = "Widen to", LayoutOrder = 1, Width = 60 }),
 		Dropdown = e(Components.Dropdown, {
 			Options = endProfileOptions,
@@ -7330,10 +7407,10 @@ local function BuildBar(props: {
 			props.Settings.SuperelevationMode = if checked then "Auto" else "Off"
 			props.OnSettingsChanged()
 		end,
-		LayoutOrder = 5,
+		LayoutOrder = 9,
 	})
 	children.Speed = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 6 }, {
+		and e(Components.Row, { LayoutOrder = 10 }, {
 			Label = e(Components.Label, { Text = "Speed (km/h)", LayoutOrder = 1, Width = 90 }),
 			Field = e(Components.NumberField, {
 				Value = props.Settings.DesignSpeedKph,
@@ -7353,7 +7430,7 @@ local function BuildBar(props: {
 	-- both used the same key at one point, which silently dropped whichever
 	-- rendered second from the panel entirely.
 	children.BankTransition = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 7 }, {
+		and e(Components.Row, { LayoutOrder = 11 }, {
 			Label = e(Components.Label, { Text = "Transition (m)", LayoutOrder = 1, Width = 90 }),
 			Slider = e(Components.Slider, {
 				Value = props.Settings.SuperelevationRunoffM,
@@ -7367,7 +7444,7 @@ local function BuildBar(props: {
 				LayoutOrder = 2,
 			}),
 		})
-	children.Elevation = e(Components.Row, { LayoutOrder = 8 }, {
+	children.Elevation = e(Components.Row, { LayoutOrder = 12 }, {
 		Label = e(Components.Label, { Text = "Elevation", LayoutOrder = 1, Width = 64 }),
 		Down = e(Components.Button, {
 			Text = "",
@@ -7402,7 +7479,7 @@ local function BuildBar(props: {
 	-- CS2-style step adjustment: how far each R/F press or arrow click
 	-- moves the elevation, editable right next to the elevation control
 	-- instead of buried in a separate settings dock.
-	children.ElevationStep = e(Components.Row, { LayoutOrder = 9 }, {
+	children.ElevationStep = e(Components.Row, { LayoutOrder = 13 }, {
 		Label = e(Components.Label, { Text = "Step", Dim = true, LayoutOrder = 1, Width = 64 }),
 		Field = e(Components.NumberField, {
 			Value = props.Settings.ElevationStepStuds,
@@ -7423,7 +7500,7 @@ local function BuildBar(props: {
 			keyHint(props.Settings.Keybinds.ElevationDown)
 		),
 		Dim = true,
-		LayoutOrder = 10,
+		LayoutOrder = 14,
 	})
 	children.Hint = e("TextLabel", {
 		Text = props.Hint,
@@ -7435,13 +7512,13 @@ local function BuildBar(props: {
 		TextSize = Theme.TEXT_SIZE,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = true,
-		LayoutOrder = 11,
+		LayoutOrder = 15,
 	})
 	children.Stop = e(Components.Button, {
 		Text = "Stop Building",
 		Danger = true,
 		OnClick = props.OnStop,
-		LayoutOrder = 12,
+		LayoutOrder = 16,
 	})
 
 	local scrollProps = Components.ScrollBar()
@@ -12181,6 +12258,7 @@ local PolyCurve = require("./Geometry/PolyCurve")
 local Fitting = require("./Geometry/Fitting")
 local RoadBuilder = require("./Mesh/RoadBuilder")
 local JunctionBuilder = require("./Mesh/JunctionBuilder")
+local RoundaboutBuilder = require("./Mesh/RoundaboutBuilder")
 local RoadProfile = require("./RoadProfile")
 local RoadInstance = require("./RoadInstance")
 local RoadSplit = require("./RoadSplit")
@@ -12189,7 +12267,14 @@ local RegionStyles = require("./RegionStyles")
 local Settings = require("./Settings")
 local Keybinds = require("./Keybinds")
 
-export type ToolMode = "Straight" | "Curve" | "Freeform"
+-- "Roundabout" is a single-click placement (centre point only, no curve) -
+-- drops a standalone ring straight from Road Tools instead of requiring an
+-- existing junction to already exist and be selected first (the only way
+-- to build one before this). Any road drawn to cross it afterwards still
+-- won't auto-connect to it (see RoundaboutBuilder.lua's header - the ring
+-- isn't wired into the junction/split data model yet), same limitation the
+-- junction-panel "Make Roundabout" flow already has.
+export type ToolMode = "Straight" | "Curve" | "Freeform" | "Roundabout"
 
 export type RoadSession = {
 	ChangeSignal: Signal.Signal&lt;&gt;,
@@ -12202,6 +12287,12 @@ export type RoadSession = {
 	GetElevation: () -&gt; number,
 	AdjustElevation: (delta: number) -&gt; (),
 	SetElevation: (value: number) -&gt; (),
+	GetRoundaboutRadius: () -&gt; number,
+	SetRoundaboutRadius: (value: number) -&gt; (),
+	GetRoundaboutLaneCount: () -&gt; number,
+	SetRoundaboutLaneCount: (value: number) -&gt; (),
+	GetRoundaboutLaneWidth: () -&gt; number,
+	SetRoundaboutLaneWidth: (value: number) -&gt; (),
 	GetHint: () -&gt; string,
 	GetPointCount: () -&gt; number,
 	CancelPlacement: () -&gt; (),
@@ -12250,6 +12341,12 @@ local function createRoadSession(
 	-- Remembers where the user left off instead of always resetting to
 	-- ground level on a fresh session.
 	local elevation = settings.LastElevationStuds
+
+	-- Config for the "Roundabout" tool mode's single-click placement -
+	-- same defaults JunctionPanel's "Make Roundabout" fields start at.
+	local roundaboutRadiusStuds = 30
+	local roundaboutLaneCount = 1
+	local roundaboutLaneWidthM = 3.65
 
 	local previewModel: Model? = nil
 	local markerFolder: Folder? = nil
@@ -12323,6 +12420,9 @@ local function createRoadSession(
 	end
 
 	local function findEndpointSnap(pos: Vector3): (Vector3?, Vector3?)
+		if not settings.SnapToRoad then
+			return nil, nil
+		end
 		local folder = getRoadsFolder(false)
 		if not folder then
 			return nil, nil
@@ -12368,6 +12468,9 @@ local function createRoadSession(
 	-- whether the new road's point got there via a click-time snap or a
 	-- chained/seeded continuation.
 	local function findConnectableEndpoint(pos: Vector3, exclude: Model): (Model?, ("Start" | "End")?)
+		if not settings.SnapToRoad then
+			return nil, nil
+		end
 		local folder = getRoadsFolder(false)
 		if not folder then
 			return nil, nil
@@ -12446,6 +12549,9 @@ local function createRoadSession(
 	-- still connect to it instead of silently overlapping with no
 	-- relationship at all.
 	local function findMidSpanMatch(pos: Vector3, exclude: Model): (Model?, number?)
+		if not settings.SnapToRoad then
+			return nil, nil
+		end
 		local folder = getRoadsFolder(false)
 		if not folder then
 			return nil, nil
@@ -12556,10 +12662,12 @@ local function createRoadSession(
 	-- Curve construction -----------------------------------------------------------
 
 	local function clicksNeeded(): number
-		local base = if toolMode == "Straight" then 2
+		local base = if toolMode == "Straight"
+			then 2
 			elseif toolMode == "Curve" then 3
-			else 4
-		if lockedTangent and toolMode ~= "Straight" then
+			elseif toolMode == "Freeform" then 4
+			else 1 -- Roundabout: a single centre click, handled separately in onClick
+		if lockedTangent and toolMode ~= "Straight" and toolMode ~= "Roundabout" then
 			return base - 1
 		end
 		return base
@@ -12724,11 +12832,41 @@ local function createRoadSession(
 		changeSignal:Fire()
 	end
 
+	-- Places a standalone roundabout ring centred at `center` (ground click,
+	-- grid-snapped, elevated) using the current radius/lane config - no
+	-- multi-click curve fitting involved, unlike the other tool modes.
+	local function commitRoundabout(center: Vector3)
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadPlace", "Place roundabout")
+		RoundaboutBuilder.Create(
+			center,
+			roundaboutRadiusStuds,
+			roundaboutLaneCount,
+			roundaboutLaneWidthM,
+			getStyle(),
+			settings
+		)
+		if recording then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		end
+		changeSignal:Fire()
+	end
+
 	-- Input handling ----------------------------------------------------------------------
 
 	local function onClick()
 		-- Clicks on the viewport HUD must not also place road points
 		if uiState and uiState.Hovered then
+			return
+		end
+		if toolMode == "Roundabout" then
+			-- A roundabout's centre point isn't a road endpoint, so this
+			-- deliberately bypasses pickPoint's findEndpointSnap - just
+			-- ground/grid/elevation, the same as any other new point.
+			local ground = raycastGround()
+			if not ground then
+				return
+			end
+			commitRoundabout(applyGridSnap(ground) + Vector3.new(0, elevation, 0))
 			return
 		end
 		local point, snapTangent = pickPoint()
@@ -12858,11 +12996,36 @@ local function createRoadSession(
 	session.AdjustElevation = adjustElevation
 	session.SetElevation = setElevation
 
+	function session.GetRoundaboutRadius(): number
+		return roundaboutRadiusStuds
+	end
+	function session.SetRoundaboutRadius(value: number)
+		roundaboutRadiusStuds = value
+		changeSignal:Fire()
+	end
+	function session.GetRoundaboutLaneCount(): number
+		return roundaboutLaneCount
+	end
+	function session.SetRoundaboutLaneCount(value: number)
+		roundaboutLaneCount = value
+		changeSignal:Fire()
+	end
+	function session.GetRoundaboutLaneWidth(): number
+		return roundaboutLaneWidthM
+	end
+	function session.SetRoundaboutLaneWidth(value: number)
+		roundaboutLaneWidthM = value
+		changeSignal:Fire()
+	end
+
 	function session.GetPointCount(): number
 		return #points
 	end
 
 	function session.GetHint(): string
+		if toolMode == "Roundabout" then
+			return "Click to place the roundabout's centre"
+		end
 		local count = #points
 		local needed = clicksNeeded()
 		if count == 0 then
@@ -13439,6 +13602,18 @@ return function(
 						end,
 						SetElevation = function(value: number)
 							currentSession.SetElevation(value)
+						end,
+						RoundaboutRadius = currentSession.GetRoundaboutRadius(),
+						SetRoundaboutRadius = function(value: number)
+							currentSession.SetRoundaboutRadius(value)
+						end,
+						RoundaboutLaneCount = currentSession.GetRoundaboutLaneCount(),
+						SetRoundaboutLaneCount = function(value: number)
+							currentSession.SetRoundaboutLaneCount(value)
+						end,
+						RoundaboutLaneWidth = currentSession.GetRoundaboutLaneWidth(),
+						SetRoundaboutLaneWidth = function(value: number)
+							currentSession.SetRoundaboutLaneWidth(value)
 						end,
 						OnStop = function()
 							stopSession()

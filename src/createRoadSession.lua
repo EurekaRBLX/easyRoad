@@ -27,6 +27,7 @@ local PolyCurve = require("./Geometry/PolyCurve")
 local Fitting = require("./Geometry/Fitting")
 local RoadBuilder = require("./Mesh/RoadBuilder")
 local JunctionBuilder = require("./Mesh/JunctionBuilder")
+local RoundaboutBuilder = require("./Mesh/RoundaboutBuilder")
 local RoadProfile = require("./RoadProfile")
 local RoadInstance = require("./RoadInstance")
 local RoadSplit = require("./RoadSplit")
@@ -35,7 +36,14 @@ local RegionStyles = require("./RegionStyles")
 local Settings = require("./Settings")
 local Keybinds = require("./Keybinds")
 
-export type ToolMode = "Straight" | "Curve" | "Freeform"
+-- "Roundabout" is a single-click placement (centre point only, no curve) -
+-- drops a standalone ring straight from Road Tools instead of requiring an
+-- existing junction to already exist and be selected first (the only way
+-- to build one before this). Any road drawn to cross it afterwards still
+-- won't auto-connect to it (see RoundaboutBuilder.lua's header - the ring
+-- isn't wired into the junction/split data model yet), same limitation the
+-- junction-panel "Make Roundabout" flow already has.
+export type ToolMode = "Straight" | "Curve" | "Freeform" | "Roundabout"
 
 export type RoadSession = {
 	ChangeSignal: Signal.Signal<>,
@@ -48,6 +56,12 @@ export type RoadSession = {
 	GetElevation: () -> number,
 	AdjustElevation: (delta: number) -> (),
 	SetElevation: (value: number) -> (),
+	GetRoundaboutRadius: () -> number,
+	SetRoundaboutRadius: (value: number) -> (),
+	GetRoundaboutLaneCount: () -> number,
+	SetRoundaboutLaneCount: (value: number) -> (),
+	GetRoundaboutLaneWidth: () -> number,
+	SetRoundaboutLaneWidth: (value: number) -> (),
 	GetHint: () -> string,
 	GetPointCount: () -> number,
 	CancelPlacement: () -> (),
@@ -96,6 +110,12 @@ local function createRoadSession(
 	-- Remembers where the user left off instead of always resetting to
 	-- ground level on a fresh session.
 	local elevation = settings.LastElevationStuds
+
+	-- Config for the "Roundabout" tool mode's single-click placement -
+	-- same defaults JunctionPanel's "Make Roundabout" fields start at.
+	local roundaboutRadiusStuds = 30
+	local roundaboutLaneCount = 1
+	local roundaboutLaneWidthM = 3.65
 
 	local previewModel: Model? = nil
 	local markerFolder: Folder? = nil
@@ -169,6 +189,9 @@ local function createRoadSession(
 	end
 
 	local function findEndpointSnap(pos: Vector3): (Vector3?, Vector3?)
+		if not settings.SnapToRoad then
+			return nil, nil
+		end
 		local folder = getRoadsFolder(false)
 		if not folder then
 			return nil, nil
@@ -214,6 +237,9 @@ local function createRoadSession(
 	-- whether the new road's point got there via a click-time snap or a
 	-- chained/seeded continuation.
 	local function findConnectableEndpoint(pos: Vector3, exclude: Model): (Model?, ("Start" | "End")?)
+		if not settings.SnapToRoad then
+			return nil, nil
+		end
 		local folder = getRoadsFolder(false)
 		if not folder then
 			return nil, nil
@@ -292,6 +318,9 @@ local function createRoadSession(
 	-- still connect to it instead of silently overlapping with no
 	-- relationship at all.
 	local function findMidSpanMatch(pos: Vector3, exclude: Model): (Model?, number?)
+		if not settings.SnapToRoad then
+			return nil, nil
+		end
 		local folder = getRoadsFolder(false)
 		if not folder then
 			return nil, nil
@@ -402,10 +431,12 @@ local function createRoadSession(
 	-- Curve construction -----------------------------------------------------------
 
 	local function clicksNeeded(): number
-		local base = if toolMode == "Straight" then 2
+		local base = if toolMode == "Straight"
+			then 2
 			elseif toolMode == "Curve" then 3
-			else 4
-		if lockedTangent and toolMode ~= "Straight" then
+			elseif toolMode == "Freeform" then 4
+			else 1 -- Roundabout: a single centre click, handled separately in onClick
+		if lockedTangent and toolMode ~= "Straight" and toolMode ~= "Roundabout" then
 			return base - 1
 		end
 		return base
@@ -570,11 +601,41 @@ local function createRoadSession(
 		changeSignal:Fire()
 	end
 
+	-- Places a standalone roundabout ring centred at `center` (ground click,
+	-- grid-snapped, elevated) using the current radius/lane config - no
+	-- multi-click curve fitting involved, unlike the other tool modes.
+	local function commitRoundabout(center: Vector3)
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadPlace", "Place roundabout")
+		RoundaboutBuilder.Create(
+			center,
+			roundaboutRadiusStuds,
+			roundaboutLaneCount,
+			roundaboutLaneWidthM,
+			getStyle(),
+			settings
+		)
+		if recording then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		end
+		changeSignal:Fire()
+	end
+
 	-- Input handling ----------------------------------------------------------------------
 
 	local function onClick()
 		-- Clicks on the viewport HUD must not also place road points
 		if uiState and uiState.Hovered then
+			return
+		end
+		if toolMode == "Roundabout" then
+			-- A roundabout's centre point isn't a road endpoint, so this
+			-- deliberately bypasses pickPoint's findEndpointSnap - just
+			-- ground/grid/elevation, the same as any other new point.
+			local ground = raycastGround()
+			if not ground then
+				return
+			end
+			commitRoundabout(applyGridSnap(ground) + Vector3.new(0, elevation, 0))
 			return
 		end
 		local point, snapTangent = pickPoint()
@@ -704,11 +765,36 @@ local function createRoadSession(
 	session.AdjustElevation = adjustElevation
 	session.SetElevation = setElevation
 
+	function session.GetRoundaboutRadius(): number
+		return roundaboutRadiusStuds
+	end
+	function session.SetRoundaboutRadius(value: number)
+		roundaboutRadiusStuds = value
+		changeSignal:Fire()
+	end
+	function session.GetRoundaboutLaneCount(): number
+		return roundaboutLaneCount
+	end
+	function session.SetRoundaboutLaneCount(value: number)
+		roundaboutLaneCount = value
+		changeSignal:Fire()
+	end
+	function session.GetRoundaboutLaneWidth(): number
+		return roundaboutLaneWidthM
+	end
+	function session.SetRoundaboutLaneWidth(value: number)
+		roundaboutLaneWidthM = value
+		changeSignal:Fire()
+	end
+
 	function session.GetPointCount(): number
 		return #points
 	end
 
 	function session.GetHint(): string
+		if toolMode == "Roundabout" then
+			return "Click to place the roundabout's centre"
+		end
 		local count = #points
 		local needed = clicksNeeded()
 		if count == 0 then

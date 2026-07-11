@@ -43,6 +43,21 @@ internal planning only. See `TODO.md` for planned new features and
   footprint (not a wrapper around several - #1, #2), or its hover state
   must be reset on whatever transition could cause it to unmount while
   still hovered (#3).
+- **"Tile editor now renders below the road cross section so i cant see
+  it" - reported live, could not reproduce from the screenshot given.**
+  The screenshot showed the Road Editor's "Modules" tile palette (top
+  right) sitting clearly ABOVE the "Road Layout" cross-section strip
+  (bottom), which is the intended stacking (`RoadDesigner.lua`'s `Top`
+  frame at `LayoutOrder = 1`, `StripCard` at `LayoutOrder = 2`, both
+  children of one `UIListLayout`d `Stack` frame) - nothing in that image
+  showed the tile palette hidden or out of order. Possible it only shows
+  up at a specific window/viewport size (the `Top` frame's height is
+  `1 - (STRIP_HEIGHT + 8)` scale-relative, so a short enough viewport
+  could compress the Modules card until it's squeezed out or overlapped -
+  not verified), or "tile editor" refers to something else entirely (a
+  kerb/marking-stretch overlay panel, perhaps). Needs a screenshot that
+  actually shows the Modules palette missing/covered, plus window size at
+  the time, before this can be root-caused.
 - **Bus bay's displaced pavement doesn't drag its own kerb-restriction line
   marking along with it.** `BuildWithBay`'s nearside-pavement overlay (see
   `SHIPPED.md`) correctly moves the physical sidewalk/verge Parts outward
