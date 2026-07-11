@@ -3833,6 +3833,15 @@ function RoundaboutBuilder.Create(
 	return model
 end
 
+-- Ground-plane distance - the ring is a ground-plane circle, and a 3D
+-- magnitude would under-trim a spoke arriving on a grade (its inner end
+-- sits higher/lower than the ring, inflating the distance so the crossing
+-- lands too far out). Matches JunctionBuilder's own distanceXZ.
+local function distanceXZ(a: Vector3, b: Vector3): number
+	local dx, dz = a.X - b.X, a.Z - b.Z
+	return math.sqrt(dx * dx + dz * dz)
+end
+
 -- The station along `curve`, searched between `fromStation` (assumed
 -- inside the ring - at or near the junction centre) and `towardStation`
 -- (the spoke's far end), where distance from `center` first reaches
@@ -3847,7 +3856,7 @@ local function findRingCrossing(
 	radiusStuds: number
 ): number?
 	local function distanceAt(s: number): number
-		return (curve:PosAt(s) - center).Magnitude
+		return distanceXZ(curve:PosAt(s), center)
 	end
 	if distanceAt(towardStation) &lt; radiusStuds then
 		return nil
@@ -3865,14 +3874,18 @@ local function findRingCrossing(
 end
 
 -- Shortens `road` so it stops at the ring's own boundary instead of
--- running through to the junction centre - replaces it with a single
--- truncated piece (not a RoadSplit-style pair; the inner portion is
--- simply discarded, not kept as its own road). The far end (away from the
--- junction) keeps whatever it was connected to; the new, ring-side end is
--- left unconnected (see this file's header - the ring isn't wired into
--- the junction data model). Leaves `road` untouched if it has an active
--- transition/bay (same guard `RoadSplit` itself uses) or is shorter than
--- the ring's radius.
+-- running through to the junction centre - the inner portion is simply
+-- discarded (the ring covers that area now). The rebuilt shorter geometry
+-- is TRANSPLANTED into the existing Model (children + attributes swapped
+-- in place) rather than destroy-and-replace: destroying the original would
+-- fire main.lua's road-removal listener, which would spuriously rebuild
+-- the very junction we're about to delete (and each spoke's far junction)
+-- mid-loop from inside road:Destroy(). Same in-place approach as
+-- JunctionBuilder.trimApproach. The far end (away from the junction) keeps
+-- whatever it was connected to; the ring-side end is left unconnected (the
+-- ring isn't wired into the junction data model). Leaves `road` untouched
+-- if it has an active transition/bay (RoadSplit's own guard) or is shorter
+-- than the ring's radius.
 --
 -- findRingCrossing walks the spoke's CENTERLINE, but the crossing needs to
 -- keep the spoke's full cross-section (its sidewalk/kerb edges, which sit
@@ -3919,22 +3932,30 @@ local function trimSpokeToRing(
 	local outerSegment = if atStart
 		then CurveSegment.Sub(segment, crossing, curve.Length)
 		else CurveSegment.Sub(segment, 0, crossing)
-	local folder = road.Parent
-	local trimmed = RoadBuilder.Build({
+	local rebuilt = RoadBuilder.Build({
 		Curve = PolyCurve.new({ outerSegment }),
 		ProfileStart = data.ProfileStart,
 		Style = style,
 		Settings = settings,
 		Preview = false,
 	})
+	road:ClearAllChildren()
+	for name in road:GetAttributes() do
+		road:SetAttribute(name, nil)
+	end
+	for name, value in rebuilt:GetAttributes() do
+		road:SetAttribute(name, value)
+	end
+	for _, child in rebuilt:GetChildren() do
+		child.Parent = road
+	end
+	rebuilt:Destroy()
 	local farJunctionId = if atStart then data.EndJunctionId else data.StartJunctionId
 	if atStart then
-		RoadInstance.StampJunctions(trimmed, nil, farJunctionId)
+		RoadInstance.StampJunctions(road, nil, farJunctionId)
 	else
-		RoadInstance.StampJunctions(trimmed, farJunctionId, nil)
+		RoadInstance.StampJunctions(road, farJunctionId, nil)
 	end
-	trimmed.Parent = folder
-	road:Destroy()
 end
 
 -- Builds a roundabout replacing the junction `junctionId`: trims every

@@ -4,6 +4,28 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabouts: same spoke-trim robustness fixes as the junction approach trim
+
+- Ported the two correctness fixes from `JunctionBuilder.trimApproach`
+  into `RoundaboutBuilder.trimSpokeToRing`, which had the same two latent
+  bugs:
+  - **3D distance -> ground-plane distance.** `findRingCrossing` measured
+    `(pos - center).Magnitude`, so a spoke arriving on a grade (its inner
+    end higher/lower than the ring) reported an inflated distance and got
+    under-trimmed, leaving it poking into the ring. Now uses ground-plane
+    `distanceXZ`, matching the ring's actual circular footprint.
+  - **Destroy-and-replace -> transplant in place.** `trimSpokeToRing` built
+    a replacement road then called `road:Destroy()` on the original, which
+    fired main.lua's `workspace.DescendantRemoving` road-removal listener
+    once per spoke - each firing spuriously rebuilding the roundabout
+    junction we're about to delete (and each spoke's far junction) from
+    inside the trim loop. Now transplants the rebuilt geometry into the
+    existing Model (swap children + attributes in place), so the listener
+    never fires: only the road *Model* carries `RW_Road`, and it's never
+    destroyed. Same mechanism the junction trim now uses.
+- No behaviour change for the common flat-ground single-junction case;
+  this hardens the grade and multi-junction-spoke cases.
+
 ## Junctions: approaches now TERMINATE at the pad boundary (RoadArchitect model)
 
 - **The deeper root cause behind every "faulty intersection" report,
