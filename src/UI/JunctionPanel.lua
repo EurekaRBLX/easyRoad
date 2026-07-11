@@ -16,13 +16,17 @@ local Components = require("./Components")
 local RoadDesigner = require("./RoadDesigner")
 
 local DEFAULT_RADIUS_STUDS = 30
+local DEFAULT_LANE_COUNT = 1
+local DEFAULT_LANE_WIDTH_M = 3.65
 
 local function JunctionPanel(props: {
 	ConnectedRoadCount: number,
 	OnDelete: () -> (),
-	OnMakeRoundabout: (radiusStuds: number) -> (),
+	OnMakeRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number) -> (),
 })
 	local radiusStuds, setRadiusStuds = React.useState(DEFAULT_RADIUS_STUDS)
+	local laneCount, setLaneCount = React.useState(DEFAULT_LANE_COUNT)
+	local laneWidthM, setLaneWidthM = React.useState(DEFAULT_LANE_WIDTH_M)
 
 	local children: { [string]: any } = {}
 	RoadDesigner.DecorateCard(children)
@@ -60,19 +64,42 @@ local function JunctionPanel(props: {
 			}),
 			Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 3 }),
 		})
+		children.RoundaboutLaneCount = e(Components.Row, { LayoutOrder = 6 }, {
+			Label = e(Components.Label, { Text = "Lanes", LayoutOrder = 1, Width = 60 }),
+			Field = e(Components.NumberField, {
+				Value = laneCount,
+				Min = 1,
+				Max = 6,
+				OnChanged = function(value: number)
+					setLaneCount(math.floor(value))
+				end,
+				LayoutOrder = 2,
+			}),
+		})
+		children.RoundaboutLaneWidth = e(Components.Row, { LayoutOrder = 7 }, {
+			Label = e(Components.Label, { Text = "Lane width", LayoutOrder = 1, Width = 60 }),
+			Field = e(Components.NumberField, {
+				Value = laneWidthM,
+				Min = 1,
+				OnChanged = setLaneWidthM,
+				LayoutOrder = 2,
+			}),
+			Unit = e(Components.Label, { Text = "meters", Dim = true, LayoutOrder = 3 }),
+		})
 		children.MakeRoundabout = e(Components.Button, {
 			Text = "Make Roundabout",
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 6,
+			LayoutOrder = 8,
 			OnClick = function()
-				props.OnMakeRoundabout(radiusStuds)
+				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM)
 			end,
 		})
 		children.RoundaboutHint = e(Components.Label, {
-			Text = "v0: draws a ring around the junction - doesn't yet merge the "
-				.. "connected roads into it, so expect a rough seam where they meet.",
+			Text = "Trims the connected roads to the ring's edge and replaces this "
+				.. "junction with it - no per-lane merge geometry yet, so expect a "
+				.. "rough seam at each approach.",
 			Dim = true,
-			LayoutOrder = 7,
+			LayoutOrder = 9,
 		})
 	end
 

@@ -93,34 +93,48 @@ Deliberately still out of scope after Phase 1, in rough priority order:
   fundamentally "one road, station 0 to Length" and deliberately wasn't
   touched; junction marking geometry needs its own module.
 
-**Phase 2 - roundabouts (v0 shipped, rough on purpose).** `RoundaboutBuilder.lua`
-generates a real single-lane, one-way ring - not a new `CurveSegment`
-kind, a `PolyCurve` of 4 cubic-Bézier quarter-arcs approximating a true
-circle (the standard "k = 0.5522847498" construction), reusing
-`RoadBuilder.Build` completely unmodified since a closed ring is
-mechanically just an ordinary road whose curve starts and ends at the
-same point. Triggered from a selected junction's panel ("Make
-Roundabout," shown once 3+ roads are connected) with a radius field.
-**What v0 deliberately doesn't do:**
-- **No spoke-to-ring merge geometry.** The ring is generated as its own
-  free-standing road around the junction; each connected road's pavement
-  just ends near the ring with a visible, unmerged seam. This is the
-  single biggest gap between v0 and a real roundabout.
-- **Not linked into the junction/road data model at all.** The ring isn't
-  stamped `RW_Road` (so `RoadEditSession`'s selection UI, endpoint
-  snapping, and the mid-span split scan all ignore it - none of them are
-  built to handle a closed multi-segment curve) and isn't linked into
-  `Start`/`EndJunctionId` (a ring's seam point generally isn't at the
-  junction centre, so that model doesn't fit). There is currently no
-  in-plugin way to select, edit, or delete a placed ring - delete it via
-  the Explorer.
+**Phase 2 - roundabouts (v1, still rough on purpose).** `RoundaboutBuilder.lua`
+generates a real one-way ring (configurable lane count/width) - not a new
+`CurveSegment` kind, a `PolyCurve` of 4 cubic-Bézier quarter-arcs
+approximating a true circle (the standard "k = 0.5522847498"
+construction), reusing `RoadBuilder.Build` completely unmodified since a
+closed ring is mechanically just an ordinary road whose curve starts and
+ends at the same point. `CreateAtJunction` now also trims every connected
+spoke road back to the ring's own boundary (bisection to find where each
+spoke's curve crosses the ring's circle, `CurveSegment.Sub` to truncate,
+same transition/bay guard `RoadSplit` uses) and removes the junction node
+itself, since the ring replaces its fillet pad as the intersection
+surface - confirmed live that leaving spokes running straight through an
+untouched ring read as broken, not just rough. Triggered from a selected
+junction's panel ("Make Roundabout," shown once 3+ roads are connected)
+with radius/lane-count/lane-width fields.
+**What's still deliberately missing:**
+- **No per-lane merge tapering at each approach.** A trimmed spoke's
+  pavement just stops at the ring boundary - there's no shaped merge lane
+  blending its own lane(s) into the ring's circulating lane(s), no
+  yield/give-way markings, nothing modelling how many ring lanes a given
+  approach's lanes should feed into. This is the single biggest remaining
+  gap between v1 and a real roundabout.
+- **No live preview.** Unlike ordinary road placement (which ghosts the
+  road as you aim), there's no preview of the ring or the trimmed spokes
+  before clicking "Make Roundabout" - you only see the result after
+  committing. Same gap exists for the ordinary junction fillet pad itself
+  (no preview while approach roads are still being placed).
+- **The ring still isn't wired into the junction/road data model.** Not
+  stamped `RW_Road` (so `RoadEditSession`'s selection UI and the mid-span
+  split scan ignore it - neither is built to handle a closed
+  multi-segment curve), no `Start`/`EndJunctionId` link. There is
+  currently no in-plugin way to select, edit, or delete a placed ring -
+  delete it via the Explorer. A trimmed spoke's new ring-side end is
+  likewise left unconnected.
 - **Winding direction (which way traffic circulates for `DriveOnLeft`)
   is reasoned through, not verified live.** Flip
   `RoundaboutBuilder`'s `circleSegments` ternary if it reads backwards
   once tested in Studio.
-- **Only single-lane.** Multi-lane concentric (standard and turbo-marked)
-  and true spiral turbo roundabouts - the rest of the original
-  complexity ladder - are unbuilt.
+- **No median/central island component**, no turbo lane-guidance
+  markings, no spiral (true turbo) geometry - multi-lane concentric is
+  now possible (lane count is configurable), but nothing beyond a flat
+  multi-lane ring.
 
 **Phase 3 - lane connector + traffic light API (v0, data-model only, no
 UI).** `JunctionLanes.lua`'s `ComputeConnections` is a real, live
@@ -136,6 +150,50 @@ consumes this. `DefaultPhases`/`SignalPhase` is a genuinely thin mock -
 proves the shape a future traffic-light plugin would consume (all
 connections green at once), not a real conflict-aware phase-grouping
 algorithm.
+
+## Kerb marking editor + highway shoulder default (not started)
+
+Reported live: highway profiles currently draw a plain edge-line "kerb"
+marking on the outer edge of the shoulder, where real highway marking
+convention has nothing there (it's pavement running into open embankment/
+grass, not an actual kerb or a parking-relevant edge). Root cause: kerb
+line generation (`Markings.KerbEdges`/`Compute`) treats a profile's
+`KerbRestriction` as ONE setting applying uniformly to every kerb-eligible
+edge - there's no way for a profile to say "no line on the outer edge,
+but the usual restriction elsewhere." Two related asks:
+- **Default fix**: built-in Highway-category profiles should default to
+  no marking on the outer shoulder edge. Smallest correct fix is probably
+  making `RoadProfile.BuiltInProfiles`'s highway entries default
+  `KerbRestriction = "NoLine"` - but confirm this doesn't also suppress a
+  wanted restriction on an inner (median-adjacent) edge first, since
+  today's model can't distinguish the two.
+- **Real fix / feature**: extend the single whole-profile
+  `KerbRestriction` into a per-edge override map (same `EdgeIndex`
+  numbering `KerbStretch` already uses), and add a UI section to
+  `RoadDesigner.lua` (next to `ProfileFields.InsertMarkingOptions`, which
+  currently renders the single whole-profile dropdown) listing every
+  kerb-eligible edge from `Markings.KerbEdges` with its own restriction
+  dropdown - the profile-level, always-on counterpart to the
+  already-built per-instance `KerbStretch` free-form override tool.
+  Comparable in size to the `KerbStretch.Side` → `EdgeIndex`
+  generalisation already done for stretches.
+
+## Median variety + elevated/underground sections (not started)
+
+User's own sequencing: tackle after the intersection tool. Logged here,
+not scoped in detail yet:
+- **Different forms of median** - currently `Median` is one flat raised
+  strip with a single colour (`RegionStyles.MedianColor`). Wants variety:
+  at minimum grass vs. paved/flush vs. barrier (e.g. Jersey barrier)
+  medians, likely as different `ComponentKind`s or a sub-kind on
+  `Median` rather than a colour-only distinction, since a barrier median
+  reads as physically different geometry (raised concrete profile) from
+  a grass one (flat, no kerb).
+- **Elevated / protected / underground sections** - the existing
+  "Tunnels / bridges standard" backlog item below (auto-generated
+  barriers/parapets, pillars) is the closest existing scoping for this;
+  "protected" (presumably protected/segregated cycle lanes or similar)
+  hasn't been scoped at all yet.
 
 Smaller, independent alternative that builds on the inspector instead of
 junctions: dragging a placed road's endpoint, or a duplicate/delete action

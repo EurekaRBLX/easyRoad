@@ -4,6 +4,25 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabouts: configurable lanes + trims spokes to the ring boundary
+
+- **Confirmed live that generating the ring as a free-standing object with
+  no effect on the connected roads read as broken**, not just rough (a
+  screenshot showed a 4-way crossroads with roads running straight
+  through an untouched ring). `RoundaboutBuilder.CreateAtJunction` now
+  trims every connected spoke back to the ring's own boundary before
+  building it: for each spoke, bisects along its curve to find the
+  station where it crosses the ring's circle (reusing the same
+  transition/bus-bay guard `RoadSplit` uses - a spoke with either is left
+  untouched), truncates it there via `CurveSegment.Sub`, and removes the
+  junction node itself once the ring is built, since the ring now serves
+  as the intersection surface in its place. Still no per-lane merge
+  tapering at each approach (a trimmed spoke's pavement just stops at the
+  boundary) - see `TODO.md` for the full remaining gap list.
+- **Lane count and lane width are now configurable** (were hardcoded to a
+  single region-default-width lane) - two new fields alongside the radius
+  on the junction panel's "Make Roundabout" controls.
+
 ## Junctions Phase 2+3 v0: roundabout ring generator + lane/traffic-light API surface
 
 - **Requested to build all remaining phases now, roughly, to be refined

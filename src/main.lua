@@ -696,13 +696,24 @@ return function(
 			bottomContent = React.createElement(JunctionPanel, {
 				ConnectedRoadCount = junctionEditSession.GetConnectedRoadCount(),
 				OnDelete = junctionEditSession.DeleteJunction,
-				OnMakeRoundabout = function(radiusStuds: number)
-					local center = junctionEditSession.GetSelectedJunctionPosition()
-					if not center then
+				OnMakeRoundabout = function(radiusStuds: number, laneCount: number, laneWidthM: number)
+					local junctionModel = junctionEditSession.GetSelectedJunction()
+					if not junctionModel then
+						return
+					end
+					local junctionData = JunctionInstance.Read(junctionModel)
+					if not junctionData then
 						return
 					end
 					local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Make roundabout")
-					RoundaboutBuilder.Create(center, radiusStuds, getStyle(), settings)
+					RoundaboutBuilder.CreateAtJunction(
+						junctionData.Id,
+						radiusStuds,
+						laneCount,
+						laneWidthM,
+						getStyle(),
+						settings
+					)
 					if recording then
 						ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
 					end
@@ -711,7 +722,7 @@ return function(
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
 				Position = UDim2.new(0, 12, 1, -12),
-				Size = UDim2.new(0, 280, 0, 280),
+				Size = UDim2.new(0, 280, 0, 360),
 			}
 		end
 

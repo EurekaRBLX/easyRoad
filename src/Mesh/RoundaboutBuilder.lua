@@ -1,31 +1,30 @@
 --!strict
--- Generates a roundabout: a closed, single-lane, one-way ring road built
--- from 4 cubic-Bezier quarter-arcs approximating a true circle (the
--- standard "k = 0.5522847498" construction, ~0.03% max radial error) -
--- reuses RoadBuilder.Build completely unmodified, since a closed ring is
--- mechanically just an ordinary road whose curve happens to start and end
--- at the same physical point; every station/curvature/marking query
--- PolyCurve exposes already works across multiple segments, only the
+-- Generates a roundabout: a closed, one-way ring road (configurable lane
+-- count/width) built from 4 cubic-Bezier quarter-arcs approximating a true
+-- circle (the standard "k = 0.5522847498" construction, ~0.03% max radial
+-- error) - reuses RoadBuilder.Build completely unmodified, since a closed
+-- ring is mechanically just an ordinary road whose curve happens to start
+-- and end at the same physical point; every station/curvature/marking
+-- query PolyCurve exposes already works across multiple segments, only the
 -- single-segment persistence shortcut in RoadBuilder.Build's own stamping
 -- step doesn't apply here (handled below).
 --
--- v0 / rough, per TODO.md's phased plan - deliberately doesn't attempt to
--- merge each spoke road at a junction into the ring (no splicing, no
--- shared lane geometry at the approach points - there will be a visible
--- seam where each spoke's pavement meets the ring). Only single-lane
--- roundabouts are supported; multi-lane/turbo variants are unbuilt. The
--- ring is NOT stamped RW_Road (so it isn't picked up by RoadEditSession's
--- selection UI, endpoint-snapping, or the mid-span split scan, none of
--- which are built to handle a closed multi-segment curve yet) and isn't
--- linked into the junction's Start/EndJunctionId model (its seam point
--- generally isn't at the junction centre, so that model doesn't fit) -
--- there is currently no in-plugin way to select, edit, or delete a placed
--- ring; delete it via the Explorer.
+-- CreateAtJunction trims each of the junction's connected spoke roads back
+-- to the ring's own boundary (so they no longer visibly run straight
+-- through it) and removes the junction node itself, since the ring now
+-- serves as the intersection surface in its place. Still v1/rough per
+-- TODO.md's phased plan - see its "Junctions & roundabouts" section for
+-- exactly what this does and doesn't do (no per-lane merge tapering at
+-- each approach, no median island, no in-plugin selection/editing of a
+-- placed ring).
 
 local CurveSegment = require("../Geometry/CurveSegment")
 local PolyCurve = require("../Geometry/PolyCurve")
 local RoadBuilder = require("./RoadBuilder")
+local RoadInstance = require("../RoadInstance")
 local RoadProfile = require("../RoadProfile")
+local RoadSplit = require("../RoadSplit")
+local JunctionInstance = require("../JunctionInstance")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
 
@@ -72,23 +71,27 @@ local function getRoundaboutsFolder(): Folder
 	return folder
 end
 
--- Builds and parents a single-lane one-way roundabout ring of `radiusStuds`
--- centred at `center`.
+-- Builds and parents a one-way roundabout ring of `radiusStuds` centred at
+-- `center`, with `laneCount` lanes (>= 1) each `laneWidthM` wide.
 function RoundaboutBuilder.Create(
 	center: Vector3,
 	radiusStuds: number,
+	laneCount: number,
+	laneWidthM: number,
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings
 ): Model
 	local curve = PolyCurve.new(circleSegments(center, radiusStuds, style.DriveOnLeft))
+	local components: { RoadProfile.ProfileComponent } = {}
+	for _ = 1, math.max(1, math.floor(laneCount)) do
+		table.insert(components, { Kind = "Drive", WidthM = laneWidthM, Direction = 1 })
+	end
 	local profile: RoadProfile.RoadProfile = {
 		Id = "roundabout_ring",
 		Name = "Roundabout",
 		Category = "Custom",
 		BuiltIn = false,
-		Components = {
-			{ Kind = "Drive", WidthM = style.DefaultLaneWidthM, Direction = 1 },
-		},
+		Components = components,
 	}
 	local model = RoadBuilder.Build({
 		Curve = curve,
@@ -107,6 +110,126 @@ function RoundaboutBuilder.Create(
 	model.Name = "Roundabout"
 	model.Parent = getRoundaboutsFolder()
 	return model
+end
+
+-- The station along `curve`, searched between `fromStation` (assumed
+-- inside the ring - at or near the junction centre) and `towardStation`
+-- (the spoke's far end), where distance from `center` first reaches
+-- `radiusStuds` - nil if the whole span stays inside the ring (the spoke
+-- is shorter than the roundabout's own radius, so there's nothing
+-- meaningful to trim).
+local function findRingCrossing(
+	curve: PolyCurve.PolyCurve,
+	fromStation: number,
+	towardStation: number,
+	center: Vector3,
+	radiusStuds: number
+): number?
+	local function distanceAt(s: number): number
+		return (curve:PosAt(s) - center).Magnitude
+	end
+	if distanceAt(towardStation) < radiusStuds then
+		return nil
+	end
+	local lo, hi = fromStation, towardStation
+	for _ = 1, 30 do
+		local mid = (lo + hi) / 2
+		if distanceAt(mid) < radiusStuds then
+			lo = mid
+		else
+			hi = mid
+		end
+	end
+	return (lo + hi) / 2
+end
+
+-- Shortens `road` so it stops at the ring's own boundary instead of
+-- running through to the junction centre - replaces it with a single
+-- truncated piece (not a RoadSplit-style pair; the inner portion is
+-- simply discarded, not kept as its own road). The far end (away from the
+-- junction) keeps whatever it was connected to; the new, ring-side end is
+-- left unconnected (see this file's header - the ring isn't wired into
+-- the junction data model). Leaves `road` untouched if it has an active
+-- transition/bay (same guard `RoadSplit` itself uses) or is shorter than
+-- the ring's radius.
+local function trimSpokeToRing(
+	road: Model,
+	junctionId: string,
+	center: Vector3,
+	radiusStuds: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+)
+	if not RoadSplit.CanSplit(road) then
+		return
+	end
+	local data = RoadInstance.Read(road)
+	if not data then
+		return
+	end
+	local atStart = data.StartJunctionId == junctionId
+	local atEnd = data.EndJunctionId == junctionId
+	if not atStart and not atEnd then
+		return
+	end
+	local curve = data.Curve
+	local fromStation = if atStart then 0 else curve.Length
+	local towardStation = if atStart then curve.Length else 0
+	local crossing = findRingCrossing(curve, fromStation, towardStation, center, radiusStuds)
+	if not crossing then
+		return
+	end
+	local segment = curve.Segments[1]
+	local outerSegment = if atStart
+		then CurveSegment.Sub(segment, crossing, curve.Length)
+		else CurveSegment.Sub(segment, 0, crossing)
+	local folder = road.Parent
+	local trimmed = RoadBuilder.Build({
+		Curve = PolyCurve.new({ outerSegment }),
+		ProfileStart = data.ProfileStart,
+		Style = style,
+		Settings = settings,
+		Preview = false,
+	})
+	local farJunctionId = if atStart then data.EndJunctionId else data.StartJunctionId
+	if atStart then
+		RoadInstance.StampJunctions(trimmed, nil, farJunctionId)
+	else
+		RoadInstance.StampJunctions(trimmed, farJunctionId, nil)
+	end
+	trimmed.Parent = folder
+	road:Destroy()
+end
+
+-- Builds a roundabout replacing the junction `junctionId`: trims every
+-- currently-connected spoke road back to the ring's boundary, builds the
+-- ring, and removes the junction node (its fillet pad is superseded by
+-- the ring). Returns the ring model, or nil if the junction can't be read.
+function RoundaboutBuilder.CreateAtJunction(
+	junctionId: string,
+	radiusStuds: number,
+	laneCount: number,
+	laneWidthM: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): Model?
+	local junctionModel = JunctionInstance.FindById(junctionId)
+	if not junctionModel then
+		return nil
+	end
+	local junctionData = JunctionInstance.Read(junctionModel)
+	if not junctionData then
+		return nil
+	end
+	local center = junctionData.Position
+
+	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
+		trimSpokeToRing(road, junctionId, center, radiusStuds, style, settings)
+	end
+
+	local ring = RoundaboutBuilder.Create(center, radiusStuds, laneCount, laneWidthM, style, settings)
+	JunctionInstance.Delete(junctionModel)
+	return ring
 end
 
 return RoundaboutBuilder
