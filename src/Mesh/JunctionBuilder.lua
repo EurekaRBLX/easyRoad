@@ -47,19 +47,21 @@
 --    is exactly what kept breaking when used unbounded; here it's one
 --    input to a fillet whose reach is capped by construction, not by a
 --    threshold discovered after something broke.
---    Built as a strictly ADDITIVE overlay on top of the base pad (2, above)
---    rather than by substituting the hull edge in the same fan: the base
---    pad's every triangle still comes from the plain straight hull, fanned
---    from the single global apex, exactly as before; the fillet's own arc
---    points are fanned separately from each edge's own LOCAL a.Kerb/
---    a.Outer point. A fillet arc bulges outward from the straight
---    a.Kerb-b.Kerb chord, which on a sharp corner can reach past the
---    global apex's own straight-line view of that edge - fanning that
---    bulge from apex (an earlier version of this file did) is what
---    produced torn, self-intersecting shards at a real 4-way intersection.
---    Fanning it locally instead means a bad fillet case can at worst
---    overlap the already-correct base pad (invisible - same material,
---    same height), never tear it.
+--    The asphalt is built in two layers: the base pad's every triangle
+--    still comes from the plain straight hull fanned from the single global
+--    apex (exactly as before rounding existed), plus a strictly ADDITIVE
+--    corner bulge fanned from each edge's own LOCAL a.Kerb across the arc.
+--    A fillet arc bulges outward from the straight a.Kerb-b.Kerb chord
+--    toward the corner, which on a sharp corner can reach past the global
+--    apex's own straight-line view of that edge - fanning that bulge from
+--    apex (an earlier version did) is what tore the mesh into shards at a
+--    real 4-way. Fanning locally means a bad fillet at worst overlaps the
+--    already-correct base pad (invisible - same material, same height),
+--    never tears it. The SIDEWALK (see `cornerBoundaries`) is a separate
+--    BAND between the kerb boundary and an outward-offset outer boundary,
+--    filled a quad per span - NOT a fan from a single a.Outer across the
+--    curved kerb arc, which skewed the sidewalk triangles across the
+--    asphalt into hook/sliver artifacts (reported live).
 --
 -- Still missing (TODO.md): stop lines/crosswalks/lane guidance through the
 -- pad, and approach trimming for roads with a transition or bay
@@ -559,27 +561,68 @@ local function sampleFilletArc(
 	return points
 end
 
--- The ordered boundary points between `a.Kerb` and `b.Kerb` for one
--- cross-road hull edge - either the two points directly (straight
--- chamfer, always safe) or, when computeFillet finds a valid rounded
--- corner, `a.Kerb`, the fillet's sampled arc, then `b.Kerb`.
-local function cornerBoundaryPoints(a: EdgePoint, b: EdgePoint, junctionId: string, radiusStuds: number): { Vector3 }
+-- Offsets `point` outward (away from the fillet circle `center`) by
+-- `distance` studs, staying in the ground plane so the offset row stays
+-- flat/level like every other sidewalk part. A point coincident with the
+-- centre (shouldn't happen for a real arc point) is returned unchanged.
+local function offsetOutward(point: Vector3, center: Vector3, distance: number): Vector3
+	local flat = Vector3.new(point.X - center.X, 0, point.Z - center.Z)
+	if flat.Magnitude < 1e-6 then
+		return point
+	end
+	return point + flat.Unit * distance
+end
+
+-- The paired KERB (asphalt-edge) and OUTER (sidewalk-outer-edge) boundaries
+-- for one cross-road hull corner, returned as two equal-length point lists
+-- so the sidewalk can be filled as a proper BAND between them (quad per
+-- span) rather than a fan from a single point - fanning the sidewalk from
+-- one `a.Outer` across a curved kerb arc skewed the triangles across the
+-- asphalt and produced hook/sliver artifacts at the corner.
+--
+-- Straight chamfer (no valid fillet): kerb {a.Kerb, b.Kerb}, outer
+-- {a.Outer, b.Outer} - a single sidewalk quad, exactly as before rounding.
+-- Rounded corner: the kerb list follows the fillet arc; each interior arc
+-- point's outer partner is that point pushed radially outward (away from
+-- the fillet circle centre - which for the corner-facing arc is the
+-- outward/sidewalk direction) by the sidewalk width, interpolated from
+-- road A's width at the a end to road B's at the b end. The two endpoints
+-- are pinned to the roads' own real `a.Outer`/`b.Outer` so the band meets
+-- each connected road's sidewalk seamlessly.
+local function cornerBoundaries(
+	a: EdgePoint,
+	b: EdgePoint,
+	junctionId: string,
+	radiusStuds: number
+): ({ Vector3 }, { Vector3 })
 	local inwardA = outwardTangentAt(a.Road, junctionId)
 	local inwardB = outwardTangentAt(b.Road, junctionId)
 	if not inwardA or not inwardB then
-		return { a.Kerb, b.Kerb }
+		return { a.Kerb, b.Kerb }, { a.Outer, b.Outer }
 	end
 	local p1, center, p2, effectiveRadius = computeFillet(a.Kerb, -inwardA, b.Kerb, -inwardB, radiusStuds)
 	if not p1 or not center or not p2 or not effectiveRadius then
-		return { a.Kerb, b.Kerb }
+		return { a.Kerb, b.Kerb }, { a.Outer, b.Outer }
 	end
-	local boundary: { Vector3 } = { a.Kerb, p1 }
-	for _, point in sampleFilletArc(center, effectiveRadius, p1, p2, FILLET_ARC_SAMPLES) do
-		table.insert(boundary, point)
+	local widthA = distanceXZ(a.Outer, a.Kerb)
+	local widthB = distanceXZ(b.Outer, b.Kerb)
+	-- Sampled arc points, plus p1 (t=0) and p2 (t=1), each tagged with the
+	-- t used to interpolate its sidewalk width. sampleFilletArc uses
+	-- t = i/(samples+1), so the interior points sit strictly between.
+	local kerb: { Vector3 } = { a.Kerb, p1 }
+	local outer: { Vector3 } = { a.Outer, offsetOutward(p1, center, widthA) }
+	local arc = sampleFilletArc(center, effectiveRadius, p1, p2, FILLET_ARC_SAMPLES)
+	for i, point in arc do
+		local t = i / (FILLET_ARC_SAMPLES + 1)
+		local width = widthA + (widthB - widthA) * t
+		table.insert(kerb, point)
+		table.insert(outer, offsetOutward(point, center, width))
 	end
-	table.insert(boundary, p2)
-	table.insert(boundary, b.Kerb)
-	return boundary
+	table.insert(kerb, p2)
+	table.insert(outer, offsetOutward(p2, center, widthB))
+	table.insert(kerb, b.Kerb)
+	table.insert(outer, b.Outer)
+	return kerb, outer
 end
 
 -- Rebuilds the junction's geometry from scratch based on whichever roads
@@ -675,70 +718,72 @@ function JunctionBuilder.Rebuild(
 		local apex = hull[1].Kerb
 		local filletRadiusStuds = FILLET_RADIUS_M * settings.MetersToStuds
 		-- Two layers, built separately on purpose (see the header comment's
-		-- point 3): a BASE pad that's exactly the plain convex-hull fan from
-		-- earlier rounds - unconditional, every hull edge, always fanned
-		-- from the single global `apex` - so the proven-safe shape never
-		-- depends on whether a fillet succeeds. Rounding is then a strictly
-		-- ADDITIVE overlay on top, fanned from each edge's own LOCAL
-		-- `a.Kerb`/`a.Outer` point instead of the global apex. A fillet arc
-		-- bulges OUTWARD from the straight a.Kerb-b.Kerb chord (toward
-		-- where the two roads' own kerb lines would actually meet), which
-		-- can walk past the global apex's own straight-line "view" of that
-		-- edge on a sharp corner - fanning THAT from apex is exactly what
-		-- produced the torn, self-intersecting shards seen live on a real
-		-- 4-way intersection. Fanning the overlay locally instead means the
-		-- worst case for a bad fillet is a small glitch confined to one
-		-- corner's thin overlay strip - the base pad underneath is already
-		-- complete and correct regardless.
+		-- point 3): a BASE asphalt pad that's exactly the plain convex-hull
+		-- fan from earlier rounds - unconditional, every hull edge, always
+		-- fanned from the single global `apex` - so the proven-safe shape
+		-- never depends on whether a fillet succeeds. Rounding is then a
+		-- strictly ADDITIVE asphalt bulge, fanned from each edge's own LOCAL
+		-- `a.Kerb` (not the global apex): a fillet arc bulges OUTWARD from
+		-- the straight a.Kerb-b.Kerb chord toward the corner, and fanning
+		-- that from the distant global apex is what tore the mesh on a sharp
+		-- 4-way. The SIDEWALK is a separate concern: it's a proper BAND
+		-- between the kerb boundary and a matching outer boundary offset
+		-- outward by the sidewalk width (cornerBoundaries), filled a quad
+		-- per span - never a fan from one point across the curved kerb arc,
+		-- which skewed the sidewalk across the asphalt and produced the
+		-- hook/sliver artifacts reported live.
 		for i = 1, #hull do
 			local a = hull[i]
 			local b = hull[if i < #hull then i + 1 else 1]
-			-- Base: same-road edges and cross-road edges both get their
-			-- plain straight chord filled from the global apex - a boundary
-			-- point that equals `apex` itself (the two edges touching the
-			-- apex vertex) produces a zero-length edge, silently skipped by
-			-- FillTriangle's own degenerate-triangle guard.
+			-- Base: every hull edge's plain straight chord, filled from the
+			-- global apex. A chord point equal to `apex` itself (the two
+			-- edges touching the apex vertex) makes a zero-length edge,
+			-- silently skipped by FillTriangle's degenerate-triangle guard.
 			FillTriangle(apex, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
 			if a.Road ~= b.Road then
-				FillTriangle(
-					raise(a.Outer),
-					raise(a.Kerb),
-					raise(b.Kerb),
-					sidewalkDepth,
-					DOWN,
-					makeSidewalkPart,
-					folder
-				)
-				FillTriangle(
-					raise(a.Outer),
-					raise(b.Kerb),
-					raise(b.Outer),
-					sidewalkDepth,
-					DOWN,
-					makeSidewalkPart,
-					folder
-				)
-
-				-- Overlay: only for a real (cross-road) corner, only when a
-				-- safe fillet was actually found (cornerBoundaryPoints
-				-- returns just the 2 chord endpoints otherwise, so there's
-				-- nothing to add).
-				local boundary = cornerBoundaryPoints(a, b, junctionId, filletRadiusStuds)
-				if #boundary > 2 then
-					for j = 1, #boundary - 1 do
-						FillTriangle(a.Kerb, boundary[j], boundary[j + 1], thickness, DOWN, makeAsphaltPart, folder)
-					end
-					for j = 1, #boundary - 1 do
+				local kerbBoundary, outerBoundary = cornerBoundaries(a, b, junctionId, filletRadiusStuds)
+				-- Asphalt corner bulge: only when a real fillet was found
+				-- (otherwise kerbBoundary is just the 2 chord endpoints, and
+				-- the base fan above already covered the chord). Fanned from
+				-- the LOCAL a.Kerb across the arc.
+				if #kerbBoundary > 2 then
+					for j = 1, #kerbBoundary - 1 do
 						FillTriangle(
-							raise(a.Outer),
-							raise(boundary[j]),
-							raise(boundary[j + 1]),
-							sidewalkDepth,
+							a.Kerb,
+							kerbBoundary[j],
+							kerbBoundary[j + 1],
+							thickness,
 							DOWN,
-							makeSidewalkPart,
+							makeAsphaltPart,
 							folder
 						)
 					end
+				end
+				-- Sidewalk band: one quad (two triangles) per span between
+				-- the kerb boundary and its outward-offset outer boundary,
+				-- both raised to curb height. For a straight chamfer this is
+				-- the single a.Outer-a.Kerb-b.Kerb-b.Outer quad; for a
+				-- rounded corner it follows the arc without ever crossing
+				-- into the asphalt.
+				for j = 1, #kerbBoundary - 1 do
+					FillTriangle(
+						raise(outerBoundary[j]),
+						raise(kerbBoundary[j]),
+						raise(kerbBoundary[j + 1]),
+						sidewalkDepth,
+						DOWN,
+						makeSidewalkPart,
+						folder
+					)
+					FillTriangle(
+						raise(outerBoundary[j]),
+						raise(kerbBoundary[j + 1]),
+						raise(outerBoundary[j + 1]),
+						sidewalkDepth,
+						DOWN,
+						makeSidewalkPart,
+						folder
+					)
 				end
 			end
 		end

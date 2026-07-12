@@ -4,6 +4,34 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junction corners: sidewalk is now a proper offset band, not a fan (fixes the hook/sliver)
+
+- The previous round's fix decoupled the asphalt fan (base pad vs. corner
+  bulge) but left the SIDEWALK still fanned from a single `a.Outer` point
+  across the curved kerb arc. That fan skewed the sidewalk triangles across
+  the asphalt fillet and produced hook/sliver artifacts at rounded corners
+  (reported live - a curl of concrete at a curve/straight merge, and
+  scattered fragments around a junction).
+- Root cause: a fan from one fixed point is only correct across a STRAIGHT
+  span. Across the fillet's outward-bulging arc it reaches over the asphalt.
+  Fixed by building the sidewalk as a real BAND: `cornerBoundaries` now
+  returns the kerb (asphalt-edge) boundary AND a matching OUTER boundary,
+  each kerb point offset radially outward (away from the fillet circle
+  centre - which for the corner-facing arc is the sidewalk direction) by
+  the sidewalk width, interpolated from road A's width at one end to road
+  B's at the other, with the two endpoints pinned to the roads' own real
+  `a.Outer`/`b.Outer` so the band meets each connected road's sidewalk
+  seamlessly. The band is filled a quad (two triangles) per span between
+  the two boundaries - it runs parallel to the kerb arc and never crosses
+  into the asphalt.
+- The straight-chamfer case is provably unchanged: `cornerBoundaries`
+  returns exactly `({a.Kerb, b.Kerb}, {a.Outer, b.Outer})`, so the band
+  loop emits the identical single `a.Outer-a.Kerb-b.Kerb-b.Outer` quad as
+  before. Only genuinely-filleted corners take the new arc-following path.
+- Asphalt is untouched by this change (base apex fan + local-a.Kerb corner
+  bulge, both from the prior round); only the sidewalk construction moved
+  from a fan to a band.
+
 ## Junction/curve fixes round: fillet tear, sidewalk height, curve faceting, junction re-connection, roundabout sidewalks + island
 
 Five separate, concrete bugs found from live Studio screenshots (a real
