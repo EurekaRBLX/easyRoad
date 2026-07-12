@@ -254,6 +254,16 @@ any road drawn to cross it afterwards won't auto-connect.
   `JunctionBuilder`-style corner-fill bridging each spoke's sidewalk into
   the ring's own edge - there's a small margin gap by design, not a
   seamless join - but the notch itself is gone.
+- **If a fan of thin shards ever reappears inside a roundabout's island**
+  (reported live once, see `SHIPPED.md`'s "defensive stale-pad cleanup"
+  entry): the leading but UNCONFIRMED theory is a stale `JunctionBuilder`
+  pad (the old intersection's convex-hull asphalt fan) surviving because
+  something in `CreateAtJunction` errored before reaching its
+  `JunctionInstance.Delete` call. A defensive early cleanup was added, but
+  the actual root cause was never pinned down (no live Studio access to
+  check the Output window for the real error) - if it recurs, check Output
+  for a Luau error during roundabout creation first, before assuming the
+  defensive cleanup didn't work.
 - **No live preview.** Unlike ordinary road placement (which ghosts the
   road as you aim), there's no preview of the ring or the trimmed spokes
   before clicking "Make Roundabout" - you only see the result after

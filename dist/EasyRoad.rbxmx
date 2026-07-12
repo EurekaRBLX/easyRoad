@@ -4126,42 +4126,62 @@ local function getRoundaboutsFolder(): Folder
 	return folder
 end
 
--- The ring's profile Components - lanes flanked by a Sidewalk on BOTH
--- sides, not just the outer edge. The ring's own frame is built by
+-- The ring's profile Components - lanes with a Sidewalk on the OUTER edge
+-- only. No pavement is needed on the inner edge (facing the island) - real
+-- roundabouts don't have a pedestrian strip there either, and the island
+-- itself (built below) reaches right up to the lanes instead.
+--
+-- Which physical side (first or last in the list) is the OUTER edge
+-- depends on the region's driving side: the ring's own frame is built by
 -- PolyCurve.FrameAt via CFrame.lookAt, whose local +X (RightVector =
--- tangent x Up) points inward (toward centre) for a DriveOnLeft=false
--- region but OUTWARD for DriveOnLeft=true (reversing the tangent direction
--- reverses RightVector too), so "first component" and "last component"
--- swap which physical edge (inner/outer) they land on depending on the
--- region's driving side. Rather than track that sign, both edges get a
--- sidewalk - the inner one reads as a paved verge/truck apron against the
--- central island's own kerb, which is normal on a real roundabout anyway,
--- and it means this never needs updating if a future style flips
--- DriveOnLeft. Shared by Create and CreateAtJunction's gap-cutting build,
--- which both need to reason about the ring's own total width up front.
+-- LookVector x UpVector - verified against Roblox's own identity CFrame,
+-- Look=(0,0,-1)/Up=(0,1,0)/Right=(1,0,0)) points inward (toward centre)
+-- for a DriveOnLeft=false region but outward for DriveOnLeft=true
+-- (reversing the tangent direction reverses RightVector too). Positive
+-- ComponentOffsetsM values are the LAST component (walks from -total/2 to
+-- +total/2), which sits in the RightVector direction - so for
+-- DriveOnLeft=false, "last component" = inward = the sidewalk belongs
+-- FIRST; for DriveOnLeft=true it's the opposite.
+--
+-- Shared by Create and CreateAtJunction's gap-cutting build, which both
+-- need this to reason about which edge to size the island against.
 local function ringComponents(
 	laneCount: number,
 	laneWidthM: number,
 	style: RegionStyles.RegionStyle
 ): { RoadProfile.ProfileComponent }
-	local sidewalkComponent: RoadProfile.ProfileComponent =
-		{ Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
-	local components: { RoadProfile.ProfileComponent } = { sidewalkComponent }
+	local components: { RoadProfile.ProfileComponent } = {}
 	for _ = 1, math.max(1, math.floor(laneCount)) do
 		table.insert(components, { Kind = "Drive", WidthM = laneWidthM, Direction = 1 })
 	end
-	table.insert(components, sidewalkComponent)
+	local sidewalkComponent: RoadProfile.ProfileComponent =
+		{ Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
+	if style.DriveOnLeft then
+		table.insert(components, sidewalkComponent)
+	else
+		table.insert(components, 1, sidewalkComponent)
+	end
 	return components
 end
 
+-- The ring's own inner pavement edge (the lane boundary facing the
+-- island, on whichever side has no sidewalk - see ringComponents), as a
+-- positive distance in meters from the centreline.
+local function ringInnerHalfWidthM(profile: RoadProfile.RoadProfile, style: RegionStyles.RegionStyle): number
+	local offsets = RoadProfile.ComponentOffsetsM(profile)
+	if style.DriveOnLeft then
+		return -offsets[1].Left
+	end
+	return offsets[#offsets].Right
+end
+
 -- Builds and parents, under `model`, a raised kerbed disc filling the hole
--- the ring leaves in the middle - sized via `profile`'s own symmetric
--- ComponentOffsetsM span (-halfWidth to +halfWidth around the centreline,
--- regardless of which physical side is which) to reach exactly the ring's
--- own inner pavement edge with no gap or overlap. Same raised-part
--- convention RoadBuilder itself uses for every Sidewalk component (top at
--- curbHeight above the ring's own plane, bottom at -thickness) so the two
--- meet flush.
+-- the ring leaves in the middle - sized to reach exactly the ring's own
+-- inner LANE edge (not a symmetric half-width - there's no sidewalk on
+-- that side any more, so the island can extend right up to the traffic
+-- lanes) with no gap or overlap. Same raised-part convention RoadBuilder
+-- itself uses for every Sidewalk component (top at curbHeight above the
+-- ring's own plane, bottom at -thickness) so the two meet flush.
 local function buildIsland(
 	model: Model,
 	center: Vector3,
@@ -4173,8 +4193,7 @@ local function buildIsland(
 	local scale = settings.MetersToStuds
 	local thickness = settings.RoadThicknessStuds
 	local curbHeight = style.CurbHeightM * scale
-	local halfWidthM = RoadProfile.TotalWidthM(profile) / 2
-	local islandRadiusStuds = radiusStuds - halfWidthM * scale
+	local islandRadiusStuds = radiusStuds - ringInnerHalfWidthM(profile, style) * scale
 	if islandRadiusStuds &lt;= 1 then
 		return
 	end
@@ -4476,6 +4495,18 @@ function RoundaboutBuilder.CreateAtJunction(
 	local center = junctionData.Position
 	local scale = settings.MetersToStuds
 
+	-- Defensively clear the junction's own pad `Geometry` (JunctionBuilder's
+	-- convex-hull fan, from whenever this junction was last rebuilt as an
+	-- ordinary intersection) up front, not just relying on the
+	-- JunctionInstance.Delete call at the very end of this function - if
+	-- anything below this point were to error out partway through, the old
+	-- pad would otherwise be left showing through the new ring/island
+	-- (reported live as a fan of thin shards visible inside the island).
+	local staleGeometry = junctionModel:FindFirstChild("Geometry")
+	if staleGeometry then
+		staleGeometry:Destroy()
+	end
+
 	local components = ringComponents(laneCount, laneWidthM, style)
 	local profile: RoadProfile.RoadProfile = {
 		Id = "roundabout_ring",
@@ -4531,13 +4562,10 @@ function RoundaboutBuilder.CreateAtJunction(
 	local ring = Instance.new("Model")
 	ring.Name = "Roundabout"
 
-	-- The two Sidewalk components are always first and last (see
-	-- ringComponents) - excluded together across each gap's station range.
-	-- Only the side actually facing the feeder needs the opening, but
-	-- excluding both is harmless (the ring's inner sidewalk, against the
-	-- island, isn't near any feeder) and avoids having to determine which
-	-- physical side is which here too.
-	local sidewalkIndices = { 1, #components }
+	-- The single Sidewalk component is first or last depending on
+	-- DriveOnLeft (see ringComponents) - excluded across each gap's
+	-- station range so the ring's outer sidewalk opens up for the feeder.
+	local sidewalkIndices = { if style.DriveOnLeft then #components else 1 }
 	local function buildSpan(fromStation: number, toStation: number, excludeSidewalks: boolean)
 		if toStation - fromStation &lt; 1e-3 then
 			return

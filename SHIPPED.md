@@ -4,6 +4,43 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: outer-edge-only sidewalk, larger island, defensive stale-pad cleanup
+
+- Reported live: a fan of thin shards visible inside a roundabout's
+  island, and (separately) a request to drop the pointless inner sidewalk
+  strip entirely and let the island grow to fill that space instead - real
+  roundabouts don't have pedestrian pavement on the side facing the centre
+  island either.
+- `ringComponents` now places exactly ONE Sidewalk component, on the
+  physically OUTER edge only - resolved via `style.DriveOnLeft`, not
+  guessed: `PolyCurve.FrameAt`'s `RightVector = LookVector x UpVector`
+  formula was checked against Roblox's own identity CFrame
+  (`Look=(0,0,-1)`, `Up=(0,1,0)` gives `Right=(1,0,0)`, confirmed via a
+  standalone cross-product check) before relying on it this time, given
+  the sidewalk-band sign error found earlier this same session in
+  unrelated (junction fillet) code. `ringInnerHalfWidthM` reads the
+  correct side's own `ComponentOffsetsM` extreme accordingly.
+- `buildIsland` now sizes the island against that real inner LANE edge
+  (previously a symmetric total-width/2, which assumed a sidewalk existed
+  on both sides) - the island grows to fill exactly the space the removed
+  inner sidewalk used to occupy, reaching right up to the traffic lanes.
+- `CreateAtJunction`'s gap-cutting (`sidewalkIndices`) now excludes just
+  the one real sidewalk component instead of two.
+- **Root cause of the fan-of-shards artifact wasn't conclusively
+  identified** (no live Studio access to debug interactively) - the
+  leading theory is a pre-existing `JunctionBuilder` pad (the convex-hull
+  asphalt fan, built whenever the location was an ordinary intersection
+  before being converted to a roundabout) persisting because something
+  between the start of `CreateAtJunction` and its final
+  `JunctionInstance.Delete` call didn't complete (most plausibly a runtime
+  error partway through, which Roblox logs but doesn't necessarily halt
+  script execution loudly). Added a defensive, unconditional cleanup of
+  the junction's own `Geometry` child at the very START of
+  `CreateAtJunction`, independent of whether the rest of the function
+  succeeds - this should eliminate the SYMPTOM even without having
+  confirmed the exact mechanism, but flagging that honestly rather than
+  claiming the root cause is fully understood.
+
 ## Roundabout: cut a gap in the ring's own sidewalk where each feeder connects, bridge the seam
 
 - Two real, concrete bugs behind "the ring's sidewalk clips through the
