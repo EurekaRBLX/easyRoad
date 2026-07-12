@@ -2071,16 +2071,32 @@ local function sampleFilletArc(
 	return points
 end
 
--- Offsets `point` outward (away from the fillet circle `center`) by
--- `distance` studs, staying in the ground plane so the offset row stays
--- flat/level like every other sidewalk part. A point coincident with the
--- centre (shouldn't happen for a real arc point) is returned unchanged.
-local function offsetOutward(point: Vector3, center: Vector3, distance: number): Vector3
-	local flat = Vector3.new(point.X - center.X, 0, point.Z - center.Z)
-	if flat.Magnitude &lt; 1e-6 then
+-- Insets `point` (assumed to already lie on the fillet circle of the given
+-- `radius`, centred at `center`) radially TOWARD `center` by `distance`
+-- studs - i.e. the same centre and angle, just a smaller concentric arc.
+-- This, not pushing the point further from centre, is the correct
+-- direction for the sidewalk's outer edge: the kerb arc is the ASPHALT's
+-- boundary, and the asphalt sits on the side of the arc AWAY from the
+-- circle's own centre (nearer the corner's true, un-rounded vertex, which
+-- sits OUTSIDE the circle - vertex-to-centre distance is always &gt; radius
+-- by construction, since `computeFillet` derives centre as vertex offset
+-- along the bisector by `tangentLength / cos(theta/2)`, strictly more than
+-- the radius `tangentLength * tan(theta/2)` for any real corner). The
+-- pavement/sidewalk therefore lies on the CENTRE side of the arc, so its
+-- outer edge is a smaller, concentric arc - NOT the arc pushed further
+-- from centre, which is what an earlier version of this function did and
+-- which pushed the sidewalk band toward the vertex/asphalt instead of away
+-- from it, reported live as a spurious inward "indent" at every rounded
+-- corner of an ordinary intersection.
+local function insetTowardCenter(point: Vector3, center: Vector3, radius: number, distance: number): Vector3
+	local dx, dz = point.X - center.X, point.Z - center.Z
+	local mag = math.sqrt(dx * dx + dz * dz)
+	if mag &lt; 1e-6 then
 		return point
 	end
-	return point + flat.Unit * distance
+	local newRadius = math.max(0.1, radius - distance)
+	local scale = newRadius / mag
+	return Vector3.new(center.X + dx * scale, point.Y, center.Z + dz * scale)
 end
 
 -- The paired KERB (asphalt-edge) and OUTER (sidewalk-outer-edge) boundaries
@@ -2093,9 +2109,8 @@ end
 -- Straight chamfer (no valid fillet): kerb {a.Kerb, b.Kerb}, outer
 -- {a.Outer, b.Outer} - a single sidewalk quad, exactly as before rounding.
 -- Rounded corner: the kerb list follows the fillet arc; each interior arc
--- point's outer partner is that point pushed radially outward (away from
--- the fillet circle centre - which for the corner-facing arc is the
--- outward/sidewalk direction) by the sidewalk width, interpolated from
+-- point's outer partner is the same point on a smaller, concentric arc
+-- (see `insetTowardCenter`) inset by the sidewalk width, interpolated from
 -- road A's width at the a end to road B's at the b end. The two endpoints
 -- are pinned to the roads' own real `a.Outer`/`b.Outer` so the band meets
 -- each connected road's sidewalk seamlessly.
@@ -2120,16 +2135,16 @@ local function cornerBoundaries(
 	-- t used to interpolate its sidewalk width. sampleFilletArc uses
 	-- t = i/(samples+1), so the interior points sit strictly between.
 	local kerb: { Vector3 } = { a.Kerb, p1 }
-	local outer: { Vector3 } = { a.Outer, offsetOutward(p1, center, widthA) }
+	local outer: { Vector3 } = { a.Outer, insetTowardCenter(p1, center, effectiveRadius, widthA) }
 	local arc = sampleFilletArc(center, effectiveRadius, p1, p2, FILLET_ARC_SAMPLES)
 	for i, point in arc do
 		local t = i / (FILLET_ARC_SAMPLES + 1)
 		local width = widthA + (widthB - widthA) * t
 		table.insert(kerb, point)
-		table.insert(outer, offsetOutward(point, center, width))
+		table.insert(outer, insetTowardCenter(point, center, effectiveRadius, width))
 	end
 	table.insert(kerb, p2)
-	table.insert(outer, offsetOutward(p2, center, widthB))
+	table.insert(outer, insetTowardCenter(p2, center, effectiveRadius, widthB))
 	table.insert(kerb, b.Kerb)
 	table.insert(outer, b.Outer)
 	return kerb, outer

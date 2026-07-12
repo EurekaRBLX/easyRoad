@@ -4,6 +4,30 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junction corners: fix sidewalk band offset direction (was inset toward the interior)
+
+- The offset-band fix from the previous round (below) had the offset
+  direction backwards: `offsetOutward` pushed each fillet arc point AWAY
+  from the fillet circle's own centre, which - worked through with
+  concrete coordinates - is actually TOWARD the corner's true (un-rounded)
+  vertex, i.e. toward the junction interior/asphalt, not toward the
+  sidewalk. Reported live as a spurious inward "indent" cut into the kerb
+  at ordinary intersections that previously looked fine.
+- Why the earlier reasoning was wrong: `computeFillet` places the circle
+  centre at `vertex + bisector * (tangentLength / cos(theta/2))`, strictly
+  FARTHER from the vertex than the circle's own radius
+  (`tangentLength * tan(theta/2)`) - so the vertex always sits OUTSIDE the
+  circle, on the far side of the arc from the centre. That means the
+  asphalt (which meets the arc on the vertex side) is on the side AWAY
+  from centre, and the sidewalk is on the side TOWARD centre - the
+  opposite of what the previous round assumed.
+- Fixed by replacing `offsetOutward` with `insetTowardCenter`: rather than
+  pushing a point further from centre by a generic direction vector, it
+  computes the same point on a smaller CONCENTRIC arc (same centre, same
+  angle, radius reduced by the sidewalk width) - the mathematically exact
+  parallel offset of a circular arc, and impossible to get the sign wrong
+  on since there's only one way to shrink a radius.
+
 ## Junction corners: sidewalk is now a proper offset band, not a fan (fixes the hook/sliver)
 
 - The previous round's fix decoupled the asphalt fan (base pad vs. corner
