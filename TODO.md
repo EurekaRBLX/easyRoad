@@ -107,14 +107,15 @@ patched one specific reported symptom without addressing that a per-pair
 order, can produce self-intersecting geometry no matter how the individual
 corner is drawn or where the fan apex sits. The convex hull sidesteps the
 whole class: there's no per-pair decision left to get wrong.
-**Trade-offs, both deliberate:**
-- **Corners are sharp chamfers (hull edges), not rounded curb returns** -
-  a step back from the Google Maps reference look requested earlier this
-  session, kept for reliability. Proper rounding later needs a DIFFERENT
-  construction that doesn't reintroduce the old failure mode: a
-  fixed-radius fillet tangent to both kerb lines (tangent length =
-  `radius / tan(angle/2)`, bounded for any angle that isn't extremely
-  close to 0° or 180°) rather than an unbounded tangent-line intersection.
+**Corners are now rounded (shipped - see `SHIPPED.md`'s "Junction corners:
+real curb-return fillets").** Every cross-road hull edge tries a bounded,
+fixed-radius fillet (`chooseArcCenter`/`sampleArc2D`-style true circle,
+adapted from the user-supplied CivicArcRoadToolkit reference) before
+falling back to the plain chamfer described above - the fallback is the
+same hull edge, so the worst case is still the reliability this section
+describes, and rounding only ever adds to it, never regresses it.
+
+**Other trade-offs, still current:**
 - **The pad is now one continuous surface with no unfilled gaps** - the
   old "skip gaps wider than ~130°" logic (meant to avoid bridging the far
   side of a bend or a T-junction's through span with a spike) is gone;

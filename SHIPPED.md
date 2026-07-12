@@ -4,6 +4,49 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junction corners: real curb-return fillets, not straight chamfers
+
+- Layered a bounded, fixed-radius circular fillet (`FILLET_RADIUS_M = 6`,
+  a typical urban kerb-return radius) on top of every cross-road edge of
+  the convex-hull pad, upgrading the straight chamfer shipped last round
+  into an actual rounded corner - the shape a real intersection has.
+- The construction is adapted from the user-supplied CivicArcRoadToolkit
+  (CART) reference, specifically `JunctionTool.lua`'s `chooseArcCenter`/
+  `sampleArc2D`: a genuine tangent circle, not a Bézier approximation.
+  `computeFillet` first finds the corner VERTEX (where the two roads' own
+  kerb lines would meet if extended - 2D line intersection on the ground
+  plane), then derives a true circle tangent to both lines at that vertex
+  via standard `tangent length = radius / tan(half-angle)` trigonometry,
+  capped so it never reaches past the roads' own kerb points (a corner
+  tighter than the requested radius, e.g. a short trimmed approach, gets
+  a smaller effective radius instead of overshooting). `sampleFilletArc`
+  samples the true arc by angle (`atan2`/`cos`/`sin`), not a spline
+  approximation.
+- Every failure mode - parallel kerb lines, roads diverging instead of
+  converging from these points, a vertex unreasonably far away relative
+  to the chord (near-parallel roads), a near-collinear pass-through -
+  makes `computeFillet` return nil, and the caller (`cornerBoundaryPoints`)
+  falls straight back to the plain `{ a.Kerb, b.Kerb }` chamfer already
+  proven safe by the convex-hull property. The fillet can only ever make
+  one corner MORE conservative than the last shipped round, never less -
+  the same "bound the worst case, not just the common case" principle
+  that came out of every earlier round's unbounded-arc failures.
+- `JunctionBuilder.Rebuild`'s fan loop was rewritten to walk every hull
+  boundary edge uniformly (same-road edges included, via wraparound)
+  instead of special-casing "corner" vs "diagonal" edges, computing a
+  boundary point list per edge (2 points for a straight chamfer, `2 +
+  FILLET_ARC_SAMPLES` for a rounded corner) and fanning every consecutive
+  pair - `FillTriangle`'s own degenerate-triangle guard silently no-ops
+  the zero-length edges touching the fan's own apex, so no special case
+  was needed there either.
+- Investigated the user's earlier citation of RoadArchitect's
+  `IntersectionCornerCalc()` (`GSDRoadUtility.cs`) before building this:
+  pulled the real source via WebFetch and couldn't find any such method -
+  only `Intersects2D`, a containment test against an already-computed
+  fixed quadrilateral, not a corner generator. Reported this back rather
+  than building on an unverified citation; CART's uploaded, actually-
+  readable source became the real reference instead.
+
 ## Roundabouts: same spoke-trim robustness fixes as the junction approach trim
 
 - Ported the two correctness fixes from `JunctionBuilder.trimApproach`
