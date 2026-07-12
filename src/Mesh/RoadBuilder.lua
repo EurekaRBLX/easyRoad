@@ -139,7 +139,27 @@ end
 
 -- Build the list of sample stations (distances along the curve). Adaptive:
 -- steps shrink where curvature is high so strips follow the curve closely.
-local function buildStations(curve: PolyCurve.PolyCurve, maxStep: number, tolerance: number): { number }
+--
+-- `maxOffsetStuds` (default 0) is the widest lateral offset any edge of the
+-- cross-section sits from the centerline (e.g. half the road's total
+-- width). The step formula below is derived from the CENTERLINE's own
+-- curvature, but a wide cross-section's concave-side edge (the inside of a
+-- turn - a kerb line, sidewalk edge, whatever's farthest from the bend)
+-- rides a tighter effective radius than the centerline: offset that edge
+-- by `d` toward the inside of a bend of radius R and its own radius is
+-- `R - d`, i.e. curvature `k / (1 - d*k)`. Spacing stations purely by
+-- centerline curvature under-subdivides that edge on any sufficiently
+-- tight bend with any real cross-section width - it reads as a smooth
+-- centerline with a visibly faceted (straight-line) kerb/sidewalk edge
+-- just inside it, worst on a roundabout ring or a tight junction spoke
+-- where both the radius is small and the cross-section is wide.
+local function buildStations(
+	curve: PolyCurve.PolyCurve,
+	maxStep: number,
+	tolerance: number,
+	maxOffsetStuds: number?
+): { number }
+	local offset = maxOffsetStuds or 0
 	local stations = { 0 }
 	local s = 0
 	local length = curve.Length
@@ -147,11 +167,17 @@ local function buildStations(curve: PolyCurve.PolyCurve, maxStep: number, tolera
 		local k = math.abs(curve:CurvatureAt(s))
 		local step = maxStep
 		if k > 1e-6 then
+			-- Effective curvature of the worst-case (concave-side) offset
+			-- edge - floored denominator so a radius tighter than the
+			-- offset itself (the edge would otherwise overlap the curve's
+			-- own center) still yields a large-but-finite curvature instead
+			-- of blowing up, forcing maximal subdivision rather than erroring.
+			local kEff = k / math.max(0.05, 1 - offset * k)
 			-- Chord deviation of an arc: d = R - sqrt(R^2 - (c/2)^2) ~= c^2 k / 8
-			step = math.min(maxStep, math.sqrt(8 * tolerance / k))
+			step = math.min(maxStep, math.sqrt(8 * tolerance / kEff))
 			-- Also bound the heading change per strip so tight curves can
 			-- never fold a single strip through a large angle
-			step = math.min(step, MAX_TURN_PER_STEP / k)
+			step = math.min(step, MAX_TURN_PER_STEP / kEff)
 		end
 		step = math.max(step, MIN_STEP)
 		s = math.min(s + step, length)
@@ -251,7 +277,11 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		maxStep = math.min(maxStep, 4, math.max(maxStepForTaper, MIN_STEP))
 	end
 	local tolerance = if preview then PREVIEW_CHORD_TOLERANCE else CHORD_TOLERANCE
-	local stations = buildStations(curve, maxStep, tolerance)
+	local maxOffsetStuds = math.max(
+		RoadProfile.TotalWidthM(options.ProfileStart),
+		RoadProfile.TotalWidthM(options.ProfileEnd or options.ProfileStart)
+	) / 2 * scale
+	local stations = buildStations(curve, maxStep, tolerance, maxOffsetStuds)
 
 	-- Per-station data ---------------------------------------------------------
 	-- Both the curvature-noise smoothing window and the end-of-segment

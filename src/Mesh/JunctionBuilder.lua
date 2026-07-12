@@ -37,7 +37,7 @@
 --
 -- 3. Rounded corners: each cross-road hull edge is upgraded from a straight
 --    chamfer to a real curb-return fillet where it safely can be - see
---    `filletPoints` for the construction and, importantly, why it can only
+--    `computeFillet` for the construction and, importantly, why it can only
 --    ever make one corner MORE conservative (fall back to the straight
 --    hull edge already proven safe), never introduce a new way to break
 --    the whole pad. A fixed radius (`FILLET_RADIUS_M`) tangent to both
@@ -47,6 +47,19 @@
 --    is exactly what kept breaking when used unbounded; here it's one
 --    input to a fillet whose reach is capped by construction, not by a
 --    threshold discovered after something broke.
+--    Built as a strictly ADDITIVE overlay on top of the base pad (2, above)
+--    rather than by substituting the hull edge in the same fan: the base
+--    pad's every triangle still comes from the plain straight hull, fanned
+--    from the single global apex, exactly as before; the fillet's own arc
+--    points are fanned separately from each edge's own LOCAL a.Kerb/
+--    a.Outer point. A fillet arc bulges outward from the straight
+--    a.Kerb-b.Kerb chord, which on a sharp corner can reach past the
+--    global apex's own straight-line view of that edge - fanning that
+--    bulge from apex (an earlier version of this file did) is what
+--    produced torn, self-intersecting shards at a real 4-way intersection.
+--    Fanning it locally instead means a bad fillet case can at worst
+--    overlap the already-correct base pad (invisible - same material,
+--    same height), never tear it.
 --
 -- Still missing (TODO.md): stop lines/crosswalks/lane guidance through the
 -- pad, and approach trimming for roads with a transition or bay
@@ -604,6 +617,18 @@ function JunctionBuilder.Rebuild(
 	end
 	local center = junctionData.Position
 	local thickness = settings.RoadThicknessStuds
+	-- Sidewalk fill needs to sit at the same raised height RoadBuilder gives
+	-- every connecting road's own sidewalk/median Parts (top at curbHeight
+	-- above the deck, same -thickness bottom as the asphalt) - previously
+	-- the junction's sidewalk corner fan used the roadway-level Kerb/Outer
+	-- points unmodified, so the pad's own sidewalk sat flush with the
+	-- asphalt instead of raised, producing a visible height step right at
+	-- the seam with the connecting roads' real (raised) sidewalks.
+	local curbHeight = style.CurbHeightM * settings.MetersToStuds
+	local sidewalkDepth = thickness + curbHeight
+	local function raise(point: Vector3): Vector3
+		return point + Vector3.new(0, curbHeight, 0)
+	end
 
 	local function makePart(material: Enum.Material, color: Color3): Part
 		local part = Instance.new("Part")
@@ -649,35 +674,72 @@ function JunctionBuilder.Rebuild(
 		-- jagged geometry reported live through several earlier rounds.
 		local apex = hull[1].Kerb
 		local filletRadiusStuds = FILLET_RADIUS_M * settings.MetersToStuds
-		-- Walk every boundary edge of the hull uniformly (with wraparound,
-		-- so the two edges touching `apex` itself are included, not just
-		-- the ones the fan below treats as diagonals). A same-road edge is
-		-- always a plain straight span (that's just the road's own
-		-- pavement); a cross-road edge tries for a real rounded corner via
-		-- cornerBoundaryPoints, falling back to the straight hull edge
-		-- when a safe fillet can't be found.
+		-- Two layers, built separately on purpose (see the header comment's
+		-- point 3): a BASE pad that's exactly the plain convex-hull fan from
+		-- earlier rounds - unconditional, every hull edge, always fanned
+		-- from the single global `apex` - so the proven-safe shape never
+		-- depends on whether a fillet succeeds. Rounding is then a strictly
+		-- ADDITIVE overlay on top, fanned from each edge's own LOCAL
+		-- `a.Kerb`/`a.Outer` point instead of the global apex. A fillet arc
+		-- bulges OUTWARD from the straight a.Kerb-b.Kerb chord (toward
+		-- where the two roads' own kerb lines would actually meet), which
+		-- can walk past the global apex's own straight-line "view" of that
+		-- edge on a sharp corner - fanning THAT from apex is exactly what
+		-- produced the torn, self-intersecting shards seen live on a real
+		-- 4-way intersection. Fanning the overlay locally instead means the
+		-- worst case for a bad fillet is a small glitch confined to one
+		-- corner's thin overlay strip - the base pad underneath is already
+		-- complete and correct regardless.
 		for i = 1, #hull do
 			local a = hull[i]
 			local b = hull[if i < #hull then i + 1 else 1]
-			local boundary = if a.Road == b.Road
-				then { a.Kerb, b.Kerb }
-				else cornerBoundaryPoints(a, b, junctionId, filletRadiusStuds)
-			-- Asphalt: fan every consecutive boundary point from the hull's
-			-- own apex. A boundary point that equals `apex` itself (the two
-			-- edges touching the apex vertex) produces a zero-length edge,
-			-- silently skipped by FillTriangle's own degenerate-triangle
-			-- guard - no special-casing needed here for that.
-			for j = 1, #boundary - 1 do
-				FillTriangle(apex, boundary[j], boundary[j + 1], thickness, DOWN, makeAsphaltPart, folder)
-			end
-			-- Sidewalk corner: only for a real (cross-road) corner - the
-			-- pedestrian strip between the same boundary and each road's
-			-- own outer (e.g. sidewalk) edge, fanned from a.Outer.
+			-- Base: same-road edges and cross-road edges both get their
+			-- plain straight chord filled from the global apex - a boundary
+			-- point that equals `apex` itself (the two edges touching the
+			-- apex vertex) produces a zero-length edge, silently skipped by
+			-- FillTriangle's own degenerate-triangle guard.
+			FillTriangle(apex, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
 			if a.Road ~= b.Road then
-				for j = 1, #boundary - 1 do
-					FillTriangle(a.Outer, boundary[j], boundary[j + 1], thickness, DOWN, makeSidewalkPart, folder)
+				FillTriangle(
+					raise(a.Outer),
+					raise(a.Kerb),
+					raise(b.Kerb),
+					sidewalkDepth,
+					DOWN,
+					makeSidewalkPart,
+					folder
+				)
+				FillTriangle(
+					raise(a.Outer),
+					raise(b.Kerb),
+					raise(b.Outer),
+					sidewalkDepth,
+					DOWN,
+					makeSidewalkPart,
+					folder
+				)
+
+				-- Overlay: only for a real (cross-road) corner, only when a
+				-- safe fillet was actually found (cornerBoundaryPoints
+				-- returns just the 2 chord endpoints otherwise, so there's
+				-- nothing to add).
+				local boundary = cornerBoundaryPoints(a, b, junctionId, filletRadiusStuds)
+				if #boundary > 2 then
+					for j = 1, #boundary - 1 do
+						FillTriangle(a.Kerb, boundary[j], boundary[j + 1], thickness, DOWN, makeAsphaltPart, folder)
+					end
+					for j = 1, #boundary - 1 do
+						FillTriangle(
+							raise(a.Outer),
+							raise(boundary[j]),
+							raise(boundary[j + 1]),
+							sidewalkDepth,
+							DOWN,
+							makeSidewalkPart,
+							folder
+						)
+					end
 				end
-				FillTriangle(a.Outer, b.Kerb, b.Outer, thickness, DOWN, makeSidewalkPart, folder)
 			end
 		end
 	else

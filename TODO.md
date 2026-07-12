@@ -151,18 +151,28 @@ Deliberately still out of scope, in rough priority order:
   regardless of what the road's actual outermost non-roadway component
   is (doesn't inspect Median vs Sidewalk, or a future median-variety
   sub-kind once that's built).
-- **No lane markings drawn through the junction.** Stop lines, give-way
-  markings, crosswalks, lane-guidance paint - `Markings.Compute` is
-  fundamentally "one road, station 0 to Length" and deliberately wasn't
-  touched; junction marking geometry needs its own module.
-- **Roundabout ring's own pavement/sidewalk still doesn't align cleanly**
-  with the trimmed spokes' sidewalks - reported live with a screenshot
-  (visible gaps/misalignment where each spoke's sidewalk meets the ring).
-  The spoke trim (see Phase 2 above) cuts the whole cross-section at the
-  ring boundary, but nothing yet builds a matching corner/verge piece
-  bridging a spoke's sidewalk into the ring's own edge, the way ordinary
-  junction corners now do (just above) - the ring doesn't have a
-  `JunctionBuilder`-style corner-fill pass of its own.
+- **No lane markings (or even the plain kerb/edge line) drawn through the
+  junction or around the roundabout ring.** Confirmed by grep - neither
+  `JunctionBuilder.lua` nor `RoundaboutBuilder.lua` references `Markings`
+  at all, so the white edge-line that runs along every ordinary road's
+  kerb simply stops dead at the pad/ring boundary instead of continuing
+  around the corner - reported live, visible as a gap in the white line
+  exactly at each corner of a real intersection. Stop lines, give-way
+  markings, crosswalks, lane-guidance paint are the same underlying gap.
+  `Markings.Compute` is fundamentally "one road, station 0 to Length" and
+  deliberately wasn't touched; junction/ring marking geometry needs its
+  own pass. Rough sketch for whenever this is picked up: for the junction
+  pad, walk the same hull-edge boundary `JunctionBuilder.Rebuild` already
+  computes (straight chord or `cornerBoundaryPoints`' fillet arc) and lay
+  a thin marking strip along each cross-road edge's OWN a.Kerb/boundary
+  points (not through `Markings.Compute`, which is curve/station-shaped,
+  not polyline-shaped) - same technique the deck-strip marking Parts use,
+  just addressed by explicit point pairs instead of curve stations. For
+  the roundabout ring, simpler: the ring is already a `PolyCurve` built by
+  the ordinary `RoadBuilder.Build`, so passing it a `KerbRestriction`/kerb
+  line marking config through its `RoadProfile.Components` (the same as
+  any real road) may already work without new code - worth checking before
+  building anything bespoke for the ring specifically.
 - **No mid-span-to-mid-span crossing detection.** `RoadSplit`'s existing
   mid-span connect (Phase 1b) only fires when a NEW road's endpoint lands
   on an EXISTING road - not when a new road is drawn crossing an existing

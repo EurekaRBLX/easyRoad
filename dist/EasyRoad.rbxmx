@@ -1547,7 +1547,7 @@ return fillTriangle
 --
 -- 3. Rounded corners: each cross-road hull edge is upgraded from a straight
 --    chamfer to a real curb-return fillet where it safely can be - see
---    `filletPoints` for the construction and, importantly, why it can only
+--    `computeFillet` for the construction and, importantly, why it can only
 --    ever make one corner MORE conservative (fall back to the straight
 --    hull edge already proven safe), never introduce a new way to break
 --    the whole pad. A fixed radius (`FILLET_RADIUS_M`) tangent to both
@@ -1557,6 +1557,19 @@ return fillTriangle
 --    is exactly what kept breaking when used unbounded; here it's one
 --    input to a fillet whose reach is capped by construction, not by a
 --    threshold discovered after something broke.
+--    Built as a strictly ADDITIVE overlay on top of the base pad (2, above)
+--    rather than by substituting the hull edge in the same fan: the base
+--    pad's every triangle still comes from the plain straight hull, fanned
+--    from the single global apex, exactly as before; the fillet's own arc
+--    points are fanned separately from each edge's own LOCAL a.Kerb/
+--    a.Outer point. A fillet arc bulges outward from the straight
+--    a.Kerb-b.Kerb chord, which on a sharp corner can reach past the
+--    global apex's own straight-line view of that edge - fanning that
+--    bulge from apex (an earlier version of this file did) is what
+--    produced torn, self-intersecting shards at a real 4-way intersection.
+--    Fanning it locally instead means a bad fillet case can at worst
+--    overlap the already-correct base pad (invisible - same material,
+--    same height), never tear it.
 --
 -- Still missing (TODO.md): stop lines/crosswalks/lane guidance through the
 -- pad, and approach trimming for roads with a transition or bay
@@ -2114,6 +2127,18 @@ function JunctionBuilder.Rebuild(
 	end
 	local center = junctionData.Position
 	local thickness = settings.RoadThicknessStuds
+	-- Sidewalk fill needs to sit at the same raised height RoadBuilder gives
+	-- every connecting road's own sidewalk/median Parts (top at curbHeight
+	-- above the deck, same -thickness bottom as the asphalt) - previously
+	-- the junction's sidewalk corner fan used the roadway-level Kerb/Outer
+	-- points unmodified, so the pad's own sidewalk sat flush with the
+	-- asphalt instead of raised, producing a visible height step right at
+	-- the seam with the connecting roads' real (raised) sidewalks.
+	local curbHeight = style.CurbHeightM * settings.MetersToStuds
+	local sidewalkDepth = thickness + curbHeight
+	local function raise(point: Vector3): Vector3
+		return point + Vector3.new(0, curbHeight, 0)
+	end
 
 	local function makePart(material: Enum.Material, color: Color3): Part
 		local part = Instance.new("Part")
@@ -2159,35 +2184,72 @@ function JunctionBuilder.Rebuild(
 		-- jagged geometry reported live through several earlier rounds.
 		local apex = hull[1].Kerb
 		local filletRadiusStuds = FILLET_RADIUS_M * settings.MetersToStuds
-		-- Walk every boundary edge of the hull uniformly (with wraparound,
-		-- so the two edges touching `apex` itself are included, not just
-		-- the ones the fan below treats as diagonals). A same-road edge is
-		-- always a plain straight span (that's just the road's own
-		-- pavement); a cross-road edge tries for a real rounded corner via
-		-- cornerBoundaryPoints, falling back to the straight hull edge
-		-- when a safe fillet can't be found.
+		-- Two layers, built separately on purpose (see the header comment's
+		-- point 3): a BASE pad that's exactly the plain convex-hull fan from
+		-- earlier rounds - unconditional, every hull edge, always fanned
+		-- from the single global `apex` - so the proven-safe shape never
+		-- depends on whether a fillet succeeds. Rounding is then a strictly
+		-- ADDITIVE overlay on top, fanned from each edge's own LOCAL
+		-- `a.Kerb`/`a.Outer` point instead of the global apex. A fillet arc
+		-- bulges OUTWARD from the straight a.Kerb-b.Kerb chord (toward
+		-- where the two roads' own kerb lines would actually meet), which
+		-- can walk past the global apex's own straight-line "view" of that
+		-- edge on a sharp corner - fanning THAT from apex is exactly what
+		-- produced the torn, self-intersecting shards seen live on a real
+		-- 4-way intersection. Fanning the overlay locally instead means the
+		-- worst case for a bad fillet is a small glitch confined to one
+		-- corner's thin overlay strip - the base pad underneath is already
+		-- complete and correct regardless.
 		for i = 1, #hull do
 			local a = hull[i]
 			local b = hull[if i &lt; #hull then i + 1 else 1]
-			local boundary = if a.Road == b.Road
-				then { a.Kerb, b.Kerb }
-				else cornerBoundaryPoints(a, b, junctionId, filletRadiusStuds)
-			-- Asphalt: fan every consecutive boundary point from the hull's
-			-- own apex. A boundary point that equals `apex` itself (the two
-			-- edges touching the apex vertex) produces a zero-length edge,
-			-- silently skipped by FillTriangle's own degenerate-triangle
-			-- guard - no special-casing needed here for that.
-			for j = 1, #boundary - 1 do
-				FillTriangle(apex, boundary[j], boundary[j + 1], thickness, DOWN, makeAsphaltPart, folder)
-			end
-			-- Sidewalk corner: only for a real (cross-road) corner - the
-			-- pedestrian strip between the same boundary and each road's
-			-- own outer (e.g. sidewalk) edge, fanned from a.Outer.
+			-- Base: same-road edges and cross-road edges both get their
+			-- plain straight chord filled from the global apex - a boundary
+			-- point that equals `apex` itself (the two edges touching the
+			-- apex vertex) produces a zero-length edge, silently skipped by
+			-- FillTriangle's own degenerate-triangle guard.
+			FillTriangle(apex, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
 			if a.Road ~= b.Road then
-				for j = 1, #boundary - 1 do
-					FillTriangle(a.Outer, boundary[j], boundary[j + 1], thickness, DOWN, makeSidewalkPart, folder)
+				FillTriangle(
+					raise(a.Outer),
+					raise(a.Kerb),
+					raise(b.Kerb),
+					sidewalkDepth,
+					DOWN,
+					makeSidewalkPart,
+					folder
+				)
+				FillTriangle(
+					raise(a.Outer),
+					raise(b.Kerb),
+					raise(b.Outer),
+					sidewalkDepth,
+					DOWN,
+					makeSidewalkPart,
+					folder
+				)
+
+				-- Overlay: only for a real (cross-road) corner, only when a
+				-- safe fillet was actually found (cornerBoundaryPoints
+				-- returns just the 2 chord endpoints otherwise, so there's
+				-- nothing to add).
+				local boundary = cornerBoundaryPoints(a, b, junctionId, filletRadiusStuds)
+				if #boundary &gt; 2 then
+					for j = 1, #boundary - 1 do
+						FillTriangle(a.Kerb, boundary[j], boundary[j + 1], thickness, DOWN, makeAsphaltPart, folder)
+					end
+					for j = 1, #boundary - 1 do
+						FillTriangle(
+							raise(a.Outer),
+							raise(boundary[j]),
+							raise(boundary[j + 1]),
+							sidewalkDepth,
+							DOWN,
+							makeSidewalkPart,
+							folder
+						)
+					end
 				end
-				FillTriangle(a.Outer, b.Kerb, b.Outer, thickness, DOWN, makeSidewalkPart, folder)
 			end
 		end
 	else
@@ -2983,7 +3045,27 @@ end
 
 -- Build the list of sample stations (distances along the curve). Adaptive:
 -- steps shrink where curvature is high so strips follow the curve closely.
-local function buildStations(curve: PolyCurve.PolyCurve, maxStep: number, tolerance: number): { number }
+--
+-- `maxOffsetStuds` (default 0) is the widest lateral offset any edge of the
+-- cross-section sits from the centerline (e.g. half the road's total
+-- width). The step formula below is derived from the CENTERLINE's own
+-- curvature, but a wide cross-section's concave-side edge (the inside of a
+-- turn - a kerb line, sidewalk edge, whatever's farthest from the bend)
+-- rides a tighter effective radius than the centerline: offset that edge
+-- by `d` toward the inside of a bend of radius R and its own radius is
+-- `R - d`, i.e. curvature `k / (1 - d*k)`. Spacing stations purely by
+-- centerline curvature under-subdivides that edge on any sufficiently
+-- tight bend with any real cross-section width - it reads as a smooth
+-- centerline with a visibly faceted (straight-line) kerb/sidewalk edge
+-- just inside it, worst on a roundabout ring or a tight junction spoke
+-- where both the radius is small and the cross-section is wide.
+local function buildStations(
+	curve: PolyCurve.PolyCurve,
+	maxStep: number,
+	tolerance: number,
+	maxOffsetStuds: number?
+): { number }
+	local offset = maxOffsetStuds or 0
 	local stations = { 0 }
 	local s = 0
 	local length = curve.Length
@@ -2991,11 +3073,17 @@ local function buildStations(curve: PolyCurve.PolyCurve, maxStep: number, tolera
 		local k = math.abs(curve:CurvatureAt(s))
 		local step = maxStep
 		if k &gt; 1e-6 then
+			-- Effective curvature of the worst-case (concave-side) offset
+			-- edge - floored denominator so a radius tighter than the
+			-- offset itself (the edge would otherwise overlap the curve's
+			-- own center) still yields a large-but-finite curvature instead
+			-- of blowing up, forcing maximal subdivision rather than erroring.
+			local kEff = k / math.max(0.05, 1 - offset * k)
 			-- Chord deviation of an arc: d = R - sqrt(R^2 - (c/2)^2) ~= c^2 k / 8
-			step = math.min(maxStep, math.sqrt(8 * tolerance / k))
+			step = math.min(maxStep, math.sqrt(8 * tolerance / kEff))
 			-- Also bound the heading change per strip so tight curves can
 			-- never fold a single strip through a large angle
-			step = math.min(step, MAX_TURN_PER_STEP / k)
+			step = math.min(step, MAX_TURN_PER_STEP / kEff)
 		end
 		step = math.max(step, MIN_STEP)
 		s = math.min(s + step, length)
@@ -3095,7 +3183,11 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		maxStep = math.min(maxStep, 4, math.max(maxStepForTaper, MIN_STEP))
 	end
 	local tolerance = if preview then PREVIEW_CHORD_TOLERANCE else CHORD_TOLERANCE
-	local stations = buildStations(curve, maxStep, tolerance)
+	local maxOffsetStuds = math.max(
+		RoadProfile.TotalWidthM(options.ProfileStart),
+		RoadProfile.TotalWidthM(options.ProfileEnd or options.ProfileStart)
+	) / 2 * scale
+	local stations = buildStations(curve, maxStep, tolerance, maxOffsetStuds)
 
 	-- Per-station data ---------------------------------------------------------
 	-- Both the curvature-noise smoothing window and the end-of-segment
@@ -3975,6 +4067,18 @@ end
 
 -- Builds and parents a one-way roundabout ring of `radiusStuds` centred at
 -- `center`, with `laneCount` lanes (&gt;= 1) each `laneWidthM` wide.
+--
+-- The lane stack is flanked by a Sidewalk component on BOTH sides, not just
+-- the outer edge - the ring's own frame is built by PolyCurve.FrameAt via
+-- CFrame.lookAt, whose local +X (RightVector = tangent x Up) points inward
+-- (toward centre) for a DriveOnLeft=false region but OUTWARD for
+-- DriveOnLeft=true (reversing the tangent direction reverses RightVector
+-- too), so "first component" and "last component" swap which physical edge
+-- (inner/outer) they land on depending on the region's driving side. Rather
+-- than track that sign, both edges get a sidewalk - the inner one reads as
+-- a paved verge/truck apron against the central island's own kerb (built
+-- below), which is normal on a real roundabout anyway, and it means this
+-- never needs updating if a future style flips DriveOnLeft.
 function RoundaboutBuilder.Create(
 	center: Vector3,
 	radiusStuds: number,
@@ -3984,10 +4088,13 @@ function RoundaboutBuilder.Create(
 	settings: Settings.EasyRoadSettings
 ): Model
 	local curve = PolyCurve.new(circleSegments(center, radiusStuds, style.DriveOnLeft))
-	local components: { RoadProfile.ProfileComponent } = {}
+	local sidewalkComponent: RoadProfile.ProfileComponent =
+		{ Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
+	local components: { RoadProfile.ProfileComponent } = { sidewalkComponent }
 	for _ = 1, math.max(1, math.floor(laneCount)) do
 		table.insert(components, { Kind = "Drive", WidthM = laneWidthM, Direction = 1 })
 	end
+	table.insert(components, sidewalkComponent)
 	local profile: RoadProfile.RoadProfile = {
 		Id = "roundabout_ring",
 		Name = "Roundabout",
@@ -4010,6 +4117,41 @@ function RoundaboutBuilder.Create(
 	model:SetAttribute("RW_Road", nil)
 	model:SetAttribute("RW_Roundabout", true)
 	model.Name = "Roundabout"
+
+	-- Central island: a raised, kerbed disc filling the hole the ring
+	-- leaves in the middle, sized to reach exactly the ring's own inner
+	-- pavement edge so there's no gap or overlap at the seam. Doesn't need
+	-- to know which physical side (inner/outer) is which - ComponentOffsetsM
+	-- always centres the whole cross-section on the curve (spans exactly
+	-- -halfWidth to +halfWidth), so both edges sit the same radial distance
+	-- from the ring's own centreline regardless of DriveOnLeft. Same
+	-- raised-part convention RoadBuilder itself uses for every Sidewalk
+	-- component (top at curbHeight above the ring's own plane, bottom at
+	-- -thickness) so the two meet flush.
+	local scale = settings.MetersToStuds
+	local thickness = settings.RoadThicknessStuds
+	local curbHeight = style.CurbHeightM * scale
+	local halfWidthM = RoadProfile.TotalWidthM(profile) / 2
+	local islandRadiusStuds = radiusStuds - halfWidthM * scale
+	if islandRadiusStuds &gt; 1 then
+		local island = Instance.new("Part")
+		island.Name = "Island"
+		island.Anchored = true
+		island.CanCollide = false
+		island.CanTouch = false
+		island.CanQuery = false
+		island.CastShadow = false
+		island.TopSurface = Enum.SurfaceType.Smooth
+		island.BottomSurface = Enum.SurfaceType.Smooth
+		island.Material = Enum.Material.Concrete
+		island.Color = style.SidewalkColor
+		island.Shape = Enum.PartType.Cylinder
+		island.Size = Vector3.new(thickness + curbHeight, islandRadiusStuds * 2, islandRadiusStuds * 2)
+		island.CFrame = CFrame.new(center + Vector3.new(0, curbHeight - (thickness + curbHeight) / 2, 0))
+			* CFrame.Angles(0, 0, math.rad(90))
+		island.Parent = model
+	end
+
 	model.Parent = getRoundaboutsFolder()
 	return model
 end
@@ -12771,35 +12913,57 @@ local function createRoadSession(
 		if not settings.SnapToRoad then
 			return nil, nil
 		end
-		local folder = getRoadsFolder(false)
-		if not folder then
-			return nil, nil
-		end
 		local bestDistance = settings.SnapRadiusStuds
 		local bestPos: Vector3? = nil
 		local bestTangent: Vector3? = nil
-		for _, child in folder:GetChildren() do
-			if child:GetAttribute("RW_Road") ~= true then
-				continue
-			end
-			local startPos = child:GetAttribute("RW_StartPos") :: Vector3?
-			local endPos = child:GetAttribute("RW_EndPos") :: Vector3?
-			local startTan = child:GetAttribute("RW_StartTan") :: Vector3?
-			local endTan = child:GetAttribute("RW_EndTan") :: Vector3?
-			if endPos and endTan then
-				local d = (endPos - pos).Magnitude
-				if d &lt; bestDistance then
-					bestDistance = d
-					bestPos = endPos
-					bestTangent = endTan -- Outgoing continuation direction
+		local folder = getRoadsFolder(false)
+		if folder then
+			for _, child in folder:GetChildren() do
+				if child:GetAttribute("RW_Road") ~= true then
+					continue
+				end
+				local startPos = child:GetAttribute("RW_StartPos") :: Vector3?
+				local endPos = child:GetAttribute("RW_EndPos") :: Vector3?
+				local startTan = child:GetAttribute("RW_StartTan") :: Vector3?
+				local endTan = child:GetAttribute("RW_EndTan") :: Vector3?
+				if endPos and endTan then
+					local d = (endPos - pos).Magnitude
+					if d &lt; bestDistance then
+						bestDistance = d
+						bestPos = endPos
+						bestTangent = endTan -- Outgoing continuation direction
+					end
+				end
+				if startPos and startTan then
+					local d = (startPos - pos).Magnitude
+					if d &lt; bestDistance then
+						bestDistance = d
+						bestPos = startPos
+						bestTangent = -startTan -- Continue backwards out of the start
+					end
 				end
 			end
-			if startPos and startTan then
-				local d = (startPos - pos).Magnitude
+		end
+		-- Also snap toward an existing JunctionNode's own centre - not just
+		-- its connected roads' endpoints. TrimApproaches always pulls every
+		-- connected road's real endpoint back to the pad boundary now, so on
+		-- an already-built intersection there's no road endpoint sitting at
+		-- the centre any more for a new road to snap onto; without this, a
+		-- click aimed at the middle of a junction pad (the visually obvious
+		-- place to attach a new approach) had nothing to snap to and could
+		-- easily land just outside every connected road's own snap radius.
+		-- No single tangent makes sense for a junction with more than one
+		-- road already meeting there, so this leaves the tangent unlocked
+		-- (nil) - the placement tools already treat a nil tangent as "no
+		-- guide point saved, free to aim."
+		local junctionModel = JunctionInstance.FindNear(pos, bestDistance)
+		if junctionModel then
+			local junctionData = JunctionInstance.Read(junctionModel)
+			if junctionData then
+				local d = (junctionData.Position - pos).Magnitude
 				if d &lt; bestDistance then
-					bestDistance = d
-					bestPos = startPos
-					bestTangent = -startTan -- Continue backwards out of the start
+					bestPos = junctionData.Position
+					bestTangent = nil
 				end
 			end
 		end
@@ -13162,26 +13326,37 @@ local function createRoadSession(
 		})
 		model.Parent = getRoadsFolder(true)
 
+		-- Links `model`'s `whichEnd` at `pos` to whatever it should connect
+		-- to there: an existing road's endpoint first (findConnectableEndpoint),
+		-- then a mid-span crossing (findMidSpanMatch), then - since neither of
+		-- those looks at JunctionNodes at all, only at roads - an existing
+		-- junction sitting at `pos` with no road endpoint left exactly at its
+		-- centre to match against (every connected approach is trimmed back
+		-- to the pad boundary by now). Without this last fallback, a new
+		-- road aimed at an already-built intersection's centre had nothing
+		-- to snap its post-commit connection onto and silently placed
+		-- unlinked, even though `findEndpointSnap` guided the click there in
+		-- the first place.
+		local function connectEnd(pos: Vector3, whichEnd: "Start" | "End")
+			local otherModel, otherEnd = findConnectableEndpoint(pos, model)
+			if otherModel then
+				connectAt(pos, model, whichEnd, otherModel, otherEnd)
+				return
+			end
+			local midRoad, midStation = findMidSpanMatch(pos, model)
+			if midRoad and midStation then
+				connectAtSplit(midRoad, midStation, model, whichEnd)
+				return
+			end
+			if settings.SnapToRoad and JunctionInstance.FindNear(pos, settings.SnapRadiusStuds) then
+				connectAt(pos, model, whichEnd, nil, nil)
+			end
+		end
+
 		local startPos = curve:PosAt(0)
 		local endPos = curve:PosAt(curve.Length)
-		local otherAtStart, otherStartEnd = findConnectableEndpoint(startPos, model)
-		if otherAtStart then
-			connectAt(startPos, model, "Start", otherAtStart, otherStartEnd)
-		else
-			local midRoad, midStation = findMidSpanMatch(startPos, model)
-			if midRoad and midStation then
-				connectAtSplit(midRoad, midStation, model, "Start")
-			end
-		end
-		local otherAtEnd, otherEndEnd = findConnectableEndpoint(endPos, model)
-		if otherAtEnd then
-			connectAt(endPos, model, "End", otherAtEnd, otherEndEnd)
-		else
-			local midRoad, midStation = findMidSpanMatch(endPos, model)
-			if midRoad and midStation then
-				connectAtSplit(midRoad, midStation, model, "End")
-			end
-		end
+		connectEnd(startPos, "Start")
+		connectEnd(endPos, "End")
 
 		if recording then
 			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)

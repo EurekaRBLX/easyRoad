@@ -4,6 +4,103 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junction/curve fixes round: fillet tear, sidewalk height, curve faceting, junction re-connection, roundabout sidewalks + island
+
+Five separate, concrete bugs found from live Studio screenshots (a real
+4-way avenue intersection and a roundabout), fixed individually rather than
+as one sweeping rewrite:
+
+- **Torn, self-intersecting asphalt shards at filleted corners (the actual
+  bug behind the fillet-rounding work shipped last round).** Root cause:
+  the fillet's arc points were fanned from the pad's single GLOBAL apex,
+  same as the base hull pad. A fillet arc bulges OUTWARD from the straight
+  `a.Kerb-b.Kerb` chord (toward where the two roads' own kerb lines would
+  actually meet), which on a sharp corner reaches past the global apex's
+  own straight-line "view" of that edge - fanning that from apex is what
+  produced the jagged dark shards visible at every corner of a real 4-way
+  intersection. Fixed by decoupling `JunctionBuilder.Rebuild`'s asphalt fan
+  into two layers: an unconditional BASE pad (the plain straight hull,
+  fanned from the global apex, exactly as before corner rounding existed -
+  never varies with whether a fillet succeeds) plus a strictly ADDITIVE
+  rounding OVERLAY, fanned from each edge's own LOCAL `a.Kerb` point
+  instead. A bad fillet case can now at worst overlap the already-correct
+  base pad (invisible - same material, same height), never tear it.
+- **Junction sidewalk/kerb sat flush with the roadway instead of raised.**
+  `edgePointsForRoad`'s `Outer` points (and the hull's `Kerb` points) are
+  sampled at the road's own deck-level Y - they were never lifted before
+  being handed to `FillTriangle` for the sidewalk corner fill, so the
+  junction's sidewalk pad rendered completely flat with the asphalt, right
+  next to the connecting roads' properly raised (curb-height) sidewalks -
+  a visible step exactly at the seam. Fixed: sidewalk fills now raise every
+  point by `style.CurbHeightM` and use `thickness + curbHeight` as the
+  extrusion depth, matching the exact convention `RoadBuilder` already uses
+  for every raised (Sidewalk/Median) component elsewhere in the codebase
+  (same `-thickness` bottom, `+curbHeight` top).
+- **Straight-line faceting on tight curves (a roundabout ring, a tight
+  junction spoke).** `RoadBuilder.buildStations` spaced adaptive stations
+  by the CENTRELINE's own curvature only. A wide cross-section's
+  concave-side (inner) edge on a tight bend rides a tighter effective
+  radius than the centreline (offset a curve by `d` toward the inside of a
+  bend of radius `R` and its own radius is `R - d`), so centreline-only
+  spacing under-subdivides exactly that edge - it read as a smooth
+  centreline with a visibly faceted kerb/sidewalk line just inside it.
+  Fixed by computing an effective curvature `k / (1 - maxOffsetStuds * k)`
+  (denominator floored so a radius tighter than the offset itself still
+  yields a large-but-finite value instead of blowing up) using the widest
+  lateral offset in the road's own cross-section, and spacing stations by
+  that instead.
+- **Couldn't connect a new road to an already-built intersection.** Root
+  cause: `commitRoad`'s post-placement connection logic only ever checked
+  for a nearby ROAD endpoint (`findConnectableEndpoint`) or a nearby road's
+  MID-SPAN (`findMidSpanMatch`) - neither ever looked at `JunctionInstance`
+  directly. Since `TrimApproaches` (shipped two rounds ago) now always
+  pulls every connected approach's real endpoint back from the junction
+  centre to the pad boundary, a new road aimed at an existing junction's
+  centre had no nearby road endpoint or curve left to match against, so it
+  silently placed unlinked. Fixed with a third fallback in `commitRoad`:
+  `JunctionInstance.FindNear` directly, which `connectAt` already knew how
+  to use (its `otherModel`/`otherEnd` args are optional). Also extended the
+  live placement guide (`findEndpointSnap`) to snap toward a nearby
+  junction's own centre (tangent left unlocked - no single tangent makes
+  sense for a junction with more than one road already meeting there), so
+  the click that's supposed to land there is actually easy to make.
+- **Roundabout ring had no sidewalk pavement or a distinguished central
+  island.** `RoundaboutBuilder.Create`'s profile was lane components only.
+  Now flanks the lanes with a Sidewalk component on BOTH sides - the
+  ring's frame (`CFrame.lookAt`, `RightVector = tangent x Up`) points
+  toward the centre for a `DriveOnLeft = false` region but away from it
+  for `DriveOnLeft = true` (reversing the tangent reverses `RightVector`
+  too), so which physical edge is "first" vs "last" in the profile swaps
+  with the region's driving side - flanking both sides sidesteps needing
+  to track that, and the inner strip reads as a normal paved verge/truck
+  apron against the island's own kerb anyway. The central island itself is
+  new: a raised, kerbed disc sized via `RoadProfile.ComponentOffsetsM`'s
+  own symmetric span (`-halfWidth` to `+halfWidth` around the centreline,
+  regardless of which side is which) to reach exactly the ring's own inner
+  pavement edge with no gap or overlap, using the same raised-part
+  convention (`+curbHeight` top, `-thickness` bottom) as every other
+  raised component in the codebase.
+- **Investigated, not fixed this round: kerb/edge-line markings don't
+  continue through a junction pad or around a roundabout ring.** Neither
+  `JunctionBuilder` nor `RoundaboutBuilder`'s ring ever calls `Markings` at
+  all (confirmed - no reference to it in either file), so the white
+  edge-line simply stops dead at the pad/ring boundary instead of
+  continuing around the corner. This needs a real marking system for an
+  arbitrary polyline boundary (the hull edges/fillet arcs, or the ring's
+  own kerb line), not a one-line fix - logged in `TODO.md` with a concrete
+  sketch rather than rushed this round.
+- Declined a much larger ask this round to rewrite the roundabout module
+  as "Component-Based Generation (Spline Patching)" - polar-coordinate ring
+  baking, plane-clipping feeder roads, asymmetric Bézier tangent blending -
+  in favour of the concrete, verifiable fixes above. The specific symptoms
+  described (missing island pavement, feeder-join tearing) are addressed
+  by the sidewalk/island fix and the offset-aware curve subdivision fix
+  respectively, both built from this codebase's own existing primitives
+  (`RoadProfile`, `RoadBuilder.buildStations`, the trim-and-transplant
+  mechanism already in place) rather than a new unverified architecture -
+  consistent with how the RoadArchitect citation was handled earlier this
+  project: verify and adapt concretely, don't adopt framing wholesale.
+
 ## Junction corners: real curb-return fillets, not straight chamfers
 
 - Layered a bounded, fixed-radius circular fillet (`FILLET_RADIUS_M = 6`,

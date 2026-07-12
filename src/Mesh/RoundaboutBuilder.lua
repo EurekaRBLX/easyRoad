@@ -74,6 +74,18 @@ end
 
 -- Builds and parents a one-way roundabout ring of `radiusStuds` centred at
 -- `center`, with `laneCount` lanes (>= 1) each `laneWidthM` wide.
+--
+-- The lane stack is flanked by a Sidewalk component on BOTH sides, not just
+-- the outer edge - the ring's own frame is built by PolyCurve.FrameAt via
+-- CFrame.lookAt, whose local +X (RightVector = tangent x Up) points inward
+-- (toward centre) for a DriveOnLeft=false region but OUTWARD for
+-- DriveOnLeft=true (reversing the tangent direction reverses RightVector
+-- too), so "first component" and "last component" swap which physical edge
+-- (inner/outer) they land on depending on the region's driving side. Rather
+-- than track that sign, both edges get a sidewalk - the inner one reads as
+-- a paved verge/truck apron against the central island's own kerb (built
+-- below), which is normal on a real roundabout anyway, and it means this
+-- never needs updating if a future style flips DriveOnLeft.
 function RoundaboutBuilder.Create(
 	center: Vector3,
 	radiusStuds: number,
@@ -83,10 +95,13 @@ function RoundaboutBuilder.Create(
 	settings: Settings.EasyRoadSettings
 ): Model
 	local curve = PolyCurve.new(circleSegments(center, radiusStuds, style.DriveOnLeft))
-	local components: { RoadProfile.ProfileComponent } = {}
+	local sidewalkComponent: RoadProfile.ProfileComponent =
+		{ Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
+	local components: { RoadProfile.ProfileComponent } = { sidewalkComponent }
 	for _ = 1, math.max(1, math.floor(laneCount)) do
 		table.insert(components, { Kind = "Drive", WidthM = laneWidthM, Direction = 1 })
 	end
+	table.insert(components, sidewalkComponent)
 	local profile: RoadProfile.RoadProfile = {
 		Id = "roundabout_ring",
 		Name = "Roundabout",
@@ -109,6 +124,41 @@ function RoundaboutBuilder.Create(
 	model:SetAttribute("RW_Road", nil)
 	model:SetAttribute("RW_Roundabout", true)
 	model.Name = "Roundabout"
+
+	-- Central island: a raised, kerbed disc filling the hole the ring
+	-- leaves in the middle, sized to reach exactly the ring's own inner
+	-- pavement edge so there's no gap or overlap at the seam. Doesn't need
+	-- to know which physical side (inner/outer) is which - ComponentOffsetsM
+	-- always centres the whole cross-section on the curve (spans exactly
+	-- -halfWidth to +halfWidth), so both edges sit the same radial distance
+	-- from the ring's own centreline regardless of DriveOnLeft. Same
+	-- raised-part convention RoadBuilder itself uses for every Sidewalk
+	-- component (top at curbHeight above the ring's own plane, bottom at
+	-- -thickness) so the two meet flush.
+	local scale = settings.MetersToStuds
+	local thickness = settings.RoadThicknessStuds
+	local curbHeight = style.CurbHeightM * scale
+	local halfWidthM = RoadProfile.TotalWidthM(profile) / 2
+	local islandRadiusStuds = radiusStuds - halfWidthM * scale
+	if islandRadiusStuds > 1 then
+		local island = Instance.new("Part")
+		island.Name = "Island"
+		island.Anchored = true
+		island.CanCollide = false
+		island.CanTouch = false
+		island.CanQuery = false
+		island.CastShadow = false
+		island.TopSurface = Enum.SurfaceType.Smooth
+		island.BottomSurface = Enum.SurfaceType.Smooth
+		island.Material = Enum.Material.Concrete
+		island.Color = style.SidewalkColor
+		island.Shape = Enum.PartType.Cylinder
+		island.Size = Vector3.new(thickness + curbHeight, islandRadiusStuds * 2, islandRadiusStuds * 2)
+		island.CFrame = CFrame.new(center + Vector3.new(0, curbHeight - (thickness + curbHeight) / 2, 0))
+			* CFrame.Angles(0, 0, math.rad(90))
+		island.Parent = model
+	end
+
 	model.Parent = getRoundaboutsFolder()
 	return model
 end

@@ -192,35 +192,57 @@ local function createRoadSession(
 		if not settings.SnapToRoad then
 			return nil, nil
 		end
-		local folder = getRoadsFolder(false)
-		if not folder then
-			return nil, nil
-		end
 		local bestDistance = settings.SnapRadiusStuds
 		local bestPos: Vector3? = nil
 		local bestTangent: Vector3? = nil
-		for _, child in folder:GetChildren() do
-			if child:GetAttribute("RW_Road") ~= true then
-				continue
-			end
-			local startPos = child:GetAttribute("RW_StartPos") :: Vector3?
-			local endPos = child:GetAttribute("RW_EndPos") :: Vector3?
-			local startTan = child:GetAttribute("RW_StartTan") :: Vector3?
-			local endTan = child:GetAttribute("RW_EndTan") :: Vector3?
-			if endPos and endTan then
-				local d = (endPos - pos).Magnitude
-				if d < bestDistance then
-					bestDistance = d
-					bestPos = endPos
-					bestTangent = endTan -- Outgoing continuation direction
+		local folder = getRoadsFolder(false)
+		if folder then
+			for _, child in folder:GetChildren() do
+				if child:GetAttribute("RW_Road") ~= true then
+					continue
+				end
+				local startPos = child:GetAttribute("RW_StartPos") :: Vector3?
+				local endPos = child:GetAttribute("RW_EndPos") :: Vector3?
+				local startTan = child:GetAttribute("RW_StartTan") :: Vector3?
+				local endTan = child:GetAttribute("RW_EndTan") :: Vector3?
+				if endPos and endTan then
+					local d = (endPos - pos).Magnitude
+					if d < bestDistance then
+						bestDistance = d
+						bestPos = endPos
+						bestTangent = endTan -- Outgoing continuation direction
+					end
+				end
+				if startPos and startTan then
+					local d = (startPos - pos).Magnitude
+					if d < bestDistance then
+						bestDistance = d
+						bestPos = startPos
+						bestTangent = -startTan -- Continue backwards out of the start
+					end
 				end
 			end
-			if startPos and startTan then
-				local d = (startPos - pos).Magnitude
+		end
+		-- Also snap toward an existing JunctionNode's own centre - not just
+		-- its connected roads' endpoints. TrimApproaches always pulls every
+		-- connected road's real endpoint back to the pad boundary now, so on
+		-- an already-built intersection there's no road endpoint sitting at
+		-- the centre any more for a new road to snap onto; without this, a
+		-- click aimed at the middle of a junction pad (the visually obvious
+		-- place to attach a new approach) had nothing to snap to and could
+		-- easily land just outside every connected road's own snap radius.
+		-- No single tangent makes sense for a junction with more than one
+		-- road already meeting there, so this leaves the tangent unlocked
+		-- (nil) - the placement tools already treat a nil tangent as "no
+		-- guide point saved, free to aim."
+		local junctionModel = JunctionInstance.FindNear(pos, bestDistance)
+		if junctionModel then
+			local junctionData = JunctionInstance.Read(junctionModel)
+			if junctionData then
+				local d = (junctionData.Position - pos).Magnitude
 				if d < bestDistance then
-					bestDistance = d
-					bestPos = startPos
-					bestTangent = -startTan -- Continue backwards out of the start
+					bestPos = junctionData.Position
+					bestTangent = nil
 				end
 			end
 		end
@@ -583,26 +605,37 @@ local function createRoadSession(
 		})
 		model.Parent = getRoadsFolder(true)
 
+		-- Links `model`'s `whichEnd` at `pos` to whatever it should connect
+		-- to there: an existing road's endpoint first (findConnectableEndpoint),
+		-- then a mid-span crossing (findMidSpanMatch), then - since neither of
+		-- those looks at JunctionNodes at all, only at roads - an existing
+		-- junction sitting at `pos` with no road endpoint left exactly at its
+		-- centre to match against (every connected approach is trimmed back
+		-- to the pad boundary by now). Without this last fallback, a new
+		-- road aimed at an already-built intersection's centre had nothing
+		-- to snap its post-commit connection onto and silently placed
+		-- unlinked, even though `findEndpointSnap` guided the click there in
+		-- the first place.
+		local function connectEnd(pos: Vector3, whichEnd: "Start" | "End")
+			local otherModel, otherEnd = findConnectableEndpoint(pos, model)
+			if otherModel then
+				connectAt(pos, model, whichEnd, otherModel, otherEnd)
+				return
+			end
+			local midRoad, midStation = findMidSpanMatch(pos, model)
+			if midRoad and midStation then
+				connectAtSplit(midRoad, midStation, model, whichEnd)
+				return
+			end
+			if settings.SnapToRoad and JunctionInstance.FindNear(pos, settings.SnapRadiusStuds) then
+				connectAt(pos, model, whichEnd, nil, nil)
+			end
+		end
+
 		local startPos = curve:PosAt(0)
 		local endPos = curve:PosAt(curve.Length)
-		local otherAtStart, otherStartEnd = findConnectableEndpoint(startPos, model)
-		if otherAtStart then
-			connectAt(startPos, model, "Start", otherAtStart, otherStartEnd)
-		else
-			local midRoad, midStation = findMidSpanMatch(startPos, model)
-			if midRoad and midStation then
-				connectAtSplit(midRoad, midStation, model, "Start")
-			end
-		end
-		local otherAtEnd, otherEndEnd = findConnectableEndpoint(endPos, model)
-		if otherAtEnd then
-			connectAt(endPos, model, "End", otherAtEnd, otherEndEnd)
-		else
-			local midRoad, midStation = findMidSpanMatch(endPos, model)
-			if midRoad and midStation then
-				connectAtSplit(midRoad, midStation, model, "End")
-			end
-		end
+		connectEnd(startPos, "Start")
+		connectEnd(endPos, "End")
 
 		if recording then
 			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
