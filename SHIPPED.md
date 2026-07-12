@@ -4,6 +4,38 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Fix bottom HUD panels sitting well above the true viewport bottom ("pushed upward")
+
+- Reported live with a screenshot: the Road Tools panel and Road Library
+  box both floated with a large, unexplained gap of empty space beneath
+  them instead of sitting near the bottom edge as their `-40` studs
+  margin intends - same for every other bottom-anchored panel
+  (RoadDesigner, RoadInspector, JunctionPanel, the bay/marking/kerb-stretch
+  sub-panels).
+- Root cause: every one of these panels lives in `bottomScreenGui`, which
+  has `IgnoreGuiInset = true`. That flag is documented (multiple Roblox
+  Developer Forum engine-bug reports, current as of checking) to NOT
+  reliably zero out the GUI inset for a ScreenGui's own descendant layout
+  in the current engine, despite the flag's whole purpose being exactly
+  that - so `AnchorPoint(_, 1)` + `Position(_, 1, -40)` was resolving
+  against a shorter-than-true effective height, landing the panel's
+  bottom edge well above the actual viewport bottom by roughly the size
+  of the (supposedly ignored) inset.
+- Fixed without touching the flag itself (it's still needed for the
+  drag-and-drop hit-testing fix from an earlier round, which uses
+  `GuiService:GetGuiObjectsAtPosition` and doesn't depend on this
+  particular inconsistency): added `bottomMarginStuds(base)`, which reads
+  the ACTUAL current inset via `GuiService:GetGuiInset()`'s bottom-right
+  component and adds it back into the margin, so every bottom-anchored
+  panel's `-40` became `-bottomMarginStuds(40)` - self-correcting against
+  whatever the engine is actually doing at the moment, rather than
+  hard-coding a guessed pixel offset that would drift again on the next
+  engine change. All 9 occurrences of the pattern across `main.lua`
+  updated identically.
+- The top nav bar (`TopBar.lua`, its own `topScreenGui`) was NOT touched -
+  confirmed live that only the bottom-anchored panels were affected, not
+  the top pill.
+
 ## Roundabout: outer-edge-only sidewalk, larger island, defensive stale-pad cleanup
 
 - Reported live: a fan of thin shards visible inside a roundabout's
