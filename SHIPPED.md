@@ -4,6 +4,58 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: cut a gap in the ring's own sidewalk where each feeder connects, bridge the seam
+
+- Two real, concrete bugs behind "the ring's sidewalk clips through the
+  driving lanes where feeders join": (1) spokes were trimmed to the ring's
+  CENTRELINE radius, not its true outer pavement edge - the ring's own
+  cross-section extends `halfWidth` beyond its centreline on each side (via
+  the sidewalks added a couple rounds ago), so every spoke stopped a full
+  half-ring-width short of the ring's actual kerb, a real gap that simply
+  wasn't visible before the ring had a sidewalk to expose it against; (2)
+  the ring's outer sidewalk band ran fully unbroken around the whole
+  circle, with no opening cut for a feeder to connect through, so even
+  once a spoke reached the right radius its lanes would run straight under
+  the ring's continuous sidewalk pavement.
+- `trimSpokeToRing` now takes an explicit `targetRadiusStuds` (the ring's
+  outer edge, `radiusStuds + ringHalfWidthStuds` - not the centreline) and
+  returns the spoke's own freshly-cut edge points (kerb + sidewalk-outer,
+  both sides) so `CreateAtJunction` can use them to cut a matching gap.
+- `CreateAtJunction` finds each gap's exact station interval on the ring's
+  own curve via `PolyCurve:ClosestS` on the spoke's real edge points (not
+  an assumed angular width - it always matches the spoke's true width),
+  then builds the ring as alternating slices: normal (full profile, both
+  sidewalks) between gaps, `ExcludeComponentIndices` (just the two
+  Sidewalk components, first and last) across each gap so the DRIVE LANES
+  stay fully continuous - the ring is never actually cut open for traffic,
+  only its sidewalk band is - while the spoke's own asphalt (now reaching
+  the ring's true outer radius) flows straight into the ring's lanes with
+  a little harmless overlap in the gap zone (same material, same height,
+  no visible seam).
+- Each gap is bridged with a plain two-triangle quad connecting the ring's
+  own outer-sidewalk edge (computed analytically at the gap boundary,
+  since no Part was built there) to the spoke's real sidewalk edge -
+  deliberately the same plain a.Outer-a.Kerb-b.Kerb-b.Outer shape
+  `JunctionBuilder`'s `cornerBoundaries` uses for an ordinary straight
+  chamfer, not a new curve-fitting/fillet system - that's exactly the kind
+  of code that needed a sign-error fix earlier this same round, and both
+  edges meeting the gap are already smooth curves, so a straight bridge
+  between them reads as a continuation rather than a sharp corner.
+- Which physical side of the ring's cross-section is "outer" (facing a
+  feeder) vs "inner" (facing the island) still flips with
+  `style.DriveOnLeft` (see `ringComponents`'s own note) - rather than
+  track that sign for the bridge, `ringEdgeNear` just picks whichever side
+  is physically closer to the spoke's own edge point at that station.
+  Nearest-point matching sidesteps the entire class of directional sign
+  error that bit the junction fillet fix earlier this round.
+- **Not live-tested in Studio** (no Roblox client in this environment) -
+  this is a substantial new code path (ring construction split into
+  multiple sliced sub-builds merged into one Model, analytic edge-point
+  computation independent of any built Part) built from careful reasoning
+  and this codebase's own already-proven primitives (`PolyCurve.Slice`/
+  `ClosestS`, `ExcludeComponentIndices`, `FillTriangle`), not verified
+  live. Flagged explicitly rather than claimed working.
+
 ## Junction corners: fix sidewalk band offset direction (was inset toward the interior)
 
 - The offset-band fix from the previous round (below) had the offset
