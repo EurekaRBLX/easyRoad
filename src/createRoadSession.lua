@@ -188,6 +188,30 @@ local function createRoadSession(
 		return origin + direction * t
 	end
 
+	-- Finds an existing junction whose PAD footprint (not just its centre
+	-- point) is within snap radius of `pos`. JunctionInstance.FindNear
+	-- measures from the centre alone, but a wide avenue's pad radius (half
+	-- the road width + setback margin) is much larger than the snap radius -
+	-- a click at the pad's visible EDGE, the natural place to start a new
+	-- approach from, sat well outside a centre-only search and never
+	-- matched. Matching against centre distance minus the junction's own
+	-- real pad radius fixes that for any road width.
+	local function findJunctionNear(pos: Vector3): Model?
+		if not settings.SnapToRoad then
+			return nil
+		end
+		for _, junctionModel in JunctionInstance.GetAll() do
+			local junctionData = JunctionInstance.Read(junctionModel)
+			if junctionData then
+				local padRadius = JunctionBuilder.PadRadiusStuds(junctionData.Id, settings) or 0
+				if (junctionData.Position - pos).Magnitude <= settings.SnapRadiusStuds + padRadius then
+					return junctionModel
+				end
+			end
+		end
+		return nil
+	end
+
 	local function findEndpointSnap(pos: Vector3): (Vector3?, Vector3?)
 		if not settings.SnapToRoad then
 			return nil, nil
@@ -227,20 +251,18 @@ local function createRoadSession(
 		-- its connected roads' endpoints. TrimApproaches always pulls every
 		-- connected road's real endpoint back to the pad boundary now, so on
 		-- an already-built intersection there's no road endpoint sitting at
-		-- the centre any more for a new road to snap onto; without this, a
-		-- click aimed at the middle of a junction pad (the visually obvious
-		-- place to attach a new approach) had nothing to snap to and could
-		-- easily land just outside every connected road's own snap radius.
-		-- No single tangent makes sense for a junction with more than one
-		-- road already meeting there, so this leaves the tangent unlocked
-		-- (nil) - the placement tools already treat a nil tangent as "no
-		-- guide point saved, free to aim."
-		local junctionModel = JunctionInstance.FindNear(pos, bestDistance)
-		if junctionModel then
-			local junctionData = JunctionInstance.Read(junctionModel)
-			if junctionData then
-				local d = (junctionData.Position - pos).Magnitude
-				if d < bestDistance then
+		-- the centre any more for a new road to snap onto. Matched against
+		-- the pad's whole footprint (findJunctionNear), not just a small
+		-- radius around the centre - clicking anywhere on the visible pad
+		-- counts as "attach here". No single tangent makes sense for a
+		-- junction with more than one road already meeting there, so this
+		-- leaves the tangent unlocked (nil) - the placement tools already
+		-- treat a nil tangent as "no guide point saved, free to aim."
+		if not bestPos then
+			local junctionModel = findJunctionNear(pos)
+			if junctionModel then
+				local junctionData = JunctionInstance.Read(junctionModel)
+				if junctionData then
 					bestPos = junctionData.Position
 					bestTangent = nil
 				end
@@ -317,7 +339,8 @@ local function createRoadSession(
 		model: Model,
 		modelEnd: "Start" | "End",
 		otherModel: Model?,
-		otherEnd: ("Start" | "End")?
+		otherEnd: ("Start" | "End")?,
+		knownJunction: Model?
 	)
 		-- Reuse the junction the other road's end is ALREADY linked to before
 		-- searching by position: approaches get trimmed back to the pad
@@ -325,7 +348,11 @@ local function createRoadSession(
 		-- road-half-width away from its junction's centre - farther than the
 		-- position search radius - and treating it as unlinked would stamp a
 		-- fresh junction over the existing link, silently disconnecting the
-		-- road from its real junction.
+		-- road from its real junction. `knownJunction` (a junction the
+		-- caller already located, e.g. via the pad-footprint search) takes
+		-- the same precedence over the narrow centre-point search below,
+		-- which could easily miss a wide pad's junction and mint a
+		-- duplicate node right next to the real one.
 		local existingJunctionModel: Model? = nil
 		if otherModel and otherEnd then
 			local otherData = RoadInstance.Read(otherModel)
@@ -337,6 +364,7 @@ local function createRoadSession(
 			end
 		end
 		local junctionModel = existingJunctionModel
+			or knownJunction
 			or JunctionInstance.FindNear(pos, settings.SnapRadiusStuds)
 			or JunctionInstance.Create(pos)
 		local junctionData = JunctionInstance.Read(junctionModel)
@@ -411,11 +439,7 @@ local function createRoadSession(
 			return pos
 		end
 		local grid = settings.GridSizeStuds
-		return Vector3.new(
-			math.round(pos.X / grid) * grid,
-			pos.Y,
-			math.round(pos.Z / grid) * grid
-		)
+		return Vector3.new(math.round(pos.X / grid) * grid, pos.Y, math.round(pos.Z / grid) * grid)
 	end
 
 	-- Recomputes hoverPos from the last known ground point using whatever
@@ -607,28 +631,33 @@ local function createRoadSession(
 
 		-- Links `model`'s `whichEnd` at `pos` to whatever it should connect
 		-- to there: an existing road's endpoint first (findConnectableEndpoint),
-		-- then a mid-span crossing (findMidSpanMatch), then - since neither of
-		-- those looks at JunctionNodes at all, only at roads - an existing
-		-- junction sitting at `pos` with no road endpoint left exactly at its
-		-- centre to match against (every connected approach is trimmed back
-		-- to the pad boundary by now). Without this last fallback, a new
-		-- road aimed at an already-built intersection's centre had nothing
-		-- to snap its post-commit connection onto and silently placed
-		-- unlinked, even though `findEndpointSnap` guided the click there in
-		-- the first place.
+		-- then an existing JUNCTION whose pad footprint covers `pos`
+		-- (findJunctionNear), then a mid-span crossing (findMidSpanMatch).
+		--
+		-- The junction check runs BEFORE the mid-span check, deliberately -
+		-- an earlier version had it last, and near an already-built
+		-- intersection it was unreachable: every trimmed approach's own
+		-- curve passes within findMidSpanMatch's width-scaled tolerance of
+		-- a click near the pad, so the mid-span branch matched a station
+		-- right at that approach's cut end and returned unconditionally -
+		-- and RoadSplit then declined the degenerate near-end split, so the
+		-- whole connection silently died without ever reaching the junction
+		-- fallback. That was the real reason "can't add a new road to an
+		-- intersection" survived the previous fix.
 		local function connectEnd(pos: Vector3, whichEnd: "Start" | "End")
 			local otherModel, otherEnd = findConnectableEndpoint(pos, model)
 			if otherModel then
 				connectAt(pos, model, whichEnd, otherModel, otherEnd)
 				return
 			end
+			local junctionModel = findJunctionNear(pos)
+			if junctionModel then
+				connectAt(pos, model, whichEnd, nil, nil, junctionModel)
+				return
+			end
 			local midRoad, midStation = findMidSpanMatch(pos, model)
 			if midRoad and midStation then
 				connectAtSplit(midRoad, midStation, model, whichEnd)
-				return
-			end
-			if settings.SnapToRoad and JunctionInstance.FindNear(pos, settings.SnapRadiusStuds) then
-				connectAt(pos, model, whichEnd, nil, nil)
 			end
 		end
 
@@ -725,49 +754,58 @@ local function createRoadSession(
 	end
 
 	table.insert(connections, mouse.Button1Down:Connect(onClick))
-	table.insert(connections, mouse.Move:Connect(function()
-		local ground = raycastGround()
-		if ground then
-			lastGroundPos = ground
-			refreshHoverPos()
-		end
-	end))
+	table.insert(
+		connections,
+		mouse.Move:Connect(function()
+			local ground = raycastGround()
+			if ground then
+				lastGroundPos = ground
+				refreshHoverPos()
+			end
+		end)
+	)
 
 	-- Rebindable via the Keybinds settings dock (src/Keybinds.lua); each
 	-- action can have multiple bound inputs (Cancel Placement defaults to
 	-- Escape and middle-click - right-click is deliberately not a default
 	-- since it also doubles as Studio's camera-orbit gesture, but can be
 	-- added manually).
-	table.insert(connections, UserInputService.InputBegan:Connect(function(input, gameProcessed)
-		if gameProcessed then
-			return
-		end
-		local binds = settings.Keybinds
-		if Keybinds.Matches(binds.ElevationUp, input) then
-			adjustElevation(settings.ElevationStepStuds)
-		elseif Keybinds.Matches(binds.ElevationDown, input) then
-			adjustElevation(-settings.ElevationStepStuds)
-		elseif Keybinds.Matches(binds.CancelPlacement, input) then
-			cancelPlacement()
-		end
-	end))
+	table.insert(
+		connections,
+		UserInputService.InputBegan:Connect(function(input, gameProcessed)
+			if gameProcessed then
+				return
+			end
+			local binds = settings.Keybinds
+			if Keybinds.Matches(binds.ElevationUp, input) then
+				adjustElevation(settings.ElevationStepStuds)
+			elseif Keybinds.Matches(binds.ElevationDown, input) then
+				adjustElevation(-settings.ElevationStepStuds)
+			elseif Keybinds.Matches(binds.CancelPlacement, input) then
+				cancelPlacement()
+			end
+		end)
+	)
 
-	table.insert(connections, RunService.Heartbeat:Connect(function()
-		if not previewDirty then
-			return
-		end
-		local now = os.clock()
-		if now - lastPreviewTime < PREVIEW_REBUILD_INTERVAL then
-			return
-		end
-		lastPreviewTime = now
-		previewDirty = false
-		if #points > 0 then
-			rebuildPreview()
-		else
-			destroyPreview()
-		end
-	end))
+	table.insert(
+		connections,
+		RunService.Heartbeat:Connect(function()
+			if not previewDirty then
+				return
+			end
+			local now = os.clock()
+			if now - lastPreviewTime < PREVIEW_REBUILD_INTERVAL then
+				return
+			end
+			lastPreviewTime = now
+			previewDirty = false
+			if #points > 0 then
+				rebuildPreview()
+			else
+				destroyPreview()
+			end
+		end)
+	)
 
 	-- Public interface ---------------------------------------------------------------------
 

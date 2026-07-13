@@ -4,6 +4,75 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Big fix round: junction re-connect (real root cause), roundabout speed bumps -> flares, setback, mouth guard, UI inset revert
+
+Driven by three live screenshots (a roundabout with raised strips at every
+feeder join, a Y-junction with sidewalk bands crossing the carriageway, a
+T-junction with no setback) plus "still can't add a road to an
+intersection" and "the UI is still up".
+
+- **"Cannot add new road to an intersection" - the REAL root cause this
+  time.** The previous fix added a junction fallback to `connectEnd`, but
+  put it LAST - after `findMidSpanMatch`. Near an already-built
+  intersection that made it unreachable: every trimmed approach's curve
+  passes within the mid-span matcher's width-scaled tolerance of a click
+  near the pad, so the mid-span branch matched a station right at that
+  approach's cut END and returned unconditionally - and `RoadSplit`
+  declined the degenerate near-end split, so the whole connection silently
+  died before the junction check ever ran. Reordered: road endpoint ->
+  junction -> mid-span. Also: junction matching now uses the pad's real
+  FOOTPRINT (`JunctionBuilder.PadRadiusStuds`, new export - centre
+  distance <= snap radius + pad radius) instead of a bare centre-point
+  search whose radius a wide avenue's pad dwarfs, in both the click-time
+  snap guide and the post-commit connect; and `connectAt` accepts the
+  already-found junction so its own narrow internal re-search can't miss
+  it and mint a duplicate node.
+- **Roundabout "random speed bumps" removed.** The previous round's
+  raised sidewalk "bridge quads" between the ring's cut sidewalk edge and
+  each spoke's sidewalk edge were the bumps: a raised quad whose corner
+  resolution goes even slightly wrong lands concrete strips across the
+  driving surface, and that failure mode was reported live at multiple
+  feeder joins. Deleted outright rather than patched - replaced by:
+- **Roundabout entry/exit FLARES (the "no curves for feeding in and out"
+  request).** Each side of each spoke's mouth now gets a deck-level
+  asphalt fillet between the spoke's own kerb line and the ring's outer
+  kerb line (locally approximated by its tangent at that station), built
+  with the same proven circular-fillet construction as junction corners -
+  now extracted to a shared `Geometry/Fillet.lua` (verbatim move, one
+  implementation for both callers) - and fanned locally from the spoke's
+  own kerb point. Deliberately DECK-LEVEL asphalt: worst failure mode is
+  flat asphalt overlapping flat asphalt (invisible), never a raised
+  obstacle; `Fillet.Compute` returning nil (tangential feeder) just means
+  no flare on that side. Also fixed a latent wrap-around bug found while
+  restructuring: a spoke straddling the ring curve's own station-0 seam
+  produced a "mouth interval" spanning nearly the whole circumference,
+  which would have deleted the ring's sidewalk everywhere EXCEPT the
+  mouth - now detected (interval > half the circumference) and split
+  into the two end fragments.
+- **Junction setback (`PAD_MARGIN_STUDS` 2 -> 6).** Explicitly requested:
+  approaches now stop visibly short of the interior, reading as roads
+  arriving at a distinct intersection area instead of ending flush
+  against its geometry.
+- **Junction mouth guard.** On a 3+ way junction where one road's kerb
+  points fall hull-interior, the hull edge between its two neighbours
+  spans right across that road's mouth - and the corner treatment built
+  on it (raised sidewalk band) walled off the approach (reported live:
+  bands crossing the carriageway). Cross-road hull edges that PROPERLY
+  intersect a third road's mouth segment (2D orientation-test crossing
+  check, endpoint-touch excluded - `segmentsCross2D`, the same idea as
+  RoadArchitect's `Intersects2D`) now skip the corner treatment entirely;
+  the base asphalt fan still fills the area.
+- **UI "pushed upward" - second attempt, different theory.** The
+  GetGuiInset-margin fix didn't work (confirmed live), so it's reverted.
+  New approach: `IgnoreGuiInset` is now OFF for both HUD ScreenGuis. The
+  pie-menu ScreenGui has never set the flag and is the one HUD surface
+  that has always positioned correctly in the user's Studio; both HUD
+  guis now follow its convention, and the flag's known-inconsistent
+  codepath is avoided entirely. NOT verified live (no Studio here). If it
+  STILL sits high, the next step is data, not another theory: run
+  `print(workspace.CurrentCamera.ViewportSize, game:GetService("GuiService"):GetGuiInset(), game:GetService("CoreGui").EasyRoadHUD.AbsolutePosition, game:GetService("CoreGui").EasyRoadHUD.AbsoluteSize)`
+  in Studio's command bar while the Road Tools panel is open.
+
 ## Fix bottom HUD panels sitting well above the true viewport bottom ("pushed upward")
 
 - Reported live with a screenshot: the Road Tools panel and Road Library

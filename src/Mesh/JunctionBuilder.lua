@@ -37,7 +37,7 @@
 --
 -- 3. Rounded corners: each cross-road hull edge is upgraded from a straight
 --    chamfer to a real curb-return fillet where it safely can be - see
---    `computeFillet` for the construction and, importantly, why it can only
+--    `Fillet.Compute` (Geometry/Fillet.lua) for the construction and, importantly, why it can only
 --    ever make one corner MORE conservative (fall back to the straight
 --    hull edge already proven safe), never introduce a new way to break
 --    the whole pad. A fixed radius (`FILLET_RADIUS_M`) tangent to both
@@ -68,6 +68,7 @@
 -- (RoadSplit's CanSplit guard - those roads still overlap the old way).
 
 local CurveSegment = require("../Geometry/CurveSegment")
+local Fillet = require("../Geometry/Fillet")
 local PolyCurve = require("../Geometry/PolyCurve")
 local RoadProfile = require("../RoadProfile")
 local RegionStyles = require("../RegionStyles")
@@ -80,7 +81,12 @@ local FillTriangle = require("./FillTriangle")
 
 local JunctionBuilder = {}
 
-local PAD_MARGIN_STUDS = 2 -- Pad reach beyond the widest connected road's half-width
+-- Pad reach beyond the widest connected road's half-width. Raised from 2
+-- to 6 after live feedback asking for a real SETBACK at intersections:
+-- with only 2 studs of clearance the approaches' medians/sidewalks ended
+-- flush against the pad's own geometry, reading as one continuous mess
+-- rather than roads arriving at a distinct intersection area.
+local PAD_MARGIN_STUDS = 6
 -- An approach end already this close to the pad boundary counts as trimmed
 -- (makes TrimApproaches idempotent across repeated connect/rebuild rounds).
 local TRIM_EPSILON_STUDS = 0.5
@@ -89,24 +95,12 @@ local TRIM_EPSILON_STUDS = 0.5
 local MIN_APPROACH_REMAINDER_STUDS = 2
 -- A typical urban kerb-return radius (real-world design values run roughly
 -- 3-15m depending on road class; 6m is a reasonable general default for a
--- residential/collector corner). Cross-checked against CivicArcRoadToolkit
--- (CART)'s JunctionTool.lua: its chooseArcCenter/sampleArc2D build a true
--- circular fillet (perpendicular-offset lines intersected to find a centre
--- equidistant from both tangent points, then sampled by angle) rather than
--- a Bézier approximation - the construction here follows that same shape
--- (find the vertex, derive tangent points and a true circle through them,
--- sample by angle), just built from this file's own kerb-point data
--- instead of taking the tangent points as a given input the way CART's
--- helper does.
+-- residential/collector corner). The fillet construction itself lives in
+-- Geometry/Fillet.lua (shared with the roundabout's entry/exit flares) -
+-- see that file for the CART-derived true-circle technique and its
+-- bounded-failure design.
 local FILLET_RADIUS_M = 6
 local FILLET_ARC_SAMPLES = 4 -- interior points sampled along each fillet
--- The corner vertex (where the two roads' own kerb lines would meet if
--- extended) is rejected as "too far to be a real corner" beyond this
--- multiple of the straight a.Kerb-b.Kerb chord length - guards the same
--- near-parallel-tangent case that made the old unbounded Bézier corner
--- spike, except here rejecting just means "skip rounding, keep the
--- already-safe straight hull edge" instead of corrupting anything.
-local MAX_VERTEX_CHORD_RATIO = 4
 local DOWN = Vector3.new(0, -1, 0)
 
 -- The profile actually present at the end of `road` that connects to this
@@ -352,6 +346,32 @@ local function trimApproach(
 	end
 end
 
+-- The radius (studs, from the junction centre) of this junction's pad -
+-- widest connected road's half-width plus the setback margin, the same
+-- number TrimApproaches cuts every approach back to. nil when no connected
+-- road contributes a usable width. Public so createRoadSession can match a
+-- click against the pad's real physical extent (its visible footprint)
+-- rather than just a fixed snap radius around the centre point, which for
+-- a wide avenue's junction is far smaller than the pad itself.
+function JunctionBuilder.PadRadiusStuds(junctionId: string, settings: Settings.EasyRoadSettings): number?
+	local roads = JunctionInstance.ConnectedRoads(junctionId)
+	if #roads == 0 then
+		return nil
+	end
+	local scale = settings.MetersToStuds
+	local maxHalfWidthStuds = 0
+	for _, road in roads do
+		local profile = profileAtJunctionEnd(road, junctionId)
+		if profile then
+			maxHalfWidthStuds = math.max(maxHalfWidthStuds, RoadProfile.TotalWidthM(profile) / 2 * scale)
+		end
+	end
+	if maxHalfWidthStuds <= 0 then
+		return nil
+	end
+	return maxHalfWidthStuds + PAD_MARGIN_STUDS
+end
+
 -- Trims every connected approach back to this junction's pad boundary -
 -- call from the placement flow right before Rebuild, whenever a road is
 -- connected to the junction. Deliberately NOT called from Rebuild itself:
@@ -376,19 +396,11 @@ function JunctionBuilder.TrimApproaches(
 	if #roads < 2 or isSmoothPassThrough(roads, junctionId) then
 		return
 	end
-	local center = junctionData.Position
-	local scale = settings.MetersToStuds
-	local maxHalfWidthStuds = 0
-	for _, road in roads do
-		local profile = profileAtJunctionEnd(road, junctionId)
-		if profile then
-			maxHalfWidthStuds = math.max(maxHalfWidthStuds, RoadProfile.TotalWidthM(profile) / 2 * scale)
-		end
-	end
-	if maxHalfWidthStuds <= 0 then
+	local padRadiusStuds = JunctionBuilder.PadRadiusStuds(junctionId, settings)
+	if not padRadiusStuds then
 		return
 	end
-	local padRadiusStuds = maxHalfWidthStuds + PAD_MARGIN_STUDS
+	local center = junctionData.Position
 	for _, road in roads do
 		trimApproach(road, junctionId, center, padRadiusStuds, style, settings)
 	end
@@ -399,6 +411,21 @@ end
 -- extended, negative means right, zero means collinear.
 local function cross2D(o: Vector3, a: Vector3, b: Vector3): number
 	return (a.X - o.X) * (b.Z - o.Z) - (a.Z - o.Z) * (b.X - o.X)
+end
+
+-- True when segments a1-a2 and b1-b2 PROPERLY cross in the ground plane
+-- (strict interior crossing - merely touching at an endpoint doesn't
+-- count, so a corner band sharing a kerb point with an adjacent road's
+-- mouth isn't a false positive). Same segment-overlap idea RoadArchitect's
+-- GSDRoadIntersection.Intersects2D uses for its own boundary tests: four
+-- orientation (turn) tests, crossing iff each segment's endpoints straddle
+-- the other's line.
+local function segmentsCross2D(a1: Vector3, a2: Vector3, b1: Vector3, b2: Vector3): boolean
+	local o1 = cross2D(a1, a2, b1)
+	local o2 = cross2D(a1, a2, b2)
+	local o3 = cross2D(b1, b2, a1)
+	local o4 = cross2D(b1, b2, a2)
+	return o1 * o2 < 0 and o3 * o4 < 0
 end
 
 -- The convex hull of `points`' Kerb positions (2D, ground plane), via the
@@ -447,120 +474,6 @@ local function convexHull(points: { EdgePoint }): { EdgePoint }
 	return hull
 end
 
--- A real curb-return fillet between two roads' kerb lines meeting at
--- `aKerb`/`bKerb` - the roads' own edge points, which the fillet must
--- connect to WITHOUT moving them. `inwardA`/`inwardB` are each road's kerb
--- line direction pointing INTO the junction (toward where the two lines
--- would cross if extended).
---
--- Two stages, both bounded so a bad case just loses the rounding for this
--- one corner (returns nil - caller falls back to the straight hull edge,
--- already proven safe) rather than producing anything unbounded:
---
--- 1. Find the corner VERTEX: where the two roads' own kerb lines actually
---    meet if extended (2D line intersection, ground plane). Rejected if
---    the lines are parallel, if either road's line only reaches the
---    vertex going BACKWARD (t <= 0 - the roads diverge instead of
---    converging, not a real corner), or if the vertex is unreasonably far
---    away relative to the chord between the two points (near-parallel
---    roads) - the same class of case that made the old unbounded Bézier
---    corner spike, except rejecting it here only skips rounding.
--- 2. Derive a true circular fillet of `radiusStuds` tangent to both lines
---    at that vertex, the same shape CivicArcRoadToolkit's chooseArcCenter/
---    sampleArc2D build (see this file's header) - standard "tangent
---    length = radius / tan(half-angle)" trigonometry, capped to never
---    reach past the roads' own aKerb/bKerb points (a corner tighter than
---    the requested radius needs, e.g. a short trimmed approach, gets a
---    smaller effective radius instead of overshooting).
---
--- Returns (tangent point near aKerb, circle centre, tangent point near
--- bKerb, effective radius) or nil.
-local function computeFillet(
-	aKerb: Vector3,
-	inwardA: Vector3,
-	bKerb: Vector3,
-	inwardB: Vector3,
-	radiusStuds: number
-): (Vector3?, Vector3?, Vector3?, number?)
-	local ax, az = inwardA.X, inwardA.Z
-	local bx, bz = inwardB.X, inwardB.Z
-	local det = ax * -bz - az * -bx
-	if math.abs(det) < 1e-6 then
-		return nil, nil, nil, nil
-	end
-	local dx, dz = bKerb.X - aKerb.X, bKerb.Z - aKerb.Z
-	local t1 = (dx * -bz - dz * -bx) / det
-	local t2 = (ax * dz - dx * az) / det
-	if t1 <= 1e-3 or t2 <= 1e-3 then
-		return nil, nil, nil, nil -- roads diverge from these points, not a real corner
-	end
-	local chordLength = (bKerb - aKerb).Magnitude
-	if chordLength < 1e-3 or t1 > chordLength * MAX_VERTEX_CHORD_RATIO or t2 > chordLength * MAX_VERTEX_CHORD_RATIO then
-		return nil, nil, nil, nil -- vertex too far away: near-parallel roads
-	end
-	local vertex = aKerb + inwardA * t1
-	local dirA = (-inwardA).Unit -- from vertex back toward aKerb
-	local dirB = (-inwardB).Unit
-	local cosTheta = math.clamp(dirA:Dot(dirB), -1, 1)
-	local theta = math.acos(cosTheta)
-	if theta < 1e-3 then
-		return nil, nil, nil, nil -- roads nearly collinear here: no real corner to round
-	end
-	local tangentLength = math.min(radiusStuds / math.tan(theta / 2), t1, t2)
-	if tangentLength < 1e-3 then
-		return nil, nil, nil, nil
-	end
-	local effectiveRadius = tangentLength * math.tan(theta / 2)
-	local bisector = dirA + dirB
-	if bisector.Magnitude < 1e-6 then
-		return nil, nil, nil, nil
-	end
-	bisector = bisector.Unit
-	local center = vertex + bisector * (tangentLength / math.cos(theta / 2))
-	local p1 = vertex + dirA * tangentLength
-	local p2 = vertex + dirB * tangentLength
-	return p1, center, p2, effectiveRadius
-end
-
--- Samples `samples` interior points (excluding the endpoints) along the
--- TRUE circular arc from `p1` to `p2` around `center` with the given
--- radius - the short way around, which is always well-defined here since
--- computeFillet's geometry guarantees the angle subtended is less than
--- 180 degrees. Interpolates height linearly between the two endpoints
--- (the fillet is small enough, relative to any grade change across a
--- junction, that this is visually indistinguishable from tracking the
--- true 3D surface).
-local function sampleFilletArc(
-	center: Vector3,
-	radiusStuds: number,
-	p1: Vector3,
-	p2: Vector3,
-	samples: number
-): { Vector3 }
-	local v1 = p1 - center
-	local v2 = p2 - center
-	local a1 = math.atan2(v1.Z, v1.X)
-	local a2 = math.atan2(v2.Z, v2.X)
-	local delta = a2 - a1
-	while delta > math.pi do
-		delta -= 2 * math.pi
-	end
-	while delta <= -math.pi do
-		delta += 2 * math.pi
-	end
-	local points: { Vector3 } = {}
-	for i = 1, samples do
-		local t = i / (samples + 1)
-		local angle = a1 + delta * t
-		local y = p1.Y + (p2.Y - p1.Y) * t
-		table.insert(
-			points,
-			Vector3.new(center.X + math.cos(angle) * radiusStuds, y, center.Z + math.sin(angle) * radiusStuds)
-		)
-	end
-	return points
-end
-
 -- Insets `point` (assumed to already lie on the fillet circle of the given
 -- `radius`, centred at `center`) radially TOWARD `center` by `distance`
 -- studs - i.e. the same centre and angle, just a smaller concentric arc.
@@ -569,7 +482,7 @@ end
 -- boundary, and the asphalt sits on the side of the arc AWAY from the
 -- circle's own centre (nearer the corner's true, un-rounded vertex, which
 -- sits OUTSIDE the circle - vertex-to-centre distance is always > radius
--- by construction, since `computeFillet` derives centre as vertex offset
+-- by construction, since `Fillet.Compute` derives centre as vertex offset
 -- along the bisector by `tangentLength / cos(theta/2)`, strictly more than
 -- the radius `tangentLength * tan(theta/2)` for any real corner). The
 -- pavement/sidewalk therefore lies on the CENTRE side of the arc, so its
@@ -615,18 +528,18 @@ local function cornerBoundaries(
 	if not inwardA or not inwardB then
 		return { a.Kerb, b.Kerb }, { a.Outer, b.Outer }
 	end
-	local p1, center, p2, effectiveRadius = computeFillet(a.Kerb, -inwardA, b.Kerb, -inwardB, radiusStuds)
+	local p1, center, p2, effectiveRadius = Fillet.Compute(a.Kerb, -inwardA, b.Kerb, -inwardB, radiusStuds)
 	if not p1 or not center or not p2 or not effectiveRadius then
 		return { a.Kerb, b.Kerb }, { a.Outer, b.Outer }
 	end
 	local widthA = distanceXZ(a.Outer, a.Kerb)
 	local widthB = distanceXZ(b.Outer, b.Kerb)
 	-- Sampled arc points, plus p1 (t=0) and p2 (t=1), each tagged with the
-	-- t used to interpolate its sidewalk width. sampleFilletArc uses
+	-- t used to interpolate its sidewalk width. Fillet.SampleArc uses
 	-- t = i/(samples+1), so the interior points sit strictly between.
 	local kerb: { Vector3 } = { a.Kerb, p1 }
 	local outer: { Vector3 } = { a.Outer, insetTowardCenter(p1, center, effectiveRadius, widthA) }
-	local arc = sampleFilletArc(center, effectiveRadius, p1, p2, FILLET_ARC_SAMPLES)
+	local arc = Fillet.SampleArc(center, effectiveRadius, p1, p2, FILLET_ARC_SAMPLES)
 	for i, point in arc do
 		local t = i / (FILLET_ARC_SAMPLES + 1)
 		local width = widthA + (widthB - widthA) * t
@@ -713,11 +626,19 @@ function JunctionBuilder.Rebuild(
 	folder.Name = "Geometry"
 
 	local edgePoints: { EdgePoint } = {}
+	-- Each road's MOUTH: the segment between its own left and right kerb
+	-- points at its junction end - the opening its traffic flows through.
+	-- Used below to stop a corner treatment between two OTHER roads from
+	-- being drawn straight across it (see the crossesMouth check).
+	local mouths: { { Road: Model, L: Vector3, R: Vector3 } } = {}
 	for _, road in roads do
 		local points = edgePointsForRoad(road, junctionId, settings)
 		if points then
 			for _, point in points do
 				table.insert(edgePoints, point)
+			end
+			if #points == 2 then
+				table.insert(mouths, { Road = road, L = points[1].Kerb, R = points[2].Kerb })
 			end
 		end
 	end
@@ -755,7 +676,30 @@ function JunctionBuilder.Rebuild(
 			-- edges touching the apex vertex) makes a zero-length edge,
 			-- silently skipped by FillTriangle's degenerate-triangle guard.
 			FillTriangle(apex, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
+			-- No corner treatment (no raised sidewalk band, no asphalt
+			-- bulge) for a cross-road hull edge that cuts straight across a
+			-- THIRD road's mouth - on a 3+ way junction where one road's
+			-- kerb points fall hull-interior (narrower road, shallower
+			-- angle), the hull edge between its two neighbours spans right
+			-- across the opening its traffic drives through, and building a
+			-- raised band there walls off the approach (reported live:
+			-- raised strips crossing the carriageway). The base asphalt fan
+			-- above still fills the area - only the raised/decorative
+			-- treatment is skipped.
+			local crossesMouth = false
 			if a.Road ~= b.Road then
+				for _, mouth in mouths do
+					if
+						mouth.Road ~= a.Road
+						and mouth.Road ~= b.Road
+						and segmentsCross2D(a.Kerb, b.Kerb, mouth.L, mouth.R)
+					then
+						crossesMouth = true
+						break
+					end
+				end
+			end
+			if a.Road ~= b.Road and not crossesMouth then
 				local kerbBoundary, outerBoundary = cornerBoundaries(a, b, junctionId, filletRadiusStuds)
 				-- Asphalt corner bulge: only when a real fillet was found
 				-- (otherwise kerbBoundary is just the 2 chord endpoints, and

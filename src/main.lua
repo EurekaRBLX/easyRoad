@@ -18,7 +18,6 @@
 
 local CoreGui = game:GetService("CoreGui")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
-local GuiService = game:GetService("GuiService")
 
 local Packages = script.Parent.Parent.Packages
 local React = require(Packages.React)
@@ -98,26 +97,6 @@ return function(
 	local pieMenuScreenGui: ScreenGui? = nil
 
 	local updateUI: () -> () = nil :: any
-
-	-- Every bottom-anchored HUD panel (BuildBar's Tool Mode/Road Library
-	-- boxes, RoadDesigner, RoadInspector, JunctionPanel, the pie-menu
-	-- sub-panels) is positioned via AnchorPoint(_, 1) + a fixed "-40"
-	-- margin from the bottom of `bottomScreenGui`, which has
-	-- IgnoreGuiInset = true. That flag is documented (and reproduced
-	-- live) to NOT reliably zero out the inset for a ScreenGui's own
-	-- layout math in the current engine - the panels rendered with a
-	-- large, unexplained gap below them instead of sitting near the true
-	-- viewport bottom ("pushed upward"), matching Roblox's own
-	-- IgnoreGuiInset/AbsolutePosition engine bug reports. Rather than
-	-- trust the flag, this reads the actual reported inset directly via
-	-- GuiService:GetGuiInset() (whose bottom-right component is exactly
-	-- the gap being seen) and adds it back into every bottom margin, so
-	-- the panels land at the intended distance from the TRUE bottom edge
-	-- regardless of how the engine handles the flag internally.
-	local function bottomMarginStuds(baseMargin: number): number
-		local _, bottomRightInset = GuiService:GetGuiInset()
-		return baseMargin + bottomRightInset.Y
-	end
 
 	local function getStyle(): RegionStyles.RegionStyle
 		return regionLibrary.Get(settings.RegionId)
@@ -344,7 +323,9 @@ return function(
 				screen.Name = "EasyRoadTopBar"
 				screen.ResetOnSpawn = false
 				screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-				screen.IgnoreGuiInset = true
+				-- IgnoreGuiInset deliberately left OFF (default false) - see
+				-- the EasyRoadHUD gui below for the full story; both HUD guis
+				-- follow the same convention.
 				screen.Parent = CoreGui
 				topScreenGui = screen
 				topRoot = ReactRoblox.createRoot(screen)
@@ -493,7 +474,7 @@ return function(
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
-				Position = UDim2.new(0, 12, 1, -bottomMarginStuds(40)),
+				Position = UDim2.new(0, 12, 1, -40),
 				Size = UDim2.new(1, -24, 0, 470),
 			}
 		elseif session then
@@ -523,7 +504,7 @@ return function(
 			bottomContent = React.createElement(React.Fragment, nil, {
 				ToolMode = React.createElement("Frame", {
 					AnchorPoint = Vector2.new(0, 1),
-					Position = UDim2.new(0, 16, 1, -bottomMarginStuds(40)),
+					Position = UDim2.new(0, 16, 1, -40),
 					Size = UDim2.new(0, 260, 0, 430),
 					BackgroundTransparency = 1,
 					[React.Event.MouseEnter] = function()
@@ -581,7 +562,7 @@ return function(
 				}),
 				RoadLibrary = React.createElement("Frame", {
 					AnchorPoint = Vector2.new(1, 1),
-					Position = UDim2.new(1, -16, 1, -bottomMarginStuds(40)),
+					Position = UDim2.new(1, -16, 1, -40),
 					Size = UDim2.new(0, 340, 0, 260),
 					BackgroundTransparency = 1,
 					[React.Event.MouseEnter] = function()
@@ -622,7 +603,7 @@ return function(
 				})
 				bottomFrameProps = {
 					AnchorPoint = Vector2.new(0, 1),
-					Position = UDim2.new(0, 12, 1, -bottomMarginStuds(40)),
+					Position = UDim2.new(0, 12, 1, -40),
 					Size = UDim2.new(0, 260, 0, 180),
 				}
 			end
@@ -645,7 +626,7 @@ return function(
 				})
 				bottomFrameProps = {
 					AnchorPoint = Vector2.new(0, 1),
-					Position = UDim2.new(0, 12, 1, -bottomMarginStuds(40)),
+					Position = UDim2.new(0, 12, 1, -40),
 					Size = UDim2.new(0, 280, 0, 300),
 				}
 			end
@@ -682,7 +663,7 @@ return function(
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
-				Position = UDim2.new(0, 12, 1, -bottomMarginStuds(40)),
+				Position = UDim2.new(0, 12, 1, -40),
 				Size = UDim2.new(0, 280, 0, 260),
 			}
 		elseif editSession.GetSelectedRoad() and editSession.IsConfirmingKerbStretch() then
@@ -698,7 +679,7 @@ return function(
 				})
 				bottomFrameProps = {
 					AnchorPoint = Vector2.new(0, 1),
-					Position = UDim2.new(0, 12, 1, -bottomMarginStuds(40)),
+					Position = UDim2.new(0, 12, 1, -40),
 					Size = UDim2.new(0, 280, 0, 240),
 				}
 			end
@@ -722,7 +703,7 @@ return function(
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
-				Position = UDim2.new(0, 12, 1, -bottomMarginStuds(40)),
+				Position = UDim2.new(0, 12, 1, -40),
 				Size = UDim2.new(1, -24, 0, 420),
 			}
 		elseif junctionEditSession.GetSelectedJunction() then
@@ -754,7 +735,7 @@ return function(
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
-				Position = UDim2.new(0, 12, 1, -bottomMarginStuds(40)),
+				Position = UDim2.new(0, 12, 1, -40),
 				Size = UDim2.new(0, 280, 0, 360),
 			}
 		end
@@ -765,7 +746,18 @@ return function(
 				screen.Name = "EasyRoadHUD"
 				screen.ResetOnSpawn = false
 				screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-				screen.IgnoreGuiInset = true
+				-- IgnoreGuiInset deliberately OFF (default false). With it ON,
+				-- every bottom-anchored panel in this gui rendered well above
+				-- the true viewport bottom in the user's Studio ("pushed
+				-- upward" - reported live twice), consistent with the
+				-- documented engine inconsistencies around IgnoreGuiInset and
+				-- inset handling. The pie-menu ScreenGui below has never set
+				-- the flag and is the one HUD surface that has always
+				-- positioned correctly, so both HUD guis now follow its
+				-- convention. An earlier attempt kept the flag and added
+				-- GuiService:GetGuiInset() to the bottom margins instead -
+				-- that didn't fix it (the reported inset isn't the quantity
+				-- the broken codepath actually misplaces things by).
 				screen.Parent = CoreGui
 				bottomScreenGui = screen
 				bottomRoot = ReactRoblox.createRoot(screen)

@@ -19,6 +19,7 @@
 -- placed ring).
 
 local CurveSegment = require("../Geometry/CurveSegment")
+local Fillet = require("../Geometry/Fillet")
 local PolyCurve = require("../Geometry/PolyCurve")
 local RoadBuilder = require("./RoadBuilder")
 local RoadInstance = require("../RoadInstance")
@@ -268,6 +269,11 @@ export type SpokeCutEdges = {
 	LeftOuter: Vector3,
 	RightKerb: Vector3,
 	RightOuter: Vector3,
+	-- Ground-plane unit direction the spoke's cut end faces - from the cut
+	-- toward the ring/junction centre. The entry/exit flare construction
+	-- needs the direction each kerb EDGE LINE runs in, which is parallel to
+	-- this (the kerb lines run alongside the centreline).
+	Inward: Vector3,
 }
 
 -- Shortens `road` so it stops at `targetRadiusStuds` from `center` instead
@@ -383,46 +389,60 @@ local function trimSpokeToRing(
 	local function worldPoint(offsetM: number): Vector3
 		return (frame * CFrame.new(offsetM * scale, 0, 0)).Position
 	end
+	-- Direction the cut end faces (toward the ring centre): the curve's
+	-- tangent at the cut, flipped when the junction was at the road's start
+	-- (tangent at 0 points AWAY from the junction, along the road).
+	local tangent = newData.Curve:TangentAt(cutStation)
+	local inward = if atStart then -tangent else tangent
+	inward = Vector3.new(inward.X, 0, inward.Z)
+	if inward.Magnitude < 1e-6 then
+		return nil
+	end
 	return {
 		LeftKerb = worldPoint(kerbLeftM),
 		LeftOuter = worldPoint(outerLeftM),
 		RightKerb = worldPoint(kerbRightM),
 		RightOuter = worldPoint(outerRightM),
+		Inward = inward.Unit,
 	}
 end
 
 local DOWN = Vector3.new(0, -1, 0)
+
+-- Radius for the asphalt entry/exit flare arc where a feeder's kerb line
+-- meets the ring's own outer kerb line - larger than an urban street
+-- corner's kerb return (roundabout entries are designed to be driven at
+-- speed, not turned into from a stop).
+local FLARE_RADIUS_M = 8
+local FLARE_ARC_SAMPLES = 4
 
 -- Builds a roundabout replacing the junction `junctionId`: trims every
 -- currently-connected spoke road back to the ring's own OUTER pavement
 -- edge (not just its centreline - see trimSpokeToRing for why that
 -- distinction matters), cuts a matching gap in the ring's own outer
 -- sidewalk at each spoke's connection point so the ring's sidewalk band
--- doesn't sit in the way of the spoke's driving lanes (reported live as
--- the ring's pavement "clipping through" a feeder's lanes at the join),
--- bridges each gap's cut sidewalk edges to the spoke's own sidewalk edges
--- with a plain two-triangle quad, then removes the junction node (its
--- fillet pad is superseded by the ring). Returns the ring model, or nil if
--- the junction can't be read.
+-- doesn't sit in the way of the spoke's driving lanes, fills each side of
+-- each gap with an asphalt entry/exit FLARE (a Fillet.Compute circular arc
+-- between the spoke's kerb line and the ring's outer kerb line, fanned at
+-- deck level), then removes the junction node. Returns the ring model, or
+-- nil if the junction can't be read.
 --
 -- The ring's DRIVE LANES are never cut, only its outer sidewalk band -
--- ExcludeComponentIndices skips just the first/last (Sidewalk) components
--- across each gap's station range, so the ring stays fully driveable
--- straight through every junction point. A spoke's own asphalt reaching
--- the ring's outer radius therefore overlaps a little into the ring's own
--- lane area in the gap zone - harmless (same material, same height, no
--- visible seam), and far simpler than computing an exact non-overlapping
--- asphalt handoff.
+-- ExcludeComponentIndices skips just the Sidewalk component across each
+-- gap's station range, so the ring stays fully driveable straight through
+-- every junction point. A spoke's own asphalt reaching the ring's outer
+-- radius therefore overlaps a little into the ring's own lane area in the
+-- gap zone - harmless (same material, same height, no visible seam).
 --
--- The bridge quad deliberately reuses the plain a.Outer-a.Kerb-b.Kerb-
--- b.Outer shape JunctionBuilder's cornerBoundaries falls back to for an
--- ordinary straight chamfer (already proven correct) rather than a
--- fillet-arc curve fit - that arc-fitting code is exactly what needed a
--- sign-error fix earlier this same round, so a second, independent
--- attempt at it here isn't worth the risk for what's fundamentally a
--- small, already-mostly-curved seam (both the ring's edge and the spoke's
--- edge are already smooth curves arriving at the gap; the straight bridge
--- between them reads as a continuation, not a sharp kink).
+-- The flares replaced an earlier RAISED sidewalk "bridge quad" between the
+-- ring's cut sidewalk edge and the spoke's sidewalk edge - reported live
+-- as random raised strips ("speed bumps") across the carriageway at feeder
+-- joins: a raised quad whose corner resolution goes even slightly wrong
+-- lands concrete across the driving surface. The flares are deliberately
+-- DECK-LEVEL asphalt fanned from the spoke's own kerb point, so their
+-- worst failure mode is flat asphalt overlapping other flat asphalt
+-- (invisible), never a raised obstacle - and Fillet.Compute returning nil
+-- (tangential feeder, degenerate angle) just means no flare on that side.
 function RoundaboutBuilder.CreateAtJunction(
 	junctionId: string,
 	radiusStuds: number,
@@ -466,43 +486,41 @@ function RoundaboutBuilder.CreateAtJunction(
 	local outerRadiusStuds = radiusStuds + halfWidthStuds
 	local curve = PolyCurve.new(circleSegments(center, radiusStuds, style.DriveOnLeft))
 
-	-- Trim every spoke to the ring's outer edge, recording a gap (a
-	-- station interval on the ring's own curve, found via ClosestS on the
-	-- spoke's OWN cut-end edge points - so it always matches the spoke's
-	-- real width exactly, not an assumed angular span) for each one that
-	-- actually got trimmed. `Lo`/`Hi` are tagged by whichever of the
-	-- spoke's own Left/Right edge points has the smaller/larger station,
-	-- purely from the computed values - no assumption about which
-	-- physical side that corresponds to.
-	local gaps: { { Lo: number, Hi: number, LoOuter: Vector3, LoKerb: Vector3, HiOuter: Vector3, HiKerb: Vector3 } } =
-		{}
+	-- Trim every spoke to the ring's outer edge, recording per spoke: the
+	-- station interval its mouth spans on the ring's own curve (a sidewalk
+	-- EXCLUSION - found via ClosestS on the spoke's own cut-end edge
+	-- points, so it always matches the spoke's real width exactly, not an
+	-- assumed angular span), and one flare anchor per side of the mouth
+	-- (the spoke's kerb point + the ring station it lands next to).
+	--
+	-- A spoke whose mouth straddles the ring curve's own start/end seam
+	-- (the closed circle's station 0 == station Length point) yields
+	-- ClosestS values on opposite extremes of the station range - naively
+	-- treating [min, max] as the mouth interval would exclude the sidewalk
+	-- around almost the WHOLE ring except the mouth. Detected by the
+	-- interval spanning more than half the circumference (no real spoke is
+	-- that wide) and split into the two end fragments instead.
+	type FlareAnchor = { Station: number, Kerb: Vector3, Inward: Vector3 }
+	local exclusions: { { Lo: number, Hi: number } } = {}
+	local flares: { FlareAnchor } = {}
 	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
 		local edges = trimSpokeToRing(road, junctionId, center, outerRadiusStuds, style, settings)
 		if edges then
 			local sLeft = curve:ClosestS(edges.LeftOuter)
 			local sRight = curve:ClosestS(edges.RightOuter)
-			if sLeft <= sRight then
-				table.insert(gaps, {
-					Lo = sLeft,
-					Hi = sRight,
-					LoOuter = edges.LeftOuter,
-					LoKerb = edges.LeftKerb,
-					HiOuter = edges.RightOuter,
-					HiKerb = edges.RightKerb,
-				})
+			local lo = math.min(sLeft, sRight)
+			local hi = math.max(sLeft, sRight)
+			if hi - lo > curve.Length / 2 then
+				table.insert(exclusions, { Lo = hi, Hi = curve.Length })
+				table.insert(exclusions, { Lo = 0, Hi = lo })
 			else
-				table.insert(gaps, {
-					Lo = sRight,
-					Hi = sLeft,
-					LoOuter = edges.RightOuter,
-					LoKerb = edges.RightKerb,
-					HiOuter = edges.LeftOuter,
-					HiKerb = edges.LeftKerb,
-				})
+				table.insert(exclusions, { Lo = lo, Hi = hi })
 			end
+			table.insert(flares, { Station = sLeft, Kerb = edges.LeftKerb, Inward = edges.Inward })
+			table.insert(flares, { Station = sRight, Kerb = edges.RightKerb, Inward = edges.Inward })
 		end
 	end
-	table.sort(gaps, function(a, b)
+	table.sort(exclusions, function(a, b)
 		return a.Lo < b.Lo
 	end)
 
@@ -532,14 +550,14 @@ function RoundaboutBuilder.CreateAtJunction(
 	end
 
 	-- `Lo` clamped to never go backward relative to `cursor` (guards
-	-- pathologically close/overlapping gaps - two feeders placed closer
-	-- together than their own combined width - degrading to a zero-length,
-	-- harmlessly-skipped paved span between them rather than an inverted
-	-- station range).
+	-- pathologically close/overlapping exclusions - two feeders placed
+	-- closer together than their own combined width - degrading to a
+	-- zero-length, harmlessly-skipped paved span between them rather than
+	-- an inverted station range).
 	local cursor = 0
-	for _, gap in gaps do
-		local lo = math.max(gap.Lo, cursor)
-		local hi = math.max(gap.Hi, lo)
+	for _, exclusion in exclusions do
+		local lo = math.max(exclusion.Lo, cursor)
+		local hi = math.max(exclusion.Hi, lo)
 		buildSpan(cursor, lo, false)
 		buildSpan(lo, hi, true)
 		cursor = hi
@@ -549,21 +567,25 @@ function RoundaboutBuilder.CreateAtJunction(
 	ring:SetAttribute("RW_Roundabout", true)
 	buildIsland(ring, center, radiusStuds, profile, style, settings)
 
-	-- Bridge each gap: connect the ring's own outer-sidewalk edge (computed
-	-- analytically at the exact gap-boundary station, even though no Part
-	-- was built there) to the spoke's real edge point recorded above.
+	-- Entry/exit flares: a deck-level asphalt fillet on each side of each
+	-- spoke's mouth, between the spoke's own kerb line (direction: the
+	-- spoke's Inward, since kerb lines run parallel to the centreline) and
+	-- the ring's own OUTER kerb line (locally approximated by its tangent
+	-- at the flare's station - fine at flare scale, the ring's curvature
+	-- barely bends across a few studs). The ring tangent's orientation is
+	-- picked by which way faces the spoke (dot test against the
+	-- ring-kerb-to-spoke-kerb offset), so it needs no CW/CCW or
+	-- DriveOnLeft sign-tracking. Fanned locally from the spoke's own kerb
+	-- point - same construction discipline as the junction corner bulge.
 	local thickness = settings.RoadThicknessStuds
-	local curbHeight = style.CurbHeightM * scale
-	local sidewalkDepth = thickness + curbHeight
-	local offsets = RoadProfile.ComponentOffsetsM(profile)
-	local outerLeftM, outerRightM = offsets[1].Left, offsets[#offsets].Right
 	local kerbLeftM, kerbRightM = roadwayEdgeOffsetsM(profile)
-	local function raise(point: Vector3): Vector3
-		return point + Vector3.new(0, curbHeight, 0)
-	end
-	local function makeBridgePart(): Part
+	-- The ring's outer lane edge (kerb) offset: positive ComponentOffsetsM
+	-- side points outward for DriveOnLeft and inward otherwise - see
+	-- ringComponents' derivation.
+	local outerKerbM = if style.DriveOnLeft then kerbRightM else kerbLeftM
+	local function makeFlarePart(): Part
 		local part = Instance.new("Part")
-		part.Name = "RoundaboutBridge"
+		part.Name = "RoundaboutFlare"
 		part.Anchored = true
 		part.CanCollide = false
 		part.CanTouch = false
@@ -571,65 +593,33 @@ function RoundaboutBuilder.CreateAtJunction(
 		part.CastShadow = false
 		part.TopSurface = Enum.SurfaceType.Smooth
 		part.BottomSurface = Enum.SurfaceType.Smooth
-		part.Material = Enum.Material.Concrete
-		part.Color = style.SidewalkColor
+		part.Material = Enum.Material.Asphalt
+		part.Color = style.AsphaltColor
 		return part
 	end
-	-- Picks whichever side (left or right) of the ring's cross-section at
-	-- `station` is physically closer to `targetOuter` (the spoke's own
-	-- edge point) - not an assumed "outer = first/last component" side,
-	-- since which physical edge that is flips with DriveOnLeft (see
-	-- ringComponents). Proximity is unambiguous regardless of that sign.
-	local function ringEdgeNear(station: number, targetOuter: Vector3): (Vector3, Vector3)
-		local frame = curve:FrameAt(station)
-		local leftOuter = (frame * CFrame.new(outerLeftM * scale, 0, 0)).Position
-		local rightOuter = (frame * CFrame.new(outerRightM * scale, 0, 0)).Position
-		local leftKerb = (frame * CFrame.new(kerbLeftM * scale, 0, 0)).Position
-		local rightKerb = (frame * CFrame.new(kerbRightM * scale, 0, 0)).Position
-		if (leftOuter - targetOuter).Magnitude <= (rightOuter - targetOuter).Magnitude then
-			return leftOuter, leftKerb
+	for _, flare in flares do
+		local frame = curve:FrameAt(flare.Station)
+		local ringKerb = (frame * CFrame.new(outerKerbM * scale, 0, 0)).Position
+		local toSpoke = Vector3.new(flare.Kerb.X - ringKerb.X, 0, flare.Kerb.Z - ringKerb.Z)
+		local tangent = curve:TangentAt(flare.Station)
+		tangent = Vector3.new(tangent.X, 0, tangent.Z)
+		if toSpoke.Magnitude > 1e-3 and tangent.Magnitude > 1e-6 then
+			tangent = tangent.Unit
+			local inwardRing = if tangent:Dot(toSpoke) >= 0 then tangent else -tangent
+			local p1, arcCenter, p2, arcRadius =
+				Fillet.Compute(flare.Kerb, flare.Inward, ringKerb, inwardRing, FLARE_RADIUS_M * scale)
+			if p1 and arcCenter and p2 and arcRadius then
+				local boundary: { Vector3 } = { flare.Kerb, p1 }
+				for _, point in Fillet.SampleArc(arcCenter, arcRadius, p1, p2, FLARE_ARC_SAMPLES) do
+					table.insert(boundary, point)
+				end
+				table.insert(boundary, p2)
+				table.insert(boundary, ringKerb)
+				for j = 1, #boundary - 1 do
+					FillTriangle(flare.Kerb, boundary[j], boundary[j + 1], thickness, DOWN, makeFlarePart, ring)
+				end
+			end
 		end
-		return rightOuter, rightKerb
-	end
-	for _, gap in gaps do
-		local ringLoOuter, ringLoKerb = ringEdgeNear(gap.Lo, gap.LoOuter)
-		local ringHiOuter, ringHiKerb = ringEdgeNear(gap.Hi, gap.HiOuter)
-		FillTriangle(
-			raise(ringLoOuter),
-			raise(ringLoKerb),
-			raise(gap.LoKerb),
-			sidewalkDepth,
-			DOWN,
-			makeBridgePart,
-			ring
-		)
-		FillTriangle(
-			raise(ringLoOuter),
-			raise(gap.LoKerb),
-			raise(gap.LoOuter),
-			sidewalkDepth,
-			DOWN,
-			makeBridgePart,
-			ring
-		)
-		FillTriangle(
-			raise(ringHiOuter),
-			raise(ringHiKerb),
-			raise(gap.HiKerb),
-			sidewalkDepth,
-			DOWN,
-			makeBridgePart,
-			ring
-		)
-		FillTriangle(
-			raise(ringHiOuter),
-			raise(gap.HiKerb),
-			raise(gap.HiOuter),
-			sidewalkDepth,
-			DOWN,
-			makeBridgePart,
-			ring
-		)
 	end
 
 	ring.Parent = getRoundaboutsFolder()
