@@ -4,6 +4,29 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Priority plan: roundabout feed curves, snap, raycast, curve faceting
+
+- **P0 raycast:** `raycastGround` now excludes `workspace.Roundabouts` (was
+  only Roads + Junctions). Clicks over a ring hit terrain / set elevation,
+  not the ring deck - fixes "road stacked on roundabout".
+- **P0 collision:** `RoadBuilder.makePart` sets `CanCollide = false` for
+  real roads too (was only previews); geometry is visual, not a physics box.
+- **P1 snap + connect:** Rings stamp `RW_Center` / `RW_RingRadius` /
+  `RW_OuterRadius` / lane config. `RoundaboutBuilder.FindNear` snaps the
+  first placement point to the outer rim with an outward tangent.
+  `ConnectRoad` rebuilds the ring with the new road as a spoke (temp
+  junction + CreateAtJunction pipeline).
+- **P2 feed-in/out:** After setback trim (`SETBACK_STUDS` 16), each spoke
+  gets a Hermite cubic feed built onto the ring (full spoke profile) from
+  the cut to the outer kerb arriving on the circulating tangent - real
+  merge geometry rather than only corner flares + ruled mouth band.
+  Residual mouth fill + flares remain as seam insurance. Feeds are
+  ring-owned (not multi-segment roads) so `RoadInstance` single-segment
+  stamping still works.
+- **P3 curve faceting:** Tighter `CHORD_TOLERANCE` (0.05), `MIN_STEP`
+  (0.4), `MAX_TURN_PER_STEP` (0.2) so outer sidewalk edges on tight U-bends
+  subdivide more instead of reading as indented facets.
+
 ## Roundabout setback feed-in/out + mouth fill (live broken-ring reports)
 
 Driven by live screenshots of a 4-leg roundabout whose feeders stopped as

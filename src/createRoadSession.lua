@@ -38,11 +38,9 @@ local Keybinds = require("./Keybinds")
 
 -- "Roundabout" is a single-click placement (centre point only, no curve) -
 -- drops a standalone ring straight from Road Tools instead of requiring an
--- existing junction to already exist and be selected first (the only way
--- to build one before this). Any road drawn to cross it afterwards still
--- won't auto-connect to it (see RoundaboutBuilder.lua's header - the ring
--- isn't wired into the junction/split data model yet), same limitation the
--- junction-panel "Make Roundabout" flow already has.
+-- existing junction to already exist and be selected first. Roads can snap
+-- onto a placed ring's outer rim (RoundaboutBuilder.FindNear) and attach as
+-- spokes via ConnectRoad after commit.
 export type ToolMode = "Straight" | "Curve" | "Freeform" | "Roundabout"
 
 export type RoadSession = {
@@ -143,14 +141,17 @@ local function createRoadSession(
 		return nil
 	end
 
-	-- Ground-picking deliberately ignores existing roads/junctions (crossing
-	-- over one is allowed by default, not something to route around) - the
-	-- old behaviour of hitting an existing road's own deck instead of the
-	-- terrain beneath it made a new placement silently "stack" on top of
-	-- whatever it crossed. Mid-network crossings are now handled properly
-	-- by the junction/split system (see RoadSplit.lua), and elevation is
-	-- already an explicit, separate control (R/F keys, the elevation
-	-- field) for the cases that genuinely want a different height.
+	-- Ground-picking deliberately ignores existing roads/junctions/roundabouts
+	-- (crossing over one is allowed by default, not something to route around)
+	-- - the old behaviour of hitting an existing road's own deck instead of
+	-- the terrain beneath it made a new placement silently "stack" on top of
+	-- whatever it crossed. Roundabouts lived in their own workspace folder
+	-- and were missed by the first version of this exclude list, so a click
+	-- over a ring hit the ring deck (CanQuery=true) and placed at deck Y
+	-- instead of the user's set elevation - reported live as "road over the
+	-- roundabout." Mid-network crossings are handled by the junction/split
+	-- system (and roundabout ConnectRoad); elevation is an explicit control
+	-- (R/F, elevation field) for cases that genuinely want a different height.
 	local function raycastGround(): Vector3?
 		local unitRay = mouse.UnitRay
 		local params = RaycastParams.new()
@@ -169,6 +170,10 @@ local function createRoadSession(
 		local junctionsFolder = workspace:FindFirstChild("Junctions")
 		if junctionsFolder then
 			table.insert(excluded, junctionsFolder)
+		end
+		local roundaboutsFolder = workspace:FindFirstChild("Roundabouts")
+		if roundaboutsFolder then
+			table.insert(excluded, roundaboutsFolder)
 		end
 		params.FilterDescendantsInstances = excluded
 		local result = workspace:Raycast(unitRay.Origin, unitRay.Direction * 10000, params)
@@ -266,6 +271,20 @@ local function createRoadSession(
 					bestPos = junctionData.Position
 					bestTangent = nil
 				end
+			end
+		end
+		-- Snap onto a placed roundabout's outer rim (rings stamp RW_Center /
+		-- RW_OuterRadius and are not RW_Road, so the loop above never sees
+		-- them). Attach point is on the outer pavement edge; outward tangent
+		-- lets the tool chain a new spoke away from the ring.
+		if not bestPos then
+			local _ring, attachPos, outward = RoundaboutBuilder.FindNear(pos, settings.SnapRadiusStuds)
+			if attachPos and outward then
+				-- Attach on the ring's own deck height (center.Y stamped at
+				-- create time), not ground+elevation - stacking on the ring
+				-- was the old bug; snapping TO the ring should meet it flush.
+				bestPos = attachPos
+				bestTangent = outward
 			end
 		end
 		return bestPos, bestTangent
@@ -653,6 +672,13 @@ local function createRoadSession(
 			local junctionModel = findJunctionNear(pos)
 			if junctionModel then
 				connectAt(pos, model, whichEnd, nil, nil, junctionModel)
+				return
+			end
+			-- Attach as a new spoke on a placed roundabout (rebuilds the ring
+			-- with Hermite feeds for every nearby road including this one).
+			local ring = RoundaboutBuilder.FindNear(pos, settings.SnapRadiusStuds)
+			if ring then
+				RoundaboutBuilder.ConnectRoad(ring, model, getStyle(), settings)
 				return
 			end
 			local midRoad, midStation = findMidSpanMatch(pos, model)

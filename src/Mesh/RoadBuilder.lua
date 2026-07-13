@@ -44,10 +44,16 @@ export type BuildOptions = {
 
 local MARKING_THICKNESS = 0.05
 local MARKING_LIFT = 0.03 -- Center height of marking parts above the deck surface
-local CHORD_TOLERANCE = 0.1 -- Max chord deviation (studs) used for adaptive stepping
-local PREVIEW_CHORD_TOLERANCE = 0.35
-local MIN_STEP = 0.75
-local MAX_TURN_PER_STEP = 0.3 -- Radians of heading change allowed per strip
+-- Tighter than the original 0.1 / 0.75 / 0.3: on a tight U-bend the outer
+-- sidewalk edge was visibly faceted (straight strip chords) even when the
+-- centerline looked smooth - reported live as an "indent" on ordinary road
+-- gen. Smaller chord tolerance + min step + turn-per-strip bound forces more
+-- strips on high-curvature outer edges (via kEff which already inflates for
+-- maxOffsetStuds) without changing the centerline-anchored construction.
+local CHORD_TOLERANCE = 0.05 -- Max chord deviation (studs) used for adaptive stepping
+local PREVIEW_CHORD_TOLERANCE = 0.25
+local MIN_STEP = 0.4
+local MAX_TURN_PER_STEP = 0.2 -- Radians of heading change allowed per strip
 local MAX_ROLL_PER_STEP = 0.02 -- Radians of superelevation (bank) change allowed per strip
 local ROLL_WEDGE_EPSILON = 1e-4 -- Roll change (radians) per strip above which a flat box would visibly kink
 
@@ -129,9 +135,13 @@ local function makePart(preview: boolean): Part
 	-- cursor while dragging a bay); CanQuery=false would make roads
 	-- invisible to those raycasts.
 	part.CanTouch = false
+	-- Plugin road geometry is visual; it should not act as a physics
+	-- collision box for avatars/vehicles. CanQuery stays true for real
+	-- parts so intentional tools can still hit them when needed - ground
+	-- placement excludes the Roads/Junctions/Roundabouts folders instead.
+	part.CanCollide = false
 	if preview then
 		part.Transparency = 0.55
-		part.CanCollide = false
 		part.CanQuery = false
 	end
 	return part
