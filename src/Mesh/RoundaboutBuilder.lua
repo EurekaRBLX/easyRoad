@@ -25,10 +25,6 @@ local RoundaboutBuilder = {}
 
 local ROUNDABOUTS_FOLDER_NAME = "Roundabouts"
 local BEZIER_CIRCLE_K = 0.5522847498307936
--- Spoke outermost edge lands just inside the ring outer pavement radius.
-local RING_TRIM_MARGIN_STUDS = 1.5
--- Extra angular pad on each side of a mouth when opening the ring sidewalk.
-local MOUTH_ANGLE_EPSILON = 0.04 -- radians (~2.3°)
 local FLARE_RADIUS_M = 8
 local FLARE_ARC_SAMPLES = 4
 local DOWN = Vector3.new(0, -1, 0)
@@ -295,8 +291,61 @@ local function transplantRoad(road: Model, rebuilt: Model, startJ: string?, endJ
 	RoadInstance.StampJunctions(road, startJ, endJ)
 end
 
--- Trim spoke so its outermost cross-section edge sits at targetRadius (outer
--- pavement + small margin). Returns mouth edges at the cut.
+-- Max ground-plane distance from `center` of the profile's centerline and
+-- both true outer edges at station `s`. Pythagorean half-width trim only
+-- works for RADIAL approaches (cut perpendicular to a ray from centre). A
+-- curved spoke's frame is skewed, so outer edges can sit well outside the
+-- ring while the centerline is "inside" - live triangle gap between a flat
+-- cut and the ring. Measuring the real outer points fixes that.
+local function maxProfileRadiusAt(
+	curve: PolyCurve.PolyCurve,
+	profile: RoadProfile.RoadProfile,
+	station: number,
+	center: Vector3,
+	scale: number
+): number
+	local offsets = RoadProfile.ComponentOffsetsM(profile)
+	if #offsets == 0 then
+		return distanceXZ(curve:PosAt(station), center)
+	end
+	local outerLeftM, outerRightM = offsets[1].Left, offsets[#offsets].Right
+	local frame = curve:FrameAt(station)
+	local mid = frame.Position
+	local left = (frame * CFrame.new(outerLeftM * scale, 0, 0)).Position
+	local right = (frame * CFrame.new(outerRightM * scale, 0, 0)).Position
+	return math.max(distanceXZ(mid, center), distanceXZ(left, center), distanceXZ(right, center))
+end
+
+local function findProfileRingCrossing(
+	curve: PolyCurve.PolyCurve,
+	profile: RoadProfile.RoadProfile,
+	fromStation: number,
+	towardStation: number,
+	center: Vector3,
+	targetRadiusStuds: number,
+	scale: number
+): number?
+	local function radiusAt(s: number): number
+		return maxProfileRadiusAt(curve, profile, s, center, scale)
+	end
+	if radiusAt(towardStation) < targetRadiusStuds then
+		return nil
+	end
+	-- fromStation is near the junction (inside); toward is far (outside).
+	local lo, hi = fromStation, towardStation
+	for _ = 1, 32 do
+		local mid = (lo + hi) / 2
+		if radiusAt(mid) < targetRadiusStuds then
+			lo = mid
+		else
+			hi = mid
+		end
+	end
+	return (lo + hi) / 2
+end
+
+-- Trim spoke so its FULL cross-section (outer edges) sits at targetRadius.
+-- Returns mouth edges at the cut.
 local function trimSpoke(
 	road: Model,
 	atStart: boolean,
@@ -312,13 +361,19 @@ local function trimSpoke(
 	if not data or #data.Curve.Segments ~= 1 then
 		return nil
 	end
-	local halfWidthStuds = RoadProfile.TotalWidthM(data.ProfileStart) / 2 * settings.MetersToStuds
-	local trimRadiusStuds =
-		math.max(0, math.sqrt(math.max(0, targetRadiusStuds ^ 2 - halfWidthStuds ^ 2)) - RING_TRIM_MARGIN_STUDS)
+	local scale = settings.MetersToStuds
 	local curve = data.Curve
 	local fromStation = if atStart then 0 else curve.Length
 	local towardStation = if atStart then curve.Length else 0
-	local crossing = findRingCrossing(curve, fromStation, towardStation, center, trimRadiusStuds)
+	local crossing = findProfileRingCrossing(
+		curve,
+		data.ProfileStart,
+		fromStation,
+		towardStation,
+		center,
+		targetRadiusStuds,
+		scale
+	)
 	if not crossing then
 		return nil
 	end
@@ -352,48 +407,64 @@ local function trimSpoke(
 		return nil
 	end
 	local profile = if atStart then newData.ProfileStart else (newData.ProfileEnd or newData.ProfileStart)
-	return edgePointsAt(newData.Curve, profile, cutStation, inward.Unit, settings.MetersToStuds)
+	return edgePointsAt(newData.Curve, profile, cutStation, inward.Unit, scale)
 end
 
--- Map a world point's polar angle around centre to ring curve station by
--- ClosestS (handles Bezier circle approximation; more robust than raw θ).
 local function mouthStation(curve: PolyCurve.PolyCurve, point: Vector3): number
 	return curve:ClosestS(point)
 end
 
--- Station half-span for sidewalk exclusion from spoke half-width at outer R.
-local function mouthHalfStation(curveLength: number, halfWidthStuds: number, outerRadiusStuds: number): number
-	if outerRadiusStuds < 1e-3 then
-		return curveLength * 0.05
+-- Short-arc station interval from sA to sB on a closed ring (never the long way).
+local function shortArcInterval(sA: number, sB: number, length: number): { { Lo: number, Hi: number } }
+	local lo, hi = sA, sB
+	local forward = (hi - lo) % length
+	if forward < 0 then
+		forward += length
 	end
-	local alpha = math.asin(math.clamp(halfWidthStuds / outerRadiusStuds, 0, 0.99))
-	local arc = (alpha + MOUTH_ANGLE_EPSILON) * outerRadiusStuds
-	-- Convert arc length approx to station on the closed ring (centreline
-	-- length ≈ 2π R_ring; outer arc is longer - use centreline fraction).
-	local fraction = (alpha + MOUTH_ANGLE_EPSILON) / (2 * math.pi)
-	return math.clamp(curveLength * fraction, 1, curveLength * 0.2)
-end
-
-local function normalizeInterval(lo: number, hi: number, length: number): { { Lo: number, Hi: number } }
-	lo = lo % length
-	hi = hi % length
-	if lo < 0 then
-		lo += length
-	end
-	if hi < 0 then
-		hi += length
+	if forward > length / 2 then
+		-- swap so we walk the short way: from hi to lo wrapping
+		return {
+			{ Lo = hi, Hi = length },
+			{ Lo = 0, Hi = lo },
+		}
 	end
 	if hi < lo then
-		-- wraps seam
-		return { { Lo = lo, Hi = length }, { Lo = 0, Hi = hi } }
+		return {
+			{ Lo = lo, Hi = length },
+			{ Lo = 0, Hi = hi },
+		}
 	end
-	if hi - lo > length / 2 then
-		-- pathologically wide; clamp to half
-		local mid = (lo + hi) / 2
-		local half = length / 4
-		return { { Lo = mid - half, Hi = mid + half } }
-	end
+	-- pad slightly so sidewalk opens a hair past the true outer edges
+	local pad = math.min(length * 0.01, 1.5)
+	lo = math.max(0, lo - pad)
+	hi = math.min(length, hi + pad)
 	return { { Lo = lo, Hi = hi } }
+end
+
+local function sampleRingStations(sA: number, sB: number, length: number, samples: number): { number }
+	local forward = (sB - sA) % length
+	if forward < 0 then
+		forward += length
+	end
+	local backward = length - forward
+	local delta = if forward <= backward then forward else -backward
+	local out: { number } = {}
+	for i = 0, samples do
+		local t = i / samples
+		local s: number
+		if i == 0 then
+			s = sA
+		elseif i == samples then
+			s = sB
+		else
+			s = (sA + delta * t) % length
+			if s < 0 then
+				s += length
+			end
+		end
+		table.insert(out, s)
+	end
+	return out
 end
 
 function RoundaboutBuilder.CreateAtJunction(
@@ -430,8 +501,9 @@ function RoundaboutBuilder.CreateAtJunction(
 	}
 	local halfWidthStuds = RoadProfile.TotalWidthM(profile) / 2 * scale
 	local outerRadiusStuds = radiusStuds + halfWidthStuds
-	-- Trim target: outer pavement edge (no large structural setback).
-	local trimTarget = outerRadiusStuds + RING_TRIM_MARGIN_STUDS
+	-- Full-profile outer edge lands on the ring outer pavement (margin is
+	-- inside the bisection target so the cut sits flush, not short).
+	local trimTarget = outerRadiusStuds - 0.25
 	local curve = PolyCurve.new(circleSegments(center, radiusStuds, style.DriveOnLeft))
 
 	local kerbLeftM, kerbRightM = roadwayEdgeOffsetsM(profile)
@@ -440,8 +512,14 @@ function RoundaboutBuilder.CreateAtJunction(
 	local outerSidewalkM = if style.DriveOnLeft then offsets[#offsets].Right else offsets[1].Left
 
 	type FlareAnchor = { Station: number, Kerb: Vector3, Outer: Vector3, Inward: Vector3 }
+	type Mouth = {
+		Edges: SpokeCutEdges,
+		SLeft: number,
+		SRight: number,
+	}
 	local exclusions: { { Lo: number, Hi: number } } = {}
 	local flares: { FlareAnchor } = {}
+	local mouths: { Mouth } = {}
 
 	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
 		local data = RoadInstance.Read(road)
@@ -456,14 +534,14 @@ function RoundaboutBuilder.CreateAtJunction(
 		if not edges then
 			continue
 		end
-		local mid = (edges.LeftKerb + edges.RightKerb) * 0.5
-		local sMid = mouthStation(curve, mid)
-		local halfS = mouthHalfStation(curve.Length, edges.HalfWidthStuds, outerRadiusStuds)
-		for _, interval in normalizeInterval(sMid - halfS, sMid + halfS, curve.Length) do
-			table.insert(exclusions, interval)
-		end
+		-- Exclusion + mouth fill use REAL outer/kerb stations (short arc),
+		-- not mid ± asin(halfWidth) which only fits radial approaches.
 		local sLeft = mouthStation(curve, edges.LeftOuter)
 		local sRight = mouthStation(curve, edges.RightOuter)
+		for _, interval in shortArcInterval(sLeft, sRight, curve.Length) do
+			table.insert(exclusions, interval)
+		end
+		table.insert(mouths, { Edges = edges, SLeft = sLeft, SRight = sRight })
 		table.insert(flares, { Station = sLeft, Kerb = edges.LeftKerb, Outer = edges.LeftOuter, Inward = edges.Inward })
 		table.insert(flares, { Station = sRight, Kerb = edges.RightKerb, Outer = edges.RightOuter, Inward = edges.Inward })
 	end
@@ -471,10 +549,9 @@ function RoundaboutBuilder.CreateAtJunction(
 	table.sort(exclusions, function(a, b)
 		return a.Lo < b.Lo
 	end)
-	-- Merge overlapping sidewalk exclusions so we never double-walk inverted spans.
 	local merged: { { Lo: number, Hi: number } } = {}
 	for _, ex in exclusions do
-		if #merged == 0 or ex.Lo > merged[#merged].Hi then
+		if #merged == 0 or ex.Lo > merged[#merged].Hi + 1e-3 then
 			table.insert(merged, { Lo = ex.Lo, Hi = ex.Hi })
 		else
 			merged[#merged].Hi = math.max(merged[#merged].Hi, ex.Hi)
@@ -510,7 +587,7 @@ function RoundaboutBuilder.CreateAtJunction(
 		local lo = math.max(exclusion.Lo, cursor)
 		local hi = math.max(exclusion.Hi, lo)
 		buildSpan(cursor, lo, false)
-		buildSpan(lo, hi, true) -- drive continues; sidewalk only off
+		buildSpan(lo, hi, true)
 		cursor = hi
 	end
 	buildSpan(cursor, curve.Length, false)
@@ -518,7 +595,6 @@ function RoundaboutBuilder.CreateAtJunction(
 	stampRingMeta(ring, center, radiusStuds, outerRadiusStuds, laneCount, laneWidthM)
 	buildIsland(ring, center, radiusStuds, profile, style, settings)
 
-	-- Mouth corner fillets only (decoration on continuous ring).
 	local thickness = settings.RoadThicknessStuds
 	local curbHeight = style.CurbHeightM * scale
 	local sidewalkDepth = thickness + curbHeight
@@ -528,7 +604,7 @@ function RoundaboutBuilder.CreateAtJunction(
 	end
 	local function makeAsphaltPart(): Part
 		local part = Instance.new("Part")
-		part.Name = "RoundaboutFlare"
+		part.Name = "RoundaboutMouth"
 		part.Anchored = true
 		part.CanCollide = false
 		part.CanTouch = false
@@ -538,6 +614,11 @@ function RoundaboutBuilder.CreateAtJunction(
 		part.BottomSurface = Enum.SurfaceType.Smooth
 		part.Material = Enum.Material.Asphalt
 		part.Color = style.AsphaltColor
+		return part
+	end
+	local function makeFlarePart(): Part
+		local part = makeAsphaltPart()
+		part.Name = "RoundaboutFlare"
 		return part
 	end
 	local function makeSidewalkPart(): Part
@@ -559,17 +640,42 @@ function RoundaboutBuilder.CreateAtJunction(
 		return (frame * CFrame.new(offsetM * scale, 0, 0)).Position
 	end
 
+	-- Mouth asphalt: ruled band spoke kerb cut → ring outer kerb arc.
+	-- Closes the triangle gap when the cut is flat and the ring is curved,
+	-- and when Fillet.Compute returns nil on near-radial mouths.
+	local MOUTH_SAMPLES = 6
+	for _, mouth in mouths do
+		local stations = sampleRingStations(mouth.SLeft, mouth.SRight, curve.Length, MOUTH_SAMPLES)
+		local n = #stations
+		if n >= 2 then
+			for i = 1, n - 1 do
+				local t0 = (i - 1) / (n - 1)
+				local t1 = i / (n - 1)
+				local a0 = mouth.Edges.LeftKerb:Lerp(mouth.Edges.RightKerb, t0) + sink
+				local a1 = mouth.Edges.LeftKerb:Lerp(mouth.Edges.RightKerb, t1) + sink
+				local r0 = ringPointAt(stations[i], outerKerbM) + sink
+				local r1 = ringPointAt(stations[i + 1], outerKerbM) + sink
+				FillTriangle(a0, a1, r1, thickness, DOWN, makeAsphaltPart, ring)
+				FillTriangle(a0, r1, r0, thickness, DOWN, makeAsphaltPart, ring)
+			end
+		end
+	end
+
+	-- Corner fillets + sidewalk bridges (when geometry allows).
 	for _, flare in flares do
 		local ringKerb = ringPointAt(flare.Station, outerKerbM)
+		local ringOuter = ringPointAt(flare.Station, outerSidewalkM)
 		local toSpoke = Vector3.new(flare.Kerb.X - ringKerb.X, 0, flare.Kerb.Z - ringKerb.Z)
 		local tangent = curve:TangentAt(flare.Station)
 		tangent = Vector3.new(tangent.X, 0, tangent.Z)
+		local filleted = false
 		if toSpoke.Magnitude > 1e-3 and tangent.Magnitude > 1e-6 then
 			tangent = tangent.Unit
 			local inwardRing = if tangent:Dot(toSpoke) >= 0 then tangent else -tangent
 			local p1, arcCenter, p2, arcRadius =
 				Fillet.Compute(flare.Kerb, flare.Inward, ringKerb, inwardRing, FLARE_RADIUS_M * scale)
 			if p1 and arcCenter and p2 and arcRadius then
+				filleted = true
 				local boundary: { Vector3 } = { flare.Kerb + sink, p1 + sink }
 				for _, point in Fillet.SampleArc(arcCenter, arcRadius, p1, p2, FLARE_ARC_SAMPLES) do
 					table.insert(boundary, point + sink)
@@ -577,9 +683,8 @@ function RoundaboutBuilder.CreateAtJunction(
 				table.insert(boundary, p2 + sink)
 				table.insert(boundary, ringKerb + sink)
 				for j = 1, #boundary - 1 do
-					FillTriangle(boundary[1], boundary[j], boundary[j + 1], thickness, DOWN, makeAsphaltPart, ring)
+					FillTriangle(boundary[1], boundary[j], boundary[j + 1], thickness, DOWN, makeFlarePart, ring)
 				end
-				local ringOuter = ringPointAt(flare.Station, outerSidewalkM)
 				local outerBoundary: { Vector3 } = { flare.Outer }
 				local kerbBoundary: { Vector3 } = { flare.Kerb, p1 }
 				for _, point in Fillet.SampleArc(arcCenter, arcRadius, p1, p2, FLARE_ARC_SAMPLES) do
@@ -613,6 +718,27 @@ function RoundaboutBuilder.CreateAtJunction(
 					)
 				end
 			end
+		end
+		if not filleted then
+			-- Straight sidewalk bridge when fillet degenerates.
+			FillTriangle(
+				raise(flare.Outer),
+				raise(flare.Kerb),
+				raise(ringKerb),
+				sidewalkDepth,
+				DOWN,
+				makeSidewalkPart,
+				ring
+			)
+			FillTriangle(
+				raise(flare.Outer),
+				raise(ringKerb),
+				raise(ringOuter),
+				sidewalkDepth,
+				DOWN,
+				makeSidewalkPart,
+				ring
+			)
 		end
 	end
 
