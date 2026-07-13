@@ -6934,15 +6934,20 @@ end
 
 return RoadBuilder
 </ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX21"><Properties><string name="Name">RoundaboutBuilder</string><ProtectedString name="Source">--!strict
--- Generates a roundabout as a POLAR annulus with tangential entry feeds
--- (closer to real HK/TW roundabouts): continuous circulating ring; spokes
--- pull back a feed length; each mouth gets a Hermite cubic entry (full
--- profile) that arrives on the circulating tangent; mouth fillets seal
--- residual corners. Ring drive lanes stay continuous — only outer sidewalk
--- opens at mouths.
+-- Roundabout: ONE continuous ring + flush spoke trim + mouth fill triangles.
+--
+-- Hard lesson from live Studio: Hermite "entry feed" RoadBuilder pieces +
+-- sidewalk exclusion slices + large setback produce knotted partial rings
+-- every time. Do not reintroduce those without a proven polar mesh.
+--
+-- CreateAtJunction:
+--   1. Build full closed ring (drive + outer sidewalk, flat, no cuts)
+--   2. Trim each spoke so its full cross-section sits at the outer pavement
+--   3. FillTriangle mouth asphalt (spoke kerb → ring outer kerb arc)
+--   4. Simple corner sidewalk quads
+--   5. Island disc
 
 local CurveSegment = require("../Geometry/CurveSegment")
-local Fillet = require("../Geometry/Fillet")
 local PolyCurve = require("../Geometry/PolyCurve")
 local RoadBuilder = require("./RoadBuilder")
 local RoadInstance = require("../RoadInstance")
@@ -6957,10 +6962,7 @@ local RoundaboutBuilder = {}
 
 local ROUNDABOUTS_FOLDER_NAME = "Roundabouts"
 local BEZIER_CIRCLE_K = 0.5522847498307936
--- Room for a real entry curve (setback from ring outer pavement).
-local FEED_LENGTH_STUDS = 16
-local FLARE_RADIUS_M = 10
-local FLARE_ARC_SAMPLES = 5
+local MOUTH_SAMPLES = 8
 local DOWN = Vector3.new(0, -1, 0)
 
 local function circleSegments(center: Vector3, radiusStuds: number, driveOnLeft: boolean): { CurveSegment.Segment }
@@ -7005,12 +7007,11 @@ local function ringComponents(
 	for _ = 1, math.max(1, math.floor(laneCount)) do
 		table.insert(components, { Kind = "Drive", WidthM = laneWidthM, Direction = 1 })
 	end
-	local sidewalkComponent: RoadProfile.ProfileComponent =
-		{ Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
+	local sidewalk: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
 	if style.DriveOnLeft then
-		table.insert(components, sidewalkComponent)
+		table.insert(components, sidewalk)
 	else
-		table.insert(components, 1, sidewalkComponent)
+		table.insert(components, 1, sidewalk)
 	end
 	return components
 end
@@ -7116,31 +7117,6 @@ local function distanceXZ(a: Vector3, b: Vector3): number
 	return math.sqrt(dx * dx + dz * dz)
 end
 
-local function findRingCrossing(
-	curve: PolyCurve.PolyCurve,
-	fromStation: number,
-	towardStation: number,
-	center: Vector3,
-	radiusStuds: number
-): number?
-	local function distanceAt(s: number): number
-		return distanceXZ(curve:PosAt(s), center)
-	end
-	if distanceAt(towardStation) &lt; radiusStuds then
-		return nil
-	end
-	local lo, hi = fromStation, towardStation
-	for _ = 1, 30 do
-		local mid = (lo + hi) / 2
-		if distanceAt(mid) &lt; radiusStuds then
-			lo = mid
-		else
-			hi = mid
-		end
-	end
-	return (lo + hi) / 2
-end
-
 local function roadwayEdgeOffsetsM(profile: RoadProfile.RoadProfile): (number, number)
 	local offsets = RoadProfile.ComponentOffsetsM(profile)
 	local firstRoadway: number? = nil
@@ -7173,9 +7149,7 @@ local function ringSideIsStart(road: Model, center: Vector3): boolean?
 	if not data then
 		return nil
 	end
-	local d0 = distanceXZ(data.Curve:PosAt(0), center)
-	local d1 = distanceXZ(data.Curve:PosAt(data.Curve.Length), center)
-	return d0 &lt;= d1
+	return distanceXZ(data.Curve:PosAt(0), center) &lt;= distanceXZ(data.Curve:PosAt(data.Curve.Length), center)
 end
 
 local function edgePointsAt(
@@ -7199,14 +7173,13 @@ local function edgePointsAt(
 	if flatIn.Magnitude &lt; 1e-6 then
 		return nil
 	end
-	local halfWidth = RoadProfile.TotalWidthM(profile) / 2 * scale
 	return {
 		LeftKerb = worldPoint(kerbLeftM),
 		LeftOuter = worldPoint(outerLeftM),
 		RightKerb = worldPoint(kerbRightM),
 		RightOuter = worldPoint(outerRightM),
 		Inward = flatIn.Unit,
-		HalfWidthStuds = halfWidth,
+		HalfWidthStuds = RoadProfile.TotalWidthM(profile) / 2 * scale,
 	}
 end
 
@@ -7225,12 +7198,6 @@ local function transplantRoad(road: Model, rebuilt: Model, startJ: string?, endJ
 	RoadInstance.StampJunctions(road, startJ, endJ)
 end
 
--- Max ground-plane distance from `center` of the profile's centerline and
--- both true outer edges at station `s`. Pythagorean half-width trim only
--- works for RADIAL approaches (cut perpendicular to a ray from centre). A
--- curved spoke's frame is skewed, so outer edges can sit well outside the
--- ring while the centerline is "inside" - live triangle gap between a flat
--- cut and the ring. Measuring the real outer points fixes that.
 local function maxProfileRadiusAt(
 	curve: PolyCurve.PolyCurve,
 	profile: RoadProfile.RoadProfile,
@@ -7265,7 +7232,6 @@ local function findProfileRingCrossing(
 	if radiusAt(towardStation) &lt; targetRadiusStuds then
 		return nil
 	end
-	-- fromStation is near the junction (inside); toward is far (outside).
 	local lo, hi = fromStation, towardStation
 	for _ = 1, 32 do
 		local mid = (lo + hi) / 2
@@ -7278,8 +7244,6 @@ local function findProfileRingCrossing(
 	return (lo + hi) / 2
 end
 
--- Trim spoke so its FULL cross-section (outer edges) sits at targetRadius.
--- Returns mouth edges at the cut.
 local function trimSpoke(
 	road: Model,
 	atStart: boolean,
@@ -7328,7 +7292,6 @@ local function trimSpoke(
 	else
 		transplantRoad(road, rebuilt, farJunctionId, nil)
 	end
-
 	local newData = RoadInstance.Read(road)
 	if not newData then
 		return nil
@@ -7344,38 +7307,7 @@ local function trimSpoke(
 	return edgePointsAt(newData.Curve, profile, cutStation, inward.Unit, scale)
 end
 
-local function mouthStation(curve: PolyCurve.PolyCurve, point: Vector3): number
-	return curve:ClosestS(point)
-end
-
--- Short-arc station interval from sA to sB on a closed ring (never the long way).
-local function shortArcInterval(sA: number, sB: number, length: number): { { Lo: number, Hi: number } }
-	local lo, hi = sA, sB
-	local forward = (hi - lo) % length
-	if forward &lt; 0 then
-		forward += length
-	end
-	if forward &gt; length / 2 then
-		-- swap so we walk the short way: from hi to lo wrapping
-		return {
-			{ Lo = hi, Hi = length },
-			{ Lo = 0, Hi = lo },
-		}
-	end
-	if hi &lt; lo then
-		return {
-			{ Lo = lo, Hi = length },
-			{ Lo = 0, Hi = hi },
-		}
-	end
-	-- pad slightly so sidewalk opens a hair past the true outer edges
-	local pad = math.min(length * 0.01, 1.5)
-	lo = math.max(0, lo - pad)
-	hi = math.min(length, hi + pad)
-	return { { Lo = lo, Hi = hi } }
-end
-
-local function sampleRingStations(sA: number, sB: number, length: number, samples: number): { number }
+local function sampleShortArc(sA: number, sB: number, length: number, samples: number): { number }
 	local forward = (sB - sA) % length
 	if forward &lt; 0 then
 		forward += length
@@ -7420,9 +7352,9 @@ function RoundaboutBuilder.CreateAtJunction(
 	local center = junctionData.Position
 	local scale = settings.MetersToStuds
 
-	local staleGeometry = junctionModel:FindFirstChild("Geometry")
-	if staleGeometry then
-		staleGeometry:Destroy()
+	local stale = junctionModel:FindFirstChild("Geometry")
+	if stale then
+		stale:Destroy()
 	end
 
 	local components = ringComponents(laneCount, laneWidthM, style)
@@ -7439,22 +7371,24 @@ function RoundaboutBuilder.CreateAtJunction(
 	local outerKerbM = if style.DriveOnLeft then kerbRightM else kerbLeftM
 	local offsets = RoadProfile.ComponentOffsetsM(profile)
 	local outerSidewalkM = if style.DriveOnLeft then offsets[#offsets].Right else offsets[1].Left
-	-- Pull spokes back so a tangential entry cubic has room (real roundabouts
-	-- don't meet the ring as radial T-cuts — reference: HK aerials).
-	local trimTarget = outerRadiusStuds + FEED_LENGTH_STUDS
-	local attachRadiusStuds = radiusStuds + math.abs(outerKerbM) * scale
-	local curve = PolyCurve.new(circleSegments(center, radiusStuds, style.DriveOnLeft))
 
-	type FlareAnchor = { Station: number, Kerb: Vector3, Outer: Vector3, Inward: Vector3 }
-	type Mouth = {
-		Edges: SpokeCutEdges,
-		Profile: RoadProfile.RoadProfile,
-		CutPos: Vector3,
-		SLeft: number,
-		SRight: number,
-	}
-	local exclusions: { { Lo: number, Hi: number } } = {}
-	local flares: { FlareAnchor } = {}
+	-- ONE continuous ring — never slice/exclude (that caused knotted arcs).
+	local ringCurve = PolyCurve.new(circleSegments(center, radiusStuds, style.DriveOnLeft))
+	local ring = RoadBuilder.Build({
+		Curve = ringCurve,
+		ProfileStart = profile,
+		Style = style,
+		Settings = flatSettings(settings),
+		Preview = false,
+	})
+	ring:SetAttribute("RW_Road", nil)
+	ring.Name = "Roundabout"
+	stampRingMeta(ring, center, radiusStuds, outerRadiusStuds, laneCount, laneWidthM)
+	buildIsland(ring, center, radiusStuds, profile, style, settings)
+
+	-- Flush trim: full cross-section at outer pavement edge.
+	local trimTarget = outerRadiusStuds - 0.15
+	type Mouth = { Edges: SpokeCutEdges, SLeft: number, SRight: number }
 	local mouths: { Mouth } = {}
 
 	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
@@ -7470,281 +7404,77 @@ function RoundaboutBuilder.CreateAtJunction(
 		if not edges then
 			continue
 		end
-		local cutPos = (edges.LeftKerb + edges.RightKerb) * 0.5
-		local spokeProfile = if atStart then data.ProfileStart else (data.ProfileEnd or data.ProfileStart)
-		-- Re-read after trim for profile at cut end.
-		local newData = RoadInstance.Read(road)
-		if newData then
-			spokeProfile = if atStart then newData.ProfileStart else (newData.ProfileEnd or newData.ProfileStart)
-		end
-		-- Mouth sector from cut outer edges projected onto the ring (short arc).
-		local sLeft = mouthStation(curve, edges.LeftOuter)
-		local sRight = mouthStation(curve, edges.RightOuter)
-		for _, interval in shortArcInterval(sLeft, sRight, curve.Length) do
-			table.insert(exclusions, interval)
-		end
-		table.insert(mouths, {
-			Edges = edges,
-			Profile = spokeProfile,
-			CutPos = cutPos,
-			SLeft = sLeft,
-			SRight = sRight,
-		})
-		table.insert(flares, { Station = sLeft, Kerb = edges.LeftKerb, Outer = edges.LeftOuter, Inward = edges.Inward })
-		table.insert(flares, { Station = sRight, Kerb = edges.RightKerb, Outer = edges.RightOuter, Inward = edges.Inward })
+		local sLeft = ringCurve:ClosestS(edges.LeftOuter)
+		local sRight = ringCurve:ClosestS(edges.RightOuter)
+		table.insert(mouths, { Edges = edges, SLeft = sLeft, SRight = sRight })
 	end
-
-	table.sort(exclusions, function(a, b)
-		return a.Lo &lt; b.Lo
-	end)
-	local merged: { { Lo: number, Hi: number } } = {}
-	for _, ex in exclusions do
-		if #merged == 0 or ex.Lo &gt; merged[#merged].Hi + 1e-3 then
-			table.insert(merged, { Lo = ex.Lo, Hi = ex.Hi })
-		else
-			merged[#merged].Hi = math.max(merged[#merged].Hi, ex.Hi)
-		end
-	end
-	exclusions = merged
-
-	local ring = Instance.new("Model")
-	ring.Name = "Roundabout"
-
-	local ringSettings = flatSettings(settings)
-	local sidewalkIndices = { if style.DriveOnLeft then #components else 1 }
-	local function buildSpan(fromStation: number, toStation: number, excludeSidewalks: boolean)
-		if toStation - fromStation &lt; 1e-3 then
-			return
-		end
-		local piece = RoadBuilder.Build({
-			Curve = curve:Slice(fromStation, toStation),
-			ProfileStart = profile,
-			Style = style,
-			Settings = ringSettings,
-			Preview = false,
-			ExcludeComponentIndices = if excludeSidewalks then sidewalkIndices else nil,
-		})
-		for _, child in piece:GetChildren() do
-			child.Parent = ring
-		end
-		piece:Destroy()
-	end
-
-	local cursor = 0
-	for _, exclusion in exclusions do
-		local lo = math.max(exclusion.Lo, cursor)
-		local hi = math.max(exclusion.Hi, lo)
-		buildSpan(cursor, lo, false)
-		buildSpan(lo, hi, true)
-		cursor = hi
-	end
-	buildSpan(cursor, curve.Length, false)
-
-	stampRingMeta(ring, center, radiusStuds, outerRadiusStuds, laneCount, laneWidthM)
-	buildIsland(ring, center, radiusStuds, profile, style, settings)
 
 	local thickness = settings.RoadThicknessStuds
 	local curbHeight = style.CurbHeightM * scale
 	local sidewalkDepth = thickness + curbHeight
-	local sink = Vector3.new(0, -0.02, 0)
-	local function raise(point: Vector3): Vector3
-		return point + Vector3.new(0, curbHeight, 0)
-	end
-	local function makeAsphaltPart(): Part
-		local part = Instance.new("Part")
-		part.Name = "RoundaboutMouth"
-		part.Anchored = true
-		part.CanCollide = false
-		part.CanTouch = false
-		part.CanQuery = false
-		part.CastShadow = false
-		part.TopSurface = Enum.SurfaceType.Smooth
-		part.BottomSurface = Enum.SurfaceType.Smooth
-		part.Material = Enum.Material.Asphalt
-		part.Color = style.AsphaltColor
-		return part
-	end
-	local function makeFlarePart(): Part
-		local part = makeAsphaltPart()
-		part.Name = "RoundaboutFlare"
-		return part
-	end
-	local function makeSidewalkPart(): Part
-		local part = Instance.new("Part")
-		part.Name = "RoundaboutMouthSidewalk"
-		part.Anchored = true
-		part.CanCollide = false
-		part.CanTouch = false
-		part.CanQuery = false
-		part.CastShadow = false
-		part.TopSurface = Enum.SurfaceType.Smooth
-		part.BottomSurface = Enum.SurfaceType.Smooth
-		part.Material = Enum.Material.Concrete
-		part.Color = style.SidewalkColor
-		return part
-	end
-	local function ringPointAt(station: number, offsetM: number): Vector3
-		local frame = curve:FrameAt(station)
-		return (frame * CFrame.new(offsetM * scale, 0, 0)).Position
-	end
+	local sink = Vector3.new(0, -0.015, 0)
 
-	-- Tangential entry feeds: cubic from setback cut → ring outer kerb,
-	-- arriving on the circulating tangent (full spoke profile). Ring-owned
-	-- so single-segment road stamps stay valid. Continuous ring is already
-	-- built — feeds only fill the approach, they don't cut the drive loop.
-	local function circulationTangentAt(point: Vector3): Vector3
-		local dx, dz = point.X - center.X, point.Z - center.Z
-		local mag = math.sqrt(dx * dx + dz * dz)
-		if mag &lt; 1e-6 then
-			return Vector3.new(1, 0, 0)
-		end
-		local sign = if style.DriveOnLeft then -1 else 1
-		return Vector3.new(-dz / mag * sign, 0, dx / mag * sign)
+	local function raise(p: Vector3): Vector3
+		return p + Vector3.new(0, curbHeight, 0)
+	end
+	local function makeAsphalt(): Part
+		local p = Instance.new("Part")
+		p.Name = "RoundaboutMouth"
+		p.Anchored = true
+		p.CanCollide = false
+		p.CanTouch = false
+		p.CanQuery = false
+		p.CastShadow = false
+		p.Material = Enum.Material.Asphalt
+		p.Color = style.AsphaltColor
+		p.TopSurface = Enum.SurfaceType.Smooth
+		p.BottomSurface = Enum.SurfaceType.Smooth
+		return p
+	end
+	local function makeSidewalk(): Part
+		local p = Instance.new("Part")
+		p.Name = "RoundaboutMouthSidewalk"
+		p.Anchored = true
+		p.CanCollide = false
+		p.CanTouch = false
+		p.CanQuery = false
+		p.CastShadow = false
+		p.Material = Enum.Material.Concrete
+		p.Color = style.SidewalkColor
+		p.TopSurface = Enum.SurfaceType.Smooth
+		p.BottomSurface = Enum.SurfaceType.Smooth
+		return p
+	end
+	local function ringAt(station: number, offsetM: number): Vector3
+		return (ringCurve:FrameAt(station) * CFrame.new(offsetM * scale, 0, 0)).Position
 	end
 
 	for _, mouth in mouths do
-		local cutPos = mouth.CutPos
-		local inward = mouth.Edges.Inward
-		local radial = Vector3.new(cutPos.X - center.X, 0, cutPos.Z - center.Z)
-		if radial.Magnitude &lt; 1e-6 then
-			radial = inward
-		else
-			radial = radial.Unit
-		end
-		local attach = Vector3.new(
-			center.X + radial.X * attachRadiusStuds,
-			cutPos.Y,
-			center.Z + radial.Z * attachRadiusStuds
-		)
-		local ringTan = circulationTangentAt(attach)
-		local side = Vector3.new(-inward.Z, 0, inward.X)
-		if ringTan:Dot(side) &lt; 0 then
-			ringTan = -ringTan
-		end
-		local chord = Vector3.new(attach.X - cutPos.X, 0, attach.Z - cutPos.Z)
-		local chordLen = chord.Magnitude
-		if chordLen &gt;= 2 then
-			local handle = math.min(chordLen * 0.42, FEED_LENGTH_STUDS * 0.5)
-			local feed = CurveSegment.Cubic(
-				cutPos,
-				cutPos + inward * handle,
-				attach - ringTan * handle,
-				attach
-			)
-			local piece = RoadBuilder.Build({
-				Curve = PolyCurve.new({ feed }),
-				ProfileStart = mouth.Profile,
-				Style = style,
-				Settings = flatSettings(settings),
-				Preview = false,
-			})
-			piece:SetAttribute("RW_Road", nil)
-			for _, child in piece:GetChildren() do
-				child.Name = "Entry_" .. child.Name
-				child.Parent = ring
-			end
-			piece:Destroy()
-		end
-	end
-
-	-- Residual mouth asphalt under feeds (kerb cut → ring kerb arc).
-	local MOUTH_SAMPLES = 6
-	for _, mouth in mouths do
-		local stations = sampleRingStations(mouth.SLeft, mouth.SRight, curve.Length, MOUTH_SAMPLES)
+		local stations = sampleShortArc(mouth.SLeft, mouth.SRight, ringCurve.Length, MOUTH_SAMPLES)
 		local n = #stations
-		if n &gt;= 2 then
-			for i = 1, n - 1 do
-				local t0 = (i - 1) / (n - 1)
-				local t1 = i / (n - 1)
-				local a0 = mouth.Edges.LeftKerb:Lerp(mouth.Edges.RightKerb, t0) + sink
-				local a1 = mouth.Edges.LeftKerb:Lerp(mouth.Edges.RightKerb, t1) + sink
-				local r0 = ringPointAt(stations[i], outerKerbM) + sink
-				local r1 = ringPointAt(stations[i + 1], outerKerbM) + sink
-				FillTriangle(a0, a1, r1, thickness, DOWN, makeAsphaltPart, ring)
-				FillTriangle(a0, r1, r0, thickness, DOWN, makeAsphaltPart, ring)
-			end
+		if n &lt; 2 then
+			continue
 		end
-	end
-
-	-- Corner fillets + sidewalk bridges (when geometry allows).
-	for _, flare in flares do
-		local ringKerb = ringPointAt(flare.Station, outerKerbM)
-		local ringOuter = ringPointAt(flare.Station, outerSidewalkM)
-		local toSpoke = Vector3.new(flare.Kerb.X - ringKerb.X, 0, flare.Kerb.Z - ringKerb.Z)
-		local tangent = curve:TangentAt(flare.Station)
-		tangent = Vector3.new(tangent.X, 0, tangent.Z)
-		local filleted = false
-		if toSpoke.Magnitude &gt; 1e-3 and tangent.Magnitude &gt; 1e-6 then
-			tangent = tangent.Unit
-			local inwardRing = if tangent:Dot(toSpoke) &gt;= 0 then tangent else -tangent
-			local p1, arcCenter, p2, arcRadius =
-				Fillet.Compute(flare.Kerb, flare.Inward, ringKerb, inwardRing, FLARE_RADIUS_M * scale)
-			if p1 and arcCenter and p2 and arcRadius then
-				filleted = true
-				local boundary: { Vector3 } = { flare.Kerb + sink, p1 + sink }
-				for _, point in Fillet.SampleArc(arcCenter, arcRadius, p1, p2, FLARE_ARC_SAMPLES) do
-					table.insert(boundary, point + sink)
-				end
-				table.insert(boundary, p2 + sink)
-				table.insert(boundary, ringKerb + sink)
-				for j = 1, #boundary - 1 do
-					FillTriangle(boundary[1], boundary[j], boundary[j + 1], thickness, DOWN, makeFlarePart, ring)
-				end
-				local outerBoundary: { Vector3 } = { flare.Outer }
-				local kerbBoundary: { Vector3 } = { flare.Kerb, p1 }
-				for _, point in Fillet.SampleArc(arcCenter, arcRadius, p1, p2, FLARE_ARC_SAMPLES) do
-					table.insert(kerbBoundary, point)
-				end
-				table.insert(kerbBoundary, p2)
-				table.insert(kerbBoundary, ringKerb)
-				for j = 2, #kerbBoundary - 1 do
-					local t = (j - 1) / (#kerbBoundary - 1)
-					table.insert(outerBoundary, flare.Outer:Lerp(ringOuter, t))
-				end
-				table.insert(outerBoundary, ringOuter)
-				for j = 1, #kerbBoundary - 1 do
-					FillTriangle(
-						raise(outerBoundary[j]),
-						raise(kerbBoundary[j]),
-						raise(kerbBoundary[j + 1]),
-						sidewalkDepth,
-						DOWN,
-						makeSidewalkPart,
-						ring
-					)
-					FillTriangle(
-						raise(outerBoundary[j]),
-						raise(kerbBoundary[j + 1]),
-						raise(outerBoundary[j + 1]),
-						sidewalkDepth,
-						DOWN,
-						makeSidewalkPart,
-						ring
-					)
-				end
-			end
+		-- Asphalt: spoke kerb line → ring outer kerb arc (underlap sink).
+		for i = 1, n - 1 do
+			local t0 = (i - 1) / (n - 1)
+			local t1 = i / (n - 1)
+			local a0 = mouth.Edges.LeftKerb:Lerp(mouth.Edges.RightKerb, t0) + sink
+			local a1 = mouth.Edges.LeftKerb:Lerp(mouth.Edges.RightKerb, t1) + sink
+			local r0 = ringAt(stations[i], outerKerbM) + sink
+			local r1 = ringAt(stations[i + 1], outerKerbM) + sink
+			FillTriangle(a0, a1, r1, thickness, DOWN, makeAsphalt, ring)
+			FillTriangle(a0, r1, r0, thickness, DOWN, makeAsphalt, ring)
 		end
-		if not filleted then
-			-- Straight sidewalk bridge when fillet degenerates.
-			FillTriangle(
-				raise(flare.Outer),
-				raise(flare.Kerb),
-				raise(ringKerb),
-				sidewalkDepth,
-				DOWN,
-				makeSidewalkPart,
-				ring
-			)
-			FillTriangle(
-				raise(flare.Outer),
-				raise(ringKerb),
-				raise(ringOuter),
-				sidewalkDepth,
-				DOWN,
-				makeSidewalkPart,
-				ring
-			)
+		-- Sidewalk corners: spoke outer/kerb → ring outer sidewalk/kerb at ends.
+		local function bridgeSide(spokeOuter: Vector3, spokeKerb: Vector3, station: number)
+			local rKerb = ringAt(station, outerKerbM)
+			local rOuter = ringAt(station, outerSidewalkM)
+			FillTriangle(raise(spokeOuter), raise(spokeKerb), raise(rKerb), sidewalkDepth, DOWN, makeSidewalk, ring)
+			FillTriangle(raise(spokeOuter), raise(rKerb), raise(rOuter), sidewalkDepth, DOWN, makeSidewalk, ring)
 		end
+		bridgeSide(mouth.Edges.LeftOuter, mouth.Edges.LeftKerb, mouth.SLeft)
+		bridgeSide(mouth.Edges.RightOuter, mouth.Edges.RightKerb, mouth.SRight)
 	end
 
 	ring.Parent = getRoundaboutsFolder()
@@ -7768,24 +7498,24 @@ function RoundaboutBuilder.FindNear(
 		if child:GetAttribute("RW_Roundabout") ~= true then
 			continue
 		end
-		local center = child:GetAttribute("RW_Center") :: Vector3?
+		local c = child:GetAttribute("RW_Center") :: Vector3?
 		local outerR = child:GetAttribute("RW_OuterRadius") :: number?
-		if not center or not outerR then
+		if not c or not outerR then
 			continue
 		end
-		local d = distanceXZ(pos, center)
+		local d = distanceXZ(pos, c)
 		if d &lt;= outerR + snapRadiusStuds then
 			local score = math.abs(d - outerR)
 			if score &lt; bestScore then
 				bestScore = score
-				local radial = Vector3.new(pos.X - center.X, 0, pos.Z - center.Z)
+				local radial = Vector3.new(pos.X - c.X, 0, pos.Z - c.Z)
 				if radial.Magnitude &lt; 1e-6 then
 					radial = Vector3.new(1, 0, 0)
 				else
 					radial = radial.Unit
 				end
 				best = child :: Model
-				bestAttach = Vector3.new(center.X + radial.X * outerR, center.Y, center.Z + radial.Z * outerR)
+				bestAttach = Vector3.new(c.X + radial.X * outerR, c.Y, c.Z + radial.Z * outerR)
 				bestOut = radial
 			end
 		end
@@ -7807,9 +7537,10 @@ local function collectNearbyRoads(center: Vector3, maxDist: number, minDist: num
 		if not data then
 			continue
 		end
-		local d0 = distanceXZ(data.Curve:PosAt(0), center)
-		local d1 = distanceXZ(data.Curve:PosAt(data.Curve.Length), center)
-		local dNear = math.min(d0, d1)
+		local dNear = math.min(
+			distanceXZ(data.Curve:PosAt(0), center),
+			distanceXZ(data.Curve:PosAt(data.Curve.Length), center)
+		)
 		if dNear &lt;= maxDist and dNear &gt;= minDist then
 			table.insert(out, child :: Model)
 		end
@@ -7831,9 +7562,7 @@ function RoundaboutBuilder.ConnectRoad(
 	if not center or not radiusStuds or not outerR or not laneCount or not laneWidthM then
 		return nil
 	end
-	local maxDist = outerR + settings.SnapRadiusStuds + 8
-	local minDist = math.max(1, radiusStuds * 0.25)
-	local roads = collectNearbyRoads(center, maxDist, minDist)
+	local roads = collectNearbyRoads(center, outerR + settings.SnapRadiusStuds + 8, math.max(1, radiusStuds * 0.25))
 	local has = false
 	for _, r in roads do
 		if r == road then
@@ -7847,7 +7576,6 @@ function RoundaboutBuilder.ConnectRoad(
 	if #roads &lt; 1 then
 		return nil
 	end
-
 	local junctionModel = JunctionInstance.Create(center)
 	local junctionData = JunctionInstance.Read(junctionModel)
 	if not junctionData then
@@ -7870,7 +7598,6 @@ function RoundaboutBuilder.ConnectRoad(
 			RoadInstance.StampJunctions(r, data.StartJunctionId, jid)
 		end
 	end
-
 	ring:Destroy()
 	return RoundaboutBuilder.CreateAtJunction(jid, radiusStuds, laneCount, laneWidthM, style, settings)
 end
