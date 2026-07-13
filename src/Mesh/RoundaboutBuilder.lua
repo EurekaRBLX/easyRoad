@@ -1,12 +1,15 @@
 --!strict
--- Roundabout: continuous ring (never sliced) + setback + FillTriangle feeds.
+-- Roundabout: continuous ring (never sliced) + setback + RoadBuilder feeders.
 --
--- Ring is always ONE full RoadBuilder circle — never Hermite "entry roads"
--- parented onto it (those knot the annulus). Feed-in/out is pure edge
--- geometry: sample Hermite left/right kerb paths from the setback cut to the
--- ring, fill asphalt between them, sidewalk bands outside them.
+-- Ring is always ONE full RoadBuilder circle — never slice the annulus and
+-- never parent Hermite "entry roads" onto the ring curve (those knot it).
+-- Each spoke is trimmed with a junction-style setback, then bridged to the
+-- ring with a normal curved road (Fitting + RoadBuilder.Build, same path as
+-- freeform/curve placement). Full-width profile feeders stay outward; the
+-- old edge-Hermite + FillTriangle mouths pinched inward at ClosestS.
 
 local CurveSegment = require("../Geometry/CurveSegment")
+local Fitting = require("../Geometry/Fitting")
 local PolyCurve = require("../Geometry/PolyCurve")
 local RoadBuilder = require("./RoadBuilder")
 local RoadInstance = require("../RoadInstance")
@@ -15,7 +18,6 @@ local RoadSplit = require("../RoadSplit")
 local JunctionInstance = require("../JunctionInstance")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
-local FillTriangle = require("./FillTriangle")
 
 local RoundaboutBuilder = {}
 
@@ -23,8 +25,8 @@ local ROUNDABOUTS_FOLDER_NAME = "Roundabouts"
 local BEZIER_CIRCLE_K = 0.5522847498307936
 -- Pull spokes back so feed curves have length (studs past ring outer edge).
 local SETBACK_STUDS = 14
-local FEED_SAMPLES = 10
-local DOWN = Vector3.new(0, -1, 0)
+-- Slight inset past the ring outer edge so feeder asphalt blends into the ring.
+local FEED_OVERLAP_STUDS = 1
 
 local function circleSegments(center: Vector3, radiusStuds: number, driveOnLeft: boolean): { CurveSegment.Segment }
 	local sign = if driveOnLeft then -1 else 1
@@ -368,42 +370,60 @@ local function trimSpoke(
 	return edgePointsAt(newData.Curve, profile, cutStation, inward.Unit, scale)
 end
 
--- Sample a cubic Hermite from p0→p1 with travel dirs d0/d1 (unit).
-local function sampleHermite(p0: Vector3, d0: Vector3, p1: Vector3, d1: Vector3, samples: number): { Vector3 }
-	local flat0 = Vector3.new(d0.X, 0, d0.Z)
-	local flat1 = Vector3.new(d1.X, 0, d1.Z)
-	if flat0.Magnitude < 1e-6 or flat1.Magnitude < 1e-6 then
-		return { p0, p1 }
+-- Short curved feeder from a setback cut mid into the ring, built with the
+-- same Fitting + RoadBuilder path as normal curved roads. End lands just
+-- inside the ring outer edge along the spoke's radial so the full profile
+-- stays outward (constant width) instead of pinching at ClosestS.
+local function buildFeederRoad(
+	cutMid: Vector3,
+	inward: Vector3,
+	center: Vector3,
+	attachRadiusStuds: number,
+	profile: RoadProfile.RoadProfile,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): Model?
+	local flatIn = Vector3.new(inward.X, 0, inward.Z)
+	if flatIn.Magnitude < 1e-6 then
+		local toCenter = Vector3.new(center.X - cutMid.X, 0, center.Z - cutMid.Z)
+		if toCenter.Magnitude < 1e-6 then
+			return nil
+		end
+		flatIn = toCenter
 	end
-	local chord = Vector3.new(p1.X - p0.X, 0, p1.Z - p0.Z).Magnitude
-	local handle = math.max(chord * 0.4, 1)
-	local m0 = flat0.Unit * handle
-	local m1 = flat1.Unit * handle
-	local points: { Vector3 } = table.create(samples + 1)
-	for i = 0, samples do
-		local t = i / samples
-		local t2 = t * t
-		local t3 = t2 * t
-		local h00 = 2 * t3 - 3 * t2 + 1
-		local h10 = t3 - 2 * t2 + t
-		local h01 = -2 * t3 + 3 * t2
-		local h11 = t3 - t2
-		local y = p0.Y + (p1.Y - p0.Y) * t
-		local x = p0.X * h00 + m0.X * h10 + p1.X * h01 + m1.X * h11
-		local z = p0.Z * h00 + m0.Z * h10 + p1.Z * h01 + m1.Z * h11
-		table.insert(points, Vector3.new(x, y, z))
-	end
-	return points
-end
+	local startTan = flatIn.Unit
 
-local function circulationTan(center: Vector3, point: Vector3, driveOnLeft: boolean): Vector3
-	local dx, dz = point.X - center.X, point.Z - center.Z
-	local mag = math.sqrt(dx * dx + dz * dz)
-	if mag < 1e-6 then
-		return Vector3.new(1, 0, 0)
+	-- Prefer radial attach from cut mid so a head-on spoke is a short straight
+	-- (or mild CurveFromTangent) segment; angled approaches get a smooth curve.
+	local radial = Vector3.new(cutMid.X - center.X, 0, cutMid.Z - center.Z)
+	if radial.Magnitude < 1e-6 then
+		radial = -startTan
+	else
+		radial = radial.Unit
 	end
-	local sign = if driveOnLeft then -1 else 1
-	return Vector3.new(-dz / mag * sign, 0, dx / mag * sign)
+	local ringAttach = Vector3.new(
+		center.X + radial.X * attachRadiusStuds,
+		cutMid.Y,
+		center.Z + radial.Z * attachRadiusStuds
+	)
+	if (ringAttach - cutMid).Magnitude < 0.5 then
+		return nil
+	end
+
+	-- Locked start tangent = spoke travel into the ring (same as freeform curve
+	-- continuation from an existing road end).
+	local segment = Fitting.CurveFromTangent(cutMid, startTan, ringAttach)
+	local feeder = RoadBuilder.Build({
+		Curve = PolyCurve.new({ segment }),
+		ProfileStart = profile,
+		Style = style,
+		Settings = flatSettings(settings),
+		Preview = false,
+	})
+	-- Not a free-standing editable road — owned by the roundabout mesh.
+	feeder:SetAttribute("RW_Road", nil)
+	feeder.Name = "RoundaboutFeeder"
+	return feeder
 end
 
 function RoundaboutBuilder.CreateAtJunction(
@@ -440,10 +460,6 @@ function RoundaboutBuilder.CreateAtJunction(
 	}
 	local halfWidthStuds = RoadProfile.TotalWidthM(profile) / 2 * scale
 	local outerRadiusStuds = radiusStuds + halfWidthStuds
-	local kerbLeftM, kerbRightM = roadwayEdgeOffsetsM(profile)
-	local outerKerbM = if style.DriveOnLeft then kerbRightM else kerbLeftM
-	local offsets = RoadProfile.ComponentOffsetsM(profile)
-	local outerSidewalkM = if style.DriveOnLeft then offsets[#offsets].Right else offsets[1].Left
 
 	-- ONE continuous ring — never slice (knotted arcs).
 	local ringCurve = PolyCurve.new(circleSegments(center, radiusStuds, style.DriveOnLeft))
@@ -459,10 +475,10 @@ function RoundaboutBuilder.CreateAtJunction(
 	stampRingMeta(ring, center, radiusStuds, outerRadiusStuds, laneCount, laneWidthM)
 	buildIsland(ring, center, radiusStuds, profile, style, settings)
 
-	-- Setback: full cross-section beyond outer pavement so feeds have length.
+	-- Setback: full cross-section beyond outer pavement so feeders have length.
 	local trimTarget = outerRadiusStuds + SETBACK_STUDS
-	type Mouth = { Edges: SpokeCutEdges, SLeft: number, SRight: number }
-	local mouths: { Mouth } = {}
+	-- Feeder centerline ends just inside outer pavement (blend, no gap).
+	local feedAttachR = math.max(radiusStuds, outerRadiusStuds - FEED_OVERLAP_STUDS)
 
 	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
 		local data = RoadInstance.Read(road)
@@ -477,142 +493,26 @@ function RoundaboutBuilder.CreateAtJunction(
 		if not edges then
 			continue
 		end
-		local sLeft = ringCurve:ClosestS(edges.LeftOuter)
-		local sRight = ringCurve:ClosestS(edges.RightOuter)
-		table.insert(mouths, { Edges = edges, SLeft = sLeft, SRight = sRight })
-	end
-
-	local thickness = settings.RoadThicknessStuds
-	local curbHeight = style.CurbHeightM * scale
-	local sidewalkDepth = thickness + curbHeight
-	local sink = Vector3.new(0, -0.015, 0)
-
-	local function raise(p: Vector3): Vector3
-		return p + Vector3.new(0, curbHeight, 0)
-	end
-	local function makeAsphalt(): Part
-		local p = Instance.new("Part")
-		p.Name = "RoundaboutFeed"
-		p.Anchored = true
-		p.CanCollide = false
-		p.CanTouch = false
-		p.CanQuery = false
-		p.CastShadow = false
-		p.Material = Enum.Material.Asphalt
-		p.Color = style.AsphaltColor
-		p.TopSurface = Enum.SurfaceType.Smooth
-		p.BottomSurface = Enum.SurfaceType.Smooth
-		return p
-	end
-	local function makeSidewalk(): Part
-		local p = Instance.new("Part")
-		p.Name = "RoundaboutFeedSidewalk"
-		p.Anchored = true
-		p.CanCollide = false
-		p.CanTouch = false
-		p.CanQuery = false
-		p.CastShadow = false
-		p.Material = Enum.Material.Concrete
-		p.Color = style.SidewalkColor
-		p.TopSurface = Enum.SurfaceType.Smooth
-		p.BottomSurface = Enum.SurfaceType.Smooth
-		return p
-	end
-	local function ringAt(station: number, offsetM: number): Vector3
-		return (ringCurve:FrameAt(station) * CFrame.new(offsetM * scale, 0, 0)).Position
-	end
-	local function ringTanAt(station: number): Vector3
-		local t = ringCurve:TangentAt(station)
-		return Vector3.new(t.X, 0, t.Z)
-	end
-
-	for _, mouth in mouths do
-		local e = mouth.Edges
-		local rKerbL = ringAt(mouth.SLeft, outerKerbM)
-		local rKerbR = ringAt(mouth.SRight, outerKerbM)
-		local rOuterL = ringAt(mouth.SLeft, outerSidewalkM)
-		local rOuterR = ringAt(mouth.SRight, outerSidewalkM)
-
-		-- Arrive along the ring tangent that faces the mouth (into the gap).
-		local tanL = ringTanAt(mouth.SLeft)
-		local tanR = ringTanAt(mouth.SRight)
-		if tanL.Magnitude > 1e-6 then
-			tanL = tanL.Unit
-		else
-			tanL = e.Inward
-		end
-		if tanR.Magnitude > 1e-6 then
-			tanR = tanR.Unit
-		else
-			tanR = e.Inward
-		end
-		-- Orient arrival so travel continues from spoke inward into the ring.
-		local toRingL = Vector3.new(rKerbL.X - e.LeftKerb.X, 0, rKerbL.Z - e.LeftKerb.Z)
-		local toRingR = Vector3.new(rKerbR.X - e.RightKerb.X, 0, rKerbR.Z - e.RightKerb.Z)
-		if toRingL.Magnitude > 1e-3 and tanL:Dot(toRingL) < 0 then
-			tanL = -tanL
-		end
-		if toRingR.Magnitude > 1e-3 and tanR:Dot(toRingR) < 0 then
-			tanR = -tanR
-		end
-
-		-- Feed-in/out edge curves (Hermite): setback cut → ring, curved.
-		local leftKerb = sampleHermite(e.LeftKerb, e.Inward, rKerbL, tanL, FEED_SAMPLES)
-		local rightKerb = sampleHermite(e.RightKerb, e.Inward, rKerbR, tanR, FEED_SAMPLES)
-		local leftOuter = sampleHermite(e.LeftOuter, e.Inward, rOuterL, tanL, FEED_SAMPLES)
-		local rightOuter = sampleHermite(e.RightOuter, e.Inward, rOuterR, tanR, FEED_SAMPLES)
-		local n = math.min(#leftKerb, #rightKerb, #leftOuter, #rightOuter)
-		if n < 2 then
+		local trimmed = RoadInstance.Read(road)
+		if not trimmed then
 			continue
 		end
-
-		-- Asphalt deck between left/right kerb curves.
-		for i = 1, n - 1 do
-			local a0 = leftKerb[i] + sink
-			local a1 = leftKerb[i + 1] + sink
-			local b0 = rightKerb[i] + sink
-			local b1 = rightKerb[i + 1] + sink
-			FillTriangle(a0, a1, b1, thickness, DOWN, makeAsphalt, ring)
-			FillTriangle(a0, b1, b0, thickness, DOWN, makeAsphalt, ring)
-		end
-		-- Sidewalk patches outside each kerb curve.
-		for i = 1, n - 1 do
-			FillTriangle(
-				raise(leftOuter[i]),
-				raise(leftOuter[i + 1]),
-				raise(leftKerb[i + 1]),
-				sidewalkDepth,
-				DOWN,
-				makeSidewalk,
-				ring
-			)
-			FillTriangle(
-				raise(leftOuter[i]),
-				raise(leftKerb[i + 1]),
-				raise(leftKerb[i]),
-				sidewalkDepth,
-				DOWN,
-				makeSidewalk,
-				ring
-			)
-			FillTriangle(
-				raise(rightOuter[i]),
-				raise(rightKerb[i]),
-				raise(rightKerb[i + 1]),
-				sidewalkDepth,
-				DOWN,
-				makeSidewalk,
-				ring
-			)
-			FillTriangle(
-				raise(rightOuter[i]),
-				raise(rightKerb[i + 1]),
-				raise(rightOuter[i + 1]),
-				sidewalkDepth,
-				DOWN,
-				makeSidewalk,
-				ring
-			)
+		local cutStation = if atStart then 0 else trimmed.Curve.Length
+		local cutMid = trimmed.Curve:PosAt(cutStation)
+		local spokeProfile = if atStart
+			then trimmed.ProfileStart
+			else (trimmed.ProfileEnd or trimmed.ProfileStart)
+		local feeder = buildFeederRoad(
+			cutMid,
+			edges.Inward,
+			center,
+			feedAttachR,
+			spokeProfile,
+			style,
+			settings
+		)
+		if feeder then
+			feeder.Parent = ring
 		end
 	end
 

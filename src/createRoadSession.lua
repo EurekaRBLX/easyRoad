@@ -675,7 +675,7 @@ local function createRoadSession(
 				return
 			end
 			-- Attach as a new spoke on a placed roundabout (rebuilds the ring
-			-- with Hermite feeds for every nearby road including this one).
+			-- with RoadBuilder curve feeders for every nearby road including this one).
 			local ring = RoundaboutBuilder.FindNear(pos, settings.SnapRadiusStuds)
 			if ring then
 				RoundaboutBuilder.ConnectRoad(ring, model, getStyle(), settings)
