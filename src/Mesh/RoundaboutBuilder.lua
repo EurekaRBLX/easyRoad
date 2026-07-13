@@ -701,7 +701,11 @@ function RoundaboutBuilder.ConnectRoad(
 	if not center or not radiusStuds or not outerR or not laneCount or not laneWidthM then
 		return nil
 	end
-	local roads = collectNearbyRoads(center, outerR + settings.SnapRadiusStuds + 8, math.max(1, radiusStuds * 0.25))
+	local roads = collectNearbyRoads(
+		center,
+		outerR + SETBACK_STUDS + settings.SnapRadiusStuds + 8,
+		math.max(1, radiusStuds * 0.25)
+	)
 	local has = false
 	for _, r in roads do
 		if r == road then
