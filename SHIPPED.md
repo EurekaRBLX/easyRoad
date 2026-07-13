@@ -4,6 +4,52 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Ring banking off, mouth-angle sort, Hermite corner fallback (three live screenshot reports)
+
+- **Roundabout "humps and lumps" - root cause found in the actual math,
+  not guessed.** `Superelevation.RollAt` in Auto mode banks ANY curve by
+  the highway design formula `e + f = V^2/(127R)`; a 30-stud ring is
+  ~8.4m radius, so at any realistic design speed the demand saturates at
+  the region's MAXIMUM superelevation - the ring was being built as a
+  maximally-banked circle of hundreds of short tilted strips. Real
+  roundabouts are never superelevated (low-speed geometry). Both ring
+  build paths (`Create` and `CreateAtJunction`'s span slices) now build
+  with a settings clone whose `SuperelevationMode` is forced `"Off"`
+  (`flatSettings`); spokes keep the caller's real settings. Also sank the
+  entry/exit flares 0.02 studs below deck: they overlap both the spoke's
+  and the ring's own asphalt where they meet, and three coplanar surfaces
+  z-fight (flickering streaks).
+- **3+-road junctions losing their corners (reported live: "seems to only
+  support 2 additional roads").** The per-approach node sort used the
+  road's outward CURVE TANGENT angle - and every approach in the reported
+  layouts was strongly curved, so the tangent at the trimmed end pointed
+  somewhere very different from where the mouth physically sits,
+  mis-sorting the angular neighbour order and pairing corners between
+  non-adjacent approaches (which the mouth-crossing guard then rightly
+  killed, leaving bare pads). The approach angle is now the angle of the
+  MOUTH MIDPOINT around the junction centre - the mouth's position can't
+  lie about where the mouth is, regardless of how the road curves.
+- **Indent/notch where a curved road passes through a T/Y junction.** The
+  nearly-opposite "through" pair's fillet is correctly rejected as
+  degenerate (near-collinear), but the old fallback was a straight chord
+  across the whole pad - which cuts visibly INSIDE the curved sidewalk
+  line the two roads actually follow, a sharp notch at each mouth
+  (reported live). New middle fallback: a cubic HERMITE tangent-matched
+  to both roads' own edge lines (leaves a.Kerb travelling into the pad
+  along A's line, arrives at b.Kerb travelling out along B's), sampled at
+  5 interior points, for both the kerb boundary and the outer sidewalk
+  boundary. No kink at either end for any approach geometry, and bounded
+  near the chord by construction (tangents scaled to chord length =
+  every Bezier control point within chord/3 of an endpoint). The straight
+  chamfer now only remains for the "tangent unreadable" case.
+- **NOT done this round, deliberately: the "setback shaping feed-in/out
+  lanes" ask for roundabouts.** Pulling spokes further back from the ring
+  (like the junction setback) without new mouth-fill geometry would open
+  a strip of bare ground across the middle of every feeder mouth - the
+  flares only bridge the two corner wedges, not the span between them.
+  Logged in TODO.md with that requirement spelled out rather than shipped
+  half-broken.
+
 ## Junction corners: per-approach node model (user's architecture suggestion)
 
 - Implemented the decomposition the user proposed: "break an intersection

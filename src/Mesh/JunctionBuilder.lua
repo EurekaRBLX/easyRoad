@@ -502,35 +502,79 @@ local function insetTowardCenter(point: Vector3, center: Vector3, radius: number
 	return Vector3.new(center.X + dx * scale, point.Y, center.Z + dz * scale)
 end
 
+-- Cubic Hermite from `p0` to `p1` whose travel direction is `d0` at the
+-- start and `d1` at the end, sampled at `samples` interior points.
+-- Tangent magnitudes are the chord length (the standard "taut" choice), so
+-- in Bezier terms every control point sits within chord/3 of an endpoint -
+-- the curve is bounded near the straight chord by construction, with none
+-- of the unbounded-reach failure modes that plagued earlier corner code.
+local function hermiteBoundary(p0: Vector3, d0: Vector3, p1: Vector3, d1: Vector3, samples: number): { Vector3 }
+	local chord = (p1 - p0).Magnitude
+	local m0 = d0.Unit * chord
+	local m1 = d1.Unit * chord
+	local points: { Vector3 } = { p0 }
+	for i = 1, samples do
+		local t = i / (samples + 1)
+		local t2 = t * t
+		local t3 = t2 * t
+		local h00 = 2 * t3 - 3 * t2 + 1
+		local h10 = t3 - 2 * t2 + t
+		local h01 = -2 * t3 + 3 * t2
+		local h11 = t3 - t2
+		table.insert(points, p0 * h00 + m0 * h10 + p1 * h01 + m1 * h11)
+	end
+	table.insert(points, p1)
+	return points
+end
+
+local HERMITE_SAMPLES = 5
+
 -- The paired KERB (asphalt-edge) and OUTER (sidewalk-outer-edge) boundaries
--- for one cross-road hull corner, returned as two equal-length point lists
--- so the sidewalk can be filled as a proper BAND between them (quad per
--- span) rather than a fan from a single point - fanning the sidewalk from
--- one `a.Outer` across a curved kerb arc skewed the triangles across the
+-- for one corner pair, returned as two equal-length point lists so the
+-- sidewalk can be filled as a proper BAND between them (quad per span)
+-- rather than a fan from a single point - fanning the sidewalk from one
+-- `a.Outer` across a curved kerb arc skewed the triangles across the
 -- asphalt and produced hook/sliver artifacts at the corner.
 --
--- Straight chamfer (no valid fillet): kerb {a.Kerb, b.Kerb}, outer
--- {a.Outer, b.Outer} - a single sidewalk quad, exactly as before rounding.
--- Rounded corner: the kerb list follows the fillet arc; each interior arc
--- point's outer partner is the same point on a smaller, concentric arc
--- (see `insetTowardCenter`) inset by the sidewalk width, interpolated from
--- road A's width at the a end to road B's at the b end. The two endpoints
--- are pinned to the roads' own real `a.Outer`/`b.Outer` so the band meets
--- each connected road's sidewalk seamlessly.
+-- Three shapes, in order of preference:
+-- 1. FILLET (real corners): the kerb list follows the true circular arc;
+--    each interior arc point's outer partner is the same point on a
+--    smaller, concentric arc (see `insetTowardCenter`) inset by the
+--    sidewalk width, interpolated from road A's width at the a end to
+--    road B's at the b end.
+-- 2. HERMITE (fillet degenerate - through pairs, near-parallel or
+--    diverging kerb lines): a cubic tangent-matched to both roads' own
+--    edge lines, leaving a.Kerb travelling INTO the pad along A's line
+--    and arriving at b.Kerb travelling OUT along B's line. This replaced
+--    the old straight-chamfer fallback for these cases after a live
+--    report: at a T/Y junction the pair of nearly-opposite "through"
+--    approaches got a straight chord across the whole pad, which cut
+--    visibly INSIDE the curved sidewalk line the two roads actually
+--    follow - a sharp notch/indent at each mouth. The Hermite continues
+--    both roads' own edge directions, so there is no kink at either end
+--    for ANY approach geometry, and it is bounded near the chord by
+--    construction (see hermiteBoundary).
+-- 3. STRAIGHT chamfer: only when a road's tangent can't be read at all.
+--
+-- In every shape the endpoints are pinned to the roads' own real points
+-- so the band meets each connected road's sidewalk seamlessly.
 local function cornerBoundaries(
 	a: EdgePoint,
 	b: EdgePoint,
 	junctionId: string,
 	radiusStuds: number
 ): ({ Vector3 }, { Vector3 })
-	local inwardA = outwardTangentAt(a.Road, junctionId)
-	local inwardB = outwardTangentAt(b.Road, junctionId)
-	if not inwardA or not inwardB then
+	local outwardA = outwardTangentAt(a.Road, junctionId)
+	local outwardB = outwardTangentAt(b.Road, junctionId)
+	if not outwardA or not outwardB then
 		return { a.Kerb, b.Kerb }, { a.Outer, b.Outer }
 	end
-	local p1, center, p2, effectiveRadius = Fillet.Compute(a.Kerb, -inwardA, b.Kerb, -inwardB, radiusStuds)
+	local p1, center, p2, effectiveRadius = Fillet.Compute(a.Kerb, -outwardA, b.Kerb, -outwardB, radiusStuds)
 	if not p1 or not center or not p2 or not effectiveRadius then
-		return { a.Kerb, b.Kerb }, { a.Outer, b.Outer }
+		-- Travel into the pad continuing A's own line, out along B's.
+		local kerb = hermiteBoundary(a.Kerb, -outwardA, b.Kerb, outwardB, HERMITE_SAMPLES)
+		local outer = hermiteBoundary(a.Outer, -outwardA, b.Outer, outwardB, HERMITE_SAMPLES)
+		return kerb, outer
 	end
 	local widthA = distanceXZ(a.Outer, a.Kerb)
 	local widthB = distanceXZ(b.Outer, b.Kerb)
@@ -654,14 +698,25 @@ function JunctionBuilder.Rebuild(
 			end
 			if #points == 2 then
 				table.insert(mouths, { Road = road, L = points[1].Kerb, R = points[2].Kerb })
-				local outward = outwardTangentAt(road, junctionId)
-				if outward then
-					local angle = math.atan2(outward.Z, outward.X)
+				-- The approach's angle is where its MOUTH physically sits
+				-- around the junction centre (midpoint of its two kerb
+				-- points), NOT the road's outward curve tangent - a strongly
+				-- curved approach's tangent at the trimmed end can point
+				-- somewhere very different from where the mouth actually is,
+				-- mis-sorting the angular neighbour order and pairing
+				-- corners between non-adjacent approaches (reported live as
+				-- 3+-road junctions with curved approaches losing their
+				-- corners entirely). The mouth position can't lie about
+				-- where the mouth is.
+				local mid = (points[1].Kerb + points[2].Kerb) / 2
+				local mx, mz = mid.X - center.X, mid.Z - center.Z
+				if mx * mx + mz * mz > 1e-6 then
+					local angle = math.atan2(mz, mx)
 					-- Which side each edge point sits on, resolved purely
 					-- computationally (the signed angular offset of the
 					-- point around the junction centre, relative to the
-					-- road's own outward direction) - no left/right or
-					-- driving-side sign conventions to get wrong.
+					-- mouth's own angle) - no left/right or driving-side
+					-- sign conventions to get wrong.
 					local d1 = angleDelta(math.atan2(points[1].Kerb.Z - center.Z, points[1].Kerb.X - center.X), angle)
 					local d2 = angleDelta(math.atan2(points[2].Kerb.Z - center.Z, points[2].Kerb.X - center.X), angle)
 					local cw = if d1 <= d2 then points[1] else points[2]

@@ -163,6 +163,23 @@ local function buildIsland(
 	island.Parent = model
 end
 
+-- Settings clone with superelevation forced OFF, for building the ring's
+-- own pavement. In Auto mode Superelevation.RollAt banks ANY curve by the
+-- highway design formula, and a roundabout-sized radius (e.g. 30 studs =
+-- ~8.4m) at any realistic design speed saturates the formula at the
+-- region's MAXIMUM superelevation - so the ring was being built as a
+-- maximally-banked circle of hundreds of short tilted strips, reported
+-- live as "a lot of humps and lumps" across the circulating lane. Real
+-- roundabouts are never superelevated (they're low-speed geometry, often
+-- deliberately built with adverse crossfall); the ring is always flat.
+-- Spoke roads keep the caller's real settings - they're ordinary roads,
+-- and their own per-segment runoff already tapers bank to zero at ends.
+local function flatSettings(settings: Settings.EasyRoadSettings): Settings.EasyRoadSettings
+	local clone = table.clone(settings)
+	clone.SuperelevationMode = "Off"
+	return clone
+end
+
 -- Builds and parents a one-way roundabout ring of `radiusStuds` centred at
 -- `center`, with `laneCount` lanes (>= 1) each `laneWidthM` wide.
 function RoundaboutBuilder.Create(
@@ -186,7 +203,7 @@ function RoundaboutBuilder.Create(
 		Curve = curve,
 		ProfileStart = profile,
 		Style = style,
-		Settings = settings,
+		Settings = flatSettings(settings),
 		Preview = false,
 	})
 	-- RoadBuilder.Build's multi-segment fallback stamps RW_Road (for
@@ -530,6 +547,9 @@ function RoundaboutBuilder.CreateAtJunction(
 	-- The single Sidewalk component is first or last depending on
 	-- DriveOnLeft (see ringComponents) - excluded across each gap's
 	-- station range so the ring's outer sidewalk opens up for the feeder.
+	-- Built with superelevation forced off (see flatSettings above) - the
+	-- ring is never banked.
+	local ringSettings = flatSettings(settings)
 	local sidewalkIndices = { if style.DriveOnLeft then #components else 1 }
 	local function buildSpan(fromStation: number, toStation: number, excludeSidewalks: boolean)
 		if toStation - fromStation < 1e-3 then
@@ -539,7 +559,7 @@ function RoundaboutBuilder.CreateAtJunction(
 			Curve = curve:Slice(fromStation, toStation),
 			ProfileStart = profile,
 			Style = style,
-			Settings = settings,
+			Settings = ringSettings,
 			Preview = false,
 			ExcludeComponentIndices = if excludeSidewalks then sidewalkIndices else nil,
 		})
@@ -609,14 +629,20 @@ function RoundaboutBuilder.CreateAtJunction(
 			local p1, arcCenter, p2, arcRadius =
 				Fillet.Compute(flare.Kerb, flare.Inward, ringKerb, inwardRing, FLARE_RADIUS_M * scale)
 			if p1 and arcCenter and p2 and arcRadius then
-				local boundary: { Vector3 } = { flare.Kerb, p1 }
+				-- The whole flare sits 0.02 studs below deck level: its fan
+				-- overlaps both the spoke's and the ring's own asphalt where
+				-- they meet, and three coplanar surfaces z-fight (rendered
+				-- as flickering streaks). 0.02 is invisible as a step but
+				-- decisively below the surfaces it ducks under.
+				local sink = Vector3.new(0, -0.02, 0)
+				local boundary: { Vector3 } = { flare.Kerb + sink, p1 + sink }
 				for _, point in Fillet.SampleArc(arcCenter, arcRadius, p1, p2, FLARE_ARC_SAMPLES) do
-					table.insert(boundary, point)
+					table.insert(boundary, point + sink)
 				end
-				table.insert(boundary, p2)
-				table.insert(boundary, ringKerb)
+				table.insert(boundary, p2 + sink)
+				table.insert(boundary, ringKerb + sink)
 				for j = 1, #boundary - 1 do
-					FillTriangle(flare.Kerb, boundary[j], boundary[j + 1], thickness, DOWN, makeFlarePart, ring)
+					FillTriangle(boundary[1], boundary[j], boundary[j + 1], thickness, DOWN, makeFlarePart, ring)
 				end
 			end
 		end
