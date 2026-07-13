@@ -114,7 +114,7 @@ return function(
 	-- JunctionNodes (see JunctionEditSession.lua) - a road and a junction
 	-- are never selected by the same click, so the two sessions never need
 	-- to coordinate with each other.
-	local junctionEditSession = createJunctionEditSession()
+	local junctionEditSession = createJunctionEditSession(getStyle, settings)
 	local junctionEditSessionChangedCn = junctionEditSession.ChangeSignal:Connect(function()
 		updateUI()
 	end)
@@ -709,6 +709,11 @@ return function(
 		elseif junctionEditSession.GetSelectedJunction() then
 			bottomContent = React.createElement(JunctionPanel, {
 				ConnectedRoadCount = junctionEditSession.GetConnectedRoadCount(),
+				FilletRadiusM = junctionEditSession.GetFilletRadiusM(),
+				PadMarginStuds = junctionEditSession.GetPadMarginStuds(),
+				OnFilletRadiusChanged = junctionEditSession.SetFilletRadiusM,
+				OnPadMarginChanged = junctionEditSession.SetPadMarginStuds,
+				OnRebuild = junctionEditSession.RebuildSelected,
 				OnDelete = junctionEditSession.DeleteJunction,
 				OnMakeRoundabout = function(radiusStuds: number, laneCount: number, laneWidthM: number)
 					local junctionModel = junctionEditSession.GetSelectedJunction()
@@ -736,7 +741,7 @@ return function(
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
 				Position = UDim2.new(0, 12, 1, -40),
-				Size = UDim2.new(0, 280, 0, 360),
+				Size = UDim2.new(0, 300, 0, 440),
 			}
 		end
 

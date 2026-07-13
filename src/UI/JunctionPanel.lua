@@ -1,9 +1,7 @@
 --!strict
--- Small HUD shown when a placed JunctionNode is selected (Studio's ordinary
--- Selection, same convention as RoadInspector for a selected road): how
--- many roads meet here, and a way to remove the junction itself (which
--- just unlinks the roads - see JunctionEditSession.DeleteJunction - not
--- delete them).
+-- HUD when a JunctionNode is selected: connection info, node controller
+-- (fillet / setback), rebuild, roundabout convert, delete.
+-- Viewport handles (centre, mouth bars) live in JunctionEditSession.
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -21,6 +19,11 @@ local DEFAULT_LANE_WIDTH_M = 3.65
 
 local function JunctionPanel(props: {
 	ConnectedRoadCount: number,
+	FilletRadiusM: number,
+	PadMarginStuds: number,
+	OnFilletRadiusChanged: (value: number) -> (),
+	OnPadMarginChanged: (value: number) -> (),
+	OnRebuild: () -> (),
 	OnDelete: () -> (),
 	OnMakeRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number) -> (),
 })
@@ -40,21 +43,58 @@ local function JunctionPanel(props: {
 		Dim = true,
 		LayoutOrder = 2,
 	})
+	children.HandleHint = e(Components.Label, {
+		Text = "Yellow ball = move node. Red bars = approach mouths. Cyan balls = curb corners.",
+		Dim = true,
+		LayoutOrder = 3,
+	})
+
+	children.NodeSection = e(Components.Section, { Text = "Node controller", LayoutOrder = 4 })
+	children.FilletRow = e(Components.Row, { LayoutOrder = 5 }, {
+		Label = e(Components.Label, { Text = "Corner radius", LayoutOrder = 1, Width = 90 }),
+		Field = e(Components.NumberField, {
+			Value = props.FilletRadiusM,
+			Min = 0.5,
+			Max = 40,
+			OnChanged = props.OnFilletRadiusChanged,
+			LayoutOrder = 2,
+		}),
+		Unit = e(Components.Label, { Text = "m", Dim = true, LayoutOrder = 3 }),
+	})
+	children.SetbackRow = e(Components.Row, { LayoutOrder = 6 }, {
+		Label = e(Components.Label, { Text = "Setback", LayoutOrder = 1, Width = 90 }),
+		Field = e(Components.NumberField, {
+			Value = props.PadMarginStuds,
+			Min = 1,
+			Max = 40,
+			OnChanged = props.OnPadMarginChanged,
+			LayoutOrder = 2,
+		}),
+		Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 3 }),
+	})
+	children.Rebuild = e(Components.Button, {
+		Text = "Rebuild junction",
+		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
+		LayoutOrder = 7,
+		OnClick = props.OnRebuild,
+	})
+
 	children.Delete = e(Components.Button, {
 		Text = "Delete Junction",
 		Danger = true,
 		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-		LayoutOrder = 3,
+		LayoutOrder = 8,
 		OnClick = props.OnDelete,
 	})
 	children.Hint = e(Components.Label, {
-		Text = "Unlinks the roads meeting here - doesn't delete them.",
+		Text = "Unlinks the roads meeting here — doesn't delete them.",
 		Dim = true,
-		LayoutOrder = 4,
+		LayoutOrder = 9,
 	})
 
 	if props.ConnectedRoadCount >= 3 then
-		children.RoundaboutRadius = e(Components.Row, { LayoutOrder = 5 }, {
+		children.RoundaboutSection = e(Components.Section, { Text = "Roundabout", LayoutOrder = 10 })
+		children.RoundaboutRadius = e(Components.Row, { LayoutOrder = 11 }, {
 			Label = e(Components.Label, { Text = "Radius", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.NumberField, {
 				Value = radiusStuds,
@@ -64,7 +104,7 @@ local function JunctionPanel(props: {
 			}),
 			Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 3 }),
 		})
-		children.RoundaboutLaneCount = e(Components.Row, { LayoutOrder = 6 }, {
+		children.RoundaboutLaneCount = e(Components.Row, { LayoutOrder = 12 }, {
 			Label = e(Components.Label, { Text = "Lanes", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.NumberField, {
 				Value = laneCount,
@@ -76,7 +116,7 @@ local function JunctionPanel(props: {
 				LayoutOrder = 2,
 			}),
 		})
-		children.RoundaboutLaneWidth = e(Components.Row, { LayoutOrder = 7 }, {
+		children.RoundaboutLaneWidth = e(Components.Row, { LayoutOrder = 13 }, {
 			Label = e(Components.Label, { Text = "Lane width", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.NumberField, {
 				Value = laneWidthM,
@@ -89,17 +129,15 @@ local function JunctionPanel(props: {
 		children.MakeRoundabout = e(Components.Button, {
 			Text = "Make Roundabout",
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 8,
+			LayoutOrder = 14,
 			OnClick = function()
 				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM)
 			end,
 		})
 		children.RoundaboutHint = e(Components.Label, {
-			Text = "Trims the connected roads to the ring's edge and replaces this "
-				.. "junction with it - no per-lane merge geometry yet, so expect a "
-				.. "rough seam at each approach.",
+			Text = "Replaces this junction with a polar ring and trims approaches to the outer edge.",
 			Dim = true,
-			LayoutOrder = 9,
+			LayoutOrder = 15,
 		})
 	end
 

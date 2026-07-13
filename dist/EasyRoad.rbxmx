@@ -1856,38 +1856,145 @@ end
 
 return Superelevation
 </ProtectedString></Properties></Item></Item><Item class="ModuleScript" referent="RBX9"><Properties><string name="Name">JunctionEditSession</string><ProtectedString name="Source">--!strict
--- Selection-based junction editing: select an already-placed JunctionNode
--- with Studio's ordinary Selection (clicking its pad in the viewport or the
--- Explorer) to see how many roads meet there and delete it if wanted.
---
--- Mirrors RoadEditSession's own Selection-service-driven pattern
--- (loadSelection there), but deliberately its own small module rather than
--- folded into RoadEditSession, which is already a large, road-specific
--- state machine - a junction and a road are never selected by the same
--- click (they live under separate top-level folders), so there's no
--- interaction between the two to coordinate.
+-- Selection-based junction editing + CivilArc-style node controller:
+-- select a JunctionNode (pad click / Explorer) to show mouth markers and a
+-- centre handle. Drag the centre to re-seat the node; panel sliders adjust
+-- fillet radius and pad setback, then rebuild.
 
 local Selection = game:GetService("Selection")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local UserInputService = game:GetService("UserInputService")
 
 local Packages = script.Parent.Parent.Packages
 local Signal = require(Packages.Signal)
 
 local JunctionInstance = require("./JunctionInstance")
+local JunctionBuilder = require("./Mesh/JunctionBuilder")
 local RoadInstance = require("./RoadInstance")
+local RegionStyles = require("./RegionStyles")
+local Settings = require("./Settings")
 
 export type JunctionEditSession = {
 	ChangeSignal: Signal.Signal&lt;&gt;,
 	GetSelectedJunction: () -&gt; Model?,
 	GetConnectedRoadCount: () -&gt; number,
 	GetSelectedJunctionPosition: () -&gt; Vector3?,
+	GetFilletRadiusM: () -&gt; number,
+	GetPadMarginStuds: () -&gt; number,
+	SetFilletRadiusM: (value: number) -&gt; (),
+	SetPadMarginStuds: (value: number) -&gt; (),
+	RebuildSelected: () -&gt; (),
 	DeleteJunction: () -&gt; (),
 	Destroy: () -&gt; (),
 }
 
-local function createJunctionEditSession(): JunctionEditSession
+local HANDLES_FOLDER_NAME = "EasyRoadJunctionHandles"
+local CENTER_HANDLE_NAME = "CenterHandle"
+local MOUTH_PREFIX = "Mouth_"
+
+local function createJunctionEditSession(
+	getStyle: () -&gt; RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): JunctionEditSession
 	local changeSignal = Signal.new()
 	local selectedJunction: Model? = nil
+	local handlesFolder: Folder? = nil
+	local draggingCenter = false
+	local dragPlaneY = 0
+	local connections: { RBXScriptConnection } = {}
+
+	local function clearHandles()
+		if handlesFolder then
+			handlesFolder:Destroy()
+			handlesFolder = nil
+		end
+		draggingCenter = false
+	end
+
+	local function makeHandlePart(name: string, size: Vector3, color: Color3, shape: Enum.PartType?): Part
+		local part = Instance.new("Part")
+		part.Name = name
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanTouch = false
+		part.CanQuery = true
+		part.CastShadow = false
+		part.Material = Enum.Material.Neon
+		part.Color = color
+		part.Transparency = 0.25
+		part.Size = size
+		if shape then
+			part.Shape = shape
+		end
+		part.TopSurface = Enum.SurfaceType.Smooth
+		part.BottomSurface = Enum.SurfaceType.Smooth
+		return part
+	end
+
+	local function refreshHandles()
+		clearHandles()
+		if not selectedJunction then
+			return
+		end
+		local data = JunctionInstance.Read(selectedJunction)
+		if not data then
+			return
+		end
+		local layout = JunctionBuilder.GetLayout(data.Id, settings)
+		if not layout then
+			return
+		end
+
+		local folder = Instance.new("Folder")
+		folder.Name = HANDLES_FOLDER_NAME
+		folder.Parent = workspace
+		handlesFolder = folder
+
+		-- Centre node (draggable) — CivilArc-style primary control.
+		local center = makeHandlePart(CENTER_HANDLE_NAME, Vector3.new(2.2, 2.2, 2.2), Color3.fromRGB(255, 200, 40), Enum.PartType.Ball)
+		center.CFrame = CFrame.new(layout.Center + Vector3.new(0, 1.2, 0))
+		center.Parent = folder
+
+		-- Mouth markers: red bar across each approach cut (CivilArc corner line).
+		for i, mouth in layout.Mouths do
+			local left, right = mouth.Left, mouth.Right
+			local mid = (left + right) * 0.5
+			local len = (right - left).Magnitude
+			if len &gt; 0.1 then
+				local bar = makeHandlePart(MOUTH_PREFIX .. i, Vector3.new(0.25, 0.25, len), Color3.fromRGB(255, 70, 70))
+				bar.CFrame = CFrame.lookAt(mid + Vector3.new(0, 0.4, 0), right + Vector3.new(0, 0.4, 0))
+				bar.Parent = folder
+				local dotL = makeHandlePart(MOUTH_PREFIX .. i .. "_L", Vector3.new(0.7, 0.7, 0.7), Color3.fromRGB(255, 255, 255), Enum.PartType.Ball)
+				dotL.CFrame = CFrame.new(left + Vector3.new(0, 0.5, 0))
+				dotL.Parent = folder
+				local dotR = makeHandlePart(MOUTH_PREFIX .. i .. "_R", Vector3.new(0.7, 0.7, 0.7), Color3.fromRGB(255, 255, 255), Enum.PartType.Ball)
+				dotR.CFrame = CFrame.new(right + Vector3.new(0, 0.5, 0))
+				dotR.Parent = folder
+			end
+		end
+
+		-- Corner mid markers (cyan) — show which spans get curb returns.
+		for i, corner in layout.Corners do
+			local c = makeHandlePart("Corner_" .. i, Vector3.new(1.1, 1.1, 1.1), Color3.fromRGB(80, 200, 255), Enum.PartType.Ball)
+			c.CFrame = CFrame.new(corner.Mid + Vector3.new(0, 0.9, 0))
+			c.Parent = folder
+		end
+	end
+
+	local function rebuildSelected()
+		if not selectedJunction then
+			return
+		end
+		local data = JunctionInstance.Read(selectedJunction)
+		if not data then
+			return
+		end
+		local style = getStyle()
+		JunctionBuilder.TrimApproaches(data.Id, style, settings)
+		JunctionBuilder.Rebuild(data.Id, style, settings)
+		refreshHandles()
+		changeSignal:Fire()
+	end
 
 	local function loadSelection()
 		local junction: Model? = nil
@@ -1896,6 +2003,11 @@ local function createJunctionEditSession(): JunctionEditSession
 			while current do
 				if JunctionInstance.IsJunction(current) then
 					junction = current :: Model
+					break
+				end
+				-- Also treat our handles as selecting the junction.
+				if current.Name == HANDLES_FOLDER_NAME or (current.Parent and current.Parent.Name == HANDLES_FOLDER_NAME) then
+					junction = selectedJunction
 					break
 				end
 				current = current.Parent
@@ -1908,11 +2020,94 @@ local function createJunctionEditSession(): JunctionEditSession
 			return
 		end
 		selectedJunction = junction
+		refreshHandles()
 		changeSignal:Fire()
 	end
 
-	local connections: { RBXScriptConnection } = {}
+	local function hitOnCenterHandle(): boolean
+		local camera = workspace.CurrentCamera
+		if not camera or not handlesFolder then
+			return false
+		end
+		local mouse = UserInputService:GetMouseLocation()
+		local ray = camera:ViewportPointToRay(mouse.X, mouse.Y)
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Include
+		params.FilterDescendantsInstances = { handlesFolder }
+		local result = workspace:Raycast(ray.Origin, ray.Direction * 2000, params)
+		return result ~= nil and result.Instance.Name == CENTER_HANDLE_NAME
+	end
+
+	local function groundPointFromMouse(): Vector3?
+		local camera = workspace.CurrentCamera
+		if not camera then
+			return nil
+		end
+		local mouse = UserInputService:GetMouseLocation()
+		local ray = camera:ViewportPointToRay(mouse.X, mouse.Y)
+		if math.abs(ray.Direction.Y) &lt; 1e-6 then
+			return nil
+		end
+		local t = (dragPlaneY - ray.Origin.Y) / ray.Direction.Y
+		if t &lt; 0 then
+			return nil
+		end
+		local p = ray.Origin + ray.Direction * t
+		return Vector3.new(p.X, dragPlaneY, p.Z)
+	end
+
 	table.insert(connections, Selection.SelectionChanged:Connect(loadSelection))
+
+	table.insert(
+		connections,
+		UserInputService.InputBegan:Connect(function(input, gameProcessed)
+			if gameProcessed or not selectedJunction then
+				return
+			end
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				if hitOnCenterHandle() then
+					local data = JunctionInstance.Read(selectedJunction)
+					if data then
+						draggingCenter = true
+						dragPlaneY = data.Position.Y
+					end
+				end
+			end
+		end)
+	)
+
+	table.insert(
+		connections,
+		UserInputService.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 and draggingCenter then
+				draggingCenter = false
+				rebuildSelected()
+			end
+		end)
+	)
+
+	table.insert(
+		connections,
+		UserInputService.InputChanged:Connect(function(input)
+			if not draggingCenter or not selectedJunction then
+				return
+			end
+			if input.UserInputType ~= Enum.UserInputType.MouseMovement then
+				return
+			end
+			local pos = groundPointFromMouse()
+			if not pos then
+				return
+			end
+			JunctionInstance.SetPosition(selectedJunction, pos)
+			if handlesFolder then
+				local centerPart = handlesFolder:FindFirstChild(CENTER_HANDLE_NAME)
+				if centerPart and centerPart:IsA("BasePart") then
+					centerPart.CFrame = CFrame.new(pos + Vector3.new(0, 1.2, 0))
+				end
+			end
+		end)
+	)
 
 	local session = {} :: JunctionEditSession
 	session.ChangeSignal = changeSignal
@@ -1940,9 +2135,57 @@ local function createJunctionEditSession(): JunctionEditSession
 		return if data then data.Position else nil
 	end
 
-	-- Removes the junction itself and clears the reference on every road
-	-- that pointed to it (back to a free, unconnected end - same as before
-	-- they were ever joined) - doesn't touch the roads' own geometry.
+	function session.GetFilletRadiusM(): number
+		if not selectedJunction then
+			return 6
+		end
+		local data = JunctionInstance.Read(selectedJunction)
+		return if data and data.FilletRadiusM then data.FilletRadiusM else 6
+	end
+
+	function session.GetPadMarginStuds(): number
+		if not selectedJunction then
+			return 6
+		end
+		local data = JunctionInstance.Read(selectedJunction)
+		return if data and data.PadMarginStuds then data.PadMarginStuds else 6
+	end
+
+	function session.SetFilletRadiusM(value: number)
+		if not selectedJunction then
+			return
+		end
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Junction fillet radius")
+		JunctionInstance.SetFilletRadiusM(selectedJunction, math.clamp(value, 0.5, 40))
+		rebuildSelected()
+		if recording then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		end
+	end
+
+	function session.SetPadMarginStuds(value: number)
+		if not selectedJunction then
+			return
+		end
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Junction setback")
+		JunctionInstance.SetPadMarginStuds(selectedJunction, math.clamp(value, 1, 40))
+		rebuildSelected()
+		if recording then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		end
+	end
+
+	function session.RebuildSelected()
+		if not selectedJunction then
+			return
+		end
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Rebuild junction")
+		rebuildSelected()
+		if recording then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		end
+	end
+
 	function session.DeleteJunction()
 		if not selectedJunction then
 			return
@@ -1958,6 +2201,7 @@ local function createJunctionEditSession(): JunctionEditSession
 			local endId = if roadData and roadData.EndJunctionId ~= data.Id then roadData.EndJunctionId else nil
 			RoadInstance.StampJunctions(road, startId, endId)
 		end
+		clearHandles()
 		JunctionInstance.Delete(selectedJunction)
 		selectedJunction = nil
 		if recording then
@@ -1967,6 +2211,7 @@ local function createJunctionEditSession(): JunctionEditSession
 	end
 
 	function session.Destroy()
+		clearHandles()
 		for _, connection in connections do
 			connection:Disconnect()
 		end
@@ -1974,6 +2219,7 @@ local function createJunctionEditSession(): JunctionEditSession
 		changeSignal:DisconnectAll()
 	end
 
+	loadSelection()
 	return session
 end
 
@@ -1997,6 +2243,9 @@ local HttpService = game:GetService("HttpService")
 export type JunctionData = {
 	Id: string,
 	Position: Vector3,
+	-- Optional user overrides (node controller). nil = builder defaults.
+	FilletRadiusM: number?,
+	PadMarginStuds: number?,
 }
 
 local JunctionInstance = {}
@@ -2080,7 +2329,26 @@ function JunctionInstance.Read(model: Model): JunctionData?
 	if typeof(id) ~= "string" or typeof(position) ~= "Vector3" then
 		return nil
 	end
-	return { Id = id, Position = position }
+	local fillet = model:GetAttribute("RW_FilletRadiusM")
+	local margin = model:GetAttribute("RW_PadMarginStuds")
+	return {
+		Id = id,
+		Position = position,
+		FilletRadiusM = if typeof(fillet) == "number" then fillet else nil,
+		PadMarginStuds = if typeof(margin) == "number" then margin else nil,
+	}
+end
+
+function JunctionInstance.SetPosition(model: Model, position: Vector3)
+	model:SetAttribute("RW_Position", position)
+end
+
+function JunctionInstance.SetFilletRadiusM(model: Model, radiusM: number?)
+	model:SetAttribute("RW_FilletRadiusM", radiusM)
+end
+
+function JunctionInstance.SetPadMarginStuds(model: Model, marginStuds: number?)
+	model:SetAttribute("RW_PadMarginStuds", marginStuds)
 end
 
 function JunctionInstance.Delete(model: Model)
@@ -2484,7 +2752,7 @@ return function(
 	-- JunctionNodes (see JunctionEditSession.lua) - a road and a junction
 	-- are never selected by the same click, so the two sessions never need
 	-- to coordinate with each other.
-	local junctionEditSession = createJunctionEditSession()
+	local junctionEditSession = createJunctionEditSession(getStyle, settings)
 	local junctionEditSessionChangedCn = junctionEditSession.ChangeSignal:Connect(function()
 		updateUI()
 	end)
@@ -3079,6 +3347,11 @@ return function(
 		elseif junctionEditSession.GetSelectedJunction() then
 			bottomContent = React.createElement(JunctionPanel, {
 				ConnectedRoadCount = junctionEditSession.GetConnectedRoadCount(),
+				FilletRadiusM = junctionEditSession.GetFilletRadiusM(),
+				PadMarginStuds = junctionEditSession.GetPadMarginStuds(),
+				OnFilletRadiusChanged = junctionEditSession.SetFilletRadiusM,
+				OnPadMarginChanged = junctionEditSession.SetPadMarginStuds,
+				OnRebuild = junctionEditSession.RebuildSelected,
 				OnDelete = junctionEditSession.DeleteJunction,
 				OnMakeRoundabout = function(radiusStuds: number, laneCount: number, laneWidthM: number)
 					local junctionModel = junctionEditSession.GetSelectedJunction()
@@ -3106,7 +3379,7 @@ return function(
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
 				Position = UDim2.new(0, 12, 1, -40),
-				Size = UDim2.new(0, 280, 0, 360),
+				Size = UDim2.new(0, 300, 0, 440),
 			}
 		end
 
@@ -4214,7 +4487,91 @@ function JunctionBuilder.PadRadiusStuds(junctionId: string, settings: Settings.E
 	if maxHalfWidthStuds &lt;= 0 then
 		return nil
 	end
-	return maxHalfWidthStuds + PAD_MARGIN_STUDS
+	local margin = PAD_MARGIN_STUDS
+	local junctionModel = JunctionInstance.FindById(junctionId)
+	if junctionModel then
+		local data = JunctionInstance.Read(junctionModel)
+		if data and data.PadMarginStuds then
+			margin = math.clamp(data.PadMarginStuds, 1, 40)
+		end
+	end
+	return maxHalfWidthStuds + margin
+end
+
+-- Layout snapshot for the node controller (viewport handles / panel).
+export type JunctionLayout = {
+	Center: Vector3,
+	FilletRadiusM: number,
+	PadMarginStuds: number,
+	Mouths: { { Road: Model, Left: Vector3, Right: Vector3, Mid: Vector3 } },
+	Corners: { { Index: number, Mid: Vector3, SpanRad: number } },
+}
+
+function JunctionBuilder.GetLayout(
+	junctionId: string,
+	settings: Settings.EasyRoadSettings
+): JunctionLayout?
+	local junctionModel = JunctionInstance.FindById(junctionId)
+	if not junctionModel then
+		return nil
+	end
+	local junctionData = JunctionInstance.Read(junctionModel)
+	if not junctionData then
+		return nil
+	end
+	local center = junctionData.Position
+	local filletM = junctionData.FilletRadiusM or FILLET_RADIUS_M
+	local margin = junctionData.PadMarginStuds or PAD_MARGIN_STUDS
+	local mouths: { { Road: Model, Left: Vector3, Right: Vector3, Mid: Vector3 } } = {}
+	local corners: { { Index: number, Mid: Vector3, SpanRad: number } } = {}
+	local approaches: { { Angle: number, Cw: EdgePoint, Ccw: EdgePoint } } = {}
+	local function angleDelta(a: number, b: number): number
+		return (a - b + math.pi) % (2 * math.pi) - math.pi
+	end
+	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
+		local points = edgePointsForRoad(road, junctionId, settings)
+		if points and #points == 2 then
+			local mid = (points[1].Kerb + points[2].Kerb) / 2
+			table.insert(mouths, {
+				Road = road,
+				Left = points[1].Kerb,
+				Right = points[2].Kerb,
+				Mid = mid,
+			})
+			local mx, mz = mid.X - center.X, mid.Z - center.Z
+			if mx * mx + mz * mz &gt; 1e-6 then
+				local angle = math.atan2(mz, mx)
+				local d1 = angleDelta(math.atan2(points[1].Kerb.Z - center.Z, points[1].Kerb.X - center.X), angle)
+				local d2 = angleDelta(math.atan2(points[2].Kerb.Z - center.Z, points[2].Kerb.X - center.X), angle)
+				local cw = if d1 &lt;= d2 then points[1] else points[2]
+				local ccw = if d1 &lt;= d2 then points[2] else points[1]
+				table.insert(approaches, { Angle = angle, Cw = cw, Ccw = ccw })
+			end
+		end
+	end
+	table.sort(approaches, function(a, b)
+		return a.Angle &lt; b.Angle
+	end)
+	for i = 1, #approaches do
+		local nextI = if i &lt; #approaches then i + 1 else 1
+		local span = approaches[nextI].Angle - approaches[i].Angle
+		if span &lt; 0 then
+			span += 2 * math.pi
+		end
+		if span &lt;= MAX_CORNER_SPAN_RAD then
+			local a = approaches[i].Ccw
+			local b = approaches[nextI].Cw
+			local mid = (a.Kerb + b.Kerb) * 0.5
+			table.insert(corners, { Index = i, Mid = mid, SpanRad = span })
+		end
+	end
+	return {
+		Center = center,
+		FilletRadiusM = filletM,
+		PadMarginStuds = margin,
+		Mouths = mouths,
+		Corners = corners,
+	}
 end
 
 -- Trims every connected approach back to this junction's pad boundary -
@@ -4606,70 +4963,112 @@ function JunctionBuilder.Rebuild(
 		return a.Angle &lt; b.Angle
 	end)
 
-	if #edgePoints &gt;= 3 then
-		local hull = convexHull(edgePoints)
-		-- Fan from the hull's own centroid (still inside a convex polygon)
-		-- rather than hull[1], which can produce long thin triangles that
-		-- crease when corner bulges stack on top (live zigzag in pad).
-		local sum = Vector3.zero
-		for _, p in hull do
-			sum += p.Kerb
+	if #approaches &gt;= 2 then
+		-- User-tunable fillet (node controller); default FILLET_RADIUS_M.
+		local filletRadiusM = FILLET_RADIUS_M
+		if junctionData.FilletRadiusM then
+			filletRadiusM = math.clamp(junctionData.FilletRadiusM, 0.5, 40)
 		end
-		local apex = sum / #hull
-		local filletRadiusStuds = FILLET_RADIUS_M * settings.MetersToStuds
-		for i = 1, #hull do
-			local a = hull[i]
-			local b = hull[if i &lt; #hull then i + 1 else 1]
-			FillTriangle(apex, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
+		local filletRadiusStuds = filletRadiusM * settings.MetersToStuds
+
+		-- Continuous pad boundary: walk approaches in angle order, append
+		-- each corner's kerb polyline (or a straight mouth-to-mouth chord
+		-- for wide through-gaps). Fan-fill that closed polygon — not the
+		-- convex hull of raw kerb points, which ignored corner arcs and
+		-- produced creases when through-pair Hermites ran across the pad.
+		type BuiltCorner = {
+			Kerb: { Vector3 },
+			Outer: { Vector3 },
+			IsReal: boolean,
+		}
+		local builtCorners: { BuiltCorner } = {}
+		local padPoly: { Vector3 } = {}
+		local function appendUnique(point: Vector3)
+			if #padPoly &gt; 0 then
+				local last = padPoly[#padPoly]
+				if (last - point).Magnitude &lt; 0.05 then
+					return
+				end
+			end
+			table.insert(padPoly, point)
 		end
 
-		-- Corner treatments only between angular neighbours that form a
-		-- REAL corner (span ≤ MAX_CORNER_SPAN_RAD). Skip the wide gap of a
-		-- T through-pair (~180°) so we never pave a "corner" across it.
 		for i = 1, #approaches do
 			local nextI = if i &lt; #approaches then i + 1 else 1
 			local span = approaches[nextI].Angle - approaches[i].Angle
 			if span &lt; 0 then
 				span += 2 * math.pi
 			end
-			if span &gt; MAX_CORNER_SPAN_RAD then
-				continue
-			end
 			local a = approaches[i].Ccw
 			local b = approaches[nextI].Cw
 			if a.Road == b.Road then
+				appendUnique(a.Kerb)
 				continue
 			end
+			local isRealCorner = span &lt;= MAX_CORNER_SPAN_RAD and span &gt;= math.rad(20)
 			local crossesMouth = false
-			for _, mouth in mouths do
-				if
-					mouth.Road ~= a.Road
-					and mouth.Road ~= b.Road
-					and segmentsCross2D(a.Kerb, b.Kerb, mouth.L, mouth.R)
-				then
-					crossesMouth = true
-					break
-				end
-			end
-			if not crossesMouth then
-				local kerbBoundary, outerBoundary =
-					cornerBoundaries(a, b, junctionId, filletRadiusStuds, center)
-				-- Asphalt corner bulge only for a multi-point boundary that
-				-- actually bows past the chord (fillet/Hermite), fanned from
-				-- local a.Kerb. Straight 2-point chords are already in the hull.
-				if #kerbBoundary &gt; 2 then
-					for j = 1, #kerbBoundary - 1 do
-						FillTriangle(
-							a.Kerb,
-							kerbBoundary[j],
-							kerbBoundary[j + 1],
-							thickness,
-							DOWN,
-							makeAsphaltPart,
-							folder
-						)
+			if isRealCorner then
+				for _, mouth in mouths do
+					if
+						mouth.Road ~= a.Road
+						and mouth.Road ~= b.Road
+						and segmentsCross2D(a.Kerb, b.Kerb, mouth.L, mouth.R)
+					then
+						crossesMouth = true
+						break
 					end
 				end
+			end
+			if isRealCorner and not crossesMouth then
+				local kerbBoundary, outerBoundary =
+					cornerBoundaries(a, b, junctionId, filletRadiusStuds, center)
+				table.insert(builtCorners, { Kerb = kerbBoundary, Outer = outerBoundary, IsReal = true })
+				for _, p in kerbBoundary do
+					appendUnique(p)
+				end
+			else
+				-- Through-gap or invalid: straight chord between mouth edges.
+				table.insert(builtCorners, {
+					Kerb = { a.Kerb, b.Kerb },
+					Outer = { a.Outer, b.Outer },
+					IsReal = false,
+				})
+				appendUnique(a.Kerb)
+				appendUnique(b.Kerb)
+			end
+		end
+
+		if #padPoly &gt;= 3 then
+			local sum = Vector3.zero
+			for _, p in padPoly do
+				sum += p
+			end
+			local apex = sum / #padPoly
+			for i = 1, #padPoly do
+				local p0 = padPoly[i]
+				local p1 = padPoly[if i &lt; #padPoly then i + 1 else 1]
+				FillTriangle(apex, p0, p1, thickness, DOWN, makeAsphaltPart, folder)
+			end
+		elseif #edgePoints &gt;= 3 then
+			-- Fallback hull if polygon collapsed.
+			local hull = convexHull(edgePoints)
+			local sum = Vector3.zero
+			for _, p in hull do
+				sum += p.Kerb
+			end
+			local apex = sum / #hull
+			for i = 1, #hull do
+				local a = hull[i]
+				local b = hull[if i &lt; #hull then i + 1 else 1]
+				FillTriangle(apex, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
+			end
+		end
+
+		-- Sidewalk bands only on real corners (not through-chords).
+		for _, corner in builtCorners do
+			if corner.IsReal and #corner.Kerb &gt;= 2 then
+				local kerbBoundary = corner.Kerb
+				local outerBoundary = corner.Outer
 				for j = 1, #kerbBoundary - 1 do
 					FillTriangle(
 						raise(outerBoundary[j]),
@@ -11964,11 +12363,9 @@ Icons.ForKind = {
 
 return Icons
 </ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX35"><Properties><string name="Name">JunctionPanel</string><ProtectedString name="Source">--!strict
--- Small HUD shown when a placed JunctionNode is selected (Studio's ordinary
--- Selection, same convention as RoadInspector for a selected road): how
--- many roads meet here, and a way to remove the junction itself (which
--- just unlinks the roads - see JunctionEditSession.DeleteJunction - not
--- delete them).
+-- HUD when a JunctionNode is selected: connection info, node controller
+-- (fillet / setback), rebuild, roundabout convert, delete.
+-- Viewport handles (centre, mouth bars) live in JunctionEditSession.
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -11986,6 +12383,11 @@ local DEFAULT_LANE_WIDTH_M = 3.65
 
 local function JunctionPanel(props: {
 	ConnectedRoadCount: number,
+	FilletRadiusM: number,
+	PadMarginStuds: number,
+	OnFilletRadiusChanged: (value: number) -&gt; (),
+	OnPadMarginChanged: (value: number) -&gt; (),
+	OnRebuild: () -&gt; (),
 	OnDelete: () -&gt; (),
 	OnMakeRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number) -&gt; (),
 })
@@ -12005,21 +12407,58 @@ local function JunctionPanel(props: {
 		Dim = true,
 		LayoutOrder = 2,
 	})
+	children.HandleHint = e(Components.Label, {
+		Text = "Yellow ball = move node. Red bars = approach mouths. Cyan balls = curb corners.",
+		Dim = true,
+		LayoutOrder = 3,
+	})
+
+	children.NodeSection = e(Components.Section, { Text = "Node controller", LayoutOrder = 4 })
+	children.FilletRow = e(Components.Row, { LayoutOrder = 5 }, {
+		Label = e(Components.Label, { Text = "Corner radius", LayoutOrder = 1, Width = 90 }),
+		Field = e(Components.NumberField, {
+			Value = props.FilletRadiusM,
+			Min = 0.5,
+			Max = 40,
+			OnChanged = props.OnFilletRadiusChanged,
+			LayoutOrder = 2,
+		}),
+		Unit = e(Components.Label, { Text = "m", Dim = true, LayoutOrder = 3 }),
+	})
+	children.SetbackRow = e(Components.Row, { LayoutOrder = 6 }, {
+		Label = e(Components.Label, { Text = "Setback", LayoutOrder = 1, Width = 90 }),
+		Field = e(Components.NumberField, {
+			Value = props.PadMarginStuds,
+			Min = 1,
+			Max = 40,
+			OnChanged = props.OnPadMarginChanged,
+			LayoutOrder = 2,
+		}),
+		Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 3 }),
+	})
+	children.Rebuild = e(Components.Button, {
+		Text = "Rebuild junction",
+		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
+		LayoutOrder = 7,
+		OnClick = props.OnRebuild,
+	})
+
 	children.Delete = e(Components.Button, {
 		Text = "Delete Junction",
 		Danger = true,
 		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-		LayoutOrder = 3,
+		LayoutOrder = 8,
 		OnClick = props.OnDelete,
 	})
 	children.Hint = e(Components.Label, {
-		Text = "Unlinks the roads meeting here - doesn't delete them.",
+		Text = "Unlinks the roads meeting here — doesn't delete them.",
 		Dim = true,
-		LayoutOrder = 4,
+		LayoutOrder = 9,
 	})
 
 	if props.ConnectedRoadCount &gt;= 3 then
-		children.RoundaboutRadius = e(Components.Row, { LayoutOrder = 5 }, {
+		children.RoundaboutSection = e(Components.Section, { Text = "Roundabout", LayoutOrder = 10 })
+		children.RoundaboutRadius = e(Components.Row, { LayoutOrder = 11 }, {
 			Label = e(Components.Label, { Text = "Radius", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.NumberField, {
 				Value = radiusStuds,
@@ -12029,7 +12468,7 @@ local function JunctionPanel(props: {
 			}),
 			Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 3 }),
 		})
-		children.RoundaboutLaneCount = e(Components.Row, { LayoutOrder = 6 }, {
+		children.RoundaboutLaneCount = e(Components.Row, { LayoutOrder = 12 }, {
 			Label = e(Components.Label, { Text = "Lanes", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.NumberField, {
 				Value = laneCount,
@@ -12041,7 +12480,7 @@ local function JunctionPanel(props: {
 				LayoutOrder = 2,
 			}),
 		})
-		children.RoundaboutLaneWidth = e(Components.Row, { LayoutOrder = 7 }, {
+		children.RoundaboutLaneWidth = e(Components.Row, { LayoutOrder = 13 }, {
 			Label = e(Components.Label, { Text = "Lane width", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.NumberField, {
 				Value = laneWidthM,
@@ -12054,17 +12493,15 @@ local function JunctionPanel(props: {
 		children.MakeRoundabout = e(Components.Button, {
 			Text = "Make Roundabout",
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 8,
+			LayoutOrder = 14,
 			OnClick = function()
 				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM)
 			end,
 		})
 		children.RoundaboutHint = e(Components.Label, {
-			Text = "Trims the connected roads to the ring's edge and replaces this "
-				.. "junction with it - no per-lane merge geometry yet, so expect a "
-				.. "rough seam at each approach.",
+			Text = "Replaces this junction with a polar ring and trims approaches to the outer edge.",
 			Dim = true,
-			LayoutOrder = 9,
+			LayoutOrder = 15,
 		})
 	end
 

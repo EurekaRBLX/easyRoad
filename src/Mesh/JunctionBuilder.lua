@@ -393,7 +393,91 @@ function JunctionBuilder.PadRadiusStuds(junctionId: string, settings: Settings.E
 	if maxHalfWidthStuds <= 0 then
 		return nil
 	end
-	return maxHalfWidthStuds + PAD_MARGIN_STUDS
+	local margin = PAD_MARGIN_STUDS
+	local junctionModel = JunctionInstance.FindById(junctionId)
+	if junctionModel then
+		local data = JunctionInstance.Read(junctionModel)
+		if data and data.PadMarginStuds then
+			margin = math.clamp(data.PadMarginStuds, 1, 40)
+		end
+	end
+	return maxHalfWidthStuds + margin
+end
+
+-- Layout snapshot for the node controller (viewport handles / panel).
+export type JunctionLayout = {
+	Center: Vector3,
+	FilletRadiusM: number,
+	PadMarginStuds: number,
+	Mouths: { { Road: Model, Left: Vector3, Right: Vector3, Mid: Vector3 } },
+	Corners: { { Index: number, Mid: Vector3, SpanRad: number } },
+}
+
+function JunctionBuilder.GetLayout(
+	junctionId: string,
+	settings: Settings.EasyRoadSettings
+): JunctionLayout?
+	local junctionModel = JunctionInstance.FindById(junctionId)
+	if not junctionModel then
+		return nil
+	end
+	local junctionData = JunctionInstance.Read(junctionModel)
+	if not junctionData then
+		return nil
+	end
+	local center = junctionData.Position
+	local filletM = junctionData.FilletRadiusM or FILLET_RADIUS_M
+	local margin = junctionData.PadMarginStuds or PAD_MARGIN_STUDS
+	local mouths: { { Road: Model, Left: Vector3, Right: Vector3, Mid: Vector3 } } = {}
+	local corners: { { Index: number, Mid: Vector3, SpanRad: number } } = {}
+	local approaches: { { Angle: number, Cw: EdgePoint, Ccw: EdgePoint } } = {}
+	local function angleDelta(a: number, b: number): number
+		return (a - b + math.pi) % (2 * math.pi) - math.pi
+	end
+	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
+		local points = edgePointsForRoad(road, junctionId, settings)
+		if points and #points == 2 then
+			local mid = (points[1].Kerb + points[2].Kerb) / 2
+			table.insert(mouths, {
+				Road = road,
+				Left = points[1].Kerb,
+				Right = points[2].Kerb,
+				Mid = mid,
+			})
+			local mx, mz = mid.X - center.X, mid.Z - center.Z
+			if mx * mx + mz * mz > 1e-6 then
+				local angle = math.atan2(mz, mx)
+				local d1 = angleDelta(math.atan2(points[1].Kerb.Z - center.Z, points[1].Kerb.X - center.X), angle)
+				local d2 = angleDelta(math.atan2(points[2].Kerb.Z - center.Z, points[2].Kerb.X - center.X), angle)
+				local cw = if d1 <= d2 then points[1] else points[2]
+				local ccw = if d1 <= d2 then points[2] else points[1]
+				table.insert(approaches, { Angle = angle, Cw = cw, Ccw = ccw })
+			end
+		end
+	end
+	table.sort(approaches, function(a, b)
+		return a.Angle < b.Angle
+	end)
+	for i = 1, #approaches do
+		local nextI = if i < #approaches then i + 1 else 1
+		local span = approaches[nextI].Angle - approaches[i].Angle
+		if span < 0 then
+			span += 2 * math.pi
+		end
+		if span <= MAX_CORNER_SPAN_RAD then
+			local a = approaches[i].Ccw
+			local b = approaches[nextI].Cw
+			local mid = (a.Kerb + b.Kerb) * 0.5
+			table.insert(corners, { Index = i, Mid = mid, SpanRad = span })
+		end
+	end
+	return {
+		Center = center,
+		FilletRadiusM = filletM,
+		PadMarginStuds = margin,
+		Mouths = mouths,
+		Corners = corners,
+	}
 end
 
 -- Trims every connected approach back to this junction's pad boundary -
@@ -785,70 +869,112 @@ function JunctionBuilder.Rebuild(
 		return a.Angle < b.Angle
 	end)
 
-	if #edgePoints >= 3 then
-		local hull = convexHull(edgePoints)
-		-- Fan from the hull's own centroid (still inside a convex polygon)
-		-- rather than hull[1], which can produce long thin triangles that
-		-- crease when corner bulges stack on top (live zigzag in pad).
-		local sum = Vector3.zero
-		for _, p in hull do
-			sum += p.Kerb
+	if #approaches >= 2 then
+		-- User-tunable fillet (node controller); default FILLET_RADIUS_M.
+		local filletRadiusM = FILLET_RADIUS_M
+		if junctionData.FilletRadiusM then
+			filletRadiusM = math.clamp(junctionData.FilletRadiusM, 0.5, 40)
 		end
-		local apex = sum / #hull
-		local filletRadiusStuds = FILLET_RADIUS_M * settings.MetersToStuds
-		for i = 1, #hull do
-			local a = hull[i]
-			local b = hull[if i < #hull then i + 1 else 1]
-			FillTriangle(apex, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
+		local filletRadiusStuds = filletRadiusM * settings.MetersToStuds
+
+		-- Continuous pad boundary: walk approaches in angle order, append
+		-- each corner's kerb polyline (or a straight mouth-to-mouth chord
+		-- for wide through-gaps). Fan-fill that closed polygon — not the
+		-- convex hull of raw kerb points, which ignored corner arcs and
+		-- produced creases when through-pair Hermites ran across the pad.
+		type BuiltCorner = {
+			Kerb: { Vector3 },
+			Outer: { Vector3 },
+			IsReal: boolean,
+		}
+		local builtCorners: { BuiltCorner } = {}
+		local padPoly: { Vector3 } = {}
+		local function appendUnique(point: Vector3)
+			if #padPoly > 0 then
+				local last = padPoly[#padPoly]
+				if (last - point).Magnitude < 0.05 then
+					return
+				end
+			end
+			table.insert(padPoly, point)
 		end
 
-		-- Corner treatments only between angular neighbours that form a
-		-- REAL corner (span ≤ MAX_CORNER_SPAN_RAD). Skip the wide gap of a
-		-- T through-pair (~180°) so we never pave a "corner" across it.
 		for i = 1, #approaches do
 			local nextI = if i < #approaches then i + 1 else 1
 			local span = approaches[nextI].Angle - approaches[i].Angle
 			if span < 0 then
 				span += 2 * math.pi
 			end
-			if span > MAX_CORNER_SPAN_RAD then
-				continue
-			end
 			local a = approaches[i].Ccw
 			local b = approaches[nextI].Cw
 			if a.Road == b.Road then
+				appendUnique(a.Kerb)
 				continue
 			end
+			local isRealCorner = span <= MAX_CORNER_SPAN_RAD and span >= math.rad(20)
 			local crossesMouth = false
-			for _, mouth in mouths do
-				if
-					mouth.Road ~= a.Road
-					and mouth.Road ~= b.Road
-					and segmentsCross2D(a.Kerb, b.Kerb, mouth.L, mouth.R)
-				then
-					crossesMouth = true
-					break
-				end
-			end
-			if not crossesMouth then
-				local kerbBoundary, outerBoundary =
-					cornerBoundaries(a, b, junctionId, filletRadiusStuds, center)
-				-- Asphalt corner bulge only for a multi-point boundary that
-				-- actually bows past the chord (fillet/Hermite), fanned from
-				-- local a.Kerb. Straight 2-point chords are already in the hull.
-				if #kerbBoundary > 2 then
-					for j = 1, #kerbBoundary - 1 do
-						FillTriangle(
-							a.Kerb,
-							kerbBoundary[j],
-							kerbBoundary[j + 1],
-							thickness,
-							DOWN,
-							makeAsphaltPart,
-							folder
-						)
+			if isRealCorner then
+				for _, mouth in mouths do
+					if
+						mouth.Road ~= a.Road
+						and mouth.Road ~= b.Road
+						and segmentsCross2D(a.Kerb, b.Kerb, mouth.L, mouth.R)
+					then
+						crossesMouth = true
+						break
 					end
 				end
+			end
+			if isRealCorner and not crossesMouth then
+				local kerbBoundary, outerBoundary =
+					cornerBoundaries(a, b, junctionId, filletRadiusStuds, center)
+				table.insert(builtCorners, { Kerb = kerbBoundary, Outer = outerBoundary, IsReal = true })
+				for _, p in kerbBoundary do
+					appendUnique(p)
+				end
+			else
+				-- Through-gap or invalid: straight chord between mouth edges.
+				table.insert(builtCorners, {
+					Kerb = { a.Kerb, b.Kerb },
+					Outer = { a.Outer, b.Outer },
+					IsReal = false,
+				})
+				appendUnique(a.Kerb)
+				appendUnique(b.Kerb)
+			end
+		end
+
+		if #padPoly >= 3 then
+			local sum = Vector3.zero
+			for _, p in padPoly do
+				sum += p
+			end
+			local apex = sum / #padPoly
+			for i = 1, #padPoly do
+				local p0 = padPoly[i]
+				local p1 = padPoly[if i < #padPoly then i + 1 else 1]
+				FillTriangle(apex, p0, p1, thickness, DOWN, makeAsphaltPart, folder)
+			end
+		elseif #edgePoints >= 3 then
+			-- Fallback hull if polygon collapsed.
+			local hull = convexHull(edgePoints)
+			local sum = Vector3.zero
+			for _, p in hull do
+				sum += p.Kerb
+			end
+			local apex = sum / #hull
+			for i = 1, #hull do
+				local a = hull[i]
+				local b = hull[if i < #hull then i + 1 else 1]
+				FillTriangle(apex, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
+			end
+		end
+
+		-- Sidewalk bands only on real corners (not through-chords).
+		for _, corner in builtCorners do
+			if corner.IsReal and #corner.Kerb >= 2 then
+				local kerbBoundary = corner.Kerb
+				local outerBoundary = corner.Outer
 				for j = 1, #kerbBoundary - 1 do
 					FillTriangle(
 						raise(outerBoundary[j]),

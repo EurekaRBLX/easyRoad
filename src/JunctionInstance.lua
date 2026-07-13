@@ -17,6 +17,9 @@ local HttpService = game:GetService("HttpService")
 export type JunctionData = {
 	Id: string,
 	Position: Vector3,
+	-- Optional user overrides (node controller). nil = builder defaults.
+	FilletRadiusM: number?,
+	PadMarginStuds: number?,
 }
 
 local JunctionInstance = {}
@@ -100,7 +103,26 @@ function JunctionInstance.Read(model: Model): JunctionData?
 	if typeof(id) ~= "string" or typeof(position) ~= "Vector3" then
 		return nil
 	end
-	return { Id = id, Position = position }
+	local fillet = model:GetAttribute("RW_FilletRadiusM")
+	local margin = model:GetAttribute("RW_PadMarginStuds")
+	return {
+		Id = id,
+		Position = position,
+		FilletRadiusM = if typeof(fillet) == "number" then fillet else nil,
+		PadMarginStuds = if typeof(margin) == "number" then margin else nil,
+	}
+end
+
+function JunctionInstance.SetPosition(model: Model, position: Vector3)
+	model:SetAttribute("RW_Position", position)
+end
+
+function JunctionInstance.SetFilletRadiusM(model: Model, radiusM: number?)
+	model:SetAttribute("RW_FilletRadiusM", radiusM)
+end
+
+function JunctionInstance.SetPadMarginStuds(model: Model, marginStuds: number?)
+	model:SetAttribute("RW_PadMarginStuds", marginStuds)
 end
 
 function JunctionInstance.Delete(model: Model)

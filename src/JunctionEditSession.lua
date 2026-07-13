@@ -1,36 +1,143 @@
 --!strict
--- Selection-based junction editing: select an already-placed JunctionNode
--- with Studio's ordinary Selection (clicking its pad in the viewport or the
--- Explorer) to see how many roads meet there and delete it if wanted.
---
--- Mirrors RoadEditSession's own Selection-service-driven pattern
--- (loadSelection there), but deliberately its own small module rather than
--- folded into RoadEditSession, which is already a large, road-specific
--- state machine - a junction and a road are never selected by the same
--- click (they live under separate top-level folders), so there's no
--- interaction between the two to coordinate.
+-- Selection-based junction editing + CivilArc-style node controller:
+-- select a JunctionNode (pad click / Explorer) to show mouth markers and a
+-- centre handle. Drag the centre to re-seat the node; panel sliders adjust
+-- fillet radius and pad setback, then rebuild.
 
 local Selection = game:GetService("Selection")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local UserInputService = game:GetService("UserInputService")
 
 local Packages = script.Parent.Parent.Packages
 local Signal = require(Packages.Signal)
 
 local JunctionInstance = require("./JunctionInstance")
+local JunctionBuilder = require("./Mesh/JunctionBuilder")
 local RoadInstance = require("./RoadInstance")
+local RegionStyles = require("./RegionStyles")
+local Settings = require("./Settings")
 
 export type JunctionEditSession = {
 	ChangeSignal: Signal.Signal<>,
 	GetSelectedJunction: () -> Model?,
 	GetConnectedRoadCount: () -> number,
 	GetSelectedJunctionPosition: () -> Vector3?,
+	GetFilletRadiusM: () -> number,
+	GetPadMarginStuds: () -> number,
+	SetFilletRadiusM: (value: number) -> (),
+	SetPadMarginStuds: (value: number) -> (),
+	RebuildSelected: () -> (),
 	DeleteJunction: () -> (),
 	Destroy: () -> (),
 }
 
-local function createJunctionEditSession(): JunctionEditSession
+local HANDLES_FOLDER_NAME = "EasyRoadJunctionHandles"
+local CENTER_HANDLE_NAME = "CenterHandle"
+local MOUTH_PREFIX = "Mouth_"
+
+local function createJunctionEditSession(
+	getStyle: () -> RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): JunctionEditSession
 	local changeSignal = Signal.new()
 	local selectedJunction: Model? = nil
+	local handlesFolder: Folder? = nil
+	local draggingCenter = false
+	local dragPlaneY = 0
+	local connections: { RBXScriptConnection } = {}
+
+	local function clearHandles()
+		if handlesFolder then
+			handlesFolder:Destroy()
+			handlesFolder = nil
+		end
+		draggingCenter = false
+	end
+
+	local function makeHandlePart(name: string, size: Vector3, color: Color3, shape: Enum.PartType?): Part
+		local part = Instance.new("Part")
+		part.Name = name
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanTouch = false
+		part.CanQuery = true
+		part.CastShadow = false
+		part.Material = Enum.Material.Neon
+		part.Color = color
+		part.Transparency = 0.25
+		part.Size = size
+		if shape then
+			part.Shape = shape
+		end
+		part.TopSurface = Enum.SurfaceType.Smooth
+		part.BottomSurface = Enum.SurfaceType.Smooth
+		return part
+	end
+
+	local function refreshHandles()
+		clearHandles()
+		if not selectedJunction then
+			return
+		end
+		local data = JunctionInstance.Read(selectedJunction)
+		if not data then
+			return
+		end
+		local layout = JunctionBuilder.GetLayout(data.Id, settings)
+		if not layout then
+			return
+		end
+
+		local folder = Instance.new("Folder")
+		folder.Name = HANDLES_FOLDER_NAME
+		folder.Parent = workspace
+		handlesFolder = folder
+
+		-- Centre node (draggable) — CivilArc-style primary control.
+		local center = makeHandlePart(CENTER_HANDLE_NAME, Vector3.new(2.2, 2.2, 2.2), Color3.fromRGB(255, 200, 40), Enum.PartType.Ball)
+		center.CFrame = CFrame.new(layout.Center + Vector3.new(0, 1.2, 0))
+		center.Parent = folder
+
+		-- Mouth markers: red bar across each approach cut (CivilArc corner line).
+		for i, mouth in layout.Mouths do
+			local left, right = mouth.Left, mouth.Right
+			local mid = (left + right) * 0.5
+			local len = (right - left).Magnitude
+			if len > 0.1 then
+				local bar = makeHandlePart(MOUTH_PREFIX .. i, Vector3.new(0.25, 0.25, len), Color3.fromRGB(255, 70, 70))
+				bar.CFrame = CFrame.lookAt(mid + Vector3.new(0, 0.4, 0), right + Vector3.new(0, 0.4, 0))
+				bar.Parent = folder
+				local dotL = makeHandlePart(MOUTH_PREFIX .. i .. "_L", Vector3.new(0.7, 0.7, 0.7), Color3.fromRGB(255, 255, 255), Enum.PartType.Ball)
+				dotL.CFrame = CFrame.new(left + Vector3.new(0, 0.5, 0))
+				dotL.Parent = folder
+				local dotR = makeHandlePart(MOUTH_PREFIX .. i .. "_R", Vector3.new(0.7, 0.7, 0.7), Color3.fromRGB(255, 255, 255), Enum.PartType.Ball)
+				dotR.CFrame = CFrame.new(right + Vector3.new(0, 0.5, 0))
+				dotR.Parent = folder
+			end
+		end
+
+		-- Corner mid markers (cyan) — show which spans get curb returns.
+		for i, corner in layout.Corners do
+			local c = makeHandlePart("Corner_" .. i, Vector3.new(1.1, 1.1, 1.1), Color3.fromRGB(80, 200, 255), Enum.PartType.Ball)
+			c.CFrame = CFrame.new(corner.Mid + Vector3.new(0, 0.9, 0))
+			c.Parent = folder
+		end
+	end
+
+	local function rebuildSelected()
+		if not selectedJunction then
+			return
+		end
+		local data = JunctionInstance.Read(selectedJunction)
+		if not data then
+			return
+		end
+		local style = getStyle()
+		JunctionBuilder.TrimApproaches(data.Id, style, settings)
+		JunctionBuilder.Rebuild(data.Id, style, settings)
+		refreshHandles()
+		changeSignal:Fire()
+	end
 
 	local function loadSelection()
 		local junction: Model? = nil
@@ -39,6 +146,11 @@ local function createJunctionEditSession(): JunctionEditSession
 			while current do
 				if JunctionInstance.IsJunction(current) then
 					junction = current :: Model
+					break
+				end
+				-- Also treat our handles as selecting the junction.
+				if current.Name == HANDLES_FOLDER_NAME or (current.Parent and current.Parent.Name == HANDLES_FOLDER_NAME) then
+					junction = selectedJunction
 					break
 				end
 				current = current.Parent
@@ -51,11 +163,94 @@ local function createJunctionEditSession(): JunctionEditSession
 			return
 		end
 		selectedJunction = junction
+		refreshHandles()
 		changeSignal:Fire()
 	end
 
-	local connections: { RBXScriptConnection } = {}
+	local function hitOnCenterHandle(): boolean
+		local camera = workspace.CurrentCamera
+		if not camera or not handlesFolder then
+			return false
+		end
+		local mouse = UserInputService:GetMouseLocation()
+		local ray = camera:ViewportPointToRay(mouse.X, mouse.Y)
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Include
+		params.FilterDescendantsInstances = { handlesFolder }
+		local result = workspace:Raycast(ray.Origin, ray.Direction * 2000, params)
+		return result ~= nil and result.Instance.Name == CENTER_HANDLE_NAME
+	end
+
+	local function groundPointFromMouse(): Vector3?
+		local camera = workspace.CurrentCamera
+		if not camera then
+			return nil
+		end
+		local mouse = UserInputService:GetMouseLocation()
+		local ray = camera:ViewportPointToRay(mouse.X, mouse.Y)
+		if math.abs(ray.Direction.Y) < 1e-6 then
+			return nil
+		end
+		local t = (dragPlaneY - ray.Origin.Y) / ray.Direction.Y
+		if t < 0 then
+			return nil
+		end
+		local p = ray.Origin + ray.Direction * t
+		return Vector3.new(p.X, dragPlaneY, p.Z)
+	end
+
 	table.insert(connections, Selection.SelectionChanged:Connect(loadSelection))
+
+	table.insert(
+		connections,
+		UserInputService.InputBegan:Connect(function(input, gameProcessed)
+			if gameProcessed or not selectedJunction then
+				return
+			end
+			if input.UserInputType == Enum.UserInputType.MouseButton1 then
+				if hitOnCenterHandle() then
+					local data = JunctionInstance.Read(selectedJunction)
+					if data then
+						draggingCenter = true
+						dragPlaneY = data.Position.Y
+					end
+				end
+			end
+		end)
+	)
+
+	table.insert(
+		connections,
+		UserInputService.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 and draggingCenter then
+				draggingCenter = false
+				rebuildSelected()
+			end
+		end)
+	)
+
+	table.insert(
+		connections,
+		UserInputService.InputChanged:Connect(function(input)
+			if not draggingCenter or not selectedJunction then
+				return
+			end
+			if input.UserInputType ~= Enum.UserInputType.MouseMovement then
+				return
+			end
+			local pos = groundPointFromMouse()
+			if not pos then
+				return
+			end
+			JunctionInstance.SetPosition(selectedJunction, pos)
+			if handlesFolder then
+				local centerPart = handlesFolder:FindFirstChild(CENTER_HANDLE_NAME)
+				if centerPart and centerPart:IsA("BasePart") then
+					centerPart.CFrame = CFrame.new(pos + Vector3.new(0, 1.2, 0))
+				end
+			end
+		end)
+	)
 
 	local session = {} :: JunctionEditSession
 	session.ChangeSignal = changeSignal
@@ -83,9 +278,57 @@ local function createJunctionEditSession(): JunctionEditSession
 		return if data then data.Position else nil
 	end
 
-	-- Removes the junction itself and clears the reference on every road
-	-- that pointed to it (back to a free, unconnected end - same as before
-	-- they were ever joined) - doesn't touch the roads' own geometry.
+	function session.GetFilletRadiusM(): number
+		if not selectedJunction then
+			return 6
+		end
+		local data = JunctionInstance.Read(selectedJunction)
+		return if data and data.FilletRadiusM then data.FilletRadiusM else 6
+	end
+
+	function session.GetPadMarginStuds(): number
+		if not selectedJunction then
+			return 6
+		end
+		local data = JunctionInstance.Read(selectedJunction)
+		return if data and data.PadMarginStuds then data.PadMarginStuds else 6
+	end
+
+	function session.SetFilletRadiusM(value: number)
+		if not selectedJunction then
+			return
+		end
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Junction fillet radius")
+		JunctionInstance.SetFilletRadiusM(selectedJunction, math.clamp(value, 0.5, 40))
+		rebuildSelected()
+		if recording then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		end
+	end
+
+	function session.SetPadMarginStuds(value: number)
+		if not selectedJunction then
+			return
+		end
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Junction setback")
+		JunctionInstance.SetPadMarginStuds(selectedJunction, math.clamp(value, 1, 40))
+		rebuildSelected()
+		if recording then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		end
+	end
+
+	function session.RebuildSelected()
+		if not selectedJunction then
+			return
+		end
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Rebuild junction")
+		rebuildSelected()
+		if recording then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		end
+	end
+
 	function session.DeleteJunction()
 		if not selectedJunction then
 			return
@@ -101,6 +344,7 @@ local function createJunctionEditSession(): JunctionEditSession
 			local endId = if roadData and roadData.EndJunctionId ~= data.Id then roadData.EndJunctionId else nil
 			RoadInstance.StampJunctions(road, startId, endId)
 		end
+		clearHandles()
 		JunctionInstance.Delete(selectedJunction)
 		selectedJunction = nil
 		if recording then
@@ -110,6 +354,7 @@ local function createJunctionEditSession(): JunctionEditSession
 	end
 
 	function session.Destroy()
+		clearHandles()
 		for _, connection in connections do
 			connection:Disconnect()
 		end
@@ -117,6 +362,7 @@ local function createJunctionEditSession(): JunctionEditSession
 		changeSignal:DisconnectAll()
 	end
 
+	loadSelection()
 	return session
 end
 
