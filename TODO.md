@@ -261,19 +261,11 @@ any road drawn to cross it afterwards won't auto-connect.
   yield/give-way markings, nothing modelling how many ring lanes a given
   approach's lanes should feed into. This is the single biggest remaining
   gap between v1 and a real roundabout.
-- **Setback-shaped feed-in/out lanes (requested live: "the setback can
-  alter the neighbouring roads for feed in and out lanes").** The
-  junction-style setback (pull spokes back a few extra studs from the
-  ring) would give the entry/exit flares room to read as real
-  deceleration/acceleration lanes - but doing it requires new MOUTH-FILL
-  geometry first: today the spoke's asphalt reaches the ring's outer
-  pavement edge, and the flares only bridge the two corner wedges of each
-  mouth. Trim the spokes further back without filling the span between
-  the flares and a strip of bare ground opens across the middle of every
-  feeder mouth. The fill is a ruled band between the spoke's cut
-  cross-section segment and the ring's outer kerb arc across the mouth's
-  station interval - buildable with the existing FillTriangle machinery,
-  just not attempted in the same round as three other geometry fixes.
+- **Setback-shaped feed-in/out lanes - SHIPPED (see SHIPPED.md).** Spokes
+  now pull back `SETBACK_STUDS` past the ring outer edge; mouth asphalt is
+  a ruled band to the ring kerb arc; flares + raised sidewalk bridges fill
+  the corners. Still no per-lane merge tapering / yield markings (item
+  above).
 - **Ring pavement/sidewalk notch at the trim point - fixed.** The spoke
   trim cuts the whole cross-section at a flat perpendicular station, but
   the ring boundary is curved, so a sidewalk's laterally-offset outer edge

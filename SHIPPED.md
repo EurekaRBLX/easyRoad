@@ -4,6 +4,36 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout setback feed-in/out + mouth fill (live broken-ring reports)
+
+Driven by live screenshots of a 4-leg roundabout whose feeders stopped as
+flat cuts against a discontinuous ring sidewalk (bare notches, rectangular
+asphalt blocks at mouths, no real entry/exit curve).
+
+- **Setback trim.** `CreateAtJunction` now trims every spoke to
+  `outerRadius + SETBACK_STUDS` (10 studs past the ring's outer pavement
+  edge), not flush to the ring. Gives entry/exit geometry real length so
+  flares read as feed-in/out lanes rather than tiny corner wedges.
+- **Mouth asphalt fill (the missing piece).** A ruled `FillTriangle` band
+  from the spoke's setback cut (LeftKerb -> RightKerb) to the ring's outer
+  kerb arc across the mouth station interval (`sampleRingStations` takes
+  the short arc, including mouths that straddle the ring's station-0 seam).
+  Without this, setback alone would open bare ground across the middle of
+  every feeder mouth - which is why it was deliberately deferred before.
+- **Larger flares + raised sidewalk bridges.** `FLARE_RADIUS_M` 8 -> 10;
+  each mouth side still gets a deck-level `Fillet.Compute` asphalt flare
+  (spoke kerb <-> ring kerb), and now also a raised sidewalk band outside
+  that flare (spoke Outer -> ring outer-sidewalk point, sampled along the
+  same arc) so the feeder's pavement continues into the ring's sidewalk
+  gap instead of ending as a hard cut. Degenerate/tangential feeders fall
+  back to a plain raised quad.
+- **Constants.** `RING_TRIM_MARGIN_STUDS` 2 -> 0.5 (setback is the real
+  clearance now; margin is only floating-point safety).
+
+Still not done: per-lane merge tapering into the circulating lanes, yield
+/ give-way markings, live ring preview, wiring the ring into the junction
+data model so a new road can snap onto it.
+
 ## Ring banking off, mouth-angle sort, Hermite corner fallback (three live screenshot reports)
 
 - **Roundabout "humps and lumps" - root cause found in the actual math,
