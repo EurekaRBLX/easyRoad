@@ -294,19 +294,40 @@ local function findPadCrossing(
 	return (lo + hi) / 2
 end
 
--- Cuts `road` back so its junction-side end sits at the pad boundary
--- instead of running through to the junction centre. The rebuilt, shorter
--- geometry is TRANSPLANTED into the existing Model (children and attributes
--- swapped in place) rather than destroy-and-replace: callers up the stack
--- (createRoadSession's commitRoad) still hold this Model reference for the
--- road's other-end connection, Studio's selection stays valid, and main.lua's
--- road-removal listener doesn't fire mid-connect. Unlike RoundaboutBuilder's
--- spoke trim, the trimmed end KEEPS its junction link, since the junction
--- still exists and still needs to know its approaches. Leaves the road
--- untouched if it has an active transition/bay (RoadSplit's own guard),
--- its end is already at the boundary, or trimming would leave a sliver.
--- Any MarkingStretches/KerbStretches are dropped by the rebuild (their
--- station ranges wouldn't survive the cut) - same limitation RoadSplit has.
+-- Untrimmed source curve for a road (preserved across setback changes so
+-- TrimApproaches can shorten OR lengthen when pad margin changes).
+local function readSourceSegment(road: Model): CurveSegment.Segment?
+	local kind = road:GetAttribute("RW_SourceKind")
+	local p0 = road:GetAttribute("RW_SourceP0")
+	local p1 = road:GetAttribute("RW_SourceP1")
+	if typeof(kind) ~= "string" or typeof(p0) ~= "Vector3" or typeof(p1) ~= "Vector3" then
+		return nil
+	end
+	local p2 = road:GetAttribute("RW_SourceP2")
+	local p3 = road:GetAttribute("RW_SourceP3")
+	if kind == "Line" then
+		return CurveSegment.Line(p0, p1)
+	elseif kind == "Quadratic" and typeof(p2) == "Vector3" then
+		return CurveSegment.Quadratic(p0, p1, p2)
+	elseif kind == "Cubic" and typeof(p2) == "Vector3" and typeof(p3) == "Vector3" then
+		return CurveSegment.Cubic(p0, p1, p2, p3)
+	end
+	return nil
+end
+
+local function writeSourceSegment(road: Model, segment: CurveSegment.Segment)
+	road:SetAttribute("RW_SourceKind", segment.Kind)
+	road:SetAttribute("RW_SourceP0", segment.P0)
+	road:SetAttribute("RW_SourceP1", segment.P1)
+	road:SetAttribute("RW_SourceP2", segment.P2)
+	road:SetAttribute("RW_SourceP3", segment.P3)
+end
+
+-- Cuts `road` back so its junction-side end sits at the pad boundary.
+-- Always trims from a preserved SOURCE segment (first connect / first trim
+-- captures it) so increasing OR decreasing setback updates mouth position —
+-- previously trim only shortened and discarded length, so Rebuild after a
+-- smaller setback left approaches stuck short of the pad.
 local function trimApproach(
 	road: Model,
 	junctionId: string,
@@ -319,7 +340,7 @@ local function trimApproach(
 		return
 	end
 	local data = RoadInstance.Read(road)
-	if not data then
+	if not data or #data.Curve.Segments ~= 1 then
 		return
 	end
 	local atStart = data.StartJunctionId == junctionId
@@ -327,24 +348,25 @@ local function trimApproach(
 	if not atStart and not atEnd then
 		return
 	end
-	local curve = data.Curve
-	local fromStation = if atStart then 0 else curve.Length
-	local towardStation = if atStart then curve.Length else 0
-	if distanceXZ(curve:PosAt(fromStation), center) >= radiusStuds - TRIM_EPSILON_STUDS then
-		return -- already at/outside the boundary: nothing to trim
+	local source = readSourceSegment(road)
+	if not source then
+		source = data.Curve.Segments[1]
 	end
-	local crossing = findPadCrossing(curve, fromStation, towardStation, center, radiusStuds)
+	local sourceCurve = PolyCurve.new({ source })
+	-- Junction end on the SOURCE curve: still 0 or Length of the full road.
+	local fromStation = if atStart then 0 else sourceCurve.Length
+	local towardStation = if atStart then sourceCurve.Length else 0
+	local crossing = findPadCrossing(sourceCurve, fromStation, towardStation, center, radiusStuds)
 	if not crossing then
 		return
 	end
-	local remaining = if atStart then curve.Length - crossing else crossing
+	local remaining = if atStart then sourceCurve.Length - crossing else crossing
 	if remaining < MIN_APPROACH_REMAINDER_STUDS then
 		return
 	end
-	local segment = curve.Segments[1]
 	local outerSegment = if atStart
-		then CurveSegment.Sub(segment, crossing, curve.Length)
-		else CurveSegment.Sub(segment, 0, crossing)
+		then CurveSegment.Sub(source, crossing, source.Length)
+		else CurveSegment.Sub(source, 0, crossing)
 	local rebuilt = RoadBuilder.Build({
 		Curve = PolyCurve.new({ outerSegment }),
 		ProfileStart = data.ProfileStart,
@@ -352,6 +374,9 @@ local function trimApproach(
 		Settings = settings,
 		Preview = false,
 	})
+	local farJunctionId = if atStart then data.EndJunctionId else data.StartJunctionId
+	local startJ = if atStart then junctionId else farJunctionId
+	local endJ = if atStart then farJunctionId else junctionId
 	road:ClearAllChildren()
 	for name in road:GetAttributes() do
 		road:SetAttribute(name, nil)
@@ -363,11 +388,8 @@ local function trimApproach(
 		child.Parent = road
 	end
 	rebuilt:Destroy()
-	if atStart then
-		RoadInstance.StampJunctions(road, junctionId, data.EndJunctionId)
-	else
-		RoadInstance.StampJunctions(road, data.StartJunctionId, junctionId)
-	end
+	writeSourceSegment(road, source)
+	RoadInstance.StampJunctions(road, startJ, endJ)
 end
 
 -- The radius (studs, from the junction centre) of this junction's pad -
@@ -464,11 +486,12 @@ function JunctionBuilder.GetLayout(
 		if span < 0 then
 			span += 2 * math.pi
 		end
-		if span <= MAX_CORNER_SPAN_RAD then
+		local turnAngle = math.min(span, 2 * math.pi - span)
+		if turnAngle <= MAX_CORNER_SPAN_RAD and turnAngle >= math.rad(20) then
 			local a = approaches[i].Ccw
 			local b = approaches[nextI].Cw
 			local mid = (a.Kerb + b.Kerb) * 0.5
-			table.insert(corners, { Index = i, Mid = mid, SpanRad = span })
+			table.insert(corners, { Index = i, Mid = mid, SpanRad = turnAngle })
 		end
 	end
 	return {
@@ -682,6 +705,9 @@ end
 
 -- The paired KERB (asphalt-edge) and OUTER (sidewalk-outer-edge) boundaries
 -- for one corner pair. `junctionCenter` steers sidewalk offset outward.
+-- `exterior` is true when this span is the long way around (e.g. outer side
+-- of an L) — Fillet.Compute needs directions toward the corner VERTEX, which
+-- for exterior is along +outward (away from centre), not -outward.
 --
 -- Three shapes, in order of preference:
 -- 1. FILLET: circular kerb arc + parallel-offset sidewalk
@@ -692,7 +718,8 @@ local function cornerBoundaries(
 	b: EdgePoint,
 	junctionId: string,
 	radiusStuds: number,
-	junctionCenter: Vector3
+	junctionCenter: Vector3,
+	exterior: boolean
 ): ({ Vector3 }, { Vector3 })
 	local outwardA = outwardTangentAt(a.Road, junctionId)
 	local outwardB = outwardTangentAt(b.Road, junctionId)
@@ -701,12 +728,16 @@ local function cornerBoundaries(
 	end
 	local widthA = distanceXZ(a.Outer, a.Kerb)
 	local widthB = distanceXZ(b.Outer, b.Kerb)
-	-- Cap fillet so it cannot reach past the mid-chord on wide gaps.
 	local chord = distanceXZ(a.Kerb, b.Kerb)
 	local cappedRadius = math.min(radiusStuds, chord * 0.45)
-	local p1, filletCenter, p2, effectiveRadius = Fillet.Compute(a.Kerb, -outwardA, b.Kerb, -outwardB, cappedRadius)
+	-- Toward the corner vertex where the two edge lines meet.
+	local dirA = if exterior then outwardA else -outwardA
+	local dirB = if exterior then outwardB else -outwardB
+	local p1, filletCenter, p2, effectiveRadius = Fillet.Compute(a.Kerb, dirA, b.Kerb, dirB, cappedRadius)
 	if not p1 or not filletCenter or not p2 or not effectiveRadius then
-		local kerb = hermiteBoundary(a.Kerb, -outwardA, b.Kerb, outwardB, HERMITE_SAMPLES)
+		local hermiteDirA = if exterior then outwardA else -outwardA
+		local hermiteDirB = if exterior then -outwardB else outwardB
+		local kerb = hermiteBoundary(a.Kerb, hermiteDirA, b.Kerb, hermiteDirB, HERMITE_SAMPLES)
 		local outer = offsetKerbPolyline(kerb, widthA, widthB, junctionCenter, a.Outer, b.Outer)
 		return kerb, outer
 	end
@@ -905,13 +936,20 @@ function JunctionBuilder.Rebuild(
 			if span < 0 then
 				span += 2 * math.pi
 			end
+			-- Turning angle of this gap (short way). An L-corner has spans
+			-- 90° and 270° — both are 90° turns (inner + outer). Using raw
+			-- span alone treated the 270° exterior as a "through-gap" and
+			-- drew a sharp miter (live). Through-pairs on a T still sit at
+			-- ~180° short-way and stay skipped.
+			local turnAngle = math.min(span, 2 * math.pi - span)
+			local exterior = span > math.pi
 			local a = approaches[i].Ccw
 			local b = approaches[nextI].Cw
 			if a.Road == b.Road then
 				appendUnique(a.Kerb)
 				continue
 			end
-			local isRealCorner = span <= MAX_CORNER_SPAN_RAD and span >= math.rad(20)
+			local isRealCorner = turnAngle <= MAX_CORNER_SPAN_RAD and turnAngle >= math.rad(20)
 			local crossesMouth = false
 			if isRealCorner then
 				for _, mouth in mouths do
@@ -927,13 +965,13 @@ function JunctionBuilder.Rebuild(
 			end
 			if isRealCorner and not crossesMouth then
 				local kerbBoundary, outerBoundary =
-					cornerBoundaries(a, b, junctionId, filletRadiusStuds, center)
+					cornerBoundaries(a, b, junctionId, filletRadiusStuds, center, exterior)
 				table.insert(builtCorners, { Kerb = kerbBoundary, Outer = outerBoundary, IsReal = true })
 				for _, p in kerbBoundary do
 					appendUnique(p)
 				end
 			else
-				-- Through-gap or invalid: straight chord between mouth edges.
+				-- Through-gap (~180°) or invalid: straight chord only.
 				table.insert(builtCorners, {
 					Kerb = { a.Kerb, b.Kerb },
 					Outer = { a.Outer, b.Outer },
