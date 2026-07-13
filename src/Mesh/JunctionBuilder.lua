@@ -157,6 +157,23 @@ local function roadwayEdgeOffsetsM(profile: RoadProfile.RoadProfile): (number, n
 	return offsets[firstRoadway].Left, offsets[lastRoadway].Right
 end
 
+-- Leftmost and rightmost offsets (meters) of any Median components, or nil
+-- if the profile has no median. Used to terminate medians at the pad mouth.
+local function medianOffsetsM(profile: RoadProfile.RoadProfile): (number?, number?)
+	local offsets = RoadProfile.ComponentOffsetsM(profile)
+	local left: number? = nil
+	local right: number? = nil
+	for i, component in profile.Components do
+		if component.Kind == "Median" then
+			if not left then
+				left = offsets[i].Left
+			end
+			right = offsets[i].Right
+		end
+	end
+	return left, right
+end
+
 type EdgePoint = {
 	Road: Model,
 	Kerb: Vector3,
@@ -529,35 +546,59 @@ end
 
 local HERMITE_SAMPLES = 5
 
+-- True parallel offset of a kerb polyline toward `towardHint` (sidewalk
+-- side). Width interpolates from widthStart at the first point to widthEnd
+-- at the last. Endpoints are pinned to pinStart/pinEnd (the roads' real
+-- outer points) so the band meets existing sidewalks seamlessly. Uses
+-- segment-normal averaging rather than fillet-circle inset alone, which
+-- mis-tracks on curved approaches and produced live sidewalk indents.
+local function offsetKerbPolyline(
+	kerb: { Vector3 },
+	widthStart: number,
+	widthEnd: number,
+	towardHint: Vector3,
+	pinStart: Vector3,
+	pinEnd: Vector3
+): { Vector3 }
+	local n = #kerb
+	if n < 2 then
+		return { pinStart, pinEnd }
+	end
+	local outer: { Vector3 } = table.create(n)
+	for i = 1, n do
+		local t = if n > 1 then (i - 1) / (n - 1) else 0
+		local w = widthStart + (widthEnd - widthStart) * t
+		local prev = kerb[math.max(1, i - 1)]
+		local nextp = kerb[math.min(n, i + 1)]
+		local tx, tz = nextp.X - prev.X, nextp.Z - prev.Z
+		local len = math.sqrt(tx * tx + tz * tz)
+		local p = kerb[i]
+		if len < 1e-6 or w < 1e-4 then
+			outer[i] = p
+		else
+			local nx1, nz1 = -tz / len, tx / len
+			local nx2, nz2 = tz / len, -tx / len
+			local hx, hz = towardHint.X - p.X, towardHint.Z - p.Z
+			local use1 = nx1 * hx + nz1 * hz >= nx2 * hx + nz2 * hz
+			local nx = if use1 then nx1 else nx2
+			local nz = if use1 then nz1 else nz2
+			outer[i] = Vector3.new(p.X + nx * w, p.Y, p.Z + nz * w)
+		end
+	end
+	outer[1] = pinStart
+	outer[n] = pinEnd
+	return outer
+end
+
 -- The paired KERB (asphalt-edge) and OUTER (sidewalk-outer-edge) boundaries
 -- for one corner pair, returned as two equal-length point lists so the
--- sidewalk can be filled as a proper BAND between them (quad per span)
--- rather than a fan from a single point - fanning the sidewalk from one
--- `a.Outer` across a curved kerb arc skewed the triangles across the
--- asphalt and produced hook/sliver artifacts at the corner.
+-- sidewalk can be filled as a proper BAND between them (quad per span).
 --
 -- Three shapes, in order of preference:
--- 1. FILLET (real corners): the kerb list follows the true circular arc;
---    each interior arc point's outer partner is the same point on a
---    smaller, concentric arc (see `insetTowardCenter`) inset by the
---    sidewalk width, interpolated from road A's width at the a end to
---    road B's at the b end.
--- 2. HERMITE (fillet degenerate - through pairs, near-parallel or
---    diverging kerb lines): a cubic tangent-matched to both roads' own
---    edge lines, leaving a.Kerb travelling INTO the pad along A's line
---    and arriving at b.Kerb travelling OUT along B's line. This replaced
---    the old straight-chamfer fallback for these cases after a live
---    report: at a T/Y junction the pair of nearly-opposite "through"
---    approaches got a straight chord across the whole pad, which cut
---    visibly INSIDE the curved sidewalk line the two roads actually
---    follow - a sharp notch/indent at each mouth. The Hermite continues
---    both roads' own edge directions, so there is no kink at either end
---    for ANY approach geometry, and it is bounded near the chord by
---    construction (see hermiteBoundary).
--- 3. STRAIGHT chamfer: only when a road's tangent can't be read at all.
---
--- In every shape the endpoints are pinned to the roads' own real points
--- so the band meets each connected road's sidewalk seamlessly.
+-- 1. FILLET: circular kerb arc; sidewalk = parallel offset of that polyline
+--    (true offset, endpoints pinned to a.Outer/b.Outer).
+-- 2. HERMITE: cubic kerb + parallel offset sidewalk (same pin rule).
+-- 3. STRAIGHT chamfer when tangents unreadable.
 local function cornerBoundaries(
 	a: EdgePoint,
 	b: EdgePoint,
@@ -569,31 +610,27 @@ local function cornerBoundaries(
 	if not outwardA or not outwardB then
 		return { a.Kerb, b.Kerb }, { a.Outer, b.Outer }
 	end
-	local p1, center, p2, effectiveRadius = Fillet.Compute(a.Kerb, -outwardA, b.Kerb, -outwardB, radiusStuds)
-	if not p1 or not center or not p2 or not effectiveRadius then
-		-- Travel into the pad continuing A's own line, out along B's.
-		local kerb = hermiteBoundary(a.Kerb, -outwardA, b.Kerb, outwardB, HERMITE_SAMPLES)
-		local outer = hermiteBoundary(a.Outer, -outwardA, b.Outer, outwardB, HERMITE_SAMPLES)
-		return kerb, outer
-	end
 	local widthA = distanceXZ(a.Outer, a.Kerb)
 	local widthB = distanceXZ(b.Outer, b.Kerb)
-	-- Sampled arc points, plus p1 (t=0) and p2 (t=1), each tagged with the
-	-- t used to interpolate its sidewalk width. Fillet.SampleArc uses
-	-- t = i/(samples+1), so the interior points sit strictly between.
+	local p1, filletCenter, p2, effectiveRadius = Fillet.Compute(a.Kerb, -outwardA, b.Kerb, -outwardB, radiusStuds)
+	if not p1 or not filletCenter or not p2 or not effectiveRadius then
+		local kerb = hermiteBoundary(a.Kerb, -outwardA, b.Kerb, outwardB, HERMITE_SAMPLES)
+		-- Offset toward the average of the real outer endpoints (sidewalk side).
+		local hint = (a.Outer + b.Outer) * 0.5
+		local outer = offsetKerbPolyline(kerb, widthA, widthB, hint, a.Outer, b.Outer)
+		return kerb, outer
+	end
 	local kerb: { Vector3 } = { a.Kerb, p1 }
-	local outer: { Vector3 } = { a.Outer, insetTowardCenter(p1, center, effectiveRadius, widthA) }
-	local arc = Fillet.SampleArc(center, effectiveRadius, p1, p2, FILLET_ARC_SAMPLES)
-	for i, point in arc do
-		local t = i / (FILLET_ARC_SAMPLES + 1)
-		local width = widthA + (widthB - widthA) * t
+	local arc = Fillet.SampleArc(filletCenter, effectiveRadius, p1, p2, FILLET_ARC_SAMPLES)
+	for _, point in arc do
 		table.insert(kerb, point)
-		table.insert(outer, insetTowardCenter(point, center, effectiveRadius, width))
 	end
 	table.insert(kerb, p2)
-	table.insert(outer, insetTowardCenter(p2, center, effectiveRadius, widthB))
 	table.insert(kerb, b.Kerb)
-	table.insert(outer, b.Outer)
+	-- Sidewalk is on the fillet-centre side of the kerb arc (toward the
+	-- rounded corner's interior relative to the vertex - same side as
+	-- insetTowardCenter). Hint = fillet centre.
+	local outer = offsetKerbPolyline(kerb, widthA, widthB, filletCenter, a.Outer, b.Outer)
 	return kerb, outer
 end
 
@@ -684,7 +721,14 @@ function JunctionBuilder.Rebuild(
 	-- points - so a road whose kerb points fall hull-interior (narrower
 	-- road between two wide ones) still gets its own corners instead of
 	-- being paved over by its neighbours' corner spanning across it.
-	type Approach = { Road: Model, Angle: number, Cw: EdgePoint, Ccw: EdgePoint }
+	type Approach = {
+		Road: Model,
+		Angle: number,
+		Cw: EdgePoint,
+		Ccw: EdgePoint,
+		MedianL: Vector3?,
+		MedianR: Vector3?,
+	}
 	local approaches: { Approach } = {}
 	-- Signed shortest angular difference a - b, wrapped to (-pi, pi].
 	local function angleDelta(a: number, b: number): number
@@ -698,30 +742,38 @@ function JunctionBuilder.Rebuild(
 			end
 			if #points == 2 then
 				table.insert(mouths, { Road = road, L = points[1].Kerb, R = points[2].Kerb })
-				-- The approach's angle is where its MOUTH physically sits
-				-- around the junction centre (midpoint of its two kerb
-				-- points), NOT the road's outward curve tangent - a strongly
-				-- curved approach's tangent at the trimmed end can point
-				-- somewhere very different from where the mouth actually is,
-				-- mis-sorting the angular neighbour order and pairing
-				-- corners between non-adjacent approaches (reported live as
-				-- 3+-road junctions with curved approaches losing their
-				-- corners entirely). The mouth position can't lie about
-				-- where the mouth is.
 				local mid = (points[1].Kerb + points[2].Kerb) / 2
 				local mx, mz = mid.X - center.X, mid.Z - center.Z
 				if mx * mx + mz * mz > 1e-6 then
 					local angle = math.atan2(mz, mx)
-					-- Which side each edge point sits on, resolved purely
-					-- computationally (the signed angular offset of the
-					-- point around the junction centre, relative to the
-					-- mouth's own angle) - no left/right or driving-side
-					-- sign conventions to get wrong.
 					local d1 = angleDelta(math.atan2(points[1].Kerb.Z - center.Z, points[1].Kerb.X - center.X), angle)
 					local d2 = angleDelta(math.atan2(points[2].Kerb.Z - center.Z, points[2].Kerb.X - center.X), angle)
 					local cw = if d1 <= d2 then points[1] else points[2]
 					local ccw = if d1 <= d2 then points[2] else points[1]
-					table.insert(approaches, { Road = road, Angle = angle, Cw = cw, Ccw = ccw })
+					local medianL: Vector3? = nil
+					local medianR: Vector3? = nil
+					local prof = profileAtJunctionEnd(road, junctionId)
+					local data = RoadInstance.Read(road)
+					if prof and data then
+						local mLeft, mRight = medianOffsetsM(prof)
+						if mLeft and mRight then
+							local station = if data.StartJunctionId == junctionId then 0 else data.Curve.Length
+							local frame = data.Curve:FrameAt(station)
+							local function wp(offsetM: number): Vector3
+								return (frame * CFrame.new(offsetM * settings.MetersToStuds, 0, 0)).Position
+							end
+							medianL = wp(mLeft)
+							medianR = wp(mRight)
+						end
+					end
+					table.insert(approaches, {
+						Road = road,
+						Angle = angle,
+						Cw = cw,
+						Ccw = ccw,
+						MedianL = medianL,
+						MedianR = medianR,
+					})
 				end
 			end
 		end
@@ -830,6 +882,36 @@ function JunctionBuilder.Rebuild(
 						sidewalkDepth,
 						DOWN,
 						makeSidewalkPart,
+						folder
+					)
+				end
+			end
+		end
+
+		-- Median noses: each approach that carries a Median ends with a
+		-- blunt slab at the trim without this - fill a short triangle into
+		-- the pad along the inward radial so the median terminates cleanly
+		-- instead of a raw rectangular cut (live report on dual-carriageway
+		-- T-junctions).
+		local function makeMedianPart(): Part
+			return makePart(Enum.Material.Grass, style.MedianColor)
+		end
+		local medianDepth = thickness + curbHeight
+		for _, approach in approaches do
+			if approach.MedianL and approach.MedianR then
+				local mid = (approach.MedianL + approach.MedianR) * 0.5
+				local radial = Vector3.new(center.X - mid.X, 0, center.Z - mid.Z)
+				if radial.Magnitude > 1e-3 then
+					local noseLen = math.clamp(distanceXZ(approach.MedianL, approach.MedianR) * 0.6, 1.5, 6)
+					local tip = mid + radial.Unit * noseLen
+					tip = Vector3.new(tip.X, mid.Y, tip.Z)
+					FillTriangle(
+						raise(approach.MedianL),
+						raise(approach.MedianR),
+						raise(tip),
+						medianDepth,
+						DOWN,
+						makeMedianPart,
 						folder
 					)
 				end

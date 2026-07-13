@@ -4,6 +4,28 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Polar roundabout rebuild + junction median/offset sidewalk
+
+**Phase A — Roundabout as polar annulus (replaces failed feed stack).**
+`CreateAtJunction` no longer uses large `SETBACK_STUDS`, Hermite feed
+cubics as ring-owned roads, or mouth exclusions from feed outer ClosestS
+(that pipeline produced knotted partial rings in Studio). New model:
+
+- Trim spokes to outer pavement + small margin only (Pythagorean half-width).
+- Continuous full-circle drive lanes; outer sidewalk off only in angular
+  entry sectors derived from mouth midpoint + half-width (`asin`).
+- Mouth joins = `Fillet.Compute` flares only (decoration on continuous ring).
+- Island, `stampRingMeta`, `FindNear`, `ConnectRoad` kept (ConnectRoad maxDist
+  no longer depends on SETBACK_STUDS).
+
+**Phase B — Junction approach-node richness.**
+
+- Sidewalk corner band uses true parallel offset of the kerb polyline
+  (`offsetKerbPolyline`) with endpoints pinned to real outers — not only
+  fillet-circle inset, which mis-tracked on curved approaches (indent).
+- Approaches with a Median get a raised grass **nose** into the pad so
+  dual-carriageway T-junctions no longer end as a blunt median slab.
+
 ## Priority plan: roundabout feed curves, snap, raycast, curve faceting
 
 - **P0 raycast:** `raycastGround` now excludes `workspace.Roundabouts` (was
