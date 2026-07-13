@@ -261,11 +261,11 @@ any road drawn to cross it afterwards won't auto-connect.
   yield/give-way markings, nothing modelling how many ring lanes a given
   approach's lanes should feed into. This is the single biggest remaining
   gap between v1 and a real roundabout.
-- **Setback-shaped feed-in/out lanes - SHIPPED (see SHIPPED.md).** Spokes
-  now pull back `SETBACK_STUDS` past the ring outer edge; mouth asphalt is
-  a ruled band to the ring kerb arc; flares + raised sidewalk bridges fill
-  the corners. Still no per-lane merge tapering / yield markings (item
-  above).
+- **Setback/Hermite ring feeds - REPLACED by polar annulus (see SHIPPED.md).**
+  Large setback + Hermite feeds-as-second-roads were reverted after live
+  knotted-ring failures. Ring is continuous drive + angular sidewalk gaps +
+  mouth fillets. True deflected spoke centreline feed-in remains future work
+  (edit the spoke curve; do not add ring-owned feed roads again).
 - **Ring pavement/sidewalk notch at the trim point - fixed.** The spoke
   trim cuts the whole cross-section at a flat perpendicular station, but
   the ring boundary is curved, so a sidewalk's laterally-offset outer edge
