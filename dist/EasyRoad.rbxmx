@@ -1655,48 +1655,48 @@ return fillTriangle
 --    boundary is skipped, so re-running when another road joins later only
 --    trims further if the pad radius actually grew.
 --
--- 2. Rebuild: the pad itself - the CONVEX HULL of every connected road's
---    KERB points (the roadway/non-roadway boundary at each trimmed end),
---    fan-triangulated from one of its own hull vertices as the asphalt
---    surface. A convex polygon can ALWAYS be fanned from any of its own
---    vertices without self-intersection - a property, not a heuristic,
---    adopted after several rounds of per-pair corner constructions
---    (Bézier arcs, chamfers, angle-sorted point walks) each producing
---    broken geometry on some junction shape. The strip between each
---    cross-road hull edge and the roads' OUTER points (sidewalk outer
---    edge) is filled as the pedestrian corner (sidewalk material).
+-- 2. Rebuild: the pad's BASE asphalt - the CONVEX HULL of every connected
+--    road's KERB points (the roadway/non-roadway boundary at each trimmed
+--    end), fan-triangulated from one of its own hull vertices. A convex
+--    polygon can ALWAYS be fanned from any of its own vertices without
+--    self-intersection - a property, not a heuristic, adopted after
+--    several rounds of per-pair corner constructions (Bézier arcs,
+--    chamfers, angle-sorted point walks) each producing broken geometry on
+--    some junction shape. The hull is deliberately kept as the
+--    unconditional base fill even now that corners are driven by the
+--    per-approach node model below - it's the guarantee that no corner
+--    logic failure can ever leave the pad itself torn or holed.
 --
 -- Skips itself entirely for a plain two-road pass-through (matching
 -- profiles, roughly opposite outward directions) - a chained straight or
 -- gently-curving continuation needs neither trimming nor a pad.
 --
--- 3. Rounded corners: each cross-road hull edge is upgraded from a straight
---    chamfer to a real curb-return fillet where it safely can be - see
---    `Fillet.Compute` (Geometry/Fillet.lua) for the construction and, importantly, why it can only
---    ever make one corner MORE conservative (fall back to the straight
---    hull edge already proven safe), never introduce a new way to break
---    the whole pad. A fixed radius (`FILLET_RADIUS_M`) tangent to both
---    roads' own kerb lines, not a Bézier control point search - the
---    earlier "intersect the two tangent lines for a control point"
---    construction (still used here to find the underlying corner VERTEX)
---    is exactly what kept breaking when used unbounded; here it's one
---    input to a fillet whose reach is capped by construction, not by a
---    threshold discovered after something broke.
---    The asphalt is built in two layers: the base pad's every triangle
---    still comes from the plain straight hull fanned from the single global
---    apex (exactly as before rounding existed), plus a strictly ADDITIVE
---    corner bulge fanned from each edge's own LOCAL a.Kerb across the arc.
---    A fillet arc bulges outward from the straight a.Kerb-b.Kerb chord
---    toward the corner, which on a sharp corner can reach past the global
---    apex's own straight-line view of that edge - fanning that bulge from
---    apex (an earlier version did) is what tore the mesh into shards at a
---    real 4-way. Fanning locally means a bad fillet at worst overlaps the
---    already-correct base pad (invisible - same material, same height),
---    never tears it. The SIDEWALK (see `cornerBoundaries`) is a separate
---    BAND between the kerb boundary and an outward-offset outer boundary,
---    filled a quad per span - NOT a fan from a single a.Outer across the
---    curved kerb arc, which skewed the sidewalk triangles across the
---    asphalt into hook/sliver artifacts (reported live).
+-- 3. Corners: PER-APPROACH NODE model (suggested by the user - "break an
+--    intersection down to different nodes, the cross section itself, and
+--    join them all"). Each connected road contributes one node: its
+--    cross-section at the trimmed end (left/right kerb + outer points)
+--    plus the angle it leaves the junction at. Nodes are sorted by that
+--    angle and corner treatments are built between ANGULAR NEIGHBOURS -
+--    each adjacent pair gets a curb-return fillet (`Fillet.Compute`,
+--    Geometry/Fillet.lua - fixed radius `FILLET_RADIUS_M`, tangent to both
+--    roads' kerb lines, straight-chamfer fallback on any degenerate case)
+--    between the first road's counter-clockwise-side point and the second
+--    road's clockwise-side point, both sides resolved computationally from
+--    signed angles around the centre (no left/right or driving-side
+--    conventions to get wrong). Corner-pairing by approach rather than by
+--    adjacent hull points means a road whose kerb points fall
+--    hull-interior (a narrow road between two wide ones) still gets real
+--    corners with both neighbours instead of being paved across - the
+--    live-reported "sidewalk band walling off an approach" class of bug is
+--    structurally impossible between angular neighbours (a mouth-crossing
+--    guard is kept anyway for pathological near-parallel approach sets).
+--    The corner's asphalt bulge is fanned from the pair's own LOCAL kerb
+--    point (never the global apex - fanning arcs from a distant apex is
+--    what tore the mesh on a real 4-way), and its SIDEWALK is a BAND
+--    between the kerb boundary and an outward-offset outer boundary,
+--    filled a quad per span (never a fan from a single outer point, which
+--    skewed triangles across the asphalt). Every failure mode in this
+--    layer degrades to less decoration on top of an intact base pad.
 --
 -- Still missing (TODO.md): stop lines/crosswalks/lane guidance through the
 -- pad, and approach trimming for roads with a transition or bay
@@ -2266,6 +2266,21 @@ function JunctionBuilder.Rebuild(
 	-- Used below to stop a corner treatment between two OTHER roads from
 	-- being drawn straight across it (see the crossesMouth check).
 	local mouths: { { Road: Model, L: Vector3, R: Vector3 } } = {}
+	-- Per-approach NODE (see the header's point 3): each connected road's
+	-- cross-section at its trimmed end, as an explicit record - which way
+	-- it leaves the junction (Angle, from its outward tangent) and which of
+	-- its two edge points sits on its clockwise vs counter-clockwise side
+	-- as seen from the junction centre. Corner treatments are built between
+	-- ANGULAR NEIGHBOURS from this list, not between adjacent convex-hull
+	-- points - so a road whose kerb points fall hull-interior (narrower
+	-- road between two wide ones) still gets its own corners instead of
+	-- being paved over by its neighbours' corner spanning across it.
+	type Approach = { Road: Model, Angle: number, Cw: EdgePoint, Ccw: EdgePoint }
+	local approaches: { Approach } = {}
+	-- Signed shortest angular difference a - b, wrapped to (-pi, pi].
+	local function angleDelta(a: number, b: number): number
+		return (a - b + math.pi) % (2 * math.pi) - math.pi
+	end
 	for _, road in roads do
 		local points = edgePointsForRoad(road, junctionId, settings)
 		if points then
@@ -2274,9 +2289,26 @@ function JunctionBuilder.Rebuild(
 			end
 			if #points == 2 then
 				table.insert(mouths, { Road = road, L = points[1].Kerb, R = points[2].Kerb })
+				local outward = outwardTangentAt(road, junctionId)
+				if outward then
+					local angle = math.atan2(outward.Z, outward.X)
+					-- Which side each edge point sits on, resolved purely
+					-- computationally (the signed angular offset of the
+					-- point around the junction centre, relative to the
+					-- road's own outward direction) - no left/right or
+					-- driving-side sign conventions to get wrong.
+					local d1 = angleDelta(math.atan2(points[1].Kerb.Z - center.Z, points[1].Kerb.X - center.X), angle)
+					local d2 = angleDelta(math.atan2(points[2].Kerb.Z - center.Z, points[2].Kerb.X - center.X), angle)
+					local cw = if d1 &lt;= d2 then points[1] else points[2]
+					local ccw = if d1 &lt;= d2 then points[2] else points[1]
+					table.insert(approaches, { Road = road, Angle = angle, Cw = cw, Ccw = ccw })
+				end
 			end
 		end
 	end
+	table.sort(approaches, function(a: Approach, b: Approach): boolean
+		return a.Angle &lt; b.Angle
+	end)
 
 	if #edgePoints &gt;= 3 then
 		local hull = convexHull(edgePoints)
@@ -2288,53 +2320,55 @@ function JunctionBuilder.Rebuild(
 		-- jagged geometry reported live through several earlier rounds.
 		local apex = hull[1].Kerb
 		local filletRadiusStuds = FILLET_RADIUS_M * settings.MetersToStuds
-		-- Two layers, built separately on purpose (see the header comment's
-		-- point 3): a BASE asphalt pad that's exactly the plain convex-hull
-		-- fan from earlier rounds - unconditional, every hull edge, always
-		-- fanned from the single global `apex` - so the proven-safe shape
-		-- never depends on whether a fillet succeeds. Rounding is then a
-		-- strictly ADDITIVE asphalt bulge, fanned from each edge's own LOCAL
-		-- `a.Kerb` (not the global apex): a fillet arc bulges OUTWARD from
-		-- the straight a.Kerb-b.Kerb chord toward the corner, and fanning
-		-- that from the distant global apex is what tore the mesh on a sharp
-		-- 4-way. The SIDEWALK is a separate concern: it's a proper BAND
-		-- between the kerb boundary and a matching outer boundary offset
-		-- outward by the sidewalk width (cornerBoundaries), filled a quad
-		-- per span - never a fan from one point across the curved kerb arc,
-		-- which skewed the sidewalk across the asphalt and produced the
-		-- hook/sliver artifacts reported live.
+		-- Base asphalt: the plain convex-hull fan, and nothing else - every
+		-- hull edge's straight chord filled from the global apex
+		-- (unconditional, so no corner-layer failure below can ever leave
+		-- the pad torn or holed - see the header's point 2). A chord point
+		-- equal to `apex` itself (the two edges touching the apex vertex)
+		-- makes a zero-length edge, silently skipped by FillTriangle's
+		-- degenerate-triangle guard.
 		for i = 1, #hull do
 			local a = hull[i]
 			local b = hull[if i &lt; #hull then i + 1 else 1]
-			-- Base: every hull edge's plain straight chord, filled from the
-			-- global apex. A chord point equal to `apex` itself (the two
-			-- edges touching the apex vertex) makes a zero-length edge,
-			-- silently skipped by FillTriangle's degenerate-triangle guard.
 			FillTriangle(apex, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
-			-- No corner treatment (no raised sidewalk band, no asphalt
-			-- bulge) for a cross-road hull edge that cuts straight across a
-			-- THIRD road's mouth - on a 3+ way junction where one road's
-			-- kerb points fall hull-interior (narrower road, shallower
-			-- angle), the hull edge between its two neighbours spans right
-			-- across the opening its traffic drives through, and building a
-			-- raised band there walls off the approach (reported live:
-			-- raised strips crossing the carriageway). The base asphalt fan
-			-- above still fills the area - only the raised/decorative
-			-- treatment is skipped.
+		end
+
+		-- Corner treatments: between ANGULAR NEIGHBOURS in the per-approach
+		-- node list, not between adjacent hull points. Walking approaches
+		-- (one angular slot per road, well separated by construction - they
+		-- are distinct roads leaving one junction) instead of raw points
+		-- avoids the point-interleaving that made the old radial point walk
+		-- self-intersect, and it means a road whose kerb points fall
+		-- hull-interior still gets real corners with both its neighbours.
+		-- Going from approach A to the next approach B in ascending-angle
+		-- order, the corner between them is bounded by A's Ccw-side point
+		-- and B's Cw-side point (both resolved computationally above).
+		for i = 1, #approaches do
+			local a = approaches[i].Ccw
+			local b = approaches[if i &lt; #approaches then i + 1 else 1].Cw
+			if a.Road == b.Road then
+				continue -- degenerate (a road looping both ends into one junction)
+			end
+			-- Belt-and-braces guard kept from the hull-walk era: skip the
+			-- raised corner treatment if it would properly cross a THIRD
+			-- road's mouth (with angular-neighbour pairing this should be
+			-- structurally impossible for sane layouts, but three roads
+			-- clustered at nearly the same angle can still produce it, and
+			-- a silently-missing corner beats a band walling off a
+			-- carriageway - the failure reported live under the old
+			-- pairing).
 			local crossesMouth = false
-			if a.Road ~= b.Road then
-				for _, mouth in mouths do
-					if
-						mouth.Road ~= a.Road
-						and mouth.Road ~= b.Road
-						and segmentsCross2D(a.Kerb, b.Kerb, mouth.L, mouth.R)
-					then
-						crossesMouth = true
-						break
-					end
+			for _, mouth in mouths do
+				if
+					mouth.Road ~= a.Road
+					and mouth.Road ~= b.Road
+					and segmentsCross2D(a.Kerb, b.Kerb, mouth.L, mouth.R)
+				then
+					crossesMouth = true
+					break
 				end
 			end
-			if a.Road ~= b.Road and not crossesMouth then
+			if not crossesMouth then
 				local kerbBoundary, outerBoundary = cornerBoundaries(a, b, junctionId, filletRadiusStuds)
 				-- Asphalt corner bulge: only when a real fillet was found
 				-- (otherwise kerbBoundary is just the 2 chord endpoints, and

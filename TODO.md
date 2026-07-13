@@ -115,30 +115,28 @@ falling back to the plain chamfer described above - the fallback is the
 same hull edge, so the worst case is still the reliability this section
 describes, and rounding only ever adds to it, never regresses it.
 
-**Proposed next architecture step (user suggestion, logged for the next
-junction round): break the intersection into per-approach NODES and join
-them.** Each approach's cross-section at its trimmed end becomes an
-explicit node (its left/right kerb + outer points and inward tangent - the
-data `edgePointsForRoad` already produces), approaches get sorted by angle
-around the junction centre, and the pad is built by joining each ADJACENT
-pair (corner fillet between neighbours, straight kerb line across each
-mouth) instead of one global convex hull fan. That's how RoadArchitect and
-CS2-style tools structure it, and it would make the mouth-crossing guard
-(below) unnecessary by construction - a corner is only ever built between
-angular neighbours, so it can't span a third road's mouth. The current
-hull is the degenerate-case-safe base to keep underneath while migrating:
-angular-neighbour walks reintroduce ordering judgement calls, which is
-exactly what the hull was adopted to remove, so any migration needs the
-hull (or an equivalent guarantee) as the fallback for weird approach sets.
+**Per-approach NODE model - SHIPPED (user's suggestion: "break an
+intersection down to different nodes, the cross section itself, and join
+them all").** Each connected road is now an explicit approach node (its
+cross-section's left/right kerb + outer points, plus the angle it leaves
+the junction at); nodes are sorted by angle around the centre and corner
+treatments are built between ANGULAR NEIGHBOURS (first road's
+counter-clockwise-side point paired with the next road's clockwise-side
+point, both sides resolved computationally from signed angles - no
+handedness conventions). This replaced corner-pairing by adjacent
+convex-hull points, which paved straight across any road whose kerb
+points fell hull-interior (the live-reported Y-junction walling-off bug).
+Per the migration caution logged when this was proposed: the convex hull
+fan is DELIBERATELY KEPT as the unconditional base asphalt underneath, so
+no corner-layer failure can tear or hole the pad itself, and the
+mouth-crossing guard is kept as belt-and-braces for pathological
+near-parallel approach clusters.
 
 **Other trade-offs, still current:**
-- **Cross-road hull edges that properly cross a THIRD road's mouth now
-  skip their corner treatment entirely** (shipped - `segmentsCross2D`
-  guard, after live-reported raised bands walling off an approach on a
-  Y-junction). The base asphalt fan still covers the area; the skipped
-  corner just has no raised band/rounded kerb there. The per-approach
-  node model above would make this case structurally impossible instead
-  of guarded-against.
+- **A corner pair that would properly cross a THIRD road's mouth still
+  skips its raised treatment** (`segmentsCross2D` guard) - structurally
+  near-impossible under angular-neighbour pairing, but kept because a
+  silently-missing corner beats a band walling off a carriageway.
 - **The pad is now one continuous surface with no unfilled gaps** - the
   old "skip gaps wider than ~130°" logic (meant to avoid bridging the far
   side of a bend or a T-junction's through span with a spike) is gone;

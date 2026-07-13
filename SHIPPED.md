@@ -4,6 +4,43 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junction corners: per-approach node model (user's architecture suggestion)
+
+- Implemented the decomposition the user proposed: "break an intersection
+  down to different nodes (the cross section itself) and join them all."
+  Each connected road now contributes one explicit APPROACH NODE - its
+  cross-section at the trimmed end (left/right kerb + outer EdgePoints)
+  plus the angle its outward tangent leaves the junction at. Nodes are
+  sorted by that angle, and every corner treatment (fillet bulge + raised
+  sidewalk band, unchanged construction) is built between ANGULAR
+  NEIGHBOURS: approach A's counter-clockwise-side point paired with the
+  next approach B's clockwise-side point.
+- Which of an approach's two edge points is its Cw vs Ccw side is resolved
+  purely computationally - the signed angular offset of each point around
+  the junction centre relative to the road's own outward angle - rather
+  than from any left/right or driving-side convention. Two of the last
+  three geometry bugs in this codebase were direction-sign errors in
+  hand-reasoned conventions; deriving the sides from the actual computed
+  angles leaves no convention to get wrong.
+- Why angular-neighbour pairing is the right join order (and the old
+  radial POINT sort, tried rounds ago, wasn't): approaches are whole-road
+  slots, one per road, with well-separated directions by construction -
+  they can't interleave the way raw kerb points from different-width
+  roads could. And unlike hull-adjacent pairing (the outgoing model), a
+  narrow road whose kerb points fall hull-interior still gets real
+  corners with both its neighbours instead of being paved across - the
+  live-reported Y-junction "sidewalk band walling off an approach" bug is
+  structurally impossible between angular neighbours.
+- Per the migration caution logged in TODO.md when this was proposed: the
+  convex hull fan REMAINS the unconditional base asphalt - the corner
+  layer decorates on top of an intact pad, so any corner failure degrades
+  to less decoration, never a torn/holed surface. The mouth-crossing
+  guard also remains, belt-and-braces, for pathological approach sets
+  (three roads clustered at nearly the same angle).
+- Not live-tested in Studio (no Roblox client here) - but the corner
+  construction itself (fillet, band, local fan) is byte-identical to what
+  was already live-verified; only WHICH PAIRS receive it changed.
+
 ## Big fix round: junction re-connect (real root cause), roundabout speed bumps -> flares, setback, mouth guard, UI inset revert
 
 Driven by three live screenshots (a roundabout with raised strips at every
