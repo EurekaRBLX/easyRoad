@@ -1,16 +1,10 @@
 --!strict
--- Roundabout: ONE continuous ring + flush spoke trim + mouth fill triangles.
+-- Roundabout: continuous ring (never sliced) + setback + FillTriangle feeds.
 --
--- Hard lesson from live Studio: Hermite "entry feed" RoadBuilder pieces +
--- sidewalk exclusion slices + large setback produce knotted partial rings
--- every time. Do not reintroduce those without a proven polar mesh.
---
--- CreateAtJunction:
---   1. Build full closed ring (drive + outer sidewalk, flat, no cuts)
---   2. Trim each spoke so its full cross-section sits at the outer pavement
---   3. FillTriangle mouth asphalt (spoke kerb → ring outer kerb arc)
---   4. Simple corner sidewalk quads
---   5. Island disc
+-- Ring is always ONE full RoadBuilder circle — never Hermite "entry roads"
+-- parented onto it (those knot the annulus). Feed-in/out is pure edge
+-- geometry: sample Hermite left/right kerb paths from the setback cut to the
+-- ring, fill asphalt between them, sidewalk bands outside them.
 
 local CurveSegment = require("../Geometry/CurveSegment")
 local PolyCurve = require("../Geometry/PolyCurve")
@@ -27,7 +21,9 @@ local RoundaboutBuilder = {}
 
 local ROUNDABOUTS_FOLDER_NAME = "Roundabouts"
 local BEZIER_CIRCLE_K = 0.5522847498307936
-local MOUTH_SAMPLES = 8
+-- Pull spokes back so feed curves have length (studs past ring outer edge).
+local SETBACK_STUDS = 14
+local FEED_SAMPLES = 10
 local DOWN = Vector3.new(0, -1, 0)
 
 local function circleSegments(center: Vector3, radiusStuds: number, driveOnLeft: boolean): { CurveSegment.Segment }
@@ -372,30 +368,42 @@ local function trimSpoke(
 	return edgePointsAt(newData.Curve, profile, cutStation, inward.Unit, scale)
 end
 
-local function sampleShortArc(sA: number, sB: number, length: number, samples: number): { number }
-	local forward = (sB - sA) % length
-	if forward < 0 then
-		forward += length
+-- Sample a cubic Hermite from p0→p1 with travel dirs d0/d1 (unit).
+local function sampleHermite(p0: Vector3, d0: Vector3, p1: Vector3, d1: Vector3, samples: number): { Vector3 }
+	local flat0 = Vector3.new(d0.X, 0, d0.Z)
+	local flat1 = Vector3.new(d1.X, 0, d1.Z)
+	if flat0.Magnitude < 1e-6 or flat1.Magnitude < 1e-6 then
+		return { p0, p1 }
 	end
-	local backward = length - forward
-	local delta = if forward <= backward then forward else -backward
-	local out: { number } = {}
+	local chord = Vector3.new(p1.X - p0.X, 0, p1.Z - p0.Z).Magnitude
+	local handle = math.max(chord * 0.4, 1)
+	local m0 = flat0.Unit * handle
+	local m1 = flat1.Unit * handle
+	local points: { Vector3 } = table.create(samples + 1)
 	for i = 0, samples do
 		local t = i / samples
-		local s: number
-		if i == 0 then
-			s = sA
-		elseif i == samples then
-			s = sB
-		else
-			s = (sA + delta * t) % length
-			if s < 0 then
-				s += length
-			end
-		end
-		table.insert(out, s)
+		local t2 = t * t
+		local t3 = t2 * t
+		local h00 = 2 * t3 - 3 * t2 + 1
+		local h10 = t3 - 2 * t2 + t
+		local h01 = -2 * t3 + 3 * t2
+		local h11 = t3 - t2
+		local y = p0.Y + (p1.Y - p0.Y) * t
+		local x = p0.X * h00 + m0.X * h10 + p1.X * h01 + m1.X * h11
+		local z = p0.Z * h00 + m0.Z * h10 + p1.Z * h01 + m1.Z * h11
+		table.insert(points, Vector3.new(x, y, z))
 	end
-	return out
+	return points
+end
+
+local function circulationTan(center: Vector3, point: Vector3, driveOnLeft: boolean): Vector3
+	local dx, dz = point.X - center.X, point.Z - center.Z
+	local mag = math.sqrt(dx * dx + dz * dz)
+	if mag < 1e-6 then
+		return Vector3.new(1, 0, 0)
+	end
+	local sign = if driveOnLeft then -1 else 1
+	return Vector3.new(-dz / mag * sign, 0, dx / mag * sign)
 end
 
 function RoundaboutBuilder.CreateAtJunction(
@@ -437,7 +445,7 @@ function RoundaboutBuilder.CreateAtJunction(
 	local offsets = RoadProfile.ComponentOffsetsM(profile)
 	local outerSidewalkM = if style.DriveOnLeft then offsets[#offsets].Right else offsets[1].Left
 
-	-- ONE continuous ring — never slice/exclude (that caused knotted arcs).
+	-- ONE continuous ring — never slice (knotted arcs).
 	local ringCurve = PolyCurve.new(circleSegments(center, radiusStuds, style.DriveOnLeft))
 	local ring = RoadBuilder.Build({
 		Curve = ringCurve,
@@ -451,8 +459,8 @@ function RoundaboutBuilder.CreateAtJunction(
 	stampRingMeta(ring, center, radiusStuds, outerRadiusStuds, laneCount, laneWidthM)
 	buildIsland(ring, center, radiusStuds, profile, style, settings)
 
-	-- Flush trim: full cross-section at outer pavement edge.
-	local trimTarget = outerRadiusStuds - 0.15
+	-- Setback: full cross-section beyond outer pavement so feeds have length.
+	local trimTarget = outerRadiusStuds + SETBACK_STUDS
 	type Mouth = { Edges: SpokeCutEdges, SLeft: number, SRight: number }
 	local mouths: { Mouth } = {}
 
@@ -484,7 +492,7 @@ function RoundaboutBuilder.CreateAtJunction(
 	end
 	local function makeAsphalt(): Part
 		local p = Instance.new("Part")
-		p.Name = "RoundaboutMouth"
+		p.Name = "RoundaboutFeed"
 		p.Anchored = true
 		p.CanCollide = false
 		p.CanTouch = false
@@ -498,7 +506,7 @@ function RoundaboutBuilder.CreateAtJunction(
 	end
 	local function makeSidewalk(): Part
 		local p = Instance.new("Part")
-		p.Name = "RoundaboutMouthSidewalk"
+		p.Name = "RoundaboutFeedSidewalk"
 		p.Anchored = true
 		p.CanCollide = false
 		p.CanTouch = false
@@ -513,33 +521,99 @@ function RoundaboutBuilder.CreateAtJunction(
 	local function ringAt(station: number, offsetM: number): Vector3
 		return (ringCurve:FrameAt(station) * CFrame.new(offsetM * scale, 0, 0)).Position
 	end
+	local function ringTanAt(station: number): Vector3
+		local t = ringCurve:TangentAt(station)
+		return Vector3.new(t.X, 0, t.Z)
+	end
 
 	for _, mouth in mouths do
-		local stations = sampleShortArc(mouth.SLeft, mouth.SRight, ringCurve.Length, MOUTH_SAMPLES)
-		local n = #stations
+		local e = mouth.Edges
+		local rKerbL = ringAt(mouth.SLeft, outerKerbM)
+		local rKerbR = ringAt(mouth.SRight, outerKerbM)
+		local rOuterL = ringAt(mouth.SLeft, outerSidewalkM)
+		local rOuterR = ringAt(mouth.SRight, outerSidewalkM)
+
+		-- Arrive along the ring tangent that faces the mouth (into the gap).
+		local tanL = ringTanAt(mouth.SLeft)
+		local tanR = ringTanAt(mouth.SRight)
+		if tanL.Magnitude > 1e-6 then
+			tanL = tanL.Unit
+		else
+			tanL = e.Inward
+		end
+		if tanR.Magnitude > 1e-6 then
+			tanR = tanR.Unit
+		else
+			tanR = e.Inward
+		end
+		-- Orient arrival so travel continues from spoke inward into the ring.
+		local toRingL = Vector3.new(rKerbL.X - e.LeftKerb.X, 0, rKerbL.Z - e.LeftKerb.Z)
+		local toRingR = Vector3.new(rKerbR.X - e.RightKerb.X, 0, rKerbR.Z - e.RightKerb.Z)
+		if toRingL.Magnitude > 1e-3 and tanL:Dot(toRingL) < 0 then
+			tanL = -tanL
+		end
+		if toRingR.Magnitude > 1e-3 and tanR:Dot(toRingR) < 0 then
+			tanR = -tanR
+		end
+
+		-- Feed-in/out edge curves (Hermite): setback cut → ring, curved.
+		local leftKerb = sampleHermite(e.LeftKerb, e.Inward, rKerbL, tanL, FEED_SAMPLES)
+		local rightKerb = sampleHermite(e.RightKerb, e.Inward, rKerbR, tanR, FEED_SAMPLES)
+		local leftOuter = sampleHermite(e.LeftOuter, e.Inward, rOuterL, tanL, FEED_SAMPLES)
+		local rightOuter = sampleHermite(e.RightOuter, e.Inward, rOuterR, tanR, FEED_SAMPLES)
+		local n = math.min(#leftKerb, #rightKerb, #leftOuter, #rightOuter)
 		if n < 2 then
 			continue
 		end
-		-- Asphalt: spoke kerb line → ring outer kerb arc (underlap sink).
+
+		-- Asphalt deck between left/right kerb curves.
 		for i = 1, n - 1 do
-			local t0 = (i - 1) / (n - 1)
-			local t1 = i / (n - 1)
-			local a0 = mouth.Edges.LeftKerb:Lerp(mouth.Edges.RightKerb, t0) + sink
-			local a1 = mouth.Edges.LeftKerb:Lerp(mouth.Edges.RightKerb, t1) + sink
-			local r0 = ringAt(stations[i], outerKerbM) + sink
-			local r1 = ringAt(stations[i + 1], outerKerbM) + sink
-			FillTriangle(a0, a1, r1, thickness, DOWN, makeAsphalt, ring)
-			FillTriangle(a0, r1, r0, thickness, DOWN, makeAsphalt, ring)
+			local a0 = leftKerb[i] + sink
+			local a1 = leftKerb[i + 1] + sink
+			local b0 = rightKerb[i] + sink
+			local b1 = rightKerb[i + 1] + sink
+			FillTriangle(a0, a1, b1, thickness, DOWN, makeAsphalt, ring)
+			FillTriangle(a0, b1, b0, thickness, DOWN, makeAsphalt, ring)
 		end
-		-- Sidewalk corners: spoke outer/kerb → ring outer sidewalk/kerb at ends.
-		local function bridgeSide(spokeOuter: Vector3, spokeKerb: Vector3, station: number)
-			local rKerb = ringAt(station, outerKerbM)
-			local rOuter = ringAt(station, outerSidewalkM)
-			FillTriangle(raise(spokeOuter), raise(spokeKerb), raise(rKerb), sidewalkDepth, DOWN, makeSidewalk, ring)
-			FillTriangle(raise(spokeOuter), raise(rKerb), raise(rOuter), sidewalkDepth, DOWN, makeSidewalk, ring)
+		-- Sidewalk patches outside each kerb curve.
+		for i = 1, n - 1 do
+			FillTriangle(
+				raise(leftOuter[i]),
+				raise(leftOuter[i + 1]),
+				raise(leftKerb[i + 1]),
+				sidewalkDepth,
+				DOWN,
+				makeSidewalk,
+				ring
+			)
+			FillTriangle(
+				raise(leftOuter[i]),
+				raise(leftKerb[i + 1]),
+				raise(leftKerb[i]),
+				sidewalkDepth,
+				DOWN,
+				makeSidewalk,
+				ring
+			)
+			FillTriangle(
+				raise(rightOuter[i]),
+				raise(rightKerb[i]),
+				raise(rightKerb[i + 1]),
+				sidewalkDepth,
+				DOWN,
+				makeSidewalk,
+				ring
+			)
+			FillTriangle(
+				raise(rightOuter[i]),
+				raise(rightKerb[i + 1]),
+				raise(rightOuter[i + 1]),
+				sidewalkDepth,
+				DOWN,
+				makeSidewalk,
+				ring
+			)
 		end
-		bridgeSide(mouth.Edges.LeftOuter, mouth.Edges.LeftKerb, mouth.SLeft)
-		bridgeSide(mouth.Edges.RightOuter, mouth.Edges.RightKerb, mouth.SRight)
 	end
 
 	ring.Parent = getRoundaboutsFolder()
