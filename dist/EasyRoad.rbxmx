@@ -3922,6 +3922,13 @@ local MIN_APPROACH_REMAINDER_STUDS = 2
 -- bounded-failure design.
 local FILLET_RADIUS_M = 6
 local FILLET_ARC_SAMPLES = 4 -- interior points sampled along each fillet
+-- Don't build a curb-return between angular neighbours whose mouths are
+-- farther apart than this: a T-junction's through-pair sits ~180° apart, and
+-- treating that gap as a "corner" draws a Hermite/fillet across the through
+-- carriageway (live: jagged zigzag through the pad, sidewalk spikes into
+-- asphalt). Real corners on urban junctions are almost always well under
+-- 135°.
+local MAX_CORNER_SPAN_RAD = math.rad(135)
 local DOWN = Vector3.new(0, -1, 0)
 
 -- The profile actually present at the end of `road` that connects to this
@@ -4367,17 +4374,15 @@ end
 
 local HERMITE_SAMPLES = 5
 
--- True parallel offset of a kerb polyline toward `towardHint` (sidewalk
--- side). Width interpolates from widthStart at the first point to widthEnd
--- at the last. Endpoints are pinned to pinStart/pinEnd (the roads' real
--- outer points) so the band meets existing sidewalks seamlessly. Uses
--- segment-normal averaging rather than fillet-circle inset alone, which
--- mis-tracks on curved approaches and produced live sidewalk indents.
+-- Parallel offset of a kerb polyline AWAY from the junction centre (pad
+-- asphalt is toward the centre; sidewalk is outside). Picking "toward
+-- fillet centre" alone flips on some Hermite spans and spikes sidewalk
+-- into the carriageway (live zigzag pad). Endpoints pinned to real outers.
 local function offsetKerbPolyline(
 	kerb: { Vector3 },
 	widthStart: number,
 	widthEnd: number,
-	towardHint: Vector3,
+	junctionCenter: Vector3,
 	pinStart: Vector3,
 	pinEnd: Vector3
 ): { Vector3 }
@@ -4399,8 +4404,9 @@ local function offsetKerbPolyline(
 		else
 			local nx1, nz1 = -tz / len, tx / len
 			local nx2, nz2 = tz / len, -tx / len
-			local hx, hz = towardHint.X - p.X, towardHint.Z - p.Z
-			local use1 = nx1 * hx + nz1 * hz &gt;= nx2 * hx + nz2 * hz
+			-- Prefer the normal that points away from the junction centre.
+			local awayX, awayZ = p.X - junctionCenter.X, p.Z - junctionCenter.Z
+			local use1 = nx1 * awayX + nz1 * awayZ &gt;= nx2 * awayX + nz2 * awayZ
 			local nx = if use1 then nx1 else nx2
 			local nz = if use1 then nz1 else nz2
 			outer[i] = Vector3.new(p.X + nx * w, p.Y, p.Z + nz * w)
@@ -4412,19 +4418,18 @@ local function offsetKerbPolyline(
 end
 
 -- The paired KERB (asphalt-edge) and OUTER (sidewalk-outer-edge) boundaries
--- for one corner pair, returned as two equal-length point lists so the
--- sidewalk can be filled as a proper BAND between them (quad per span).
+-- for one corner pair. `junctionCenter` steers sidewalk offset outward.
 --
 -- Three shapes, in order of preference:
--- 1. FILLET: circular kerb arc; sidewalk = parallel offset of that polyline
---    (true offset, endpoints pinned to a.Outer/b.Outer).
--- 2. HERMITE: cubic kerb + parallel offset sidewalk (same pin rule).
--- 3. STRAIGHT chamfer when tangents unreadable.
+-- 1. FILLET: circular kerb arc + parallel-offset sidewalk
+-- 2. HERMITE: cubic kerb + parallel-offset sidewalk
+-- 3. STRAIGHT chamfer when tangents unreadable
 local function cornerBoundaries(
 	a: EdgePoint,
 	b: EdgePoint,
 	junctionId: string,
-	radiusStuds: number
+	radiusStuds: number,
+	junctionCenter: Vector3
 ): ({ Vector3 }, { Vector3 })
 	local outwardA = outwardTangentAt(a.Road, junctionId)
 	local outwardB = outwardTangentAt(b.Road, junctionId)
@@ -4433,12 +4438,13 @@ local function cornerBoundaries(
 	end
 	local widthA = distanceXZ(a.Outer, a.Kerb)
 	local widthB = distanceXZ(b.Outer, b.Kerb)
-	local p1, filletCenter, p2, effectiveRadius = Fillet.Compute(a.Kerb, -outwardA, b.Kerb, -outwardB, radiusStuds)
+	-- Cap fillet so it cannot reach past the mid-chord on wide gaps.
+	local chord = distanceXZ(a.Kerb, b.Kerb)
+	local cappedRadius = math.min(radiusStuds, chord * 0.45)
+	local p1, filletCenter, p2, effectiveRadius = Fillet.Compute(a.Kerb, -outwardA, b.Kerb, -outwardB, cappedRadius)
 	if not p1 or not filletCenter or not p2 or not effectiveRadius then
 		local kerb = hermiteBoundary(a.Kerb, -outwardA, b.Kerb, outwardB, HERMITE_SAMPLES)
-		-- Offset toward the average of the real outer endpoints (sidewalk side).
-		local hint = (a.Outer + b.Outer) * 0.5
-		local outer = offsetKerbPolyline(kerb, widthA, widthB, hint, a.Outer, b.Outer)
+		local outer = offsetKerbPolyline(kerb, widthA, widthB, junctionCenter, a.Outer, b.Outer)
 		return kerb, outer
 	end
 	local kerb: { Vector3 } = { a.Kerb, p1 }
@@ -4448,10 +4454,7 @@ local function cornerBoundaries(
 	end
 	table.insert(kerb, p2)
 	table.insert(kerb, b.Kerb)
-	-- Sidewalk is on the fillet-centre side of the kerb arc (toward the
-	-- rounded corner's interior relative to the vertex - same side as
-	-- insetTowardCenter). Hint = fillet centre.
-	local outer = offsetKerbPolyline(kerb, widthA, widthB, filletCenter, a.Outer, b.Outer)
+	local outer = offsetKerbPolyline(kerb, widthA, widthB, junctionCenter, a.Outer, b.Outer)
 	return kerb, outer
 end
 
@@ -4605,51 +4608,38 @@ function JunctionBuilder.Rebuild(
 
 	if #edgePoints &gt;= 3 then
 		local hull = convexHull(edgePoints)
-		-- A convex polygon can always be fan-triangulated from any of its
-		-- own vertices without self-intersecting - unlike a fixed external
-		-- apex (the junction's stored position, or even the point set's
-		-- own centroid), which can end up outside the true boundary for an
-		-- oddly-shaped set of roads and produce exactly the crossing,
-		-- jagged geometry reported live through several earlier rounds.
-		local apex = hull[1].Kerb
+		-- Fan from the hull's own centroid (still inside a convex polygon)
+		-- rather than hull[1], which can produce long thin triangles that
+		-- crease when corner bulges stack on top (live zigzag in pad).
+		local sum = Vector3.zero
+		for _, p in hull do
+			sum += p.Kerb
+		end
+		local apex = sum / #hull
 		local filletRadiusStuds = FILLET_RADIUS_M * settings.MetersToStuds
-		-- Base asphalt: the plain convex-hull fan, and nothing else - every
-		-- hull edge's straight chord filled from the global apex
-		-- (unconditional, so no corner-layer failure below can ever leave
-		-- the pad torn or holed - see the header's point 2). A chord point
-		-- equal to `apex` itself (the two edges touching the apex vertex)
-		-- makes a zero-length edge, silently skipped by FillTriangle's
-		-- degenerate-triangle guard.
 		for i = 1, #hull do
 			local a = hull[i]
 			local b = hull[if i &lt; #hull then i + 1 else 1]
 			FillTriangle(apex, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
 		end
 
-		-- Corner treatments: between ANGULAR NEIGHBOURS in the per-approach
-		-- node list, not between adjacent hull points. Walking approaches
-		-- (one angular slot per road, well separated by construction - they
-		-- are distinct roads leaving one junction) instead of raw points
-		-- avoids the point-interleaving that made the old radial point walk
-		-- self-intersect, and it means a road whose kerb points fall
-		-- hull-interior still gets real corners with both its neighbours.
-		-- Going from approach A to the next approach B in ascending-angle
-		-- order, the corner between them is bounded by A's Ccw-side point
-		-- and B's Cw-side point (both resolved computationally above).
+		-- Corner treatments only between angular neighbours that form a
+		-- REAL corner (span ≤ MAX_CORNER_SPAN_RAD). Skip the wide gap of a
+		-- T through-pair (~180°) so we never pave a "corner" across it.
 		for i = 1, #approaches do
-			local a = approaches[i].Ccw
-			local b = approaches[if i &lt; #approaches then i + 1 else 1].Cw
-			if a.Road == b.Road then
-				continue -- degenerate (a road looping both ends into one junction)
+			local nextI = if i &lt; #approaches then i + 1 else 1
+			local span = approaches[nextI].Angle - approaches[i].Angle
+			if span &lt; 0 then
+				span += 2 * math.pi
 			end
-			-- Belt-and-braces guard kept from the hull-walk era: skip the
-			-- raised corner treatment if it would properly cross a THIRD
-			-- road's mouth (with angular-neighbour pairing this should be
-			-- structurally impossible for sane layouts, but three roads
-			-- clustered at nearly the same angle can still produce it, and
-			-- a silently-missing corner beats a band walling off a
-			-- carriageway - the failure reported live under the old
-			-- pairing).
+			if span &gt; MAX_CORNER_SPAN_RAD then
+				continue
+			end
+			local a = approaches[i].Ccw
+			local b = approaches[nextI].Cw
+			if a.Road == b.Road then
+				continue
+			end
 			local crossesMouth = false
 			for _, mouth in mouths do
 				if
@@ -4662,11 +4652,11 @@ function JunctionBuilder.Rebuild(
 				end
 			end
 			if not crossesMouth then
-				local kerbBoundary, outerBoundary = cornerBoundaries(a, b, junctionId, filletRadiusStuds)
-				-- Asphalt corner bulge: only when a real fillet was found
-				-- (otherwise kerbBoundary is just the 2 chord endpoints, and
-				-- the base fan above already covered the chord). Fanned from
-				-- the LOCAL a.Kerb across the arc.
+				local kerbBoundary, outerBoundary =
+					cornerBoundaries(a, b, junctionId, filletRadiusStuds, center)
+				-- Asphalt corner bulge only for a multi-point boundary that
+				-- actually bows past the chord (fillet/Hermite), fanned from
+				-- local a.Kerb. Straight 2-point chords are already in the hull.
 				if #kerbBoundary &gt; 2 then
 					for j = 1, #kerbBoundary - 1 do
 						FillTriangle(
@@ -4680,12 +4670,6 @@ function JunctionBuilder.Rebuild(
 						)
 					end
 				end
-				-- Sidewalk band: one quad (two triangles) per span between
-				-- the kerb boundary and its outward-offset outer boundary,
-				-- both raised to curb height. For a straight chamfer this is
-				-- the single a.Outer-a.Kerb-b.Kerb-b.Outer quad; for a
-				-- rounded corner it follows the arc without ever crossing
-				-- into the asphalt.
 				for j = 1, #kerbBoundary - 1 do
 					FillTriangle(
 						raise(outerBoundary[j]),
