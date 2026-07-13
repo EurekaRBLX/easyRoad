@@ -916,7 +916,7 @@ function JunctionBuilder.Rebuild(
 		type BuiltCorner = {
 			Kerb: { Vector3 },
 			Outer: { Vector3 },
-			IsReal: boolean,
+			Sidewalk: boolean,
 		}
 		local builtCorners: { BuiltCorner } = {}
 		local padPoly: { Vector3 } = {}
@@ -966,16 +966,31 @@ function JunctionBuilder.Rebuild(
 			if isRealCorner and not crossesMouth then
 				local kerbBoundary, outerBoundary =
 					cornerBoundaries(a, b, junctionId, filletRadiusStuds, center, exterior)
-				table.insert(builtCorners, { Kerb = kerbBoundary, Outer = outerBoundary, IsReal = true })
+				table.insert(builtCorners, { Kerb = kerbBoundary, Outer = outerBoundary, Sidewalk = true })
 				for _, p in kerbBoundary do
 					appendUnique(p)
 				end
 			else
-				-- Through-gap (~180°) or invalid: straight chord only.
+				-- Through-gap (~180° on a T): pad kerb is a straight chord, but
+				-- the OUTER sidewalk must still connect (live: T missing sidewalk
+				-- on the open side). Hermite the outer edge so it follows both
+				-- roads' sidewalk directions instead of a hard cut.
+				local outwardA = outwardTangentAt(a.Road, junctionId)
+				local outwardB = outwardTangentAt(b.Road, junctionId)
+				local kerbChord = { a.Kerb, b.Kerb }
+				local outerBand: { Vector3 }
+				if outwardA and outwardB then
+					outerBand = hermiteBoundary(a.Outer, -outwardA, b.Outer, outwardB, HERMITE_SAMPLES)
+				else
+					outerBand = { a.Outer, b.Outer }
+				end
+				-- Sidewalk only if outers actually sit outside the kerb (has
+				-- a sidewalk/median strip).
+				local hasSidewalk = distanceXZ(a.Outer, a.Kerb) > 0.15 or distanceXZ(b.Outer, b.Kerb) > 0.15
 				table.insert(builtCorners, {
-					Kerb = { a.Kerb, b.Kerb },
-					Outer = { a.Outer, b.Outer },
-					IsReal = false,
+					Kerb = kerbChord,
+					Outer = outerBand,
+					Sidewalk = hasSidewalk,
 				})
 				appendUnique(a.Kerb)
 				appendUnique(b.Kerb)
@@ -1002,17 +1017,27 @@ function JunctionBuilder.Rebuild(
 			end
 			local apex = sum / #hull
 			for i = 1, #hull do
-				local a = hull[i]
-				local b = hull[if i < #hull then i + 1 else 1]
-				FillTriangle(apex, a.Kerb, b.Kerb, thickness, DOWN, makeAsphaltPart, folder)
+				local ha = hull[i]
+				local hb = hull[if i < #hull then i + 1 else 1]
+				FillTriangle(apex, ha.Kerb, hb.Kerb, thickness, DOWN, makeAsphaltPart, folder)
 			end
 		end
 
-		-- Sidewalk bands only on real corners (not through-chords).
+		-- Sidewalk bands on real corners AND T through-side (open edge).
 		for _, corner in builtCorners do
-			if corner.IsReal and #corner.Kerb >= 2 then
+			if corner.Sidewalk and #corner.Kerb >= 2 and #corner.Outer >= 2 then
 				local kerbBoundary = corner.Kerb
 				local outerBoundary = corner.Outer
+				-- Through-chord has 2 kerb pts but N outer pts (Hermite) —
+				-- sample kerb linearly to match outer count.
+				if #outerBoundary ~= #kerbBoundary then
+					local resampled: { Vector3 } = {}
+					for j = 1, #outerBoundary do
+						local t = if #outerBoundary > 1 then (j - 1) / (#outerBoundary - 1) else 0
+						table.insert(resampled, kerbBoundary[1]:Lerp(kerbBoundary[#kerbBoundary], t))
+					end
+					kerbBoundary = resampled
+				end
 				for j = 1, #kerbBoundary - 1 do
 					FillTriangle(
 						raise(outerBoundary[j]),

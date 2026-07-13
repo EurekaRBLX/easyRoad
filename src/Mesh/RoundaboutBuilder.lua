@@ -1,13 +1,10 @@
 --!strict
--- Generates a roundabout as a POLAR annulus: one continuous circulating
--- ring (drive always full-circle; outer sidewalk off only in angular entry
--- sectors), spokes trimmed to the outer pavement edge, mouth joins via
--- circular fillets only.
---
--- Deliberately NOT: large setback + Hermite feed cubics as second roads +
--- exclusion intervals derived from feed outer ClosestS. That stack produced
--- knotted partial rings (live screenshots). True tangential feed-in later
--- should deflect the spoke centreline itself, not add ring-owned feeds.
+-- Generates a roundabout as a POLAR annulus with tangential entry feeds
+-- (closer to real HK/TW roundabouts): continuous circulating ring; spokes
+-- pull back a feed length; each mouth gets a Hermite cubic entry (full
+-- profile) that arrives on the circulating tangent; mouth fillets seal
+-- residual corners. Ring drive lanes stay continuous — only outer sidewalk
+-- opens at mouths.
 
 local CurveSegment = require("../Geometry/CurveSegment")
 local Fillet = require("../Geometry/Fillet")
@@ -25,8 +22,10 @@ local RoundaboutBuilder = {}
 
 local ROUNDABOUTS_FOLDER_NAME = "Roundabouts"
 local BEZIER_CIRCLE_K = 0.5522847498307936
-local FLARE_RADIUS_M = 8
-local FLARE_ARC_SAMPLES = 4
+-- Room for a real entry curve (setback from ring outer pavement).
+local FEED_LENGTH_STUDS = 16
+local FLARE_RADIUS_M = 10
+local FLARE_ARC_SAMPLES = 5
 local DOWN = Vector3.new(0, -1, 0)
 
 local function circleSegments(center: Vector3, radiusStuds: number, driveOnLeft: boolean): { CurveSegment.Segment }
@@ -501,19 +500,21 @@ function RoundaboutBuilder.CreateAtJunction(
 	}
 	local halfWidthStuds = RoadProfile.TotalWidthM(profile) / 2 * scale
 	local outerRadiusStuds = radiusStuds + halfWidthStuds
-	-- Full-profile outer edge lands on the ring outer pavement (margin is
-	-- inside the bisection target so the cut sits flush, not short).
-	local trimTarget = outerRadiusStuds - 0.25
-	local curve = PolyCurve.new(circleSegments(center, radiusStuds, style.DriveOnLeft))
-
 	local kerbLeftM, kerbRightM = roadwayEdgeOffsetsM(profile)
 	local outerKerbM = if style.DriveOnLeft then kerbRightM else kerbLeftM
 	local offsets = RoadProfile.ComponentOffsetsM(profile)
 	local outerSidewalkM = if style.DriveOnLeft then offsets[#offsets].Right else offsets[1].Left
+	-- Pull spokes back so a tangential entry cubic has room (real roundabouts
+	-- don't meet the ring as radial T-cuts — reference: HK aerials).
+	local trimTarget = outerRadiusStuds + FEED_LENGTH_STUDS
+	local attachRadiusStuds = radiusStuds + math.abs(outerKerbM) * scale
+	local curve = PolyCurve.new(circleSegments(center, radiusStuds, style.DriveOnLeft))
 
 	type FlareAnchor = { Station: number, Kerb: Vector3, Outer: Vector3, Inward: Vector3 }
 	type Mouth = {
 		Edges: SpokeCutEdges,
+		Profile: RoadProfile.RoadProfile,
+		CutPos: Vector3,
 		SLeft: number,
 		SRight: number,
 	}
@@ -534,14 +535,26 @@ function RoundaboutBuilder.CreateAtJunction(
 		if not edges then
 			continue
 		end
-		-- Exclusion + mouth fill use REAL outer/kerb stations (short arc),
-		-- not mid ± asin(halfWidth) which only fits radial approaches.
+		local cutPos = (edges.LeftKerb + edges.RightKerb) * 0.5
+		local spokeProfile = if atStart then data.ProfileStart else (data.ProfileEnd or data.ProfileStart)
+		-- Re-read after trim for profile at cut end.
+		local newData = RoadInstance.Read(road)
+		if newData then
+			spokeProfile = if atStart then newData.ProfileStart else (newData.ProfileEnd or newData.ProfileStart)
+		end
+		-- Mouth sector from cut outer edges projected onto the ring (short arc).
 		local sLeft = mouthStation(curve, edges.LeftOuter)
 		local sRight = mouthStation(curve, edges.RightOuter)
 		for _, interval in shortArcInterval(sLeft, sRight, curve.Length) do
 			table.insert(exclusions, interval)
 		end
-		table.insert(mouths, { Edges = edges, SLeft = sLeft, SRight = sRight })
+		table.insert(mouths, {
+			Edges = edges,
+			Profile = spokeProfile,
+			CutPos = cutPos,
+			SLeft = sLeft,
+			SRight = sRight,
+		})
 		table.insert(flares, { Station = sLeft, Kerb = edges.LeftKerb, Outer = edges.LeftOuter, Inward = edges.Inward })
 		table.insert(flares, { Station = sRight, Kerb = edges.RightKerb, Outer = edges.RightOuter, Inward = edges.Inward })
 	end
@@ -640,9 +653,66 @@ function RoundaboutBuilder.CreateAtJunction(
 		return (frame * CFrame.new(offsetM * scale, 0, 0)).Position
 	end
 
-	-- Mouth asphalt: ruled band spoke kerb cut → ring outer kerb arc.
-	-- Closes the triangle gap when the cut is flat and the ring is curved,
-	-- and when Fillet.Compute returns nil on near-radial mouths.
+	-- Tangential entry feeds: cubic from setback cut → ring outer kerb,
+	-- arriving on the circulating tangent (full spoke profile). Ring-owned
+	-- so single-segment road stamps stay valid. Continuous ring is already
+	-- built — feeds only fill the approach, they don't cut the drive loop.
+	local function circulationTangentAt(point: Vector3): Vector3
+		local dx, dz = point.X - center.X, point.Z - center.Z
+		local mag = math.sqrt(dx * dx + dz * dz)
+		if mag < 1e-6 then
+			return Vector3.new(1, 0, 0)
+		end
+		local sign = if style.DriveOnLeft then -1 else 1
+		return Vector3.new(-dz / mag * sign, 0, dx / mag * sign)
+	end
+
+	for _, mouth in mouths do
+		local cutPos = mouth.CutPos
+		local inward = mouth.Edges.Inward
+		local radial = Vector3.new(cutPos.X - center.X, 0, cutPos.Z - center.Z)
+		if radial.Magnitude < 1e-6 then
+			radial = inward
+		else
+			radial = radial.Unit
+		end
+		local attach = Vector3.new(
+			center.X + radial.X * attachRadiusStuds,
+			cutPos.Y,
+			center.Z + radial.Z * attachRadiusStuds
+		)
+		local ringTan = circulationTangentAt(attach)
+		local side = Vector3.new(-inward.Z, 0, inward.X)
+		if ringTan:Dot(side) < 0 then
+			ringTan = -ringTan
+		end
+		local chord = Vector3.new(attach.X - cutPos.X, 0, attach.Z - cutPos.Z)
+		local chordLen = chord.Magnitude
+		if chordLen >= 2 then
+			local handle = math.min(chordLen * 0.42, FEED_LENGTH_STUDS * 0.5)
+			local feed = CurveSegment.Cubic(
+				cutPos,
+				cutPos + inward * handle,
+				attach - ringTan * handle,
+				attach
+			)
+			local piece = RoadBuilder.Build({
+				Curve = PolyCurve.new({ feed }),
+				ProfileStart = mouth.Profile,
+				Style = style,
+				Settings = flatSettings(settings),
+				Preview = false,
+			})
+			piece:SetAttribute("RW_Road", nil)
+			for _, child in piece:GetChildren() do
+				child.Name = "Entry_" .. child.Name
+				child.Parent = ring
+			end
+			piece:Destroy()
+		end
+	end
+
+	-- Residual mouth asphalt under feeds (kerb cut → ring kerb arc).
 	local MOUTH_SAMPLES = 6
 	for _, mouth in mouths do
 		local stations = sampleRingStations(mouth.SLeft, mouth.SRight, curve.Length, MOUTH_SAMPLES)
