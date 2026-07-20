@@ -1,12 +1,25 @@
 # Existing solutions survey: intersections & roundabouts
 
 Answering "are there open-source solutions we can make use of instead of
-hand-rolling the buggy corner geometry." Short version: **no drop-in
-library generates arbitrary-N-way road-intersection *mesh*** (they all
-either template it, or output an abstract network, not pavement). But there
-IS a robust *primitive* we can use — 2D polygon boolean/union — that
-removes the entire class of faults we keep hitting. Findings below, most
-useful first.
+hand-rolling the buggy corner geometry." Two viable directions found:
+(1) a **robust primitive** — 2D polygon boolean/union — that removes the
+whole fault class, and (2) a **translate-me MIT codebase**,
+`MarcusElg/roadcreator`, that already has a working arbitrary-N-way
+intersection AND the only OSS roundabout mesh generator found, using a
+corner primitive (bounded Bézier) that's inherently more robust than our
+fillet. Findings below.
+
+## Newest & strongest: RoadCreator (MIT C#, translate to Luau)
+
+`reference/roadcreator/` — full analysis in its README. The most directly
+useful reference: its intersection corner is a **quadratic Bézier through a
+control point** (a convex combination of 3 fixed points — bounded, cannot
+spike/self-intersect for any angle), on an **angle-sorted connection ring**,
+fanned from the true centre; its roundabout **projects each feeder onto the
+ring and Bézier-blends** the cross-section in (a real merge, the fix for our
+"humps"). Both are C#→Luau translation, not a paradigm change. This is the
+lowest-risk high-value path: swap our `Fillet.Compute` corner for the
+bounded-Bézier corner, and rebuild the roundabout feed as a ring projection.
 
 ## The core insight
 
