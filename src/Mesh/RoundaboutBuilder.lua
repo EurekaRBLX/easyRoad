@@ -363,10 +363,42 @@ local function trimSpoke(
 	return edgePointsAt(newData.Curve, profile, cutStation, inward.Unit, scale)
 end
 
--- Short curved feeder from a setback cut mid into the ring, built with the
--- same Fitting + RoadBuilder path as normal curved roads. End lands just
--- inside the ring outer edge along the spoke's radial so the full profile
--- stays outward (constant width) instead of pinching at ClosestS.
+-- First forward crossing (t > 0) of the ground-plane ray `from + t*dir` with
+-- the circle of radius `R` about `center`. `dir` need not be unit. Returns nil
+-- if the ray never reaches that radius (points away from / stays outside it).
+local function rayCircleFirstHit(from: Vector3, dir: Vector3, center: Vector3, R: number): Vector3?
+	local ux, uz = dir.X, dir.Z
+	local lenSq = ux * ux + uz * uz
+	if lenSq < 1e-12 then
+		return nil
+	end
+	local dx, dz = from.X - center.X, from.Z - center.Z
+	-- Solve |(from - center) + t*dir|^2 = R^2 for the smaller positive t.
+	local b = (dx * ux + dz * uz) / lenSq
+	local c = (dx * dx + dz * dz - R * R) / lenSq
+	local disc = b * b - c
+	if disc < 0 then
+		return nil
+	end
+	local sq = math.sqrt(disc)
+	local t = -b - sq
+	if t <= 1e-6 then
+		t = -b + sq
+	end
+	if t <= 1e-6 then
+		return nil
+	end
+	return Vector3.new(from.X + ux * t, from.Y, from.Z + uz * t)
+end
+
+-- Short feeder from a setback cut mid into the ring, built with the same
+-- Fitting + RoadBuilder path as normal curved roads. The end lands where the
+-- spoke's OWN centreline, continued into the ring, first crosses just inside
+-- the outer edge - so the feeder is a straight (or gently curved) continuation
+-- of the road and actually fills the gap the road leaves. (It used to attach on
+-- the ring RADIAL through the cut mid, which for an off-centre approach - the
+-- common case - pulled the feeder end sideways off the road line, leaving the
+-- real road->ring gap unfilled with a diagonal stub floating beside it.)
 local function buildFeederRoad(
 	cutMid: Vector3,
 	inward: Vector3,
@@ -386,16 +418,23 @@ local function buildFeederRoad(
 	end
 	local startTan = flatIn.Unit
 
-	-- Prefer radial attach from cut mid so a head-on spoke is a short straight
-	-- (or mild CurveFromTangent) segment; angled approaches get a smooth curve.
-	local radial = Vector3.new(cutMid.X - center.X, 0, cutMid.Z - center.Z)
-	if radial.Magnitude < 1e-6 then
-		radial = -startTan
-	else
-		radial = radial.Unit
+	-- Attach where the road's own centreline, continued along its travel
+	-- direction, first crosses just inside the ring's outer edge, so the feeder
+	-- is a straight continuation that fills the gap the road leaves.
+	local ringAttach = rayCircleFirstHit(cutMid, startTan, center, attachRadiusStuds)
+	if not ringAttach then
+		-- Spoke points away from / tangent to the ring: fall back to the radial
+		-- point (a head-on spoke lands correctly here too).
+		local radial = Vector3.new(cutMid.X - center.X, 0, cutMid.Z - center.Z)
+		if radial.Magnitude < 1e-6 then
+			radial = -startTan
+		else
+			radial = radial.Unit
+		end
+		ringAttach =
+			Vector3.new(center.X + radial.X * attachRadiusStuds, cutMid.Y, center.Z + radial.Z * attachRadiusStuds)
 	end
-	local ringAttach =
-		Vector3.new(center.X + radial.X * attachRadiusStuds, cutMid.Y, center.Z + radial.Z * attachRadiusStuds)
+	ringAttach = Vector3.new(ringAttach.X, cutMid.Y, ringAttach.Z)
 	if (ringAttach - cutMid).Magnitude < 0.5 then
 		return nil
 	end

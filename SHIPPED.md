@@ -4,6 +4,22 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout feeders attach along the road, not the ring radial
+
+Follow-up to the feeder-gap fix below: with connection now triggering, the
+feeders built but came out as diagonal stubs floating beside an unfilled gap
+whenever the approach road did not aim at the ring centre (the common case).
+
+`buildFeederRoad` attached each feeder's ring end on the **radial through the
+cut mid**, which for an off-centre approach sits sideways of where the road
+actually points — so the feeder bent 15-45 deg off the road line, landed on
+the radial instead of in front of the road, and left the real road→ring gap
+open. Now the end is found by intersecting the road's **own continued
+centreline** with the ring circle (`rayCircleFirstHit`), so the feeder is a
+straight continuation that fills the gap (0 deg bend for any approach that
+reaches the ring; radial fallback only if the ray misses it entirely).
+Verified out-of-engine across 0/15/30/45-stud offsets.
+
 ## Roundabout tool connects nearby roads (feeder gap fix)
 
 Reported live: a roundabout dropped into a scene left the surrounding roads
