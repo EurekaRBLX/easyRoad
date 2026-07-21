@@ -4,6 +4,31 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout mouth curb-return corners
+
+With the feeders now aligned, the remaining defect was at each mouth: a
+feeder butts into the ring at an angle, so on each side its edge left a
+triangular notch against the ring's outer circle and its kerb line stopped
+dead (no curb return). `CreateAtJunction` built ring + feeders and nothing
+between them; `trimSpoke` even computed the feeder edge points and threw
+them away.
+
+- `buildFeederRoad` now also returns the feeder's cross-section edge points
+  where it meets the ring (`edgePointsAt` at the feeder's ring-end station).
+- New `buildMouthCorners`: for each feeder side, a bounded quadratic-Bezier
+  corner (`BezierCorner`, cannot spike at any mouth angle) from the feeder
+  edge to the radially-projected ring edge, filled as a raised sidewalk band
+  plus roadway asphalt (`FillTriangle`), mirroring the junction curb returns
+  in `JunctionBuilder`. Colours/heights come from the same style fields as
+  the ring (`AsphaltColor`, `SidewalkColor`, `CurbHeightM`).
+- Robustness: the corner control point is clamped so it never sits more than
+  the chord length from the chord midpoint (a very off-centre approach could
+  otherwise balloon the curve ~9 studs — verified out-of-engine at 0/10/25/40
+  stud offsets), and a side whose feeder edge already sits at the ring edge is
+  skipped (no notch to fill).
+
+Not live-verified (no Studio here); geometry checked out-of-engine.
+
 ## Roundabout feeders attach along the road, not the ring radial
 
 Follow-up to the feeder-gap fix below: with connection now triggering, the

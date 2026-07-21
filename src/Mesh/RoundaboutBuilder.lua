@@ -11,6 +11,8 @@
 local CurveSegment = require("../Geometry/CurveSegment")
 local Fitting = require("../Geometry/Fitting")
 local PolyCurve = require("../Geometry/PolyCurve")
+local BezierCorner = require("../Geometry/BezierCorner")
+local FillTriangle = require("./FillTriangle")
 local RoadBuilder = require("./RoadBuilder")
 local RoadInstance = require("../RoadInstance")
 local RoadProfile = require("../RoadProfile")
@@ -407,7 +409,7 @@ local function buildFeederRoad(
 	profile: RoadProfile.RoadProfile,
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings
-): Model?
+): (Model?, SpokeCutEdges?)
 	local flatIn = Vector3.new(inward.X, 0, inward.Z)
 	if flatIn.Magnitude < 1e-6 then
 		local toCenter = Vector3.new(center.X - cutMid.X, 0, center.Z - cutMid.Z)
@@ -442,8 +444,9 @@ local function buildFeederRoad(
 	-- Locked start tangent = spoke travel into the ring (same as freeform curve
 	-- continuation from an existing road end).
 	local segment = Fitting.CurveFromTangent(cutMid, startTan, ringAttach)
+	local feederCurve = PolyCurve.new({ segment })
 	local feeder = RoadBuilder.Build({
-		Curve = PolyCurve.new({ segment }),
+		Curve = feederCurve,
 		ProfileStart = profile,
 		Style = style,
 		Settings = flatSettings(settings),
@@ -452,7 +455,150 @@ local function buildFeederRoad(
 	-- Not a free-standing editable road — owned by the roundabout mesh.
 	feeder:SetAttribute("RW_Road", nil)
 	feeder.Name = "RoundaboutFeeder"
-	return feeder
+
+	-- Cross-section edge points where the feeder meets the ring, so the caller
+	-- can build the mouth curb-return corners against them.
+	local ringStation = feederCurve.Length
+	local endTangent = feederCurve:TangentAt(ringStation)
+	local ringEdges = edgePointsAt(feederCurve, profile, ringStation, endTangent, settings.MetersToStuds)
+	return feeder, ringEdges
+end
+
+local DOWN = Vector3.new(0, -1, 0)
+
+local function flatUnit(v: Vector3): Vector3
+	local flat = Vector3.new(v.X, 0, v.Z)
+	if flat.Magnitude < 1e-6 then
+		return flat
+	end
+	return flat.Unit
+end
+
+-- Curb-return corners where a feeder meets the ring. Each feeder is a straight
+-- road butting into the ring at an angle, so on each side its edge leaves a
+-- triangular notch against the ring's outer circle and its kerb line stops
+-- dead. This closes both notches (per side) with a bounded quadratic-Bezier
+-- corner (BezierCorner - cannot spike at any mouth angle) from the feeder's
+-- edge to the radially-projected ring edge, filled as a raised sidewalk band
+-- plus roadway asphalt, mirroring the junction curb returns in JunctionBuilder.
+local function buildMouthCorners(
+	ring: Model,
+	ringEdges: SpokeCutEdges,
+	center: Vector3,
+	outerRadiusStuds: number,
+	ringSidewalkStuds: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+)
+	local scale = settings.MetersToStuds
+	local thickness = settings.RoadThicknessStuds
+	local curbHeight = style.CurbHeightM * scale
+	local sidewalkDepth = thickness + curbHeight
+	local ringKerbRadius = math.max(1, outerRadiusStuds - ringSidewalkStuds)
+	local SAMPLES = 6
+
+	local function makePart(material: Enum.Material, color: Color3): Part
+		local part = Instance.new("Part")
+		part.Name = "RoundaboutMouth"
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanTouch = false
+		part.CanQuery = false
+		part.CastShadow = false
+		part.TopSurface = Enum.SurfaceType.Smooth
+		part.BottomSurface = Enum.SurfaceType.Smooth
+		part.Material = material
+		part.Color = color
+		return part
+	end
+	local function makeAsphaltPart(): Part
+		return makePart(Enum.Material.Asphalt, style.AsphaltColor)
+	end
+	local function makeSidewalkPart(): Part
+		return makePart(Enum.Material.Concrete, style.SidewalkColor)
+	end
+	local function raise(p: Vector3): Vector3
+		return p + Vector3.new(0, curbHeight, 0)
+	end
+	local function projectTo(p: Vector3, radius: number): Vector3
+		local u = flatUnit(p - center)
+		if u.Magnitude < 1e-6 then
+			return p
+		end
+		return Vector3.new(center.X + u.X * radius, p.Y, center.Z + u.Z * radius)
+	end
+
+	local dir = flatUnit(ringEdges.Inward)
+	if dir.Magnitude < 1e-6 then
+		return
+	end
+	-- Roadway corner apex: the ring kerb point on the feeder's own centreline.
+	local mouthMid = ringEdges.LeftKerb:Lerp(ringEdges.RightKerb, 0.5)
+	local apexAsphalt = projectTo(mouthMid, ringKerbRadius)
+
+	-- A clamped quadratic-Bezier corner from `aEdge` (edge line along `aDir`) to
+	-- `bEdge` (along `bDir`). The raw control is where the two edge lines meet,
+	-- but for a very off-centre feeder that point can sit far out and balloon the
+	-- curve, so pull the control no further from the chord midpoint than the
+	-- chord length. Bounded inside {aEdge, control, bEdge} either way.
+	local BULGE_CAP = 1.0
+	local function cornerPolyline(aEdge: Vector3, aDir: Vector3, bEdge: Vector3, bDir: Vector3): { Vector3 }
+		local control = BezierCorner.ControlPoint(aEdge, aDir, bEdge, bDir)
+		local mid = aEdge:Lerp(bEdge, 0.5)
+		local off = Vector3.new(control.X - mid.X, 0, control.Z - mid.Z)
+		local maxBulge = distanceXZ(aEdge, bEdge) * BULGE_CAP
+		if off.Magnitude > maxBulge and off.Magnitude > 1e-6 then
+			local capped = off.Unit * maxBulge
+			control = Vector3.new(mid.X + capped.X, control.Y, mid.Z + capped.Z)
+		end
+		local points: { Vector3 } = table.create(SAMPLES + 2)
+		for i = 0, SAMPLES + 1 do
+			table.insert(points, BezierCorner.PointAt(aEdge, control, bEdge, i / (SAMPLES + 1)))
+		end
+		return points
+	end
+
+	local MIN_CORNER_STUDS = 0.75
+	local function cornerSide(fKerb: Vector3, fOuter: Vector3)
+		local rKerb = projectTo(fKerb, ringKerbRadius)
+		local rOuter = projectTo(fOuter, outerRadiusStuds)
+		-- Feeder edge already at the ring edge on this side: no notch to fill.
+		if distanceXZ(fKerb, rKerb) < MIN_CORNER_STUDS then
+			return
+		end
+		-- Ring edge line at each corner point = the circle's tangent there.
+		local kerbB = cornerPolyline(fKerb, dir, rKerb, BezierCorner.Perpendicular(rKerb - center))
+		local outerB = cornerPolyline(fOuter, dir, rOuter, BezierCorner.Perpendicular(rOuter - center))
+		local n = math.min(#kerbB, #outerB)
+		-- Raised sidewalk band between the kerb and outer boundaries.
+		for j = 1, n - 1 do
+			FillTriangle(
+				raise(outerB[j]),
+				raise(kerbB[j]),
+				raise(kerbB[j + 1]),
+				sidewalkDepth,
+				DOWN,
+				makeSidewalkPart,
+				ring
+			)
+			FillTriangle(
+				raise(outerB[j]),
+				raise(kerbB[j + 1]),
+				raise(outerB[j + 1]),
+				sidewalkDepth,
+				DOWN,
+				makeSidewalkPart,
+				ring
+			)
+		end
+		-- Roadway asphalt inside the kerb: fan from the mouth-centre apex.
+		for j = 1, #kerbB - 1 do
+			FillTriangle(apexAsphalt, kerbB[j], kerbB[j + 1], thickness, DOWN, makeAsphaltPart, ring)
+		end
+	end
+
+	cornerSide(ringEdges.LeftKerb, ringEdges.LeftOuter)
+	cornerSide(ringEdges.RightKerb, ringEdges.RightOuter)
 end
 
 function RoundaboutBuilder.CreateAtJunction(
@@ -529,9 +675,13 @@ function RoundaboutBuilder.CreateAtJunction(
 		local cutStation = if atStart then 0 else trimmed.Curve.Length
 		local cutMid = trimmed.Curve:PosAt(cutStation)
 		local spokeProfile = if atStart then trimmed.ProfileStart else (trimmed.ProfileEnd or trimmed.ProfileStart)
-		local feeder = buildFeederRoad(cutMid, edges.Inward, center, feedAttachR, spokeProfile, style, settings)
+		local feeder, ringEdges =
+			buildFeederRoad(cutMid, edges.Inward, center, feedAttachR, spokeProfile, style, settings)
 		if feeder then
 			feeder.Parent = ring
+		end
+		if ringEdges then
+			buildMouthCorners(ring, ringEdges, center, outerRadiusStuds, style.SidewalkWidthM * scale, style, settings)
 		end
 	end
 
