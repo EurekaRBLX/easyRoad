@@ -4,6 +4,35 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout tool connects nearby roads (feeder gap fix)
+
+Reported live: a roundabout dropped into a scene left the surrounding roads
+disconnected — each spoke stopped short of the ring with a bare gap, no
+feeder bridging it.
+
+Root cause was the trigger, not the feeder geometry. The Roundabout tool
+committed via `RoundaboutBuilder.Create`, which builds only the ring +
+island and connects *nothing*; feeders are only ever built on the
+`ConnectRoad` → `CreateAtJunction` path, which the tool never invoked. So
+placing a roundabout onto an existing cluster of roads produced a bare ring
+sitting among untouched roads.
+
+- New `RoundaboutBuilder.Place`: builds the ring, then collects roads within
+  the feeder band (`outerR + SETBACK_STUDS + SnapRadius + 8`) and, if any,
+  hands the ring + one nearby road to `ConnectRoad`, which forms the
+  junction and rebuilds with feeders for all of them. No nearby roads → it
+  is exactly `Create`. `commitRoundabout` now calls `Place`.
+- `FindNear` match band widened by `SETBACK_STUDS` so a road drawn *toward*
+  an already-placed roundabout but stopping a little short still snaps and
+  connects (matches the collection band `ConnectRoad` already uses).
+
+Also translated MarcusElg/roadcreator's bounded quadratic-Bézier corner to
+`src/Geometry/BezierCorner.lua` (MIT) — the robust corner primitive for the
+feeder-blend follow-up in `TODO.md`. Standalone, not yet wired in.
+
+Not live-verified (no Studio in this environment); diagnosis is from the
+code path + screenshot.
+
 ## Polar roundabout rebuild + junction median/offset sidewalk
 
 **Phase A — Roundabout as polar annulus (replaces failed feed stack).**

@@ -326,15 +326,8 @@ local function trimSpoke(
 	local curve = data.Curve
 	local fromStation = if atStart then 0 else curve.Length
 	local towardStation = if atStart then curve.Length else 0
-	local crossing = findProfileRingCrossing(
-		curve,
-		data.ProfileStart,
-		fromStation,
-		towardStation,
-		center,
-		targetRadiusStuds,
-		scale
-	)
+	local crossing =
+		findProfileRingCrossing(curve, data.ProfileStart, fromStation, towardStation, center, targetRadiusStuds, scale)
 	if not crossing then
 		return nil
 	end
@@ -401,11 +394,8 @@ local function buildFeederRoad(
 	else
 		radial = radial.Unit
 	end
-	local ringAttach = Vector3.new(
-		center.X + radial.X * attachRadiusStuds,
-		cutMid.Y,
-		center.Z + radial.Z * attachRadiusStuds
-	)
+	local ringAttach =
+		Vector3.new(center.X + radial.X * attachRadiusStuds, cutMid.Y, center.Z + radial.Z * attachRadiusStuds)
 	if (ringAttach - cutMid).Magnitude < 0.5 then
 		return nil
 	end
@@ -499,18 +489,8 @@ function RoundaboutBuilder.CreateAtJunction(
 		end
 		local cutStation = if atStart then 0 else trimmed.Curve.Length
 		local cutMid = trimmed.Curve:PosAt(cutStation)
-		local spokeProfile = if atStart
-			then trimmed.ProfileStart
-			else (trimmed.ProfileEnd or trimmed.ProfileStart)
-		local feeder = buildFeederRoad(
-			cutMid,
-			edges.Inward,
-			center,
-			feedAttachR,
-			spokeProfile,
-			style,
-			settings
-		)
+		local spokeProfile = if atStart then trimmed.ProfileStart else (trimmed.ProfileEnd or trimmed.ProfileStart)
+		local feeder = buildFeederRoad(cutMid, edges.Inward, center, feedAttachR, spokeProfile, style, settings)
 		if feeder then
 			feeder.Parent = ring
 		end
@@ -521,10 +501,7 @@ function RoundaboutBuilder.CreateAtJunction(
 	return ring
 end
 
-function RoundaboutBuilder.FindNear(
-	pos: Vector3,
-	snapRadiusStuds: number
-): (Model?, Vector3?, Vector3?)
+function RoundaboutBuilder.FindNear(pos: Vector3, snapRadiusStuds: number): (Model?, Vector3?, Vector3?)
 	local folder = workspace:FindFirstChild(ROUNDABOUTS_FOLDER_NAME)
 	if not folder then
 		return nil, nil, nil
@@ -543,7 +520,10 @@ function RoundaboutBuilder.FindNear(
 			continue
 		end
 		local d = distanceXZ(pos, c)
-		if d <= outerR + snapRadiusStuds then
+		-- Include the setback zone: a road drawn toward the ring but stopping a
+		-- little short (within the feeder setback) should still connect, matching
+		-- the collection band ConnectRoad uses when it rebuilds.
+		if d <= outerR + snapRadiusStuds + SETBACK_STUDS then
 			local score = math.abs(d - outerR)
 			if score < bestScore then
 				bestScore = score
@@ -576,10 +556,8 @@ local function collectNearbyRoads(center: Vector3, maxDist: number, minDist: num
 		if not data then
 			continue
 		end
-		local dNear = math.min(
-			distanceXZ(data.Curve:PosAt(0), center),
-			distanceXZ(data.Curve:PosAt(data.Curve.Length), center)
-		)
+		local dNear =
+			math.min(distanceXZ(data.Curve:PosAt(0), center), distanceXZ(data.Curve:PosAt(data.Curve.Length), center))
 		if dNear <= maxDist and dNear >= minDist then
 			table.insert(out, child :: Model)
 		end
@@ -643,6 +621,38 @@ function RoundaboutBuilder.ConnectRoad(
 	end
 	ring:Destroy()
 	return RoundaboutBuilder.CreateAtJunction(jid, radiusStuds, laneCount, laneWidthM, style, settings)
+end
+
+-- Place a roundabout at `center` AND wire up any roads already sitting near it.
+-- The Roundabout tool used to call Create directly, which builds only a bare
+-- ring + island and ignores every nearby road - so dropping a roundabout onto
+-- an existing cluster of roads left them all disconnected (the reported
+-- "feeders don't reach the ring" gap). Here we build the ring, then hand it and
+-- one nearby road to ConnectRoad, which collects the rest, forms a junction,
+-- and rebuilds with feeders for all of them. With no nearby roads it is exactly
+-- Create.
+function RoundaboutBuilder.Place(
+	center: Vector3,
+	radiusStuds: number,
+	laneCount: number,
+	laneWidthM: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): Model
+	local ring = RoundaboutBuilder.Create(center, radiusStuds, laneCount, laneWidthM, style, settings)
+	local outerR = ring:GetAttribute("RW_OuterRadius") :: number?
+	if not outerR then
+		return ring
+	end
+	local nearby = collectNearbyRoads(
+		center,
+		outerR + SETBACK_STUDS + settings.SnapRadiusStuds + 8,
+		math.max(1, radiusStuds * 0.25)
+	)
+	if #nearby == 0 then
+		return ring
+	end
+	return RoundaboutBuilder.ConnectRoad(ring, nearby[1], style, settings) or ring
 end
 
 return RoundaboutBuilder

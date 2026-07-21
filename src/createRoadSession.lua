@@ -715,7 +715,10 @@ local function createRoadSession(
 	-- multi-click curve fitting involved, unlike the other tool modes.
 	local function commitRoundabout(center: Vector3)
 		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadPlace", "Place roundabout")
-		RoundaboutBuilder.Create(
+		-- Place, then auto-connect any roads already near the drop point (so a
+		-- roundabout dropped onto existing roads wires them up with feeders
+		-- instead of leaving a bare ring). No nearby roads -> just the ring.
+		RoundaboutBuilder.Place(
 			center,
 			roundaboutRadiusStuds,
 			roundaboutLaneCount,

@@ -4,6 +4,19 @@ Planned/requested work not yet built, roughly ordered by how developed the
 plan is. Not user-facing; internal planning only. See `SHIPPED.md` for
 what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout feeder blend with BezierCorner (robustness follow-up)
+
+The roundabout now connects nearby roads (see `SHIPPED.md`), but each feeder
+is still a separate short `Fitting.CurveFromTangent` road bridging a
+setback gap to the ring — a real merge, but the join to the ring edge is a
+butt-join, not a blended mouth, so wide-angle or offset approaches can still
+read as a seam/kink. Follow-up: replace the per-feeder bridge with a
+RoadCreator-style ring projection + bounded quadratic-Bézier blend of the
+feeder cross-section into the ring edge, using the already-translated
+`src/Geometry/BezierCorner.lua`. Bounded-by-construction, so it cannot spike
+regardless of approach angle. Same primitive can replace `Fillet.Compute` in
+junction curb returns. Needs Studio verification of the mouth continuity.
+
 ## Marking stretch v1 follow-ups (deliberately deferred, not forgotten)
 
 The marking-stretch feature (drag a lane boundary's marking to override its
