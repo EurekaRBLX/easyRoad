@@ -538,10 +538,12 @@ local function buildMouthCorners(
 
 	-- A clamped quadratic-Bezier corner from `aEdge` (edge line along `aDir`) to
 	-- `bEdge` (along `bDir`). The raw control is where the two edge lines meet,
-	-- but for a very off-centre feeder that point can sit far out and balloon the
-	-- curve, so pull the control no further from the chord midpoint than the
-	-- chord length. Bounded inside {aEdge, control, bEdge} either way.
-	local BULGE_CAP = 1.0
+	-- but that point sits well outside the chord and bowing the curve all the
+	-- way out to it makes the corner bulge into a flower-petal lobe past the
+	-- ring. Keep only a gentle round: pull the control to at most a small
+	-- fraction of the chord length off the midpoint. Bounded inside
+	-- {aEdge, control, bEdge} either way.
+	local BULGE_CAP = 0.25
 	local function cornerPolyline(aEdge: Vector3, aDir: Vector3, bEdge: Vector3, bDir: Vector3): { Vector3 }
 		local control = BezierCorner.ControlPoint(aEdge, aDir, bEdge, bDir)
 		local mid = aEdge:Lerp(bEdge, 0.5)
@@ -599,6 +601,20 @@ local function buildMouthCorners(
 
 	cornerSide(ringEdges.LeftKerb, ringEdges.LeftOuter)
 	cornerSide(ringEdges.RightKerb, ringEdges.RightOuter)
+
+	-- Central throat: both side fans start at `apexAsphalt`, so the wedge
+	-- straight between the feeder's two kerb points is left open (the dark
+	-- notch at the mouth centre). Close it with the roadway between the feeder
+	-- end and the ring's kerb.
+	FillTriangle(
+		apexAsphalt,
+		ringEdges.LeftKerb,
+		ringEdges.RightKerb,
+		settings.RoadThicknessStuds,
+		DOWN,
+		makeAsphaltPart,
+		ring
+	)
 end
 
 function RoundaboutBuilder.CreateAtJunction(

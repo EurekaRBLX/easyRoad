@@ -4,6 +4,22 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout mouth corners: tame the bulge + close the throat
+
+Follow-up on the first live screenshot of the mouth corners: the curb
+returns ballooned into flower-petal lobes past the ring, and a dark
+triangular notch remained at each mouth centre.
+
+- Bulge cap on the corner Bezier control cut from 1.0 -> 0.25 of the chord,
+  so the corner is a gentle round hugging the mouth instead of a lobe bowing
+  out to the far edge-line intersection.
+- The two per-side asphalt fans both start at the mouth-centre apex, so the
+  wedge straight between the feeder's two kerb points was never filled (the
+  centre notch). Added one `FillTriangle(apex, LeftKerb, RightKerb)` to close
+  the throat roadway.
+
+Still not live-verified.
+
 ## Roundabout mouth curb-return corners
 
 With the feeders now aligned, the remaining defect was at each mouth: a
