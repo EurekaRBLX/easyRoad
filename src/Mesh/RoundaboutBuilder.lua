@@ -562,15 +562,26 @@ local function buildMouthCorners(
 
 	local MIN_CORNER_STUDS = 0.75
 	local function cornerSide(fKerb: Vector3, fOuter: Vector3)
-		local rKerb = projectTo(fKerb, ringKerbRadius)
-		local rOuter = projectTo(fOuter, outerRadiusStuds)
-		-- Feeder edge already at the ring edge on this side: no notch to fill.
-		if distanceXZ(fKerb, rKerb) < MIN_CORNER_STUDS then
+		-- Attach BOTH boundaries at one ring angle (the radial to the feeder's
+		-- outer corner) so the band's ring end is a clean radial segment. Giving
+		-- the kerb and outer ends their own radial projections puts them at
+		-- different angles for a steeply-angled approach, which twists the band
+		-- into a triangular flap across the mouth (the "wrong way" corner).
+		local ringDir = flatUnit(fOuter - center)
+		if ringDir.Magnitude < 1e-6 then
 			return
 		end
-		-- Ring edge line at each corner point = the circle's tangent there.
-		local kerbB = cornerPolyline(fKerb, dir, rKerb, BezierCorner.Perpendicular(rKerb - center))
-		local outerB = cornerPolyline(fOuter, dir, rOuter, BezierCorner.Perpendicular(rOuter - center))
+		local rKerb = Vector3.new(center.X + ringDir.X * ringKerbRadius, fKerb.Y, center.Z + ringDir.Z * ringKerbRadius)
+		local rOuter =
+			Vector3.new(center.X + ringDir.X * outerRadiusStuds, fOuter.Y, center.Z + ringDir.Z * outerRadiusStuds)
+		-- Feeder edge already at the ring edge on this side: no notch to fill.
+		if distanceXZ(fOuter, rOuter) < MIN_CORNER_STUDS and distanceXZ(fKerb, rKerb) < MIN_CORNER_STUDS then
+			return
+		end
+		-- Both corner points share the ring tangent at that single angle.
+		local ringTan = BezierCorner.Perpendicular(ringDir)
+		local kerbB = cornerPolyline(fKerb, dir, rKerb, ringTan)
+		local outerB = cornerPolyline(fOuter, dir, rOuter, ringTan)
 		local n = math.min(#kerbB, #outerB)
 		-- Raised sidewalk band between the kerb and outer boundaries.
 		for j = 1, n - 1 do
