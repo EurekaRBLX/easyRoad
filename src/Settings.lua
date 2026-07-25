@@ -11,6 +11,8 @@ local Keybinds = require("./Keybinds")
 local kSettingsKey = "easyRoadState"
 
 local LANGUAGE_VARIANTS = { "British", "American" }
+local SPEED_UNITS = { "Kmh", "Mph" }
+local LENGTH_UNITS = { "Meters", "Feet" }
 
 export type SuperelevationMode = "Auto" | "Manual" | "Off"
 
@@ -19,6 +21,12 @@ export type SuperelevationMode = "Auto" | "Manual" | "Off"
 -- a display concern: internal data model field/kind names (CurbHeightM,
 -- "Sidewalk" component kind, etc.) don't change with this setting.
 export type LanguageVariant = "British" | "American"
+
+-- Display-only measurement units (see Units.lua). Storage stays canonically
+-- metric regardless: DesignSpeedKph and every *M field keep their values, so
+-- switching these never changes the geometry that gets built.
+export type SpeedUnit = "Kmh" | "Mph"
+export type LengthUnit = "Meters" | "Feet"
 
 export type EasyRoadSettings = {
 	-- Grand style settings
@@ -39,6 +47,8 @@ export type EasyRoadSettings = {
 	AutoMarkings: boolean,
 	DriveSideOverride: string, -- "Region" | "Left" | "Right"
 	LanguageVariant: LanguageVariant,
+	SpeedUnit: SpeedUnit,
+	LengthUnit: LengthUnit,
 
 	-- Default road
 	DefaultProfileId: string,
@@ -93,6 +103,12 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 				and table.find(LANGUAGE_VARIANTS, raw.LanguageVariant)
 			then raw.LanguageVariant :: LanguageVariant
 			else "British" :: LanguageVariant,
+		SpeedUnit = if typeof(raw.SpeedUnit) == "string" and table.find(SPEED_UNITS, raw.SpeedUnit)
+			then raw.SpeedUnit :: SpeedUnit
+			else "Kmh" :: SpeedUnit,
+		LengthUnit = if typeof(raw.LengthUnit) == "string" and table.find(LENGTH_UNITS, raw.LengthUnit)
+			then raw.LengthUnit :: LengthUnit
+			else "Meters" :: LengthUnit,
 		DefaultProfileId = raw.DefaultProfileId or "builtin_two_lane",
 		SnapRadiusStuds = raw.SnapRadiusStuds or 8,
 		GridSizeStuds = raw.GridSizeStuds or 4,
@@ -120,6 +136,8 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		AutoMarkings = settings.AutoMarkings,
 		DriveSideOverride = settings.DriveSideOverride,
 		LanguageVariant = settings.LanguageVariant,
+		SpeedUnit = settings.SpeedUnit,
+		LengthUnit = settings.LengthUnit,
 		DefaultProfileId = settings.DefaultProfileId,
 		SnapRadiusStuds = settings.SnapRadiusStuds,
 		GridSizeStuds = settings.GridSizeStuds,

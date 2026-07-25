@@ -15,6 +15,7 @@ local RegionEditor = require("./RegionEditor")
 local RegionStyles = require("../RegionStyles")
 local RegionLibraryModule = require("../RegionLibrary")
 local Settings = require("../Settings")
+local Units = require("../Units")
 
 type RegionLibrary = RegionLibraryModule.RegionLibrary
 
@@ -47,6 +48,12 @@ local function RegionalPreferenceGui(props: {
 	local settings = props.Settings
 	local regionLibrary = props.RegionLibrary
 	local editingRegion, setEditingRegion = React.useState(nil :: RegionStyles.RegionStyle?)
+
+	-- Display-unit conversions for the fields below (see Units.lua). Bounds
+	-- convert with the value, or a field shown in mph/ft would be clamped by
+	-- km/h/metre limits.
+	local speedShown, speedMin, speedMax = Units.SpeedField(settings, settings.DesignSpeedKph, 10, 200)
+	local runoffShown, runoffMin, runoffMax = Units.LengthField(settings, settings.SuperelevationRunoffM, 2, 30)
 
 	local activeStyle = regionLibrary.Get(settings.RegionId)
 
@@ -223,6 +230,47 @@ local function RegionalPreferenceGui(props: {
 			},
 		}),
 
+		-- Display-only units. Storage stays metric (see Units.lua), so
+		-- switching these never changes the geometry that gets built.
+		SpeedUnit = e(LabeledRow, {
+			Label = "Speed units",
+			LayoutOrder = 8,
+			children = {
+				Dropdown = e(Components.Dropdown, {
+					Options = {
+						{ Id = "Kmh", Text = "km/h" },
+						{ Id = "Mph", Text = "mph" },
+					},
+					SelectedId = settings.SpeedUnit,
+					OnSelected = function(id: string)
+						settings.SpeedUnit = id :: Settings.SpeedUnit
+						props.OnSettingsChanged()
+					end,
+					LayoutOrder = 2,
+					Grow = true,
+				}),
+			},
+		}),
+		LengthUnit = e(LabeledRow, {
+			Label = "Length units",
+			LayoutOrder = 9,
+			children = {
+				Dropdown = e(Components.Dropdown, {
+					Options = {
+						{ Id = "Meters", Text = "Metres (m)" },
+						{ Id = "Feet", Text = "Feet (ft)" },
+					},
+					SelectedId = settings.LengthUnit,
+					OnSelected = function(id: string)
+						settings.LengthUnit = id :: Settings.LengthUnit
+						props.OnSettingsChanged()
+					end,
+					LayoutOrder = 2,
+					Grow = true,
+				}),
+			},
+		}),
+
 		BankSection = e(Components.Section, {
 			Text = "Superelevation (Banking)",
 			LayoutOrder = 10,
@@ -244,15 +292,15 @@ local function RegionalPreferenceGui(props: {
 			},
 		}),
 		DesignSpeed = settings.SuperelevationMode == "Auto" and e(LabeledRow, {
-			Label = "Design speed (km/h)",
+			Label = "Design speed (" .. Units.SpeedSuffix(settings) .. ")",
 			LayoutOrder = 12,
 			children = {
 				Field = e(Components.NumberField, {
-					Value = settings.DesignSpeedKph,
-					Min = 10,
-					Max = 200,
+					Value = speedShown,
+					Min = speedMin,
+					Max = speedMax,
 					OnChanged = function(value: number)
-						settings.DesignSpeedKph = value
+						settings.DesignSpeedKph = Units.SpeedToKph(settings, value)
 						props.OnSettingsChanged()
 					end,
 					LayoutOrder = 2,
@@ -283,16 +331,16 @@ local function RegionalPreferenceGui(props: {
 		-- runoff taper applies to both - only hidden when banking is Off
 		-- entirely and there's nothing to transition.
 		TransitionLength = settings.SuperelevationMode ~= "Off" and e(LabeledRow, {
-			Label = "Transition length (m)",
+			Label = "Transition length (" .. Units.LengthSuffix(settings) .. ")",
 			LayoutOrder = 14,
 			children = {
 				Slider = e(Components.Slider, {
-					Value = settings.SuperelevationRunoffM,
-					Min = 2,
-					Max = 30,
-					ValueSuffix = " m",
+					Value = runoffShown,
+					Min = runoffMin,
+					Max = runoffMax,
+					ValueSuffix = " " .. Units.LengthSuffix(settings),
 					OnChanged = function(value: number)
-						settings.SuperelevationRunoffM = value
+						settings.SuperelevationRunoffM = Units.LengthToM(settings, value)
 						props.OnSettingsChanged()
 					end,
 					LayoutOrder = 2,

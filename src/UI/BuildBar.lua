@@ -21,6 +21,7 @@ local Components = require("./Components")
 local RoadDesigner = require("./RoadDesigner")
 local RoadLibraryModule = require("../RoadLibrary")
 local Settings = require("../Settings")
+local Units = require("../Units")
 local Keybinds = require("../Keybinds")
 
 local function keyHint(bindings: { string }): string
@@ -47,7 +48,8 @@ local function ToolButton(props: {
 	LayoutOrder: number,
 })
 	local hovered, setHovered = React.useState(false)
-	local color = if props.Selected then (if hovered then Theme.ACCENT_HOVER else Theme.SELECTED)
+	local color = if props.Selected
+		then (if hovered then Theme.ACCENT_HOVER else Theme.SELECTED)
 		elseif hovered then Theme.BUTTON_HOVER
 		else Theme.BUTTON
 
@@ -191,12 +193,18 @@ local function BuildBar(props: {
 		children.RoundaboutLaneWidth = e(Components.Row, { LayoutOrder = 5 }, {
 			Label = e(Components.Label, { Text = "Lane width", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.NumberField, {
-				Value = props.RoundaboutLaneWidth,
-				Min = 1,
-				OnChanged = props.SetRoundaboutLaneWidth,
+				Value = Units.LengthFromM(props.Settings, props.RoundaboutLaneWidth),
+				Min = Units.LengthFromM(props.Settings, 1),
+				OnChanged = function(value: number)
+					props.SetRoundaboutLaneWidth(Units.LengthToM(props.Settings, value))
+				end,
 				LayoutOrder = 2,
 			}),
-			Unit = e(Components.Label, { Text = "meters", Dim = true, LayoutOrder = 3 }),
+			Unit = e(Components.Label, {
+				Text = Units.LengthSuffix(props.Settings),
+				Dim = true,
+				LayoutOrder = 3,
+			}),
 		})
 	end
 	children.SnapToRoadToggle = e(Components.Checkbox, {
@@ -238,15 +246,20 @@ local function BuildBar(props: {
 		end,
 		LayoutOrder = 9,
 	})
+	local speedShown, speedMin, speedMax = Units.SpeedField(props.Settings, props.Settings.DesignSpeedKph, 10, 200)
 	children.Speed = props.Settings.SuperelevationMode ~= "Off"
 		and e(Components.Row, { LayoutOrder = 10 }, {
-			Label = e(Components.Label, { Text = "Speed (km/h)", LayoutOrder = 1, Width = 90 }),
+			Label = e(Components.Label, {
+				Text = "Speed (" .. Units.SpeedSuffix(props.Settings) .. ")",
+				LayoutOrder = 1,
+				Width = 90,
+			}),
 			Field = e(Components.NumberField, {
-				Value = props.Settings.DesignSpeedKph,
-				Min = 10,
-				Max = 200,
+				Value = speedShown,
+				Min = speedMin,
+				Max = speedMax,
 				OnChanged = function(value: number)
-					props.Settings.DesignSpeedKph = value
+					props.Settings.DesignSpeedKph = Units.SpeedToKph(props.Settings, value)
 					props.OnSettingsChanged()
 				end,
 				LayoutOrder = 2,
@@ -258,16 +271,22 @@ local function BuildBar(props: {
 	-- Named distinctly from children.Transition above (the "Widen to" row) -
 	-- both used the same key at one point, which silently dropped whichever
 	-- rendered second from the panel entirely.
+	local runoffShown, runoffMin, runoffMax =
+		Units.LengthField(props.Settings, props.Settings.SuperelevationRunoffM, 2, 30)
 	children.BankTransition = props.Settings.SuperelevationMode ~= "Off"
 		and e(Components.Row, { LayoutOrder = 11 }, {
-			Label = e(Components.Label, { Text = "Transition (m)", LayoutOrder = 1, Width = 90 }),
+			Label = e(Components.Label, {
+				Text = "Transition (" .. Units.LengthSuffix(props.Settings) .. ")",
+				LayoutOrder = 1,
+				Width = 90,
+			}),
 			Slider = e(Components.Slider, {
-				Value = props.Settings.SuperelevationRunoffM,
-				Min = 2,
-				Max = 30,
-				ValueSuffix = " m",
+				Value = runoffShown,
+				Min = runoffMin,
+				Max = runoffMax,
+				ValueSuffix = " " .. Units.LengthSuffix(props.Settings),
 				OnChanged = function(value: number)
-					props.Settings.SuperelevationRunoffM = value
+					props.Settings.SuperelevationRunoffM = Units.LengthToM(props.Settings, value)
 					props.OnSettingsChanged()
 				end,
 				LayoutOrder = 2,

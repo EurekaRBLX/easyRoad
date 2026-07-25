@@ -4,6 +4,46 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Units settings (km/h / mph, metres / feet)
+
+Backlog item: measurements were hardcoded metric in the UI. Added
+display-only unit conversion, deliberately built as the exact parallel of
+`Locale.lua`'s British/American terminology swap.
+
+- New `src/Units.lua`: `SpeedSuffix`/`SpeedFromKph`/`SpeedToKph`/`SpeedField`
+  and `LengthSuffix`/`LengthFromM`/`LengthToM`/`LengthField`/`FormatLength`.
+- New settings `SpeedUnit` ("Kmh"/"Mph") and `LengthUnit` ("Meters"/"Feet"),
+  persisted and validated on load exactly like `LanguageVariant`, with two
+  dropdowns beside Terminology in Regional Preference.
+- **Storage stays canonically metric.** `DesignSpeedKph` and every `*M` field
+  keep their values; only display converts. That is deliberate: the
+  superelevation relationship (e + f = V^2/127R) is only valid with V in km/h
+  and R in metres, so converting at the edges means switching a display unit
+  can never change the geometry that gets built.
+- The `*Field` helpers convert the Min/Max **bounds** along with the value -
+  a field showing mph but clamped to km/h limits would silently refuse valid
+  input, which is the easy bug here.
+
+Wired at every field that had `settings` in scope: design speed (Road Tool
+panel + Regional Preference), superelevation transition length (both), dash
+length/gap, roundabout lane width. `RoadDesigner`'s lane width and
+`RegionEditor`'s region dimensions still read in metres - they take no
+`Settings` prop, so it needs threading first; logged in `TODO.md`.
+
+## Roundabout mouth flares open into the ring
+
+Reported live: "the mouth still has to open, not close into it". The curb
+returns were closing each mouth back down to plain road width - both rails
+attached at the feeder's own ring angle, so the opening never widened.
+
+Each side's ring attachment is now swung AWAY from the mouth centre by an
+arc distance (`max(6, halfWidth * 0.9)` studs, clamped 8-30 deg), so the two
+sides diverge and the entry reads as a trumpet flaring into the circulating
+lane. Side is taken from the cross product of the mouth-centre radial with
+the side radial, falling back to the edge point's lateral offset when those
+radials coincide. Verified out-of-engine: mouth arc span widens (24 -> 36
+deg) with both sides moving outward. Awaiting live confirmation.
+
 ## Roundabout mouth corners: tame the bulge + close the throat
 
 Follow-up on the first live screenshot of the mouth corners: the curb

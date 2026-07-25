@@ -17,6 +17,7 @@ local RoadProfile = require("../RoadProfile")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
 local Locale = require("../Locale")
+local Units = require("../Units")
 
 local ProfileFields = {}
 
@@ -107,14 +108,18 @@ function ProfileFields.InsertMarkingOptions(
 	children["PF_DashLengthRow"] = e(Components.Row, {
 		LayoutOrder = order,
 	}, {
-		Label = e(Components.Label, { Text = "Dash length (m)", LayoutOrder = 1, Width = 100 }),
+		Label = e(Components.Label, {
+			Text = "Dash length (" .. Units.LengthSuffix(settings) .. ")",
+			LayoutOrder = 1,
+			Width = 100,
+		}),
 		Field = e(Components.NumberField, {
-			Value = profile.MarkingDashLengthM or regionStyle.DashLengthM,
-			Min = 0.25,
-			Max = 20,
+			Value = Units.LengthFromM(settings, profile.MarkingDashLengthM or regionStyle.DashLengthM),
+			Min = Units.LengthFromM(settings, 0.25),
+			Max = Units.LengthFromM(settings, 20),
 			OnChanged = function(value: number)
 				onChange(function(copy)
-					copy.MarkingDashLengthM = value
+					copy.MarkingDashLengthM = Units.LengthToM(settings, value)
 				end)
 			end,
 			LayoutOrder = 2,
@@ -126,14 +131,18 @@ function ProfileFields.InsertMarkingOptions(
 	children["PF_DashGapRow"] = e(Components.Row, {
 		LayoutOrder = order,
 	}, {
-		Label = e(Components.Label, { Text = "Dash gap (m)", LayoutOrder = 1, Width = 100 }),
+		Label = e(Components.Label, {
+			Text = "Dash gap (" .. Units.LengthSuffix(settings) .. ")",
+			LayoutOrder = 1,
+			Width = 100,
+		}),
 		Field = e(Components.NumberField, {
-			Value = profile.MarkingDashGapM or regionStyle.DashGapM,
-			Min = 0.25,
-			Max = 30,
+			Value = Units.LengthFromM(settings, profile.MarkingDashGapM or regionStyle.DashGapM),
+			Min = Units.LengthFromM(settings, 0.25),
+			Max = Units.LengthFromM(settings, 30),
 			OnChanged = function(value: number)
 				onChange(function(copy)
-					copy.MarkingDashGapM = value
+					copy.MarkingDashGapM = Units.LengthToM(settings, value)
 				end)
 			end,
 			LayoutOrder = 2,

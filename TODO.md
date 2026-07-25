@@ -4,6 +4,28 @@ Planned/requested work not yet built, roughly ordered by how developed the
 plan is. Not user-facing; internal planning only. See `SHIPPED.md` for
 what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Units: remaining length fields (follow-up)
+
+`Units.lua` + the Speed/Length unit settings shipped (see `SHIPPED.md`) and
+are wired at every field that had `settings` in scope: design speed (both the
+Road Tool panel and Regional Preference), superelevation transition length,
+marking dash length/gap, and the roundabout lane width. Two surfaces still
+display hardcoded metres because they have no `Settings` in scope:
+
+- **`UI/RoadDesigner.lua`** — the lane-width `NumberField`, the per-tile
+  `"%g m"` width caption, and the `"Road Layout - %.1f m"` header. Both
+  `LaneStripCard` and the tile component take no `Settings` prop, so this
+  needs the prop threaded from the parent (which does have it) before the
+  `Units` calls can go in. This is the most-used width field in the plugin,
+  so it's the important one.
+- **`UI/RegionEditor.lua`** — the region-style dimension rows (pavement
+  width, kerb height, marking width, fallback dash length/gap). Table-driven
+  (`{ Label, Key, Min, Max }`), so it wants a small unit-aware row helper
+  rather than per-row edits.
+
+Nothing is wrong with what shipped - these two just still read in metres
+while the rest of the UI follows the setting.
+
 ## Roundabout feeder blend with BezierCorner (robustness follow-up)
 
 The roundabout now connects nearby roads (see `SHIPPED.md`), but each feeder
