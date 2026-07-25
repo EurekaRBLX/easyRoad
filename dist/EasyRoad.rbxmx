@@ -5444,16 +5444,41 @@ local function buildMouthCorners(
 		return points
 	end
 
+	-- How far each side's ring attachment is swung AWAY from the mouth centre,
+	-- as an arc distance converted to an angle. This is what makes the entry
+	-- flare OPEN into the ring (a trumpet, like a real roundabout) instead of
+	-- the corners closing it back down to plain road width.
+	local flareStuds = math.max(6, ringEdges.HalfWidthStuds * 0.9)
+	local flareRad = math.clamp(flareStuds / outerRadiusStuds, math.rad(8), math.rad(30))
+	local mouthDir = flatUnit(mouthMid - center)
+
+	local function rotateXZ(v: Vector3, angle: number): Vector3
+		local ca, sa = math.cos(angle), math.sin(angle)
+		return Vector3.new(v.X * ca - v.Z * sa, v.Y, v.X * sa + v.Z * ca)
+	end
+
 	local MIN_CORNER_STUDS = 0.75
 	local function cornerSide(fKerb: Vector3, fOuter: Vector3)
-		-- Attach BOTH boundaries at one ring angle (the radial to the feeder's
-		-- outer corner) so the band's ring end is a clean radial segment. Giving
-		-- the kerb and outer ends their own radial projections puts them at
-		-- different angles for a steeply-angled approach, which twists the band
-		-- into a triangular flap across the mouth (the "wrong way" corner).
+		-- Attach BOTH boundaries at one ring angle so the band's ring end is a
+		-- clean radial segment. Giving the kerb and outer ends their own radial
+		-- projections puts them at different angles for a steeply-angled
+		-- approach, which twists the band into a triangular flap across the
+		-- mouth (the "wrong way" corner).
 		local ringDir = flatUnit(fOuter - center)
 		if ringDir.Magnitude &lt; 1e-6 then
 			return
+		end
+		-- Swing that angle away from the mouth centre so the mouth opens out.
+		if mouthDir.Magnitude &gt; 1e-6 then
+			local cross = mouthDir.X * ringDir.Z - mouthDir.Z * ringDir.X
+			if math.abs(cross) &lt; 1e-6 then
+				-- Side radial coincides with the mouth centre radial: take the
+				-- side from the edge point's own lateral offset instead.
+				local lateral = fOuter - mouthMid
+				cross = mouthDir.X * lateral.Z - mouthDir.Z * lateral.X
+			end
+			local sign = if cross &gt;= 0 then 1 else -1
+			ringDir = flatUnit(rotateXZ(ringDir, sign * flareRad))
 		end
 		local rKerb = Vector3.new(center.X + ringDir.X * ringKerbRadius, fKerb.Y, center.Z + ringDir.Z * ringKerbRadius)
 		local rOuter =
