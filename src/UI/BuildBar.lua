@@ -206,6 +206,15 @@ local function BuildBar(props: {
 				LayoutOrder = 3,
 			}),
 		})
+		children.RoundaboutEntryCurve = e(Components.Checkbox, {
+			Label = "Deflected entries / exits",
+			Checked = props.Settings.RoundaboutEntryCurve,
+			OnToggled = function(checked: boolean)
+				props.Settings.RoundaboutEntryCurve = checked
+				props.OnSettingsChanged()
+			end,
+			LayoutOrder = 5,
+		})
 	end
 	children.SnapToRoadToggle = e(Components.Checkbox, {
 		Label = "Snap to existing road",

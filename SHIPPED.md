@@ -4,6 +4,35 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout entrance/exit deflection (asymmetric mouth corners)
+
+Entries used to butt into the ring dead straight, with no deflection. Now each
+mouth's two corners are shaped differently, which is where deflection actually
+lives on a real roundabout - the entry centreline stays near-radial.
+
+Traffic-direction logic: `circleSegments` circulates +1 (increasing angle) for
+right-hand drive and -1 for left-hand. Going round the ring you meet a mouth's
+**exit** corner first (behind, against the flow) and its **entry** corner after
+(ahead, with the flow). So a corner is an entry iff its side sign equals
+`flow`. Standard practice is a **tight entry radius** - the deflection that
+slows traffic joining - and a **generous exit** so traffic leaves freely:
+
+- entry corner: flare x0.55, bulge 0.18 (tight)
+- exit corner:  flare x1.55, bulge 0.42 (sweeping)
+- per-side flare clamped to 4-30 deg; symmetric mode (toggle off) keeps the
+  previous single flare + 0.25 bulge exactly
+
+Only `cornerSide` changed - `buildFeederRoad` is untouched. New
+`RoundaboutEntryCurve` setting (default on) with a "Deflected entries / exits"
+checkbox in the Road Tool panel.
+
+**Prototyped in the headless renderer first and only then ported**, after the
+earlier centreline-swing attempt had to be reverted (rotating the feeder's ring
+attach point moved it ~23 studs sideways over a 14-stud feeder = hairpin). The
+shipped Luau constants and the entry/exit test were diffed against the
+validated prototype. Rendered 3-leg 2-lane and 4-leg 3-lane: mouths visibly
+asymmetric, ring intact, no hairpins.
+
 ## Marking simulation: outer edge-line bound must derive from MarkingWidthM
 
 Extended the headless renderer to model lane markings using the real rules

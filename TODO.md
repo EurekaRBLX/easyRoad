@@ -4,7 +4,12 @@ Planned/requested work not yet built, roughly ordered by how developed the
 plan is. Not user-facing; internal planning only. See `SHIPPED.md` for
 what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
-## Roundabout entrance/exit deflection curve (attempted, reverted)
+## Roundabout entrance/exit deflection — SHIPPED (see SHIPPED.md)
+
+Built as asymmetric mouth corners; the reverted centreline-swing attempt and
+why it failed are kept below as history.
+
+## History: the failed centreline-swing attempt
 
 Requested feature: entries should curve tangentially into the circulating
 direction (real roundabout entry deflection) rather than butting in radially,

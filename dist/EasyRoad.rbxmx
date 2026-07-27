@@ -5370,6 +5370,17 @@ end
 local MIN_KERB_GAP_RAD = math.rad(12)
 local MAX_SECTOR_HALF_RAD = math.rad(60)
 
+-- Entry/exit deflection: per-side multipliers on a mouth's symmetric flare,
+-- and the matching corner bulge. A tight entry is the deflection that slows
+-- traffic joining the ring; a generous exit lets it leave freely. Applied to
+-- the CORNERS only - swinging the feeder centreline instead just produces a
+-- hairpin, since the feeder is barely a setback long (see TODO history).
+local ENTRY_FLARE_SCALE = 0.55
+local EXIT_FLARE_SCALE = 1.55
+local ENTRY_BULGE = 0.18
+local EXIT_BULGE = 0.42
+local SYMMETRIC_BULGE = 0.25
+
 -- Shrink sectors until each leaves MIN_KERB_GAP_RAD of kerb to its angular
 -- neighbours. Each sector may claim at most half of the gap on either side
 -- (minus half the required kerb), which is symmetric and cannot overlap.
@@ -5521,12 +5532,17 @@ local function buildMouthCorners(
 	-- ring. Keep only a gentle round: pull the control to at most a small
 	-- fraction of the chord length off the midpoint. Bounded inside
 	-- {aEdge, control, bEdge} either way.
-	local BULGE_CAP = 0.25
-	local function cornerPolyline(aEdge: Vector3, aDir: Vector3, bEdge: Vector3, bDir: Vector3): { Vector3 }
+	local function cornerPolyline(
+		aEdge: Vector3,
+		aDir: Vector3,
+		bEdge: Vector3,
+		bDir: Vector3,
+		bulgeCap: number
+	): { Vector3 }
 		local control = BezierCorner.ControlPoint(aEdge, aDir, bEdge, bDir)
 		local mid = aEdge:Lerp(bEdge, 0.5)
 		local off = Vector3.new(control.X - mid.X, 0, control.Z - mid.Z)
-		local maxBulge = distanceXZ(aEdge, bEdge) * BULGE_CAP
+		local maxBulge = distanceXZ(aEdge, bEdge) * bulgeCap
 		if off.Magnitude &gt; maxBulge and off.Magnitude &gt; 1e-6 then
 			local capped = off.Unit * maxBulge
 			control = Vector3.new(mid.X + capped.X, control.Y, mid.Z + capped.Z)
@@ -5554,6 +5570,10 @@ local function buildMouthCorners(
 	-- Widest angular offset any flared corner reaches, so the caller can open
 	-- the ring's own pavement over exactly this sector.
 	local sectorHalf = 0
+	-- Which way traffic circulates, matching circleSegments' own sign: +1
+	-- (increasing angle) for right-hand drive, -1 for left-hand.
+	local flow = if style.DriveOnLeft then -1 else 1
+	local deflect = settings.RoundaboutEntryCurve
 
 	local function rotateXZ(v: Vector3, angle: number): Vector3
 		local ca, sa = math.cos(angle), math.sin(angle)
@@ -5571,7 +5591,9 @@ local function buildMouthCorners(
 		if ringDir.Magnitude &lt; 1e-6 then
 			return
 		end
-		-- Swing that angle away from the mouth centre so the mouth opens out.
+		-- Swing that angle away from the mouth centre so the mouth opens out,
+		-- by a per-side amount when entry deflection is on.
+		local bulgeCap = SYMMETRIC_BULGE
 		if mouthDir.Magnitude &gt; 1e-6 then
 			local cross = mouthDir.X * ringDir.Z - mouthDir.Z * ringDir.X
 			if math.abs(cross) &lt; 1e-6 then
@@ -5581,7 +5603,19 @@ local function buildMouthCorners(
 				cross = mouthDir.X * lateral.Z - mouthDir.Z * lateral.X
 			end
 			local sign = if cross &gt;= 0 then 1 else -1
-			ringDir = flatUnit(rotateXZ(ringDir, sign * flareRad))
+			local sideFlare = flareRad
+			if deflect then
+				-- Going round the ring you meet a mouth's EXIT corner first
+				-- (behind, against the flow) and its ENTRY corner after
+				-- (ahead, with the flow). Standard practice is a tight entry
+				-- radius - that is the deflection that slows traffic joining -
+				-- and a generous exit so traffic leaves freely.
+				local isEntry = sign == flow
+				sideFlare = flareRad * (if isEntry then ENTRY_FLARE_SCALE else EXIT_FLARE_SCALE)
+				bulgeCap = if isEntry then ENTRY_BULGE else EXIT_BULGE
+			end
+			sideFlare = math.clamp(sideFlare, math.rad(4), math.rad(30))
+			ringDir = flatUnit(rotateXZ(ringDir, sign * sideFlare))
 			-- Track how far out this side reaches (signed angle to mouth centre).
 			local dot = math.clamp(mouthDir.X * ringDir.X + mouthDir.Z * ringDir.Z, -1, 1)
 			sectorHalf = math.max(sectorHalf, math.acos(dot))
@@ -5595,8 +5629,8 @@ local function buildMouthCorners(
 		end
 		-- Both corner points share the ring tangent at that single angle.
 		local ringTan = BezierCorner.Perpendicular(ringDir)
-		local kerbB = cornerPolyline(fKerb, dir, rKerb, ringTan)
-		local outerB = cornerPolyline(fOuter, dir, rOuter, ringTan)
+		local kerbB = cornerPolyline(fKerb, dir, rKerb, ringTan, bulgeCap)
+		local outerB = cornerPolyline(fOuter, dir, rOuter, ringTan, bulgeCap)
 		local n = math.min(#kerbB, #outerB)
 		-- Raised sidewalk band between the kerb and outer boundaries.
 		for j = 1, n - 1 do
@@ -9130,6 +9164,9 @@ export type EasyRoadSettings = {
 	-- for a road that's deliberately meant to run free of the existing
 	-- network (an overpass with no at-grade connection, etc).
 	SnapToRoad: boolean,
+	-- Deflect roundabout entries: tight entry corner / generous exit corner on
+	-- each mouth (see RoundaboutBuilder). Off = symmetric corners.
+	RoundaboutEntryCurve: boolean,
 	ElevationStepStuds: number,
 	-- Remembered so the next building session starts where the last one
 	-- left off instead of always resetting to ground level.
@@ -9179,6 +9216,7 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		GridSizeStuds = raw.GridSizeStuds or 4,
 		SnapToGrid = if raw.SnapToGrid == nil then false else raw.SnapToGrid,
 		SnapToRoad = if raw.SnapToRoad == nil then true else raw.SnapToRoad,
+		RoundaboutEntryCurve = if raw.RoundaboutEntryCurve == nil then true else raw.RoundaboutEntryCurve,
 		ElevationStepStuds = raw.ElevationStepStuds or 1,
 		LastElevationStuds = raw.LastElevationStuds or 0,
 		RoadThicknessStuds = raw.RoadThicknessStuds or 1,
@@ -9208,6 +9246,7 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		GridSizeStuds = settings.GridSizeStuds,
 		SnapToGrid = settings.SnapToGrid,
 		SnapToRoad = settings.SnapToRoad,
+		RoundaboutEntryCurve = settings.RoundaboutEntryCurve,
 		ElevationStepStuds = settings.ElevationStepStuds,
 		LastElevationStuds = settings.LastElevationStuds,
 		RoadThicknessStuds = settings.RoadThicknessStuds,
@@ -9494,6 +9533,15 @@ local function BuildBar(props: {
 				Dim = true,
 				LayoutOrder = 3,
 			}),
+		})
+		children.RoundaboutEntryCurve = e(Components.Checkbox, {
+			Label = "Deflected entries / exits",
+			Checked = props.Settings.RoundaboutEntryCurve,
+			OnToggled = function(checked: boolean)
+				props.Settings.RoundaboutEntryCurve = checked
+				props.OnSettingsChanged()
+			end,
+			LayoutOrder = 5,
 		})
 	end
 	children.SnapToRoadToggle = e(Components.Checkbox, {
