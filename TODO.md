@@ -4,6 +4,37 @@ Planned/requested work not yet built, roughly ordered by how developed the
 plan is. Not user-facing; internal planning only. See `SHIPPED.md` for
 what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout entrance/exit deflection curve (attempted, reverted)
+
+Requested feature: entries should curve tangentially into the circulating
+direction (real roundabout entry deflection) rather than butting in radially,
+ideally behind a toggle.
+
+**A first attempt was built and reverted after the headless renderer showed it
+produces hairpins.** The naive construction - rotate the feeder's ring attach
+point around the ring by a deflection angle, in the direction of circulation,
+and let `Fitting.CurveFromTangent` bend into it - is geometrically unsound
+here: rotating 26 deg around a radius-51 ring moves the attach point ~23 studs
+sideways, and the feeder is only `SETBACK_STUDS` (14) long, so the road has to
+make that lateral jump almost immediately. Raising the setback to 30 and
+capping deflection at 18 deg did not rescue it; the feeders still swung across
+the front of the ring and the mouth corners (which derive from the feeder's end
+cross-section) followed them into nonsense.
+
+The mistake is treating deflection as a *centreline* swing. On a real
+roundabout the entry centreline stays close to radial - the deflection reads
+mainly in the **kerb geometry**: an asymmetric pair of mouth corners, with a
+large sweeping radius on the entry side (turning traffic into the circulating
+direction) and a tighter one on the exit side. `buildMouthCorners` already
+builds each side independently, so the natural implementation is to give
+`cornerSide` a per-side radius/flare rather than the symmetric one it uses now,
+and leave `buildFeederRoad` alone.
+
+Needs: per-side corner parameters, a sensible entry/exit radius ratio, and a
+`RoundaboutEntryCurve` toggle (the settings field + Road Tool checkbox from the
+reverted attempt are straightforward to re-add). Verify in the renderer before
+shipping - this is exactly the case it caught.
+
 ## Roundabout give-way lines at each entry (missing)
 
 The marking simulation (see `SHIPPED.md`) renders a correct multi-lane
