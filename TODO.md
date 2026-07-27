@@ -4,6 +4,21 @@ Planned/requested work not yet built, roughly ordered by how developed the
 plan is. Not user-facing; internal planning only. See `SHIPPED.md` for
 what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: auto-size minimum radius from entry width
+
+Multi-lane testing (see `SHIPPED.md`) showed that entries much wider than the
+ring consume most of the circumference: 4-lane entries on a radius-40 ring
+leave only 48 deg of carriageway edge, so it reads as a crossroads with a
+central island rather than a roundabout. The geometry is valid and no longer
+breaks, but the shape is wrong for what the user asked for.
+
+Real roundabouts size the inscribed circle from entry width. Proposal: when
+creating/rebuilding a roundabout, compute a minimum radius from the widest
+connected road (e.g. enough that the summed mouth sectors stay under ~60% of
+the circle) and either raise the radius automatically or surface it in the
+Road Tool panel as a suggested minimum. Needs a UX decision - silently
+overriding a user-set radius is worse than telling them - so not built.
+
 ## Units: remaining length fields (follow-up)
 
 `Units.lua` + the Speed/Length unit settings shipped (see `SHIPPED.md`) and

@@ -4,6 +4,38 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Multi-lane roundabout: bound the flare, stop sectors overlapping
+
+Testing multi-lane rings + multi-lane entries in the headless renderer caught
+a serious regression in the ring-opening change below, before it ever reached
+Studio. With 4-lane entries on a 4-leg ring the mouth sectors summed to **133%
+of the circle and overlapped each other**, so `openRingPavement` would have
+deleted the ENTIRE outer band - a roundabout with no carriageway edge at all.
+A 3-lane ring with 6-lane entries was similar (118%, overlapping).
+
+Two compounding causes, both fixed:
+
+- **The flare scaled without bound with road width.** `halfWidth * 0.9` on a
+  wide road saturated the old 30 deg cap, piling a huge swing on top of an
+  already angularly-wide mouth. Now `clamp(halfWidth * 0.9, 6, 14)` studs and
+  `clamp(.., 6 deg, 20 deg)` - the flare adds about a lane of extra width
+  rather than a proportion of an arbitrarily wide road. The single-lane case
+  is unchanged (still 9.9 studs), so the earlier validated behaviour holds.
+- **Nothing stopped neighbouring mouths overlapping.** New `clampSectors`
+  sorts sectors by angle and lets each claim at most half the gap to either
+  neighbour, less half of `MIN_KERB_GAP_RAD` (12 deg), plus an absolute
+  `MAX_SECTOR_HALF_RAD` (60 deg) cap. Symmetric, so overlap is impossible.
+
+After: 4-lane/4-leg goes 357 -> 312 deg (48 deg of kerb retained, no overlap);
+6-lane stress goes 338 -> 324 deg (36 deg retained). Verified across three
+configurations, all asserting no overlap and a surviving ring band.
+
+**Known limitation (not a bug):** entries much wider than the ring genuinely
+consume most of the circumference, so a 4-lane-entry roundabout at radius 40
+degrades into a crossroads with a central island. That is geometrically
+honest - the ring radius has to scale with entry width. Auto-sizing the
+minimum radius from the widest connected road is logged in `TODO.md`.
+
 ## Roundabout: open the ring pavement at each mouth (root cause)
 
 Found by building an out-of-engine renderer (see "Headless geometry preview"

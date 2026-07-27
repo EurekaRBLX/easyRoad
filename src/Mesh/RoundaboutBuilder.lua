@@ -479,10 +479,52 @@ local function angleDelta(a: number, b: number): number
 	return d
 end
 
+-- Minimum kerb that must survive between two adjacent entries, and the most
+-- any single entry may open. Without these, wide (multi-lane) entries produce
+-- sectors that overlap their neighbours and between them delete the entire
+-- ring band, leaving a roundabout with no carriageway edge at all.
+local MIN_KERB_GAP_RAD = math.rad(12)
+local MAX_SECTOR_HALF_RAD = math.rad(60)
+
+-- Shrink sectors until each leaves MIN_KERB_GAP_RAD of kerb to its angular
+-- neighbours. Each sector may claim at most half of the gap on either side
+-- (minus half the required kerb), which is symmetric and cannot overlap.
+local function clampSectors(sectors: { MouthSector }): { MouthSector }
+	if #sectors == 0 then
+		return sectors
+	end
+	local sorted = table.clone(sectors)
+	table.sort(sorted, function(a, b)
+		return a.Angle < b.Angle
+	end)
+	if #sorted == 1 then
+		sorted[1].Half = math.min(sorted[1].Half, MAX_SECTOR_HALF_RAD)
+		return sorted
+	end
+	local clamped: { MouthSector } = {}
+	for i, sector in sorted do
+		local prev = sorted[if i > 1 then i - 1 else #sorted]
+		local nextOne = sorted[if i < #sorted then i + 1 else 1]
+		local gapPrev = (sector.Angle - prev.Angle) % (2 * math.pi)
+		local gapNext = (nextOne.Angle - sector.Angle) % (2 * math.pi)
+		local half = math.min(
+			sector.Half,
+			MAX_SECTOR_HALF_RAD,
+			math.max(0, (gapPrev - MIN_KERB_GAP_RAD) / 2),
+			math.max(0, (gapNext - MIN_KERB_GAP_RAD) / 2)
+		)
+		if half > 0 then
+			table.insert(clamped, { Angle = sector.Angle, Half = half })
+		end
+	end
+	return clamped
+end
+
 -- Delete the ring's own outer pavement/kerb parts that fall inside an entry
 -- sector, so each mouth is an actual opening in the circulating carriageway
 -- rather than a continuous raised band the traffic would have to cross.
-local function openRingPavement(parts: { BasePart }, center: Vector3, sectors: { MouthSector })
+local function openRingPavement(parts: { BasePart }, center: Vector3, rawSectors: { MouthSector })
+	local sectors = clampSectors(rawSectors)
 	if #sectors == 0 then
 		return
 	end
@@ -603,8 +645,14 @@ local function buildMouthCorners(
 	-- as an arc distance converted to an angle. This is what makes the entry
 	-- flare OPEN into the ring (a trumpet, like a real roundabout) instead of
 	-- the corners closing it back down to plain road width.
-	local flareStuds = math.max(6, ringEdges.HalfWidthStuds * 0.9)
-	local flareRad = math.clamp(flareStuds / outerRadiusStuds, math.rad(8), math.rad(30))
+	-- Bounded in BOTH studs and angle. A multi-lane entry is already angularly
+	-- wide at the ring, so letting the flare keep scaling with road width piles
+	-- a ~30 deg swing on top of an already-huge mouth and the entries end up
+	-- eating the whole carriageway edge (measured: 4-lane entries on a 4-leg
+	-- ring wanted 133% of the ring band). The flare should add roughly a lane
+	-- of extra width, not a proportion of an arbitrarily wide road.
+	local flareStuds = math.clamp(ringEdges.HalfWidthStuds * 0.9, 6, 14)
+	local flareRad = math.clamp(flareStuds / outerRadiusStuds, math.rad(6), math.rad(20))
 	local mouthDir = flatUnit(mouthMid - center)
 	-- Widest angular offset any flared corner reaches, so the caller can open
 	-- the ring's own pavement over exactly this sector.
