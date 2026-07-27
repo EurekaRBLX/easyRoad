@@ -4,6 +4,31 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Marking simulation: outer edge-line bound must derive from MarkingWidthM
+
+Extended the headless renderer to model lane markings using the real rules
+from `Markings.lua` / `RegionStyles.lua` (same-direction lanes -> dashed
+LaneLine, opposing -> CenterLine, roadway edges -> solid EdgeLine inset by
+`MarkingWidthM * 1.5`). That immediately exposed a latent bug in the
+radius bound shipped one commit earlier.
+
+The bound was a hardcoded `ringKerbRadius - 1`. The ring's outer EDGE LINE
+sits at `ringKerbRadius - MarkingWidthM * 1.5 * scale`, which at the default
+`MarkingWidthM = 0.1` is only **0.46 studs** inside the bound - it passed by
+luck. At `MarkingWidthM >= 0.2` (reachable: the Region Editor exposes the
+field) the edge line falls *inside* the bound and survives, leaving a solid
+white line painted straight across every mouth.
+
+Bound now derives from the same inset Markings.lua uses:
+`ringKerbRadius - MarkingWidthM * 1.5 * scale - 0.5`. Checked at
+MarkingWidthM 0.1 / 0.2 / 0.3 / 0.5: the outer edge line is removed at the
+mouth in all four, and the outermost lane divider (a full lane further in)
+is never caught.
+
+Rendered 2-lane and 3-lane rings with 4-lane entries: island edge line and
+all circulating lane dividers continuous, outer edge line opening only at
+the mouths.
+
 ## Multi-lane ring: only open the OUTER band, not every marking
 
 `openRingPavement` filtered purely by ANGLE, so inside a mouth sector it

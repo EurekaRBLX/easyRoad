@@ -4,6 +4,20 @@ Planned/requested work not yet built, roughly ordered by how developed the
 plan is. Not user-facing; internal planning only. See `SHIPPED.md` for
 what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout give-way lines at each entry (missing)
+
+The marking simulation (see `SHIPPED.md`) renders a correct multi-lane
+roundabout except for one real omission: there is **no give-way / yield line
+across each entry**. Real roundabouts paint one (double dashed in the UK,
+solid triangle-backed elsewhere) at the point the entry meets the circulating
+carriageway - which the mouth code already knows exactly, since it computes
+`ringEdges.LeftKerb`/`RightKerb` and the apex on the ring kerb radius.
+
+This is part of the wider junction marking gap already noted for
+`JunctionBuilder` (stop lines, crosswalks) and would share that work - the
+give-way line is the roundabout case of the same "paint a transverse line
+across an approach" primitive.
+
 ## Roundabout: auto-size minimum radius from entry width
 
 Multi-lane testing (see `SHIPPED.md`) showed that entries much wider than the

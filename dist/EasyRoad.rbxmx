@@ -5761,10 +5761,16 @@ function RoundaboutBuilder.CreateAtJunction(
 
 	-- Open the ring's outer pavement over every entry so traffic actually flows
 	-- in, instead of meeting a continuous raised kerb.
-	-- Only the outer pavement band: from just inside the ring's kerb line
+	-- Only the outer pavement band: from just inside the ring's outer EDGE LINE
 	-- outward, so inner lane markings and the island edge line are untouched.
+	-- The bound is derived from the same inset Markings.lua uses to place that
+	-- edge line (MarkingWidthM * 1.5) rather than a flat constant - with a
+	-- hardcoded 1-stud margin any region whose MarkingWidthM is 0.2 or more
+	-- pushes the edge line inside the bound, and it survives as a white line
+	-- painted straight across the mouth.
 	local ringKerbRadius = outerRadiusStuds - style.SidewalkWidthM * scale
-	openRingPavement(ringPavement, center, mouthSectors, ringKerbRadius - 1)
+	local edgeLineInset = style.MarkingWidthM * 1.5 * scale
+	openRingPavement(ringPavement, center, mouthSectors, ringKerbRadius - edgeLineInset - 0.5)
 
 	ring.Parent = getRoundaboutsFolder()
 	JunctionInstance.Delete(junctionModel)
