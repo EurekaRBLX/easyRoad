@@ -4,6 +4,20 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Multi-lane ring: only open the OUTER band, not every marking
+
+`openRingPavement` filtered purely by ANGLE, so inside a mouth sector it
+destroyed every captured `Sidewalk`/`Marking` part at any radius. On a
+single-lane ring that is nearly harmless (the outer parts are the ones meant
+to go), but on a **multi-lane** ring it also deleted the inter-lane dashed
+dividers and - worse - the edge line around the central island, which would
+gain a gap at every entry despite the island being continuous.
+
+Added a `minRadiusStuds` bound (ring kerb radius - 1) so only the outer
+pavement band is opened. Checked on a 3-lane ring: island edge line (r=37.7)
+and both lane dividers (r=50.2, 62.7) survive; outer kerb line (r=75.2) and
+pavement band (r=78.7) open at the mouth.
+
 ## Multi-lane roundabout: bound the flare, stop sectors overlapping
 
 Testing multi-lane rings + multi-lane entries in the headless renderer caught

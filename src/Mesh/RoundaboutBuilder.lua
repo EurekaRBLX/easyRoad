@@ -523,7 +523,17 @@ end
 -- Delete the ring's own outer pavement/kerb parts that fall inside an entry
 -- sector, so each mouth is an actual opening in the circulating carriageway
 -- rather than a continuous raised band the traffic would have to cross.
-local function openRingPavement(parts: { BasePart }, center: Vector3, rawSectors: { MouthSector })
+-- `minRadiusStuds` restricts removal to the OUTER band. Without it the filter
+-- is purely angular and takes out every marking in the sector at any radius -
+-- including a multi-lane ring's inter-lane dashes and, worse, the edge line
+-- around the central island, which would gain a gap at every entry even though
+-- the island itself is continuous.
+local function openRingPavement(
+	parts: { BasePart },
+	center: Vector3,
+	rawSectors: { MouthSector },
+	minRadiusStuds: number
+)
 	local sectors = clampSectors(rawSectors)
 	if #sectors == 0 then
 		return
@@ -535,6 +545,9 @@ local function openRingPavement(parts: { BasePart }, center: Vector3, rawSectors
 		local offset = part.Position - center
 		local flat = Vector3.new(offset.X, 0, offset.Z)
 		if flat.Magnitude < 1e-6 then
+			continue
+		end
+		if flat.Magnitude < minRadiusStuds then
 			continue
 		end
 		local angle = math.atan2(flat.Z, flat.X)
@@ -864,7 +877,10 @@ function RoundaboutBuilder.CreateAtJunction(
 
 	-- Open the ring's outer pavement over every entry so traffic actually flows
 	-- in, instead of meeting a continuous raised kerb.
-	openRingPavement(ringPavement, center, mouthSectors)
+	-- Only the outer pavement band: from just inside the ring's kerb line
+	-- outward, so inner lane markings and the island edge line are untouched.
+	local ringKerbRadius = outerRadiusStuds - style.SidewalkWidthM * scale
+	openRingPavement(ringPavement, center, mouthSectors, ringKerbRadius - 1)
 
 	ring.Parent = getRoundaboutsFolder()
 	JunctionInstance.Delete(junctionModel)
