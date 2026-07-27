@@ -466,6 +466,45 @@ end
 
 local DOWN = Vector3.new(0, -1, 0)
 
+-- The angular slice of the ring one entry occupies, centred on the mouth's
+-- radial. Used to open the ring's own pavement over that entry.
+export type MouthSector = { Angle: number, Half: number }
+
+-- Shortest signed difference between two angles, in (-pi, pi].
+local function angleDelta(a: number, b: number): number
+	local d = (a - b) % (2 * math.pi)
+	if d > math.pi then
+		d -= 2 * math.pi
+	end
+	return d
+end
+
+-- Delete the ring's own outer pavement/kerb parts that fall inside an entry
+-- sector, so each mouth is an actual opening in the circulating carriageway
+-- rather than a continuous raised band the traffic would have to cross.
+local function openRingPavement(parts: { BasePart }, center: Vector3, sectors: { MouthSector })
+	if #sectors == 0 then
+		return
+	end
+	for _, part in parts do
+		if not part.Parent then
+			continue
+		end
+		local offset = part.Position - center
+		local flat = Vector3.new(offset.X, 0, offset.Z)
+		if flat.Magnitude < 1e-6 then
+			continue
+		end
+		local angle = math.atan2(flat.Z, flat.X)
+		for _, sector in sectors do
+			if math.abs(angleDelta(angle, sector.Angle)) <= sector.Half then
+				part:Destroy()
+				break
+			end
+		end
+	end
+end
+
 local function flatUnit(v: Vector3): Vector3
 	local flat = Vector3.new(v.X, 0, v.Z)
 	if flat.Magnitude < 1e-6 then
@@ -567,6 +606,9 @@ local function buildMouthCorners(
 	local flareStuds = math.max(6, ringEdges.HalfWidthStuds * 0.9)
 	local flareRad = math.clamp(flareStuds / outerRadiusStuds, math.rad(8), math.rad(30))
 	local mouthDir = flatUnit(mouthMid - center)
+	-- Widest angular offset any flared corner reaches, so the caller can open
+	-- the ring's own pavement over exactly this sector.
+	local sectorHalf = 0
 
 	local function rotateXZ(v: Vector3, angle: number): Vector3
 		local ca, sa = math.cos(angle), math.sin(angle)
@@ -595,6 +637,9 @@ local function buildMouthCorners(
 			end
 			local sign = if cross >= 0 then 1 else -1
 			ringDir = flatUnit(rotateXZ(ringDir, sign * flareRad))
+			-- Track how far out this side reaches (signed angle to mouth centre).
+			local dot = math.clamp(mouthDir.X * ringDir.X + mouthDir.Z * ringDir.Z, -1, 1)
+			sectorHalf = math.max(sectorHalf, math.acos(dot))
 		end
 		local rKerb = Vector3.new(center.X + ringDir.X * ringKerbRadius, fKerb.Y, center.Z + ringDir.Z * ringKerbRadius)
 		local rOuter =
@@ -651,6 +696,11 @@ local function buildMouthCorners(
 		makeAsphaltPart,
 		ring
 	)
+
+	if mouthDir.Magnitude < 1e-6 or sectorHalf <= 0 then
+		return nil
+	end
+	return { Angle = math.atan2(mouthDir.Z, mouthDir.X), Half = sectorHalf }
 end
 
 function RoundaboutBuilder.CreateAtJunction(
@@ -700,7 +750,23 @@ function RoundaboutBuilder.CreateAtJunction(
 	ring:SetAttribute("RW_Road", nil)
 	ring.Name = "Roundabout"
 	stampRingMeta(ring, center, radiusStuds, outerRadiusStuds, laneCount, laneWidthM)
+
+	-- The ring's OWN outer pavement, captured before any feeder/corner parts are
+	-- parented in. It is built as one unbroken circle, so without this it runs a
+	-- raised kerb + pavement band straight across every entry - the mouth reads
+	-- as walled off rather than open ("the mouth still has to open, not close
+	-- into it"). Each mouth below reports the angular sector it occupies and we
+	-- delete the ring pavement inside it.
+	local ringPavement: { BasePart } = {}
+	for _, descendant in ring:GetDescendants() do
+		if descendant:IsA("BasePart") and (descendant.Name == "Sidewalk" or descendant.Name == "Marking") then
+			table.insert(ringPavement, descendant :: BasePart)
+		end
+	end
+
 	buildIsland(ring, center, radiusStuds, profile, style, settings)
+
+	local mouthSectors: { MouthSector } = {}
 
 	-- Setback: full cross-section beyond outer pavement so feeders have length.
 	local trimTarget = outerRadiusStuds + SETBACK_STUDS
@@ -733,9 +799,24 @@ function RoundaboutBuilder.CreateAtJunction(
 			feeder.Parent = ring
 		end
 		if ringEdges then
-			buildMouthCorners(ring, ringEdges, center, outerRadiusStuds, style.SidewalkWidthM * scale, style, settings)
+			local sector = buildMouthCorners(
+				ring,
+				ringEdges,
+				center,
+				outerRadiusStuds,
+				style.SidewalkWidthM * scale,
+				style,
+				settings
+			)
+			if sector then
+				table.insert(mouthSectors, sector)
+			end
 		end
 	end
+
+	-- Open the ring's outer pavement over every entry so traffic actually flows
+	-- in, instead of meeting a continuous raised kerb.
+	openRingPavement(ringPavement, center, mouthSectors)
 
 	ring.Parent = getRoundaboutsFolder()
 	JunctionInstance.Delete(junctionModel)

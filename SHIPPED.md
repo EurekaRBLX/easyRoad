@@ -4,6 +4,38 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: open the ring pavement at each mouth (root cause)
+
+Found by building an out-of-engine renderer (see "Headless geometry preview"
+below) instead of guessing from screenshots again.
+
+**The ring's outer pavement was never opened.** `CreateAtJunction` builds the
+ring as ONE continuous `RoadBuilder` circle whose profile includes a Sidewalk
+component, so a raised kerb + pavement band ran unbroken *across every entry*.
+No amount of corner tuning could fix that - the mouth was walled off by the
+ring's own carriageway edge. This is exactly the reported "the mouth still has
+to open, not close into it", and it explains why four rounds of corner fixes
+kept not landing.
+
+- `buildMouthCorners` now returns the angular sector each entry occupies
+  (centre = mouth radial, half = widest flared corner offset).
+- The ring's own `Sidewalk`/`Marking` parts are captured immediately after the
+  ring is built (before feeders/corners are parented in, so only the ring's
+  own band is considered), and `openRingPavement` deletes those falling inside
+  any mouth sector.
+- Simulated on a 3-leg roundabout: ~46 deg opened per entry, 62% of the ring
+  band left intact - it opens the mouths without eating the carriageway edge.
+
+## Headless geometry preview (no Studio needed)
+
+Repeated blind iterations on the roundabout were costing rounds, so there is
+now a way to actually SEE what the geometry code produces without Studio:
+`scratchpad/mouthsim.py` (faithful port of the shipped `buildMouthCorners`
+maths) + a dependency-free rasterizer (`raster.py`, stdlib `zlib` only) that
+renders a top-down PNG. This is what surfaced the root cause above. Not a
+substitute for Studio - it models the corner algorithm, not part-level
+rendering - but it turns "guess from a screenshot" into "look at the output".
+
 ## Units settings (km/h / mph, metres / feet)
 
 Backlog item: measurements were hardcoded metric in the UI. Added
