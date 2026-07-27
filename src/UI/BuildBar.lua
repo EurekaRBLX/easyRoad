@@ -206,6 +206,15 @@ local function BuildBar(props: {
 				LayoutOrder = 3,
 			}),
 		})
+		children.RoundaboutMultiNode = e(Components.Checkbox, {
+			Label = "Multi-node (separate entry/exit)",
+			Checked = props.Settings.RoundaboutMultiNode,
+			OnToggled = function(checked: boolean)
+				props.Settings.RoundaboutMultiNode = checked
+				props.OnSettingsChanged()
+			end,
+			LayoutOrder = 5.4,
+		})
 		children.RoundaboutEntryCurve = e(Components.Checkbox, {
 			Label = "Deflected entries / exits",
 			Checked = props.Settings.RoundaboutEntryCurve,

@@ -4,6 +4,42 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Multi-node roundabout: a network of ordinary roads + junctions
+
+Prompted by a real interchange photo (M20 J4): entry and exit are separate
+ONE-WAY arms meeting the circulating carriageway at DIFFERENT points with a
+splitter island between them - a shape a single procedural ring node cannot
+express. Investigating showed the plugin could nearly already do this: profile
+components carry `Direction` (so one-way arms are just a profile), and
+`RoadSplit`/`connectAtSplit` already form junctions mid-span.
+
+New `src/Mesh/RoundaboutNetwork.lua` builds the whole thing from normal
+primitives, so every piece stays selectable and editable and junction geometry
+comes from `JunctionBuilder` rather than a parallel implementation:
+
+- each approach contributes TWO ring connection points - EXIT upstream
+  (against the flow) and ENTRY downstream, +/- `SPLIT_ANGLE_RAD` (22 deg)
+- the ring becomes **2N one-way arc roads** between consecutive connection
+  points, each an exact-ish cubic arc (handle = (4/3)tan(theta/4)r)
+- every connection point is an ordinary **3-way junction** (arriving arc,
+  departing arc, arm), rebuilt through `JunctionBuilder.Rebuild`
+- arms are one-way roads meeting the ring **tangentially** - a cubic with both
+  end tangents pinned, so an entry merges into the circulating direction
+- arm cross-section carries half the approach's roadway lanes
+- approach directions come from roads already near the drop point
+  (`ApproachesFromNearbyRoads`), falling back to four even legs
+
+`RoundaboutBuilder` (single-node) is untouched and still the default; the new
+path is behind a "Multi-node (separate entry/exit)" checkbox in the Road Tool
+panel (`RoundaboutMultiNode`, default off).
+
+Layout prototyped in the headless renderer first. That caught a sign error
+where entry and exit arms crossed in an X at every approach: for right-hand
+drive the inbound half sits on the driver's right (`-perp`), which is also the
+side the downstream connection lies on - offsetting the entry to `+perp` made
+them swap sides and cross. Rendered 3-leg and 4-leg after the fix: arms
+parallel with an island between, tangential arrival, ring intact.
+
 ## Roundabout entrance/exit deflection (asymmetric mouth corners)
 
 Entries used to butt into the ring dead straight, with no deflection. Now each
