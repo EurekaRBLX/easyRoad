@@ -33,7 +33,16 @@ comes from `JunctionBuilder` rather than a parallel implementation:
 path is behind a "Multi-node (separate entry/exit)" checkbox in the Road Tool
 panel (`RoundaboutMultiNode`, default off).
 
-**Continuity: no junction nodes on the ring.** A first cut created a 3-way
+**Continuity, part two: the arms' inner pavement.** Removing the junction
+nodes was not enough - `armProfile` gave each arm a sidewalk on BOTH sides, so
+where an arm merged onto the ring its inner sidewalk laid a raised pavement
+strip straight across the circulating carriageway, chopping the dark band into
+separate arcs at every approach. An arm merges travelling WITH the flow, so its
+outer side is the same side as the ring's own pavement and its inner side must
+open directly onto the carriageway. Now a single sidewalk, on the outer side
+only (mirroring `ringProfile`), and the ring renders as one unbroken annulus.
+
+**Continuity, part one: no junction nodes on the ring.** A first cut created a 3-way
 junction at every connection point. That is wrong either way - a junction
 either trims the arcs back to a pad boundary (breaking the circulating
 carriageway into disconnected pieces) or, since `JunctionBuilder.Rebuild`

@@ -6089,6 +6089,13 @@ local function ringProfile(
 end
 
 -- One-way arm cross-section carrying half an approach's roadway.
+--
+-- Pavement on the OUTER side ONLY. An arm merges into the ring travelling WITH
+-- the flow, so its outer side is the same side as the ring's own pavement and
+-- its inner side opens straight onto the circulating carriageway. Giving the
+-- arm a second, inner sidewalk lays a raised strip right across the ring at
+-- every merge, which chops the circulating band into disconnected arcs - the
+-- reported "roundabout isn't continuous".
 local function armProfile(
 	approach: RoadProfile.RoadProfile?,
 	laneWidthM: number,
@@ -6108,8 +6115,14 @@ local function armProfile(
 	for _ = 1, lanes do
 		table.insert(components, { Kind = "Drive", WidthM = laneWidthM, Direction = 1 })
 	end
-	table.insert(components, 1, { Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 })
-	table.insert(components, { Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 })
+	-- Same side as the ring's pavement (see ringProfile): index 1 is the
+	-- leftmost component, and left is outward when travelling with the flow.
+	local pavement: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
+	if style.DriveOnLeft then
+		table.insert(components, pavement)
+	else
+		table.insert(components, 1, pavement)
+	end
 	return {
 		Id = "roundabout_arm",
 		Name = "Arm",
