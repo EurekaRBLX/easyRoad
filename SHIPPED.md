@@ -33,12 +33,28 @@ comes from `JunctionBuilder` rather than a parallel implementation:
 path is behind a "Multi-node (separate entry/exit)" checkbox in the Road Tool
 panel (`RoundaboutMultiNode`, default off).
 
-Layout prototyped in the headless renderer first. That caught a sign error
-where entry and exit arms crossed in an X at every approach: for right-hand
-drive the inbound half sits on the driver's right (`-perp`), which is also the
-side the downstream connection lies on - offsetting the entry to `+perp` made
-them swap sides and cross. Rendered 3-leg and 4-leg after the fix: arms
-parallel with an island between, tangential arrival, ring intact.
+**Continuity: no junction nodes on the ring.** A first cut created a 3-way
+junction at every connection point. That is wrong either way - a junction
+either trims the arcs back to a pad boundary (breaking the circulating
+carriageway into disconnected pieces) or, since `JunctionBuilder.Rebuild`
+deliberately does not trim, stamps a pad ON TOP of an already-continuous ring.
+Instead consecutive arcs share an endpoint AND a tangent, so the ring reads as
+one unbroken loop while each arc stays separately editable.
+
+**Slip curvature.** Arms run 120 studs before the ring so they sweep rather
+than stub. The tangent handle cannot be raised freely: the far tangent runs
+along the ring (sideways), so `p1 - t1*h` walks the second control point ACROSS
+the approach as `h` grows - at 0.55 the entry and exit arms swung through each
+other, confirmed as a real centreline intersection at every leg. Swept
+run/handle/split/offset and took 0.33, which keeps the most bow (~19 studs)
+while holding the arms a full width apart.
+
+Layout prototyped in the renderer first, which also caught a sign error where
+the arms crossed: for right-hand drive the inbound half sits on the driver's
+right (`-perp`), which is also the side the downstream connection lies on, so
+offsetting the entry to `+perp` swapped them. Verified across leg counts -
+clean for **3-6 legs**; beyond that 2N arms do not fit the circumference and
+the radius has to grow with the leg count (logged in `TODO.md`).
 
 ## Roundabout entrance/exit deflection (asymmetric mouth corners)
 

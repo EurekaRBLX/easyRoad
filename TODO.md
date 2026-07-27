@@ -54,6 +54,15 @@ This is part of the wider junction marking gap already noted for
 give-way line is the roundabout case of the same "paint a transverse line
 across an approach" primitive.
 
+## Roundabout radius must scale with leg count (multi-node)
+
+`RoundaboutNetwork` is verified clean for 3-6 legs. At 7-8 legs the arms come
+closer than their own width before reaching the ring: 2N arms of ~32 studs
+simply do not fit a radius-95 circumference. Same underlying lesson as the
+single-node multi-lane case - the ring has to grow with what it serves. Should
+compute a minimum radius from leg count and arm width and either raise it or
+tell the user, rather than emitting overlapping arms.
+
 ## Roundabout: auto-size minimum radius from entry width
 
 Multi-lane testing (see `SHIPPED.md`) showed that entries much wider than the

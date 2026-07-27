@@ -5967,27 +5967,31 @@ end
 
 return RoundaboutBuilder
 </ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX21"><Properties><string name="Name">RoundaboutNetwork</string><ProtectedString name="Source">--!strict
--- Roundabout as a NETWORK of ordinary roads + junctions, not one bespoke node.
+-- Roundabout composed from ordinary ONE-WAY roads, not one bespoke ring node.
 --
 -- Motivated by real grade-separated interchanges (e.g. M20 J4): the entry and
--- exit are separate ONE-WAY arms meeting the circulating carriageway at
+-- exit are separate one-way arms meeting the circulating carriageway at
 -- DIFFERENT points, with a splitter island between them - a shape a single
--- procedural ring node cannot express. Building it out of the plugin's normal
--- primitives also means every piece stays individually selectable and
--- editable, and junction geometry is whatever `JunctionBuilder` produces
--- rather than a parallel implementation.
+-- procedural ring node cannot express. Building it from normal primitives also
+-- means every piece stays individually selectable and editable.
 --
 -- Topology, for N approaches:
 --   * each approach contributes TWO ring connection points - an EXIT upstream
---     (against the flow) and an ENTRY downstream, +/- `SPLIT_ANGLE` either
+--     (against the flow) and an ENTRY downstream, +/- SPLIT_ANGLE_RAD either
 --     side of the approach's own radial
---   * the ring becomes 2N ONE-WAY arc roads running between consecutive
---     connection points, in the circulating direction
---   * each connection point is an ordinary 3-way junction (arriving ring arc,
---     departing ring arc, and the arm)
---   * arms are one-way roads that meet the ring TANGENTIALLY - a cubic with
---     both end tangents pinned, so an entry merges into the circulating
---     direction instead of butting into it
+--   * the ring is 2N one-way arc roads between consecutive connection points,
+--     running with the flow. Consecutive arcs share an endpoint AND a tangent,
+--     so the circulating carriageway is CONTINUOUS while each arc stays
+--     separately editable
+--   * arms are one-way roads meeting the ring TANGENTIALLY - a cubic with both
+--     end tangents pinned - so an entry merges into the circulating direction
+--     instead of butting into it
+--
+-- Deliberately NO junction nodes on the ring. A junction would either trim the
+-- arcs back to a pad boundary (breaking the carriageway into disconnected
+-- pieces) or, since JunctionBuilder.Rebuild deliberately does not trim, stamp
+-- a pad on top of an already-continuous ring. Neither is wanted here: the ring
+-- must read as one unbroken loop.
 --
 -- `RoundaboutBuilder` (the single-node ring) is left alone; this is the
 -- "build me a real interchange" path, and its output is plain roads.
@@ -5997,8 +6001,6 @@ local PolyCurve = require("../Geometry/PolyCurve")
 local RoadBuilder = require("./RoadBuilder")
 local RoadInstance = require("../RoadInstance")
 local RoadProfile = require("../RoadProfile")
-local JunctionInstance = require("../JunctionInstance")
-local JunctionBuilder = require("./JunctionBuilder")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
 
@@ -6007,11 +6009,27 @@ local RoundaboutNetwork = {}
 -- How far either side of an approach's radial its exit/entry connect. Wide
 -- enough that the two arms are clearly separate roads with an island between
 -- them, tight enough that adjacent approaches keep a ring arc between them.
-local SPLIT_ANGLE_RAD = math.rad(22)
+local SPLIT_ANGLE_RAD = math.rad(30)
 -- Where the two-way approach splits into the two one-way arms, measured out
--- from the ring's outer edge. The arms need real length to reach the ring
--- tangentially - too short and the cubic becomes a hairpin.
-local ARM_RUN_STUDS = 52
+-- from the ring's outer edge. Slip roads are LONG sweeping curves on a real
+-- interchange; a short run gives a stubby arm that barely bends before it
+-- reaches the ring.
+local ARM_RUN_STUDS = 120
+-- Tangent handle as a fraction of the arm's chord, and how far apart the two
+-- arms start either side of the approach centreline.
+--
+-- The handle is what gives a slip its sweep, but it CANNOT be raised freely:
+-- the arm's far tangent runs along the ring (i.e. sideways), so `p1 - t1*h`
+-- walks the second control point ACROSS the approach as `h` grows. At 0.55 it
+-- lands on the far side and the entry and exit arms swing through each other -
+-- measured as an actual centreline intersection at every leg. Swept
+-- run/handle/split/offset: 0.33 with these companions gives the most bow
+-- (~19 studs) while keeping the arms a full width apart (~43 studs).
+local ARM_HANDLE = 0.33
+-- Verified clean (no crossing, arms a full width apart) for 3-6 legs. Beyond
+-- that the ring is over-subscribed - 2N arms simply do not fit the
+-- circumference - and the radius has to grow with the leg count.
+local ARM_OFFSET_SCALE = 2.4
 
 local function flatUnit(v: Vector3): Vector3
 	local flat = Vector3.new(v.X, 0, v.Z)
@@ -6039,7 +6057,7 @@ end
 -- Cubic with BOTH end tangents pinned, so an arm leaves the approach along the
 -- road and arrives on the ring along the circulating direction.
 local function tangentSegment(p0: Vector3, t0: Vector3, p1: Vector3, t1: Vector3): CurveSegment.Segment
-	local handle = (p1 - p0).Magnitude / 3
+	local handle = (p1 - p0).Magnitude * ARM_HANDLE
 	return CurveSegment.Cubic(p0, p0 + flatUnit(t0) * handle, p1 - flatUnit(t1) * handle, p1)
 end
 
@@ -6192,6 +6210,10 @@ function RoundaboutNetwork.Create(
 	-- right-hand drive, -1 for left-hand.
 	local flow = if style.DriveOnLeft then -1 else 1
 
+	-- With N evenly spaced legs the connections must stay inside their own
+	-- share of the circle: 2*split &lt; 2pi/N, so cap at 35% of the spacing.
+	local splitAngle = math.min(SPLIT_ANGLE_RAD, 0.35 * (2 * math.pi / #approaches))
+
 	local folder = Instance.new("Folder")
 	folder.Name = "RoundaboutNetwork"
 	folder.Parent = workspace
@@ -6201,12 +6223,12 @@ function RoundaboutNetwork.Create(
 	local conns: { Conn } = {}
 	for _, approach in approaches do
 		table.insert(conns, {
-			Angle = approach.Angle - flow * SPLIT_ANGLE_RAD,
+			Angle = approach.Angle - flow * splitAngle,
 			IsEntry = false,
 			Approach = approach,
 		})
 		table.insert(conns, {
-			Angle = approach.Angle + flow * SPLIT_ANGLE_RAD,
+			Angle = approach.Angle + flow * splitAngle,
 			IsEntry = true,
 			Approach = approach,
 		})
@@ -6218,20 +6240,13 @@ function RoundaboutNetwork.Create(
 		return norm(a.Angle) &lt; norm(b.Angle)
 	end)
 
-	-- A junction node at every connection point.
-	local nodes: { Model } = {}
-	local nodeIds: { string } = {}
-	for _, conn in conns do
-		local pos = Vector3.new(
-			center.X + math.cos(conn.Angle) * radiusStuds,
-			center.Y,
-			center.Z + math.sin(conn.Angle) * radiusStuds
-		)
-		local node = JunctionInstance.Create(pos)
-		local data = JunctionInstance.Read(node)
-		table.insert(nodes, node)
-		table.insert(nodeIds, if data then data.Id else "")
-	end
+	-- NO junction nodes on the ring. A junction would either trim the arcs
+	-- back to a pad boundary (breaking the circulating carriageway into
+	-- disconnected pieces) or, since Rebuild deliberately does not trim, stamp
+	-- a pad ON TOP of an already-continuous ring. Instead the arcs simply abut:
+	-- consecutive arcs share an endpoint AND a tangent, so the ring reads as
+	-- one unbroken carriageway while each arc stays separately editable, and
+	-- the arms merge into it tangentially.
 
 	-- Ring arcs between consecutive connection points, running with the flow.
 	for i = 1, #conns do
@@ -6242,12 +6257,11 @@ function RoundaboutNetwork.Create(
 			continue
 		end
 		local segment = arcSegment(center, radiusStuds, a0, sweep, center.Y)
-		local arc = buildRoad(segment, ring, "RingArc", style, settings, folder)
-		RoadInstance.StampJunctions(arc, nodeIds[i], nodeIds[j])
+		buildRoad(segment, ring, "RingArc", style, settings, folder)
 	end
 
 	-- Entry / exit arms.
-	for index, conn in conns do
+	for _, conn in conns do
 		local approach = conn.Approach
 		local a = approach.Angle
 		local inward = Vector3.new(-math.cos(a), 0, -math.sin(a))
@@ -6260,7 +6274,7 @@ function RoundaboutNetwork.Create(
 		local splitRadius = outerRadius + ARM_RUN_STUDS
 		local splitMid =
 			Vector3.new(center.X + math.cos(a) * splitRadius, center.Y, center.Z + math.sin(a) * splitRadius)
-		local offset = perp * ((armHalf + 1.5) * flow)
+		local offset = perp * ((armHalf + 1.5) * ARM_OFFSET_SCALE * flow)
 		local ringPoint = Vector3.new(
 			center.X + math.cos(conn.Angle) * radiusStuds,
 			center.Y,
@@ -6277,12 +6291,7 @@ function RoundaboutNetwork.Create(
 			segment = tangentSegment(ringPoint, ringTangent, splitMid + offset, -inward)
 			name = "ExitArm"
 		end
-		local road = buildRoad(segment, arm, name, style, settings, folder)
-		if conn.IsEntry then
-			RoadInstance.StampJunctions(road, nil, nodeIds[index])
-		else
-			RoadInstance.StampJunctions(road, nodeIds[index], nil)
-		end
+		buildRoad(segment, arm, name, style, settings, folder)
 	end
 
 	-- Central island, sized to the ring's inner edge.
@@ -6306,14 +6315,6 @@ function RoundaboutNetwork.Create(
 		island.CFrame = CFrame.new(center + Vector3.new(0, curbHeight - (thickness + curbHeight) / 2, 0))
 			* CFrame.Angles(0, 0, math.rad(90))
 		island.Parent = folder
-	end
-
-	-- Now that every road references its nodes, let the normal junction
-	-- builder produce each 3-way's pad and curb returns.
-	for _, id in nodeIds do
-		if id ~= "" then
-			JunctionBuilder.Rebuild(id, style, settings)
-		end
 	end
 
 	return folder
