@@ -68,9 +68,6 @@ export type EasyRoadSettings = {
 	-- Deflect roundabout entries: tight entry corner / generous exit corner on
 	-- each mouth (see RoundaboutBuilder). Off = symmetric corners.
 	RoundaboutEntryCurve: boolean,
-	-- Build a roundabout as a NETWORK of ordinary one-way roads + junctions
-	-- (separate entry/exit arms) instead of one bespoke ring node.
-	RoundaboutMultiNode: boolean,
 	ElevationStepStuds: number,
 	-- Remembered so the next building session starts where the last one
 	-- left off instead of always resetting to ground level.
@@ -121,7 +118,6 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		SnapToGrid = if raw.SnapToGrid == nil then false else raw.SnapToGrid,
 		SnapToRoad = if raw.SnapToRoad == nil then true else raw.SnapToRoad,
 		RoundaboutEntryCurve = if raw.RoundaboutEntryCurve == nil then true else raw.RoundaboutEntryCurve,
-		RoundaboutMultiNode = if raw.RoundaboutMultiNode == nil then false else raw.RoundaboutMultiNode,
 		ElevationStepStuds = raw.ElevationStepStuds or 1,
 		LastElevationStuds = raw.LastElevationStuds or 0,
 		RoadThicknessStuds = raw.RoadThicknessStuds or 1,
@@ -152,7 +148,6 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		SnapToGrid = settings.SnapToGrid,
 		SnapToRoad = settings.SnapToRoad,
 		RoundaboutEntryCurve = settings.RoundaboutEntryCurve,
-		RoundaboutMultiNode = settings.RoundaboutMultiNode,
 		ElevationStepStuds = settings.ElevationStepStuds,
 		LastElevationStuds = settings.LastElevationStuds,
 		RoadThicknessStuds = settings.RoadThicknessStuds,

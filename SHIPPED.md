@@ -4,67 +4,6 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
-## Multi-node roundabout: a network of ordinary roads + junctions
-
-Prompted by a real interchange photo (M20 J4): entry and exit are separate
-ONE-WAY arms meeting the circulating carriageway at DIFFERENT points with a
-splitter island between them - a shape a single procedural ring node cannot
-express. Investigating showed the plugin could nearly already do this: profile
-components carry `Direction` (so one-way arms are just a profile), and
-`RoadSplit`/`connectAtSplit` already form junctions mid-span.
-
-New `src/Mesh/RoundaboutNetwork.lua` builds the whole thing from normal
-primitives, so every piece stays selectable and editable and junction geometry
-comes from `JunctionBuilder` rather than a parallel implementation:
-
-- each approach contributes TWO ring connection points - EXIT upstream
-  (against the flow) and ENTRY downstream, +/- `SPLIT_ANGLE_RAD` (22 deg)
-- the ring becomes **2N one-way arc roads** between consecutive connection
-  points, each an exact-ish cubic arc (handle = (4/3)tan(theta/4)r)
-- every connection point is an ordinary **3-way junction** (arriving arc,
-  departing arc, arm), rebuilt through `JunctionBuilder.Rebuild`
-- arms are one-way roads meeting the ring **tangentially** - a cubic with both
-  end tangents pinned, so an entry merges into the circulating direction
-- arm cross-section carries half the approach's roadway lanes
-- approach directions come from roads already near the drop point
-  (`ApproachesFromNearbyRoads`), falling back to four even legs
-
-`RoundaboutBuilder` (single-node) is untouched and still the default; the new
-path is behind a "Multi-node (separate entry/exit)" checkbox in the Road Tool
-panel (`RoundaboutMultiNode`, default off).
-
-**Continuity, part two: the arms' inner pavement.** Removing the junction
-nodes was not enough - `armProfile` gave each arm a sidewalk on BOTH sides, so
-where an arm merged onto the ring its inner sidewalk laid a raised pavement
-strip straight across the circulating carriageway, chopping the dark band into
-separate arcs at every approach. An arm merges travelling WITH the flow, so its
-outer side is the same side as the ring's own pavement and its inner side must
-open directly onto the carriageway. Now a single sidewalk, on the outer side
-only (mirroring `ringProfile`), and the ring renders as one unbroken annulus.
-
-**Continuity, part one: no junction nodes on the ring.** A first cut created a 3-way
-junction at every connection point. That is wrong either way - a junction
-either trims the arcs back to a pad boundary (breaking the circulating
-carriageway into disconnected pieces) or, since `JunctionBuilder.Rebuild`
-deliberately does not trim, stamps a pad ON TOP of an already-continuous ring.
-Instead consecutive arcs share an endpoint AND a tangent, so the ring reads as
-one unbroken loop while each arc stays separately editable.
-
-**Slip curvature.** Arms run 120 studs before the ring so they sweep rather
-than stub. The tangent handle cannot be raised freely: the far tangent runs
-along the ring (sideways), so `p1 - t1*h` walks the second control point ACROSS
-the approach as `h` grows - at 0.55 the entry and exit arms swung through each
-other, confirmed as a real centreline intersection at every leg. Swept
-run/handle/split/offset and took 0.33, which keeps the most bow (~19 studs)
-while holding the arms a full width apart.
-
-Layout prototyped in the renderer first, which also caught a sign error where
-the arms crossed: for right-hand drive the inbound half sits on the driver's
-right (`-perp`), which is also the side the downstream connection lies on, so
-offsetting the entry to `+perp` swapped them. Verified across leg counts -
-clean for **3-6 legs**; beyond that 2N arms do not fit the circumference and
-the radius has to grow with the leg count (logged in `TODO.md`).
-
 ## Roundabout entrance/exit deflection (asymmetric mouth corners)
 
 Entries used to butt into the ring dead straight, with no deflection. Now each

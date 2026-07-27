@@ -40,6 +40,30 @@ Needs: per-side corner parameters, a sensible entry/exit radius ratio, and a
 reverted attempt are straightforward to re-add). Verify in the renderer before
 shipping - this is exactly the case it caught.
 
+## Multi-node roundabout (built, reverted at the user's request)
+
+Built `RoundaboutNetwork.lua` - ring as 2N one-way arc roads, separate one-way
+entry/exit arms meeting tangentially, splitter islands - after the M20 J4
+reference. Reverted: it never rendered as a continuous roundabout to the user's
+satisfaction, and after several rounds the sensible call was to go back to the
+single-node builder rather than keep iterating blind.
+
+What was learned, if it is ever picked up again:
+- Junction nodes must NOT sit on the ring. A junction either trims the arcs to
+  a pad boundary (breaking the carriageway) or, since `Rebuild` does not trim,
+  stamps a pad on top of it.
+- The arms must have pavement on the OUTER side only. A second, inner sidewalk
+  lays a raised strip across the circulating carriageway at every merge.
+- The arm tangent handle cannot exceed ~0.4 of the chord: the far tangent runs
+  along the ring, so a larger handle walks the control point across the
+  approach and the entry/exit arms swing through each other.
+- Verified clean for 3-6 legs; beyond that 2N arms do not fit the
+  circumference and the radius has to grow with the leg count.
+
+Both of the last two were found only by rendering it out-of-engine, and both
+were still not enough to make it read right - which is the honest reason it was
+dropped rather than a specific unfixed defect.
+
 ## Roundabout give-way lines at each entry (missing)
 
 The marking simulation (see `SHIPPED.md`) renders a correct multi-lane
@@ -53,15 +77,6 @@ This is part of the wider junction marking gap already noted for
 `JunctionBuilder` (stop lines, crosswalks) and would share that work - the
 give-way line is the roundabout case of the same "paint a transverse line
 across an approach" primitive.
-
-## Roundabout radius must scale with leg count (multi-node)
-
-`RoundaboutNetwork` is verified clean for 3-6 legs. At 7-8 legs the arms come
-closer than their own width before reaching the ring: 2N arms of ~32 studs
-simply do not fit a radius-95 circumference. Same underlying lesson as the
-single-node multi-lane case - the ring has to grow with what it serves. Should
-compute a minimum radius from leg count and arm width and either raise it or
-tell the user, rather than emitting overlapping arms.
 
 ## Roundabout: auto-size minimum radius from entry width
 

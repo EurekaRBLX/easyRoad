@@ -28,7 +28,6 @@ local Fitting = require("./Geometry/Fitting")
 local RoadBuilder = require("./Mesh/RoadBuilder")
 local JunctionBuilder = require("./Mesh/JunctionBuilder")
 local RoundaboutBuilder = require("./Mesh/RoundaboutBuilder")
-local RoundaboutNetwork = require("./Mesh/RoundaboutNetwork")
 local RoadProfile = require("./RoadProfile")
 local RoadInstance = require("./RoadInstance")
 local RoadSplit = require("./RoadSplit")
@@ -716,29 +715,6 @@ local function createRoadSession(
 	-- multi-click curve fitting involved, unlike the other tool modes.
 	local function commitRoundabout(center: Vector3)
 		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadPlace", "Place roundabout")
-		if settings.RoundaboutMultiNode then
-			-- Compose the interchange from ordinary one-way roads + junctions:
-			-- serve whatever roads are already nearby, else four default legs.
-			local reach = roundaboutRadiusStuds * 2 + settings.SnapRadiusStuds + 40
-			local approaches = RoundaboutNetwork.ApproachesFromNearbyRoads(center, reach)
-			if #approaches == 0 then
-				approaches = RoundaboutNetwork.DefaultApproaches(4)
-			end
-			RoundaboutNetwork.Create(
-				center,
-				roundaboutRadiusStuds,
-				roundaboutLaneCount,
-				roundaboutLaneWidthM,
-				approaches,
-				getStyle(),
-				settings
-			)
-			if recording then
-				ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
-			end
-			changeSignal:Fire()
-			return
-		end
 		-- Place, then auto-connect any roads already near the drop point (so a
 		-- roundabout dropped onto existing roads wires them up with feeders
 		-- instead of leaving a bare ring). No nearby roads -> just the ring.
