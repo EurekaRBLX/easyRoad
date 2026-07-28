@@ -24,6 +24,7 @@ local Signal = require(Packages.Signal)
 
 local CurveSegment = require("./Geometry/CurveSegment")
 local PolyCurve = require("./Geometry/PolyCurve")
+local CurveIntersections = require("./Geometry/CurveIntersections")
 local Fitting = require("./Geometry/Fitting")
 local RoadBuilder = require("./Mesh/RoadBuilder")
 local JunctionBuilder = require("./Mesh/JunctionBuilder")
@@ -68,9 +69,25 @@ export type RoadSession = {
 
 local ROADS_FOLDER_NAME = "Roads"
 local PREVIEW_REBUILD_INTERVAL = 0.05
+local MIN_AT_GRADE_SEPARATION_STUDS = 2
 
 export type UiState = {
 	Hovered: boolean,
+}
+
+type CrossingCandidate = {
+	Road: Model,
+	NewStation: number,
+	RoadStation: number,
+	Position: Vector3,
+	CanCreate: boolean,
+	Reason: string?,
+}
+
+type PreparedCrossing = {
+	Candidate: CrossingCandidate,
+	JunctionId: string,
+	JunctionModel: Model,
 }
 
 -- Continues from an exact existing point/tangent (e.g. "Place More" on an
@@ -117,6 +134,10 @@ local function createRoadSession(
 
 	local previewModel: Model? = nil
 	local markerFolder: Folder? = nil
+	local crossingMarkerFolder: Folder? = nil
+	local hoverSnapPos: Vector3? = nil
+	local previewValidCrossingCount = 0
+	local previewBlockedCrossingCount = 0
 	local previewDirty = false
 	local lastPreviewTime = 0
 
@@ -141,6 +162,10 @@ local function createRoadSession(
 		return nil
 	end
 
+	local function isAtGrade(a: Vector3, b: Vector3): boolean
+		return math.abs(a.Y - b.Y) <= math.max(MIN_AT_GRADE_SEPARATION_STUDS, settings.RoadThicknessStuds * 2)
+	end
+
 	-- Ground-picking deliberately ignores existing roads/junctions/roundabouts
 	-- (crossing over one is allowed by default, not something to route around)
 	-- - the old behaviour of hitting an existing road's own deck instead of
@@ -162,6 +187,9 @@ local function createRoadSession(
 		end
 		if markerFolder then
 			table.insert(excluded, markerFolder)
+		end
+		if crossingMarkerFolder then
+			table.insert(excluded, crossingMarkerFolder)
 		end
 		local roadsFolder = getRoadsFolder(false)
 		if roadsFolder then
@@ -209,7 +237,10 @@ local function createRoadSession(
 			local junctionData = JunctionInstance.Read(junctionModel)
 			if junctionData then
 				local padRadius = JunctionBuilder.PadRadiusStuds(junctionData.Id, settings) or 0
-				if (junctionData.Position - pos).Magnitude <= settings.SnapRadiusStuds + padRadius then
+				if
+					isAtGrade(junctionData.Position, pos)
+					and (junctionData.Position - pos).Magnitude <= settings.SnapRadiusStuds + padRadius
+				then
 					return junctionModel
 				end
 			end
@@ -236,7 +267,7 @@ local function createRoadSession(
 				local endTan = child:GetAttribute("RW_EndTan") :: Vector3?
 				if endPos and endTan then
 					local d = (endPos - pos).Magnitude
-					if d < bestDistance then
+					if isAtGrade(endPos, pos) and d < bestDistance then
 						bestDistance = d
 						bestPos = endPos
 						bestTangent = endTan -- Outgoing continuation direction
@@ -244,7 +275,7 @@ local function createRoadSession(
 				end
 				if startPos and startTan then
 					local d = (startPos - pos).Magnitude
-					if d < bestDistance then
+					if isAtGrade(startPos, pos) and d < bestDistance then
 						bestDistance = d
 						bestPos = startPos
 						bestTangent = -startTan -- Continue backwards out of the start
@@ -318,7 +349,7 @@ local function createRoadSession(
 			local endPos = child:GetAttribute("RW_EndPos") :: Vector3?
 			if startPos then
 				local d = (startPos - pos).Magnitude
-				if d < bestDistance then
+				if isAtGrade(startPos, pos) and d < bestDistance then
 					bestDistance = d
 					bestModel = child :: Model
 					bestEnd = "Start"
@@ -326,7 +357,7 @@ local function createRoadSession(
 			end
 			if endPos then
 				local d = (endPos - pos).Magnitude
-				if d < bestDistance then
+				if isAtGrade(endPos, pos) and d < bestDistance then
 					bestDistance = d
 					bestModel = child :: Model
 					bestEnd = "End"
@@ -406,7 +437,7 @@ local function createRoadSession(
 	-- above), so a new road drawn crossing an existing one mid-span can
 	-- still connect to it instead of silently overlapping with no
 	-- relationship at all.
-	local function findMidSpanMatch(pos: Vector3, exclude: Model): (Model?, number?)
+	local function findMidSpanMatch(pos: Vector3, exclude: Model?): (Model?, number?)
 		if not settings.SnapToRoad then
 			return nil, nil
 		end
@@ -418,7 +449,7 @@ local function createRoadSession(
 		local bestStation: number? = nil
 		local bestDistance = math.huge
 		for _, child in folder:GetChildren() do
-			if child == exclude or child:GetAttribute("RW_Road") ~= true then
+			if (exclude and child == exclude) or child:GetAttribute("RW_Road") ~= true then
 				continue
 			end
 			if not RoadSplit.CanSplit(child) then
@@ -429,10 +460,11 @@ local function createRoadSession(
 				continue
 			end
 			local station = data.Curve:ClosestS(pos)
-			local distance = (data.Curve:PosAt(station) - pos).Magnitude
+			local closest = data.Curve:PosAt(station)
+			local distance = (closest - pos).Magnitude
 			local tolerance = RoadProfile.TotalWidthM(data.ProfileStart) / 2 * settings.MetersToStuds
 				+ settings.SnapRadiusStuds
-			if distance < tolerance and distance < bestDistance then
+			if isAtGrade(closest, pos) and distance < tolerance and distance < bestDistance then
 				bestDistance = distance
 				best = child :: Model
 				bestStation = station
@@ -453,12 +485,156 @@ local function createRoadSession(
 		JunctionBuilder.Rebuild(junctionId, getStyle(), settings)
 	end
 
+	-- Finds real interior curve/curve crossings for the pending road. Unlike
+	-- findMidSpanMatch (an endpoint landing near a road), these candidates
+	-- cover a road whose start AND end both continue past the crossing: a
+	-- genuine X. Crossings at a different deck height are silently treated
+	-- as grade-separated; geometrically valid but unsupported cuts remain in
+	-- the result as red preview markers with a reason.
+	local function findCurveCrossings(segment: CurveSegment.Segment): { CrossingCandidate }
+		if not settings.SnapToRoad then
+			return {}
+		end
+		local folder = getRoadsFolder(false)
+		if not folder then
+			return {}
+		end
+		local newCurve = PolyCurve.new({ segment })
+		local minimumPiece = RoadSplit.MinimumPieceLengthStuds()
+		local maximumVerticalSeparation = math.max(MIN_AT_GRADE_SEPARATION_STUDS, settings.RoadThicknessStuds * 2)
+		local newRoadBlockReason = if endProfile ~= nil
+			then "Widening/narrowing roads cannot be split at a crossing yet"
+			else nil
+		local candidates: { CrossingCandidate } = {}
+		for _, child in folder:GetChildren() do
+			if child:GetAttribute("RW_Road") ~= true then
+				continue
+			end
+			local road = child :: Model
+			local data = RoadInstance.Read(road)
+			if not data then
+				continue
+			end
+			for _, intersection in CurveIntersections.Find(newCurve, data.Curve) do
+				-- A crossing at the pending road's own endpoint is handled by
+				-- the existing endpoint/mid-span connection path, which also
+				-- supplies the magnetic final-point snap.
+				if intersection.StationA < minimumPiece or intersection.StationA > newCurve.Length - minimumPiece then
+					continue
+				end
+				if intersection.VerticalSeparation > maximumVerticalSeparation then
+					continue
+				end
+				local reason = newRoadBlockReason
+				if not reason then
+					reason = RoadSplit.SplitBlockReason(road)
+				end
+				if
+					not reason
+					and (
+						intersection.StationB < minimumPiece
+						or intersection.StationB > data.Curve.Length - minimumPiece
+					)
+				then
+					reason = "Crossing is too close to the existing road's end"
+				end
+				table.insert(candidates, {
+					Road = road,
+					NewStation = intersection.StationA,
+					RoadStation = intersection.StationB,
+					Position = intersection.Position,
+					CanCreate = reason == nil,
+					Reason = reason,
+				})
+			end
+		end
+		table.sort(candidates, function(a, b)
+			return a.NewStation < b.NewStation
+		end)
+
+		-- A four-stud piece is the smallest RoadSplit can build. If two raw
+		-- crossings would create something shorter, keep the first candidate
+		-- and show the other as blocked instead of letting commit partially
+		-- mutate one of the roads.
+		local acceptedNewStations: { number } = {}
+		local acceptedRoadStations: { [Model]: { number } } = {}
+		for _, candidate in candidates do
+			if not candidate.CanCreate then
+				continue
+			end
+			local tooClose = false
+			for _, station in acceptedNewStations do
+				if math.abs(candidate.NewStation - station) < minimumPiece then
+					tooClose = true
+					break
+				end
+			end
+			local roadStations = acceptedRoadStations[candidate.Road] or {}
+			if not tooClose then
+				for _, station in roadStations do
+					if math.abs(candidate.RoadStation - station) < minimumPiece then
+						tooClose = true
+						break
+					end
+				end
+			end
+			if tooClose then
+				candidate.CanCreate = false
+				candidate.Reason = "Crossings are too close together to split safely"
+			else
+				table.insert(acceptedNewStations, candidate.NewStation)
+				table.insert(roadStations, candidate.RoadStation)
+				acceptedRoadStations[candidate.Road] = roadStations
+			end
+		end
+		return candidates
+	end
+
 	local function applyGridSnap(pos: Vector3): Vector3
 		if not settings.SnapToGrid or settings.GridSizeStuds <= 0 then
 			return pos
 		end
 		local grid = settings.GridSizeStuds
 		return Vector3.new(math.round(pos.X / grid) * grid, pos.Y, math.round(pos.Z / grid) * grid)
+	end
+
+	local function clicksNeeded(): number
+		local base = if toolMode == "Straight"
+			then 2
+			elseif toolMode == "Curve" then 3
+			elseif toolMode == "Freeform" then 4
+			else 1 -- Roundabout: a single centre click, handled separately in onClick
+		if lockedTangent and toolMode ~= "Straight" and toolMode ~= "Roundabout" then
+			return base - 1
+		end
+		return base
+	end
+
+	-- Magnetic start/end snapping shared by hover and click. The old flow
+	-- only snapped the first point; a final click near a road was connected
+	-- after commit without the preview ever moving onto the centreline, so
+	-- it felt like snapping had not happened even when metadata linked.
+	local function placementPointFromGround(ground: Vector3): (Vector3, Vector3?, boolean)
+		local unsnapped = applyGridSnap(ground) + Vector3.new(0, elevation, 0)
+		local isStart = #points == 0
+		local isEnd = #points == clicksNeeded() - 1
+		if not isStart and not isEnd then
+			return unsnapped, nil, false
+		end
+		local snapPos, snapTangent = findEndpointSnap(unsnapped)
+		if snapPos then
+			return snapPos, if isStart then snapTangent else nil, true
+		end
+		if isEnd then
+			local road, station = findMidSpanMatch(unsnapped, nil)
+			if road and station then
+				local data = RoadInstance.Read(road)
+				if data then
+					return data.Curve:PosAt(station), nil, true
+				end
+			end
+		end
+		return unsnapped, nil, false
 	end
 
 	-- Recomputes hoverPos from the last known ground point using whatever
@@ -470,12 +646,9 @@ local function createRoadSession(
 		if not ground then
 			return
 		end
-		if #points == 0 then
-			local snapPos = findEndpointSnap(ground)
-			hoverPos = snapPos or (applyGridSnap(ground) + Vector3.new(0, elevation, 0))
-		else
-			hoverPos = applyGridSnap(ground) + Vector3.new(0, elevation, 0)
-		end
+		local position, _, snapped = placementPointFromGround(ground)
+		hoverPos = position
+		hoverSnapPos = if snapped then position else nil
 		previewDirty = true
 	end
 
@@ -503,30 +676,12 @@ local function createRoadSession(
 		if not ground then
 			return nil, nil
 		end
-		-- Endpoint snapping only applies to the first point of a placement
-		if #points == 0 then
-			local snapPos, snapTangent = findEndpointSnap(ground)
-			if snapPos then
-				return snapPos, snapTangent
-			end
-		end
-		local snapped = applyGridSnap(ground)
-		return snapped + Vector3.new(0, elevation, 0), nil
+		local position, tangent, snapped = placementPointFromGround(ground)
+		hoverSnapPos = if snapped then position else nil
+		return position, tangent
 	end
 
 	-- Curve construction -----------------------------------------------------------
-
-	local function clicksNeeded(): number
-		local base = if toolMode == "Straight"
-			then 2
-			elseif toolMode == "Curve" then 3
-			elseif toolMode == "Freeform" then 4
-			else 1 -- Roundabout: a single centre click, handled separately in onClick
-		if lockedTangent and toolMode ~= "Straight" and toolMode ~= "Roundabout" then
-			return base - 1
-		end
-		return base
-	end
 
 	-- Build the segment from placed points plus an optional pending point
 	local function buildSegment(pending: Vector3?): CurveSegment.Segment?
@@ -579,6 +734,93 @@ local function createRoadSession(
 		end
 	end
 
+	local function destroyCrossingMarkers()
+		if crossingMarkerFolder then
+			crossingMarkerFolder:Destroy()
+			crossingMarkerFolder = nil
+		end
+	end
+
+	local function setPreviewCrossingStatus(validCount: number, blockedCount: number)
+		if validCount ~= previewValidCrossingCount or blockedCount ~= previewBlockedCrossingCount then
+			previewValidCrossingCount = validCount
+			previewBlockedCrossingCount = blockedCount
+			changeSignal:Fire()
+		end
+	end
+
+	local function addPreviewMarker(folder: Folder, position: Vector3, color: Color3, text: string)
+		local marker = Instance.new("Part")
+		marker.Name = "IntersectionMarker"
+		marker.Shape = Enum.PartType.Ball
+		marker.Size = Vector3.new(2.8, 2.8, 2.8)
+		marker.Color = color
+		marker.Material = Enum.Material.Neon
+		marker.Transparency = 0.08
+		marker.Anchored = true
+		marker.CanCollide = false
+		marker.CanQuery = false
+		marker.CanTouch = false
+		marker.Position = position + Vector3.new(0, 1.4, 0)
+		marker.Parent = folder
+
+		local billboard = Instance.new("BillboardGui")
+		billboard.Name = "Label"
+		billboard.AlwaysOnTop = true
+		billboard.Size = UDim2.new(0, 260, 0, 34)
+		billboard.StudsOffset = Vector3.new(0, 2.2, 0)
+		billboard.Parent = marker
+		local label = Instance.new("TextLabel")
+		label.Size = UDim2.fromScale(1, 1)
+		label.BackgroundColor3 = Color3.fromRGB(20, 24, 31)
+		label.BackgroundTransparency = 0.18
+		label.BorderSizePixel = 0
+		label.Font = Enum.Font.GothamBold
+		label.Text = text
+		label.TextColor3 = Color3.new(1, 1, 1)
+		label.TextSize = 14
+		label.TextWrapped = true
+		label.Parent = billboard
+	end
+
+	local function updateCrossingMarkers(candidates: { CrossingCandidate })
+		local validCount = 0
+		local blockedCount = 0
+		for _, candidate in candidates do
+			if candidate.CanCreate then
+				validCount += 1
+			else
+				blockedCount += 1
+			end
+		end
+		setPreviewCrossingStatus(validCount, blockedCount)
+
+		local folder: Folder? = nil
+		if #candidates > 0 or hoverSnapPos then
+			folder = Instance.new("Folder")
+			folder.Name = "EasyRoadIntersectionMarkers"
+			folder.Archivable = false
+			if hoverSnapPos then
+				addPreviewMarker(folder, hoverSnapPos, Color3.fromRGB(0, 190, 255), "SNAPPED")
+			end
+			for _, candidate in candidates do
+				if candidate.CanCreate then
+					addPreviewMarker(folder, candidate.Position, Color3.fromRGB(55, 220, 125), "X INTERSECTION")
+				else
+					addPreviewMarker(
+						folder,
+						candidate.Position,
+						Color3.fromRGB(255, 91, 91),
+						candidate.Reason or "CANNOT SPLIT"
+					)
+				end
+			end
+			folder.Parent = workspace
+		end
+		destroyCrossingMarkers()
+		crossingMarkerFolder = folder
+	end
+
 	local function updateMarkers()
 		if markerFolder then
 			markerFolder:Destroy()
@@ -611,8 +853,11 @@ local function createRoadSession(
 		local segment = buildSegment(hoverPos)
 		if not segment then
 			destroyPreview()
+			updateCrossingMarkers({})
 			return
 		end
+		local crossings = if #points == clicksNeeded() - 1 then findCurveCrossings(segment) else {}
+		updateCrossingMarkers(crossings)
 		-- Build the replacement BEFORE destroying the old ghost: no flicker
 		-- between rebuilds, and if the build errors on degenerate geometry
 		-- the previous preview stays on screen instead of vanishing.
@@ -636,6 +881,7 @@ local function createRoadSession(
 	-- Commit ---------------------------------------------------------------------------
 
 	local function commitRoad(segment: CurveSegment.Segment)
+		local crossingCandidates = findCurveCrossings(segment)
 		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadPlace", "Place road")
 		local curve = PolyCurve.new({ segment })
 		local model = RoadBuilder.Build({
@@ -647,6 +893,62 @@ local function createRoadSession(
 			Preview = false,
 		})
 		model.Parent = getRoadsFolder(true)
+
+		-- Build every true interior crossing around one shared node. Existing
+		-- roads are grouped so a curve crossed more than once is replaced in
+		-- one SplitMany call, and the new road is split at all of its accepted
+		-- crossings in the same operation.
+		local prepared: { PreparedCrossing } = {}
+		local newCuts: { RoadSplit.SplitCut } = {}
+		local cutsByRoad: { [Model]: { RoadSplit.SplitCut } } = {}
+		for _, candidate in crossingCandidates do
+			if not candidate.CanCreate then
+				continue
+			end
+			local junctionModel = JunctionInstance.Create(candidate.Position)
+			local junctionData = JunctionInstance.Read(junctionModel)
+			if not junctionData then
+				junctionModel:Destroy()
+				continue
+			end
+			table.insert(prepared, {
+				Candidate = candidate,
+				JunctionId = junctionData.Id,
+				JunctionModel = junctionModel,
+			})
+			table.insert(newCuts, {
+				StationStuds = candidate.NewStation,
+				JunctionId = junctionData.Id,
+			})
+			local roadCuts = cutsByRoad[candidate.Road] or {}
+			table.insert(roadCuts, {
+				StationStuds = candidate.RoadStation,
+				JunctionId = junctionData.Id,
+			})
+			cutsByRoad[candidate.Road] = roadCuts
+		end
+
+		local canSplitAll = #prepared > 0 and RoadSplit.CanSplitAtMany(model, newCuts)
+		if canSplitAll then
+			for road, cuts in cutsByRoad do
+				if not RoadSplit.CanSplitAtMany(road, cuts) then
+					canSplitAll = false
+					break
+				end
+			end
+		end
+		local placedPieces: { Model } = { model }
+		if canSplitAll then
+			for road, cuts in cutsByRoad do
+				RoadSplit.SplitMany(road, cuts, getStyle(), settings)
+			end
+			placedPieces = RoadSplit.SplitMany(model, newCuts, getStyle(), settings) or { model }
+		else
+			for _, crossing in prepared do
+				crossing.JunctionModel:Destroy()
+			end
+			table.clear(prepared)
+		end
 
 		-- Links `model`'s `whichEnd` at `pos` to whatever it should connect
 		-- to there: an existing road's endpoint first (findConnectableEndpoint),
@@ -663,34 +965,42 @@ local function createRoadSession(
 		-- whole connection silently died without ever reaching the junction
 		-- fallback. That was the real reason "can't add a new road to an
 		-- intersection" survived the previous fix.
-		local function connectEnd(pos: Vector3, whichEnd: "Start" | "End")
-			local otherModel, otherEnd = findConnectableEndpoint(pos, model)
+		local function connectEnd(targetModel: Model, pos: Vector3, whichEnd: "Start" | "End")
+			local otherModel, otherEnd = findConnectableEndpoint(pos, targetModel)
 			if otherModel then
-				connectAt(pos, model, whichEnd, otherModel, otherEnd)
+				connectAt(pos, targetModel, whichEnd, otherModel, otherEnd)
 				return
 			end
 			local junctionModel = findJunctionNear(pos)
 			if junctionModel then
-				connectAt(pos, model, whichEnd, nil, nil, junctionModel)
+				connectAt(pos, targetModel, whichEnd, nil, nil, junctionModel)
 				return
 			end
 			-- Attach as a new spoke on a placed roundabout (rebuilds the ring
 			-- with RoadBuilder curve feeders for every nearby road including this one).
 			local ring = RoundaboutBuilder.FindNear(pos, settings.SnapRadiusStuds)
 			if ring then
-				RoundaboutBuilder.ConnectRoad(ring, model, getStyle(), settings)
+				RoundaboutBuilder.ConnectRoad(ring, targetModel, getStyle(), settings)
 				return
 			end
-			local midRoad, midStation = findMidSpanMatch(pos, model)
+			local midRoad, midStation = findMidSpanMatch(pos, targetModel)
 			if midRoad and midStation then
-				connectAtSplit(midRoad, midStation, model, whichEnd)
+				connectAtSplit(midRoad, midStation, targetModel, whichEnd)
 			end
 		end
 
 		local startPos = curve:PosAt(0)
 		local endPos = curve:PosAt(curve.Length)
-		connectEnd(startPos, "Start")
-		connectEnd(endPos, "End")
+		connectEnd(placedPieces[1], startPos, "Start")
+		connectEnd(placedPieces[#placedPieces], endPos, "End")
+
+		-- Endpoint connections above may change the width of a crossing's
+		-- neighbouring approach. Trim and rebuild only after every road and
+		-- outer endpoint has its final junction ids.
+		for _, crossing in prepared do
+			JunctionBuilder.TrimApproaches(crossing.JunctionId, getStyle(), settings)
+			JunctionBuilder.Rebuild(crossing.JunctionId, getStyle(), settings)
+		end
 
 		if recording then
 			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
@@ -705,6 +1015,9 @@ local function createRoadSession(
 		end
 		points = { curve:PosAt(curve.Length) }
 		lockedTangent = curve:TangentAt(curve.Length)
+		hoverSnapPos = nil
+		destroyCrossingMarkers()
+		setPreviewCrossingStatus(0, 0)
 		updateMarkers()
 		previewDirty = true
 		changeSignal:Fire()
@@ -758,6 +1071,7 @@ local function createRoadSession(
 			lockedTangent = snapTangent
 		end
 		table.insert(points, point)
+		hoverSnapPos = nil
 		updateMarkers()
 
 		if #points >= clicksNeeded() then
@@ -776,8 +1090,11 @@ local function createRoadSession(
 	local function cancelPlacement()
 		points = {}
 		lockedTangent = nil
+		hoverSnapPos = nil
 		updateMarkers()
 		destroyPreview()
+		destroyCrossingMarkers()
+		setPreviewCrossingStatus(0, 0)
 		previewDirty = false
 		changeSignal:Fire()
 	end
@@ -832,6 +1149,8 @@ local function createRoadSession(
 				rebuildPreview()
 			else
 				destroyPreview()
+				destroyCrossingMarkers()
+				setPreviewCrossingStatus(0, 0)
 			end
 		end)
 	)
@@ -916,6 +1235,20 @@ local function createRoadSession(
 		if toolMode == "Roundabout" then
 			return "Click to place the roundabout's centre"
 		end
+		if previewBlockedCrossingCount > 0 then
+			return string.format(
+				"%d crossing%s cannot be split - see the red marker%s",
+				previewBlockedCrossingCount,
+				if previewBlockedCrossingCount == 1 then "" else "s",
+				if previewBlockedCrossingCount == 1 then "" else "s"
+			)
+		elseif previewValidCrossingCount > 0 then
+			return string.format(
+				"Click to place - %d X intersection%s will be created",
+				previewValidCrossingCount,
+				if previewValidCrossingCount == 1 then "" else "s"
+			)
+		end
 		local count = #points
 		local needed = clicksNeeded()
 		if count == 0 then
@@ -945,6 +1278,7 @@ local function createRoadSession(
 		end
 		table.clear(connections)
 		destroyPreview()
+		destroyCrossingMarkers()
 		if markerFolder then
 			markerFolder:Destroy()
 			markerFolder = nil

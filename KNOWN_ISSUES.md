@@ -43,21 +43,6 @@ internal planning only. See `TODO.md` for planned new features and
   footprint (not a wrapper around several - #1, #2), or its hover state
   must be reset on whatever transition could cause it to unmount while
   still hovered (#3).
-- **"Actually does not snap" - reported live alongside a screenshot of the
-  junction corner spike still showing up (from a build that predates the
-  opposing-pair fix above), no repro steps of its own given yet.**
-  Re-read `createRoadSession.lua`'s `Settings.SnapToRoad` gate in
-  `findEndpointSnap`/`findConnectableEndpoint`/`findMidSpanMatch` - all
-  three correctly early-return only when the setting is explicitly false,
-  and `Settings.lua`'s `loadSettings` defaults it to `true` for both
-  fresh installs and existing persisted settings blobs that predate the
-  field (`raw.SnapToRoad == nil` -> `true`). No other code path
-  constructs a Settings table. Given the corner-spike half of the same
-  report was confirmed to be from a stale build, this is most likely the
-  same explanation - but not confirmed, since no specific "I clicked here
-  and it didn't connect" repro was given. Revisit if it persists on a
-  build that includes both this fix's commit and the layout-overflow fix
-  above.
 - **Bus bay's displaced pavement doesn't drag its own kerb-restriction line
   marking along with it.** `BuildWithBay`'s nearside-pavement overlay (see
   `SHIPPED.md`) correctly moves the physical sidewalk/verge Parts outward

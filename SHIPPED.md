@@ -4,6 +4,44 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## True X intersections and visible road snapping
+
+Drawing a new road all the way across an existing road now creates a real
+four-arm intersection. The placement flow previously inspected only the new
+road's start and end positions, so its centreline could visibly cross another
+road while neither endpoint landed close enough to trigger `findMidSpanMatch`;
+the result was two unrelated overlapping roads. That limitation is removed.
+
+- `Geometry/CurveIntersections.lua` flattens the pending and existing curves
+  at short arc-length intervals, finds ground-plane chord crossings, then
+  refines each candidate back onto the actual line/quadratic/cubic curves with
+  a bounded Newton solve.
+- Valid crossings are shown live as green **X INTERSECTION** markers. The hint
+  states how many nodes the click will create. A final point near an endpoint,
+  junction, or road centreline now moves there in the preview and gets a blue
+  **SNAPPED** marker instead of connecting invisibly after the click.
+- Commit groups every crossing by road and splits both the newly placed road
+  and every crossed road around the same `JunctionNode`. Multiple crossings
+  in one placement are supported and remain one Studio Undo recording.
+- `RoadSplit.SplitMany` is the shared N-cut primitive. It preserves the old
+  road's outer junction ids and assigns the caller-provided junction id to
+  both pieces around every cut.
+- Junction approach trimming now derives both ends from the same preserved
+  source segment. A piece bounded by two intersections therefore keeps both
+  trims; rebuilding one node no longer restores the other end.
+- Crossings at a different deck height are treated as grade-separated. Near
+  parallel contacts are ignored, avoiding accidental junctions between roads
+  that merely run alongside each other.
+- Unsupported cuts are explicit rather than silent: crossings involving a
+  widening/narrowing road, bus bay, missing editable data, or cuts too close
+  together show a red marker with the reason. Turning off **Snap to existing
+  road** still bypasses every automatic connection path.
+
+The existing endpoint, T-junction, Y-junction and roundabout attachment paths
+remain in place. This round changes the missing interior-to-interior case and
+the feedback around all placement snapping; it does not add transition/bay
+subdivision.
+
 ## Roundabout: crash fix, direction-aware arms, mixed-approach stress test
 
 **A crash shipped in `3fd2066` and broke Make Roundabout entirely.** A

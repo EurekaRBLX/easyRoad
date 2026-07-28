@@ -26,6 +26,15 @@ local RoadSplit = {}
 
 local MIN_PIECE_LENGTH_STUDS = 4
 
+export type SplitCut = {
+	StationStuds: number,
+	JunctionId: string,
+}
+
+function RoadSplit.MinimumPieceLengthStuds(): number
+	return MIN_PIECE_LENGTH_STUDS
+end
+
 -- True if `road` is a plain, unmodified segment RoadSplit can safely cut -
 -- no transition, no bay (see this file's header for why those are refused).
 function RoadSplit.CanSplit(road: Model): boolean
@@ -34,6 +43,137 @@ function RoadSplit.CanSplit(road: Model): boolean
 		return false
 	end
 	return data.ProfileEnd == nil and data.Bay == nil and #data.Curve.Segments == 1
+end
+
+-- Human-readable reason used by the placement preview when a crossing is
+-- geometrically real but cannot be turned into a node without losing road
+-- data. nil means the road is splittable.
+function RoadSplit.SplitBlockReason(road: Model): string?
+	local data = RoadInstance.Read(road)
+	if not data then
+		return "Road is missing editable curve data"
+	elseif data.ProfileEnd ~= nil then
+		return "Widening/narrowing roads cannot be split yet"
+	elseif data.Bay ~= nil then
+		return "Roads with bus bays cannot be split yet"
+	elseif #data.Curve.Segments ~= 1 then
+		return "Multi-segment roads cannot be split yet"
+	end
+	return nil
+end
+
+local function sortedCutsForLength(length: number, cuts: { SplitCut }): { SplitCut }?
+	if #cuts == 0 then
+		return nil
+	end
+	local sorted: { SplitCut } = table.clone(cuts)
+	table.sort(sorted, function(a, b)
+		return a.StationStuds < b.StationStuds
+	end)
+	local previousStation = 0
+	for _, cut in sorted do
+		if
+			cut.JunctionId == ""
+			or cut.StationStuds < MIN_PIECE_LENGTH_STUDS
+			or cut.StationStuds > length - MIN_PIECE_LENGTH_STUDS
+			or cut.StationStuds - previousStation < MIN_PIECE_LENGTH_STUDS
+		then
+			return nil
+		end
+		previousStation = cut.StationStuds
+	end
+	if length - previousStation < MIN_PIECE_LENGTH_STUDS then
+		return nil
+	end
+	return sorted
+end
+
+function RoadSplit.CanSplitAt(road: Model, stationStuds: number): boolean
+	local data = RoadInstance.Read(road)
+	if not data or not RoadSplit.CanSplit(road) then
+		return false
+	end
+	return sortedCutsForLength(data.Curve.Length, {
+		{ StationStuds = stationStuds, JunctionId = "candidate" },
+	}) ~= nil
+end
+
+function RoadSplit.CanSplitAtMany(road: Model, cuts: { SplitCut }): boolean
+	local data = RoadInstance.Read(road)
+	if not data or not RoadSplit.CanSplit(road) then
+		return false
+	end
+	return sortedCutsForLength(data.Curve.Length, cuts) ~= nil
+end
+
+-- Replaces one plain road with N+1 pieces, all cut positions referencing
+-- caller-provided junction ids. This is the shared primitive required for
+-- a true X intersection: the existing road and the newly placed road are
+-- both split against the SAME JunctionNode instead of each SplitAt call
+-- manufacturing an unrelated node at the same position.
+function RoadSplit.SplitMany(
+	road: Model,
+	cuts: { SplitCut },
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): { Model }?
+	local data = RoadInstance.Read(road)
+	if not data or not RoadSplit.CanSplit(road) then
+		return nil
+	end
+	local sorted = sortedCutsForLength(data.Curve.Length, cuts)
+	if not sorted then
+		return nil
+	end
+
+	local segment = data.Curve.Segments[1]
+	local stations: { number } = table.create(#sorted + 2)
+	table.insert(stations, 0)
+	for _, cut in sorted do
+		table.insert(stations, cut.StationStuds)
+	end
+	table.insert(stations, data.Curve.Length)
+
+	-- Build every replacement before mutating the original so a construction
+	-- error cannot leave only half of a road in the workspace.
+	local pieces: { Model } = {}
+	for index = 1, #stations - 1 do
+		local pieceSegment = CurveSegment.Sub(segment, stations[index], stations[index + 1])
+		local piece = RoadBuilder.Build({
+			Curve = PolyCurve.new({ pieceSegment }),
+			ProfileStart = data.ProfileStart,
+			Style = style,
+			Settings = settings,
+			Preview = false,
+		})
+		local startJunctionId = if index == 1 then data.StartJunctionId else sorted[index - 1].JunctionId
+		local endJunctionId = if index > #sorted then data.EndJunctionId else sorted[index].JunctionId
+		RoadInstance.StampJunctions(piece, startJunctionId, endJunctionId)
+		table.insert(pieces, piece)
+	end
+
+	local folder = road.Parent
+	for _, piece in pieces do
+		piece.Parent = folder
+	end
+	road:Destroy()
+	return pieces
+end
+
+function RoadSplit.SplitAtJunction(
+	road: Model,
+	stationStuds: number,
+	junctionId: string,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): (Model?, Model?)
+	local pieces = RoadSplit.SplitMany(road, {
+		{ StationStuds = stationStuds, JunctionId = junctionId },
+	}, style, settings)
+	if not pieces then
+		return nil, nil
+	end
+	return pieces[1], pieces[2]
 end
 
 -- Splits `road` at `stationStuds` along its curve, replacing it with two
@@ -49,52 +189,22 @@ function RoadSplit.SplitAt(
 	settings: Settings.EasyRoadSettings
 ): (Model?, Model?, string?)
 	local data = RoadInstance.Read(road)
-	if not data or data.ProfileEnd ~= nil or data.Bay ~= nil or #data.Curve.Segments ~= 1 then
+	if not data or not RoadSplit.CanSplitAt(road, stationStuds) then
 		return nil, nil, nil
 	end
-	local length = data.Curve.Length
-	if stationStuds < MIN_PIECE_LENGTH_STUDS or stationStuds > length - MIN_PIECE_LENGTH_STUDS then
-		return nil, nil, nil
-	end
-
-	local segment = data.Curve.Segments[1]
-	local beforeSegment = CurveSegment.Sub(segment, 0, stationStuds)
-	local afterSegment = CurveSegment.Sub(segment, stationStuds, length)
-	local splitPos = CurveSegment.PosAtS(segment, stationStuds)
-
-	local folder = road.Parent
-	local beforeModel = RoadBuilder.Build({
-		Curve = PolyCurve.new({ beforeSegment }),
-		ProfileStart = data.ProfileStart,
-		Style = style,
-		Settings = settings,
-		Preview = false,
-	})
-	local afterModel = RoadBuilder.Build({
-		Curve = PolyCurve.new({ afterSegment }),
-		ProfileStart = data.ProfileStart,
-		Style = style,
-		Settings = settings,
-		Preview = false,
-	})
-	beforeModel.Parent = folder
-	afterModel.Parent = folder
-
+	local splitPos = data.Curve:PosAt(stationStuds)
 	local junctionModel = JunctionInstance.Create(splitPos)
 	local junctionData = JunctionInstance.Read(junctionModel)
 	if not junctionData then
-		beforeModel:Destroy()
-		afterModel:Destroy()
+		junctionModel:Destroy()
 		return nil, nil, nil
 	end
 
-	-- Whatever the original road's own ends were connected to (if
-	-- anything) carries over to whichever new piece now owns that end.
-	RoadInstance.StampJunctions(beforeModel, data.StartJunctionId, junctionData.Id)
-	RoadInstance.StampJunctions(afterModel, junctionData.Id, data.EndJunctionId)
-
-	road:Destroy()
-
+	local beforeModel, afterModel = RoadSplit.SplitAtJunction(road, stationStuds, junctionData.Id, style, settings)
+	if not beforeModel or not afterModel then
+		junctionModel:Destroy()
+		return nil, nil, nil
+	end
 	return beforeModel, afterModel, junctionData.Id
 end
 

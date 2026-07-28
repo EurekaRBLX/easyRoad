@@ -352,19 +352,16 @@ Deliberately still out of scope, in rough priority order:
   line marking config through its `RoadProfile.Components` (the same as
   any real road) may already work without new code - worth checking before
   building anything bespoke for the ring specifically.
-- **No mid-span-to-mid-span crossing detection.** `RoadSplit`'s existing
-  mid-span connect (Phase 1b) only fires when a NEW road's endpoint lands
-  on an EXISTING road - not when a new road is drawn crossing an existing
-  one with both roads continuing past the crossing point on every side (a
-  genuine "X" where neither road's own endpoint is at the intersection).
-  Reported live: "i cannot create a new road that intersects with the
-  road in question and extend it beyond ... I have to first explicitly
-  connect them." Needs curve-curve intersection detection between the
-  new road being placed and every existing road (no closed-form solution
-  for Bézier-Bézier intersection - likely sampling/bisection, similar in
-  spirit to `RoundaboutBuilder`'s ring-crossing bisection), then splitting
-  BOTH roads at the crossing point (today's `RoadSplit.SplitAt` only
-  splits one).
+- **Mid-span-to-mid-span X crossings - shipped.** The pending curve is now
+  intersected against every existing road during the live preview, using
+  sampled ground-plane chords plus bounded refinement back onto the real
+  curves. Green markers become shared `JunctionNode`s on commit and
+  `RoadSplit.SplitMany` cuts BOTH roads; multiple crossings in one placement
+  are supported. Different-height crossings remain grade-separated. Red
+  markers explain unsupported cases rather than silently overlapping.
+  Remaining subdivision work is the existing transition/bus-bay limitation:
+  those roads still cannot be split without remapping their changing profile
+  or bay data.
 - **Snap-to-road / snap-to-grid toggles in Road Tools - shipped.** See
   `SHIPPED.md`. `Settings.SnapToRoad` (new) gates
   `findEndpointSnap`/`findConnectableEndpoint`/`findMidSpanMatch` in

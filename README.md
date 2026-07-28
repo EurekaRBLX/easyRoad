@@ -42,6 +42,12 @@ To rebuild `dist/` yourself without Rojo: `python3 tools/build_rbxmx.py`.
    * Starting a road near the end of an existing one snaps to it and locks
      the tangent for a smooth continuation (and after each placement the
      tool chains from the road you just placed).
+   * Finishing near an existing road shows a blue **SNAPPED** marker and
+     magnetically previews on its centreline.
+   * Drawing completely across another road shows a green **X INTERSECTION**
+     marker and splits both roads into one real junction when placed. Red
+     markers explain crossings that cannot safely be split; roads at a
+     different elevation remain grade-separated.
 5. **Widening / narrowing**: set the "Widen / narrow to" dropdown to a
    second road profile. The segment you place transitions from the current
    profile at its start to the target profile at its end — lane widths (and
@@ -87,15 +93,19 @@ src/
   RoadProfile.lua          Cross-section data model + transition matching
   RoadLibrary.lua          Built-in (style-derived) + user-saved road profiles
   createRoadSession.lua    Interactive placement: clicks, snapping, preview, undo
+  RoadSplit.lua            Splits one road at one or more shared junction nodes
+  JunctionInstance.lua     First-class junction node data and road connectivity
   Geometry/
     CurveSegment.lua       Line / quadratic / cubic segments, arc-length tables,
                            signed ground-plane curvature
     PolyCurve.lua          Segment chains evaluated by distance; frames with roll
+    CurveIntersections.lua Ground-plane curve crossings + bounded refinement
     Fitting.lua            Click patterns -> segments (incl. tangent-locked fits)
     Superelevation.lua     Bank angle from curvature + design speed; runoff smoothing
   Mesh/
     Markings.lua           Cross-section boundaries -> marking line layout
     RoadBuilder.lua        Curve + profile + style -> Model of parts
+    JunctionBuilder.lua    Approach trims, pad, and rounded curb-return geometry
   UI/
     Theme.lua              Colors and metrics
     Components.lua         Button / dropdown / number field / checkbox / rows
@@ -124,12 +134,12 @@ Key mechanics:
   segment.
 * **Snapping metadata** — each placed road model carries `RW_*` attributes
   (endpoint positions, tangents, profile ids), which is what endpoint
-  snapping and tangent continuation read back.
+  snapping and tangent continuation read back. At-grade interior crossings
+  split both curves around a shared junction id.
 
 ## Roadmap / not yet implemented
 
-* Intersection nodes (junctions where roads meet mid-segment, with corner
-  fillets and stop lines).
+* Junction lane guidance, stop/give-way lines, crosswalks and box markings.
 * Bridge pillars / retaining walls for elevated roads.
 * Editing already-placed roads (drag control points, re-profile in place).
 * Arrow / text surface decals (turn arrows, crosswalks).

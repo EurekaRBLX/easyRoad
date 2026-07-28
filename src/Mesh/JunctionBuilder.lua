@@ -323,29 +323,16 @@ local function writeSourceSegment(road: Model, segment: CurveSegment.Segment)
 	road:SetAttribute("RW_SourceP3", segment.P3)
 end
 
--- Cuts `road` back so its junction-side end sits at the pad boundary.
--- Always trims from a preserved SOURCE segment (first connect / first trim
--- captures it) so increasing OR decreasing setback updates mouth position —
--- previously trim only shortened and discarded length, so Rebuild after a
--- smaller setback left approaches stuck short of the pad.
-local function trimApproach(
-	road: Model,
-	junctionId: string,
-	center: Vector3,
-	radiusStuds: number,
-	style: RegionStyles.RegionStyle,
-	settings: Settings.EasyRoadSettings
-)
+-- Cuts `road` back at every active junction it references. Handling both
+-- ends from one preserved source segment matters once a placed road crosses
+-- more than one existing road: trimming one end and then the other in two
+-- independent passes would otherwise restore the first end from the source.
+local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settings: Settings.EasyRoadSettings)
 	if not RoadSplit.CanSplit(road) then
 		return
 	end
 	local data = RoadInstance.Read(road)
-	if not data or #data.Curve.Segments ~= 1 then
-		return
-	end
-	local atStart = data.StartJunctionId == junctionId
-	local atEnd = data.EndJunctionId == junctionId
-	if not atStart and not atEnd then
+	if not data or #data.Curve.Segments ~= 1 or (not data.StartJunctionId and not data.EndJunctionId) then
 		return
 	end
 	local source = readSourceSegment(road)
@@ -353,20 +340,51 @@ local function trimApproach(
 		source = data.Curve.Segments[1]
 	end
 	local sourceCurve = PolyCurve.new({ source })
-	-- Junction end on the SOURCE curve: still 0 or Length of the full road.
-	local fromStation = if atStart then 0 else sourceCurve.Length
-	local towardStation = if atStart then sourceCurve.Length else 0
-	local crossing = findPadCrossing(sourceCurve, fromStation, towardStation, center, radiusStuds)
-	if not crossing then
+	local startStation = 0
+	local endStation = sourceCurve.Length
+	local trimmed = false
+
+	local function trimStationFor(junctionId: string, atStart: boolean): number?
+		local junctionModel = JunctionInstance.FindById(junctionId)
+		local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
+		if not junctionData then
+			return nil
+		end
+		local connected = JunctionInstance.ConnectedRoads(junctionId)
+		if #connected < 2 or isSmoothPassThrough(connected, junctionId) then
+			return nil
+		end
+		local radiusStuds = JunctionBuilder.PadRadiusStuds(junctionId, settings)
+		if not radiusStuds then
+			return nil
+		end
+		return findPadCrossing(
+			sourceCurve,
+			if atStart then 0 else sourceCurve.Length,
+			if atStart then sourceCurve.Length else 0,
+			junctionData.Position,
+			radiusStuds
+		)
+	end
+
+	if data.StartJunctionId then
+		local crossing = trimStationFor(data.StartJunctionId, true)
+		if crossing then
+			startStation = crossing
+			trimmed = true
+		end
+	end
+	if data.EndJunctionId then
+		local crossing = trimStationFor(data.EndJunctionId, false)
+		if crossing then
+			endStation = crossing
+			trimmed = true
+		end
+	end
+	if not trimmed or endStation - startStation < MIN_APPROACH_REMAINDER_STUDS then
 		return
 	end
-	local remaining = if atStart then sourceCurve.Length - crossing else crossing
-	if remaining < MIN_APPROACH_REMAINDER_STUDS then
-		return
-	end
-	local outerSegment = if atStart
-		then CurveSegment.Sub(source, crossing, source.Length)
-		else CurveSegment.Sub(source, 0, crossing)
+	local outerSegment = CurveSegment.Sub(source, startStation, endStation)
 	local rebuilt = RoadBuilder.Build({
 		Curve = PolyCurve.new({ outerSegment }),
 		ProfileStart = data.ProfileStart,
@@ -374,9 +392,6 @@ local function trimApproach(
 		Settings = settings,
 		Preview = false,
 	})
-	local farJunctionId = if atStart then data.EndJunctionId else data.StartJunctionId
-	local startJ = if atStart then junctionId else farJunctionId
-	local endJ = if atStart then farJunctionId else junctionId
 	road:ClearAllChildren()
 	for name in road:GetAttributes() do
 		road:SetAttribute(name, nil)
@@ -389,7 +404,7 @@ local function trimApproach(
 	end
 	rebuilt:Destroy()
 	writeSourceSegment(road, source)
-	RoadInstance.StampJunctions(road, startJ, endJ)
+	RoadInstance.StampJunctions(road, data.StartJunctionId, data.EndJunctionId)
 end
 
 -- The radius (studs, from the junction centre) of this junction's pad -
@@ -435,10 +450,7 @@ export type JunctionLayout = {
 	Corners: { { Index: number, Mid: Vector3, SpanRad: number } },
 }
 
-function JunctionBuilder.GetLayout(
-	junctionId: string,
-	settings: Settings.EasyRoadSettings
-): JunctionLayout?
+function JunctionBuilder.GetLayout(junctionId: string, settings: Settings.EasyRoadSettings): JunctionLayout?
 	local junctionModel = JunctionInstance.FindById(junctionId)
 	if not junctionModel then
 		return nil
@@ -531,9 +543,8 @@ function JunctionBuilder.TrimApproaches(
 	if not padRadiusStuds then
 		return
 	end
-	local center = junctionData.Position
 	for _, road in roads do
-		trimApproach(road, junctionId, center, padRadiusStuds, style, settings)
+		trimApproach(road, style, settings)
 	end
 end
 

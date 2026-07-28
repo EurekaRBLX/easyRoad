@@ -2,8 +2,8 @@
 
 Written for whoever picks this up next. `SHIPPED.md` is the full history
 (most recent first), `TODO.md` the backlog, `KNOWN_ISSUES.md` confirmed bugs.
-This file is the short version of **where the roundabout work actually stands**,
-because that is the thread that was live when the session ended.
+This file is the short version of where the most recent intersection and
+roundabout work stands.
 
 ## Ground rules for this repo
 
@@ -18,6 +18,35 @@ because that is the thread that was live when the session ended.
   No `Claude-Session:` trailer, no model identifier anywhere in commits, PRs,
   code or artifacts.
 - Log every round in `SHIPPED.md` (newest at top) and update `TODO.md`.
+
+## Latest: true X intersections and snap feedback
+
+The user reported two related placement failures: snapping did not feel
+visible, and drawing one road through another with both ends beyond the
+crossing produced overlapping roads instead of an X junction.
+
+The shipped path is now:
+
+- `Geometry/CurveIntersections.lua` detects real line/Bezier crossings in the
+  ground plane and reports vertical separation.
+- The final point magnetically previews on endpoints, junctions, roundabouts,
+  and splittable road centrelines. Blue means snapped, green means a true
+  interior X will be created, and red explains why a detected crossing cannot
+  be split.
+- `RoadSplit.SplitMany` cuts the new and existing road(s) around caller-owned
+  shared node ids. One placement can cross multiple roads and is one Undo
+  recording.
+- `JunctionBuilder.TrimApproaches` trims both ends of a between-junctions
+  piece from the same preserved source segment, preventing one node rebuild
+  from undoing the other end's trim.
+- A vertical gap greater than `max(2, RoadThicknessStuds * 2)` is treated as
+  grade separation. Near-parallel contacts are not intersections.
+
+Still deliberately blocked, with red feedback: widening/narrowing roads, bus
+bays, missing editable curve data, and cuts that would leave a piece shorter
+than four studs. The first live Studio check should cover a straight X, a
+curve/straight X, multiple crossings in one placement, an elevated overpass,
+Undo, and one red blocked case.
 
 ## There is no Luau runtime or typechecker here
 
@@ -109,6 +138,7 @@ Things that are settled, and why — don't re-litigate these blind:
 
 ## Immediate next step
 
-Have the user reinstall `dist/EasyRoad.rbxmx` and place a roundabout among a
-few roads. That confirms the crash fix and gives the first live look at the
-split-arm mouths. Everything after that is in `TODO.md`.
+Have the user reinstall `dist/EasyRoad.rbxmx` and exercise the X-intersection
+matrix above. Then place a roundabout among a few roads; that still needs the
+first live look at the split-arm mouths. Everything after that is in
+`TODO.md`.
