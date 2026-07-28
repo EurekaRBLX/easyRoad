@@ -66,8 +66,12 @@ Two lessons worth keeping:
    Python re-implementation of the geometry, not an execution of the Lua. It
    validates the algorithm, never that the code runs.
 
-Getting `luau-analyze` into CI would close this. It is the highest-value
-unbuilt item in `TODO.md`.
+Closing this is the highest-value unbuilt item in `TODO.md`. Checked, not
+assumed: GitHub and npm are blocked here (403) so the official `luau-analyze`
+cannot be downloaded, but crates.io is reachable and `full_moon` parses Luau -
+see TODO for the path. Note it needs scope awareness: the name in that crash
+was a real parameter of a *different* function in the same file, so a
+whole-file global scan would not have caught it.
 
 ## `tools/preview` — read its README first
 

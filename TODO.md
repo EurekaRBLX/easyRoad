@@ -25,12 +25,23 @@ in where the entry arm merges, not in corner fillets.
   a 4-leg ring still dips ~0.7 studs partway along before opening out. A
   nose-to-tail taper would need the island built from its own curve rather than
   from the two arm edges.
-- **Get `luau-analyze` into CI.** HIGHEST VALUE. There is no Luau runtime or
+- **Static identifier checking.** HIGHEST VALUE. There is no Luau runtime or
   typechecker in the dev environment: `stylua` proves a file parses, nothing
   proves an identifier exists. A misplaced edit shipped `ringComponents`
   referencing a nil global and Make Roundabout threw on every use until it was
   caught live in Studio. `tools/preview` cannot catch this class of bug - it
   re-implements the geometry rather than executing the Lua.
+
+  Network reality, checked rather than assumed: **GitHub and the npm registry
+  are blocked from this environment (403), so the official `luau-analyze`
+  binary cannot be fetched. crates.io and PyPI ARE reachable.** The viable path
+  is therefore a small Rust helper built on `full_moon` (2.2.0, the Luau parser
+  stylua itself uses) doing scope-aware undefined-identifier detection.
+
+  Note the bug that motivates this needs SCOPE awareness, not just a
+  file-level global scan: `spokeProfile` was a legitimate parameter of a
+  different function in the same file, so a whole-file "is this name declared
+  anywhere" check would have passed it.
 - **Auto-size a minimum ring radius** from entry width and leg count, and warn
   when the requested radius cannot carry the mouths. This is the real fix for
   the crowded-ring limit below, which currently just degrades quietly.
