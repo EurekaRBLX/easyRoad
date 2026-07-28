@@ -25,6 +25,14 @@ in where the entry arm merges, not in corner fillets.
   a 4-leg ring still dips ~0.7 studs partway along before opening out. A
   nose-to-tail taper would need the island built from its own curve rather than
   from the two arm edges.
+- **Extend `tools/preview` past the roundabout.** It only knows how to build a
+  ring + arms right now. The emission port itself (`build_stations`,
+  `emit_road`) is generic, so junctions, bus bays and lane-width transitions -
+  all places where sliver gaps have shipped before - could be scanned the same
+  way for the cost of a scenario function each.
+- **Preview does not model heights or render order**, only part footprints in
+  plan. Z-fighting between coplanar decks, dash phase and marking lift are
+  still Studio-only checks.
 
 ## History: the failed centreline-swing attempt
 

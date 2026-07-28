@@ -4,6 +4,53 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: part-level preview tool, and the three defects it found
+
+Every check up to here worked on idealised geometry - centrelines and offset
+polygons. Roblox never sees those. It sees rigid boxes, one per (component,
+station interval), each a rotated rectangle approximating an arc, and defects
+at that level are invisible to an idealised render. So `tools/preview/` now
+ports the emission path itself (`buildStations`, the deck-strip branch,
+`curveMiterPad`, `placeMarkingSpan`, plus the ring/arm/sector code) and renders
+two views per case: the parts as Studio will show them, and a **bare-ground
+map** where magenta is ground no part covers. A polar scan clusters any holes
+by angle and reports each cluster's depth, and the tool exits non-zero if a
+visible one survives. Stdlib only; it lives in the repo rather than a scratch
+dir, so it runs on any checkout.
+
+It immediately found three real defects, none of which the idealised renders
+could have shown:
+
+1. **Ring pavement was deleted wider than the arms actually cover.** The mouth
+   sector was `max(entrySplit, split) + margin` on BOTH sides, but the arms land
+   at `entrySplit` and `split` respectively - so on a 4-leg ring a ~10 degree
+   wedge of kerb was stripped off ground no arm reaches. `MouthSector` is now
+   asymmetric (`Ahead`/`Behind`) and INSET by `SECTOR_INSET_RAD` rather than
+   expanded: deleting less than the arms cover is invisible, deleting more is
+   bare ground in a ring of pavement.
+2. **The splitter island ended one rung short of the ring**, leaving a crescent
+   of bare kerb at every mouth. The island now runs out to each arm's own kerb
+   crossing and closes around the kerb ARC between them, not the chord.
+3. **On a crowded ring the island bailed out at its waist** and threw away
+   everything past it, including the wide part against the ring. It now runs
+   through the pinch - the pinched rungs collapse to zero area and FillTriangle
+   drops them.
+
+Worth recording: the first attempt at (2) projected the gore edge points
+radially onto the kerb instead of clipping to it. That paves the island
+straight over the circulating carriageway, because near the merge an arm's
+inner edge is already a full roadway width INSIDE the kerb. The bare-ground
+scan still read clean - it only looks for holes, not for island where asphalt
+belongs - and it was the parts render that caught it. Both views earn their
+keep.
+
+After the fixes: 4-leg (both drive-side conventions), 3-leg and a crowded
+5-leg mini all scan with no visible bare ground. The 3-leg keeps 13 hairline
+clusters ~0.05 studs deep where the ring's innermost strips chord across the
+island circle - an order of magnitude below visible, and unfixable by padding
+without overlapping the island instead, so the tool classifies and passes them
+rather than hiding them.
+
 ## Roundabout: circulation direction was inverted; splitter reshaped
 
 Checked the shipped geometry against the reference sketches and two things

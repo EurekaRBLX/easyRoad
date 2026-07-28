@@ -5301,9 +5301,11 @@ end
 
 local DOWN = Vector3.new(0, -1, 0)
 
--- The angular slice of the ring one entry occupies, centred on the mouth's
--- radial. Used to open the ring's own pavement over that entry.
-export type MouthSector = { Angle: number, Half: number }
+-- The angular slice of the ring one mouth occupies. ASYMMETRIC: a mouth's two
+-- arms merge at different distances from its centreline (the entry closer, when
+-- deflection is on), so a single half-angle either under-opens one side or
+-- over-opens the other. `Ahead` extends in the +angle direction, `Behind` in -.
+export type MouthSector = { Angle: number, Ahead: number, Behind: number }
 
 -- Shortest signed difference between two angles, in (-pi, pi].
 local function angleDelta(a: number, b: number): number
@@ -5320,10 +5322,17 @@ end
 -- ring band, leaving a roundabout with no carriageway edge at all.
 local MIN_KERB_GAP_RAD = math.rad(8)
 local MAX_SECTOR_HALF_RAD = math.rad(60)
+-- The sector is pulled IN from where the arms actually land, never pushed out.
+-- Deleting less than the arms cover is invisible - the arm's own pavement lies
+-- over the ring's there. Deleting more strips the kerb off ground no arm
+-- reaches, which is bare ground in a ring of pavement. Sized at about one
+-- strip's angular length so a part whose centre is just inside the bound, and
+-- which therefore straddles it, is still fully covered.
+local SECTOR_INSET_RAD = math.rad(3)
 
 -- Shrink sectors until each leaves MIN_KERB_GAP_RAD of kerb to its angular
 -- neighbours. Each sector may claim at most half of the gap on either side
--- (minus half the required kerb), which is symmetric and cannot overlap.
+-- (minus half the required kerb), which cannot overlap.
 local function clampSectors(sectors: { MouthSector }): { MouthSector }
 	if #sectors == 0 then
 		return sectors
@@ -5333,8 +5342,13 @@ local function clampSectors(sectors: { MouthSector }): { MouthSector }
 		return a.Angle &lt; b.Angle
 	end)
 	if #sorted == 1 then
-		sorted[1].Half = math.min(sorted[1].Half, MAX_SECTOR_HALF_RAD)
-		return sorted
+		return {
+			{
+				Angle = sorted[1].Angle,
+				Ahead = math.min(sorted[1].Ahead, MAX_SECTOR_HALF_RAD),
+				Behind = math.min(sorted[1].Behind, MAX_SECTOR_HALF_RAD),
+			},
+		}
 	end
 	local clamped: { MouthSector } = {}
 	for i, sector in sorted do
@@ -5342,14 +5356,10 @@ local function clampSectors(sectors: { MouthSector }): { MouthSector }
 		local nextOne = sorted[if i &lt; #sorted then i + 1 else 1]
 		local gapPrev = (sector.Angle - prev.Angle) % (2 * math.pi)
 		local gapNext = (nextOne.Angle - sector.Angle) % (2 * math.pi)
-		local half = math.min(
-			sector.Half,
-			MAX_SECTOR_HALF_RAD,
-			math.max(0, (gapPrev - MIN_KERB_GAP_RAD) / 2),
-			math.max(0, (gapNext - MIN_KERB_GAP_RAD) / 2)
-		)
-		if half &gt; 0 then
-			table.insert(clamped, { Angle = sector.Angle, Half = half })
+		local ahead = math.min(sector.Ahead, MAX_SECTOR_HALF_RAD, math.max(0, (gapNext - MIN_KERB_GAP_RAD) / 2))
+		local behind = math.min(sector.Behind, MAX_SECTOR_HALF_RAD, math.max(0, (gapPrev - MIN_KERB_GAP_RAD) / 2))
+		if ahead &gt; 0 or behind &gt; 0 then
+			table.insert(clamped, { Angle = sector.Angle, Ahead = ahead, Behind = behind })
 		end
 	end
 	return clamped
@@ -5387,7 +5397,8 @@ local function openRingPavement(
 		end
 		local angle = math.atan2(flat.Z, flat.X)
 		for _, sector in sectors do
-			if math.abs(angleDelta(angle, sector.Angle)) &lt;= sector.Half then
+			local delta = angleDelta(angle, sector.Angle)
+			if delta &lt;= sector.Ahead and -delta &lt;= sector.Behind then
 				part:Destroy()
 				break
 			end
@@ -5413,6 +5424,9 @@ end
 -- nothing extra for the arms' own width.
 local SPLIT_ANGLE_RAD = math.rad(38)
 local MIN_SPLIT_RAD = math.rad(14)
+-- Kerb reserved beyond a mouth's own split when budgeting against neighbouring
+-- legs. Distinct from SECTOR_INSET_RAD, which trims the PAVEMENT OPENING back
+-- inside the arms; this one just keeps two mouths from growing into each other.
 local SECTOR_MARGIN_RAD = math.rad(3)
 -- Cubic handle as a fraction of the arm's chord. Both ends fight each other
 -- here: the ring-end tangent runs sideways to the approach, so a long handle
@@ -5430,13 +5444,15 @@ local ENTRY_SPLIT_SCALE = 0.8
 -- circulating carriageway itself, so filling further would lay a raised band
 -- across the mouth the island exists to divide.
 local GORE_SAMPLES = 18
--- ...and the thinnest rung worth filling. On a ring too crowded for the mouths
--- it carries - many legs, or wide approaches on a small radius - the split gets
--- squeezed until the two arms run right up against each other partway along, and
--- the island has to give out there rather than trail off into slivers. The mouth
--- still builds; it just reads as one wide opening, which is what a roundabout
--- that tight looks like.
-local MIN_GORE_WIDTH_STUDS = 1.5
+-- On a ring too crowded for the mouths it carries - many legs, or wide
+-- approaches on a small radius - the split gets squeezed until the two arms run
+-- right up against each other partway along. The strip runs THROUGH that waist
+-- rather than stopping at it: the pinched rungs collapse to zero area and
+-- FillTriangle drops them, while the island still forms either side. Bailing out
+-- at the waist instead threw away everything beyond it, including the wide part
+-- against the ring, and left bare kerb at the mouth.
+-- Arc step for the island's nose fan where it meets the ring kerb.
+local NOSE_ARC_STEP_RAD = math.rad(2)
 -- Gap left between the two arms' inner edges where they leave the approach, as
 -- a multiple of the pavement width. This is the splitter's NARROW end: a metre
 -- or so of painted island running back up the approach, which then opens into a
@@ -5590,30 +5606,85 @@ local function buildSplitterIsland(
 		end
 		return position + rightOf(tangent) * (arm.InnerOffsetStuds * flow) + Vector3.new(0, curbHeight, 0)
 	end
+	-- Station at which one arm's gore edge first drops inside the ring's kerb,
+	-- searched forward from `station` in `direction` (+1 along the entry, -1
+	-- along the exit, which is parameterised from the ring outward).
+	local function kerbCrossing(curve: PolyCurve.PolyCurve, station: number, direction: number): number
+		local step = curve.Length / 128
+		local s = station
+		for _ = 1, 160 do
+			local nextS = s + direction * step
+			if nextS &lt; 0 or nextS &gt; curve.Length then
+				return math.clamp(nextS, 0, curve.Length)
+			end
+			if distanceXZ(goreEdge(curve, nextS), center) &lt;= ringKerbRadiusStuds then
+				local lo, hi = s, nextS
+				for _ = 1, 24 do
+					local mid = (lo + hi) / 2
+					if distanceXZ(goreEdge(curve, mid), center) &gt; ringKerbRadiusStuds then
+						lo = mid
+					else
+						hi = mid
+					end
+				end
+				return hi
+			end
+			s = nextS
+		end
+		return s
+	end
 	-- Rungs are paired by DISTANCE FROM THE APPROACH, not by curve fraction: the
 	-- entry and exit are different lengths, so equal fractions sit at different
 	-- distances back from the cut and the island comes out sheared.
 	local reach = math.min(entryCurve.Length, exitCurve.Length)
 	local entrySide: { Vector3 } = {}
 	local exitSide: { Vector3 } = {}
+	local lastAlong = 0
 	for i = 0, GORE_SAMPLES do
 		local along = (i / GORE_SAMPLES) * reach
 		local a = goreEdge(entryCurve, along)
 		local b = goreEdge(exitCurve, exitCurve.Length - along)
-		-- Stop at the ring: from here on the two arms are separated by the
-		-- circulating carriageway, not by island.
-		if i &gt; 0 and math.min(distanceXZ(a, center), distanceXZ(b, center)) &lt;= ringKerbRadiusStuds then
-			break
-		end
-		if i &gt; 0 and distanceXZ(a, b) &lt; MIN_GORE_WIDTH_STUDS then
+		-- Stop once either edge has dropped inside the kerb. Past that the island
+		-- would be laid over the circulating carriageway, not beside it - an
+		-- earlier attempt projected these points radially out onto the kerb
+		-- instead of stopping, which paved the mouth shut.
+		if i &gt; 0 and (distanceXZ(a, center) &lt;= ringKerbRadiusStuds or distanceXZ(b, center) &lt;= ringKerbRadiusStuds) then
 			break
 		end
 		table.insert(entrySide, a)
 		table.insert(exitSide, b)
+		lastAlong = along
 	end
 	for j = 1, #entrySide - 1 do
 		FillTriangle(entrySide[j], exitSide[j], exitSide[j + 1], depth, DOWN, makeSidewalkPart, ring)
 		FillTriangle(entrySide[j], exitSide[j + 1], entrySide[j + 1], depth, DOWN, makeSidewalkPart, ring)
+	end
+
+	-- Nose. The strip stops at the FIRST of the two edges to reach the kerb, so
+	-- the other one still has a run of island left outside it, and beyond both
+	-- the frontage is an arc of the kerb rather than the chord the last rung
+	-- draws. Close all of that here: out along each edge to its own crossing,
+	-- then around the kerb between them. Without it every mouth keeps a crescent
+	-- of bare ground where the island should meet the carriageway.
+	local nose, tail = entrySide[#entrySide], exitSide[#exitSide]
+	if not nose or not tail then
+		return
+	end
+	local noseEnd = goreEdge(entryCurve, kerbCrossing(entryCurve, lastAlong, 1))
+	local tailEnd = goreEdge(exitCurve, kerbCrossing(exitCurve, exitCurve.Length - lastAlong, -1))
+	local a0 = math.atan2(noseEnd.Z - center.Z, noseEnd.X - center.X)
+	local a1 = math.atan2(tailEnd.Z - center.Z, tailEnd.X - center.X)
+	local sweep = angleDelta(a1, a0)
+	local steps = math.max(1, math.ceil(math.abs(sweep) / NOSE_ARC_STEP_RAD))
+	local apex = nose:Lerp(tail, 0.5)
+	local boundary: { Vector3 } = { nose, noseEnd }
+	for k = 1, steps - 1 do
+		table.insert(boundary, ringPointAt(center, a0 + sweep * (k / steps), ringKerbRadiusStuds, nose.Y))
+	end
+	table.insert(boundary, tailEnd)
+	table.insert(boundary, tail)
+	for k = 1, #boundary - 1 do
+		FillTriangle(apex, boundary[k], boundary[k + 1], depth, DOWN, makeSidewalkPart, ring)
 	end
 end
 
@@ -5742,7 +5813,15 @@ local function buildMouth(
 	local ringKerbRadius = mergeRadius + arm.OuterOffsetStuds
 	buildSplitterIsland(ring, entryCurve, exitCurve, arm, center, ringKerbRadius, flow, style, settings)
 
-	return { Angle = plan.Angle, Half = math.max(entrySplit, split) + SECTOR_MARGIN_RAD }
+	-- Open exactly as far as each arm actually reaches, inset so the opening can
+	-- never outrun them. `flow` says which of the two lands on the +angle side.
+	local aheadSplit = if flow &gt; 0 then entrySplit else split
+	local behindSplit = if flow &gt; 0 then split else entrySplit
+	return {
+		Angle = plan.Angle,
+		Ahead = math.max(0, aheadSplit - SECTOR_INSET_RAD),
+		Behind = math.max(0, behindSplit - SECTOR_INSET_RAD),
+	}
 end
 
 function RoundaboutBuilder.CreateAtJunction(
