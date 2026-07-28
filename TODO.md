@@ -4,10 +4,32 @@ Planned/requested work not yet built, roughly ordered by how developed the
 plan is. Not user-facing; internal planning only. See `SHIPPED.md` for
 what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
-## Roundabout entrance/exit deflection — SHIPPED (see SHIPPED.md)
+## Roundabout split entry/exit arms — SHIPPED (see SHIPPED.md)
 
-Built as asymmetric mouth corners; the reverted centreline-swing attempt and
-why it failed are kept below as history.
+Superseded the asymmetric-mouth-corner build, which in turn superseded the
+reverted centreline-swing attempt kept below as history. Deflection now lives
+in where the entry arm merges, not in corner fillets.
+
+### Follow-ups left open
+
+- **Crowded rings.** With 5+ legs, or wide approaches on a ~40-stud radius, the
+  split gets squeezed until an entry and its own exit run up against each other
+  partway along and the splitter island gives out. Nothing overlaps or spikes,
+  but the mouth reads as one wide opening. Real fix is to auto-size the minimum
+  ring radius from the entry width and leg count (see below) and warn when the
+  requested radius can't carry them.
+- **Give-way / yield markings** across each entry arm at the merge, and the
+  circulating-lane arrows. The arms are ordinary one-way roads, so this is a
+  Markings.lua job, not a geometry one.
+- **Splitter island waist.** The gore is widest at the approach and at the ring
+  and narrowest in between, because the arms bow toward each other where the
+  ring-end control point pulls across. Cosmetic; a nose-to-tail taper would
+  need the island built from its own curve rather than the two arm edges.
+- **Circulation direction.** `circleSegments` picks its sign from
+  `DriveOnLeft`, and everything here is consistent with it (island on the
+  correct side of travel, entry downstream of exit). Whether the resulting
+  absolute direction reads clockwise in Studio for a UK ring has never been
+  confirmed against a live screenshot - worth one look.
 
 ## History: the failed centreline-swing attempt
 

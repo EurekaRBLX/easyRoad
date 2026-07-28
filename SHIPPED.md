@@ -4,7 +4,72 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
-## Roundabout entrance/exit deflection (asymmetric mouth corners)
+## Roundabout mouths: split entry/exit arms merging on the rim
+
+Replaces the single full-width feeder per approach. Each approach is now cut
+back and **splits into a one-way entry arm and a one-way exit arm**, with a
+raised splitter island in the gore between them, and both arms meet the ring
+**tangentially on its rim**. The ring itself is still one continuous annulus -
+only its outer pavement is opened over each mouth sector, as before.
+
+The merge is the point of the design. An arm's centreline ends at
+`ringKerbRadius - OuterOffsetStuds`, i.e. exactly the radius that puts its
+outer roadway edge on the ring's kerb, carrying the ring's own tangent there.
+So the arm's kerb line lands on the ring's kerb line and its pavement band on
+the ring's pavement band, and the carriageway flows in instead of butting into
+it. That removes the whole class of defect the old feeder had - the triangular
+notch on the acute side of every mouth and the kerb that stopped dead - so
+`buildMouthCorners`, `buildFeederRoad` and the flare/bulge constants are all
+gone rather than patched.
+
+Geometry, all derived from the ring's own sign convention
+(`flow = if DriveOnLeft then -1 else 1`, matching `circleSegments`):
+
+- Arm profile: half the approach's running lanes, one-way, with a **single**
+  pavement on the arm's OUTER side (`ringComponents`' placement rule). A
+  pavement on both sides would lay a raised strip down the middle of the mouth.
+- Going round the ring you meet a mouth's EXIT first (upstream) and its ENTRY
+  after (downstream): entry merge at `angle + flow*entrySplit`, exit at
+  `angle - flow*split`.
+- Mouth angle comes from `rayCircleFirstHit` along the approach's own
+  centreline, not the cut point's radial, so an off-centre approach keeps its
+  mouth on the road line.
+- Legs are trimmed and **planned first, built second**: a mouth's split budget
+  is `nearestNeighbourGap/2 - MIN_KERB_GAP/2`, which needs every leg's landed
+  angle. Assuming an even spread hands a leg wedged 45 deg from its neighbour
+  the same budget as one with the ring to itself.
+- Both arms approach their merge points from the mouth side, so the pair's
+  angular footprint lies INSIDE the split - the opened sector is
+  `split + 5 deg` margin, with nothing added for the arms' own width. (An
+  earlier version added `atan(armHalf/mergeR)` and squeezed a 4-leg ring's
+  split from 34 deg down to 26, which is where the arms started closing up.)
+- `RoundaboutEntryCurve` now means the entry merges at `0.8x` the exit's split
+  - traffic joining is turned harder than traffic leaving - rather than
+  reshaping corner fillets.
+
+Constants were **measured in the headless renderer, not eyeballed**. The cubic
+handle is the delicate one: the ring-end tangent runs sideways to the approach,
+so a long handle walks that control point across the gore until the entry and
+its own exit close up on each other, while a short one buys the clearance back
+by kinking the arm into a hairpin (min radius 4-5 studs at 0.14). 0.30 is the
+measured middle - ~20-stud min radius on a 4-leg ring with a full carriageway
+of gore left between the arms. Checked headless for 3-, 4- and 5-leg rings in
+both drive-side conventions: no arm crossings, no sector overlaps, and every
+arm's outer edge lands on the ring kerb to within 0.5 studs.
+
+Known limit, logged rather than hidden: on a ring genuinely too small for the
+mouths it carries (5+ legs, or wide approaches on a ~40-stud radius) the split
+is squeezed until the two arms run up against each other partway along. The
+mouth still builds - it reads as one wide opening, which is what a roundabout
+that tight looks like - and the splitter island gives out at
+`MIN_GORE_WIDTH_STUDS` instead of trailing into slivers.
+
+Also: arms are sunk `0.05` studs below the ring deck. Near the merge an arm's
+inner half necessarily lies over the ring's carriageway (that overlap IS the
+merge) and two coplanar asphalt decks z-fight; letting the ring win is
+invisible and also hides the arm's edge lines where they run inside the ring.
+
+## Roundabout entrance/exit deflection (asymmetric mouth corners) — superseded
 
 Entries used to butt into the ring dead straight, with no deflection. Now each
 mouth's two corners are shaped differently, which is where deflection actually

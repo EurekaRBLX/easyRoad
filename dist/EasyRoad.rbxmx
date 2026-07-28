@@ -4883,19 +4883,23 @@ end
 
 return RoadBuilder
 </ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX20"><Properties><string name="Name">RoundaboutBuilder</string><ProtectedString name="Source">--!strict
--- Roundabout: continuous ring (never sliced) + setback + RoadBuilder feeders.
+-- Roundabout: continuous ring (never sliced) + split entry/exit arms.
 --
 -- Ring is always ONE full RoadBuilder circle — never slice the annulus and
 -- never parent Hermite "entry roads" onto the ring curve (those knot it).
--- Each spoke is trimmed with a junction-style setback, then bridged to the
--- ring with a normal curved road (Fitting + RoadBuilder.Build, same path as
--- freeform/curve placement). Full-width profile feeders stay outward; the
--- old edge-Hermite + FillTriangle mouths pinched inward at ClosestS.
+--
+-- Each approach is trimmed back and splits into a pair of ONE-WAY arms: an
+-- entry that sweeps downstream onto the ring and an exit that peels upstream
+-- off it, with a raised splitter island in the gore between them. Both arms
+-- meet the ring TANGENTIALLY on its rim — the arm centreline ends at exactly
+-- the radius that puts its outer roadway edge on the ring's kerb, carrying the
+-- ring's own tangent — so kerb, pavement and carriageway flow into the ring
+-- instead of butting into it. That replaces the old single full-width feeder
+-- per approach, which butted the road square into the ring and needed
+-- curb-return corner fills to patch the notches it left on either side.
 
 local CurveSegment = require("../Geometry/CurveSegment")
-local Fitting = require("../Geometry/Fitting")
 local PolyCurve = require("../Geometry/PolyCurve")
-local BezierCorner = require("../Geometry/BezierCorner")
 local FillTriangle = require("./FillTriangle")
 local RoadBuilder = require("./RoadBuilder")
 local RoadInstance = require("../RoadInstance")
@@ -4909,10 +4913,18 @@ local RoundaboutBuilder = {}
 
 local ROUNDABOUTS_FOLDER_NAME = "Roundabouts"
 local BEZIER_CIRCLE_K = 0.5522847498307936
--- Pull spokes back so feed curves have length (studs past ring outer edge).
-local SETBACK_STUDS = 14
--- Slight inset past the ring outer edge so feeder asphalt blends into the ring.
-local FEED_OVERLAP_STUDS = 1
+
+-- How far past the ring's outer edge each approach is cut back, so the entry
+-- and exit arms have the length to split apart and swing round onto the rim.
+-- Scaled off the ring so a big roundabout gets long sweeping arms and a mini
+-- one doesn't eat 90 studs of the user's road.
+local ARM_RUN_FACTOR = 0.85
+local ARM_RUN_MIN_STUDS = 28
+local ARM_RUN_MAX_STUDS = 90
+
+local function armRunStuds(outerRadiusStuds: number): number
+	return math.clamp(outerRadiusStuds * ARM_RUN_FACTOR, ARM_RUN_MIN_STUDS, ARM_RUN_MAX_STUDS)
+end
 
 local function circleSegments(center: Vector3, radiusStuds: number, driveOnLeft: boolean): { CurveSegment.Segment }
 	local sign = if driveOnLeft then -1 else 1
@@ -5277,77 +5289,6 @@ local function rayCircleFirstHit(from: Vector3, dir: Vector3, center: Vector3, R
 	return Vector3.new(from.X + ux * t, from.Y, from.Z + uz * t)
 end
 
--- Short feeder from a setback cut mid into the ring, built with the same
--- Fitting + RoadBuilder path as normal curved roads. The end lands where the
--- spoke's OWN centreline, continued into the ring, first crosses just inside
--- the outer edge - so the feeder is a straight (or gently curved) continuation
--- of the road and actually fills the gap the road leaves. (It used to attach on
--- the ring RADIAL through the cut mid, which for an off-centre approach - the
--- common case - pulled the feeder end sideways off the road line, leaving the
--- real road-&gt;ring gap unfilled with a diagonal stub floating beside it.)
-local function buildFeederRoad(
-	cutMid: Vector3,
-	inward: Vector3,
-	center: Vector3,
-	attachRadiusStuds: number,
-	profile: RoadProfile.RoadProfile,
-	style: RegionStyles.RegionStyle,
-	settings: Settings.EasyRoadSettings
-): (Model?, SpokeCutEdges?)
-	local flatIn = Vector3.new(inward.X, 0, inward.Z)
-	if flatIn.Magnitude &lt; 1e-6 then
-		local toCenter = Vector3.new(center.X - cutMid.X, 0, center.Z - cutMid.Z)
-		if toCenter.Magnitude &lt; 1e-6 then
-			return nil
-		end
-		flatIn = toCenter
-	end
-	local startTan = flatIn.Unit
-
-	-- Attach where the road's own centreline, continued along its travel
-	-- direction, first crosses just inside the ring's outer edge, so the feeder
-	-- is a straight continuation that fills the gap the road leaves.
-	local ringAttach = rayCircleFirstHit(cutMid, startTan, center, attachRadiusStuds)
-	if not ringAttach then
-		-- Spoke points away from / tangent to the ring: fall back to the radial
-		-- point (a head-on spoke lands correctly here too).
-		local radial = Vector3.new(cutMid.X - center.X, 0, cutMid.Z - center.Z)
-		if radial.Magnitude &lt; 1e-6 then
-			radial = -startTan
-		else
-			radial = radial.Unit
-		end
-		ringAttach =
-			Vector3.new(center.X + radial.X * attachRadiusStuds, cutMid.Y, center.Z + radial.Z * attachRadiusStuds)
-	end
-	ringAttach = Vector3.new(ringAttach.X, cutMid.Y, ringAttach.Z)
-	if (ringAttach - cutMid).Magnitude &lt; 0.5 then
-		return nil
-	end
-
-	-- Locked start tangent = spoke travel into the ring (same as freeform curve
-	-- continuation from an existing road end).
-	local segment = Fitting.CurveFromTangent(cutMid, startTan, ringAttach)
-	local feederCurve = PolyCurve.new({ segment })
-	local feeder = RoadBuilder.Build({
-		Curve = feederCurve,
-		ProfileStart = profile,
-		Style = style,
-		Settings = flatSettings(settings),
-		Preview = false,
-	})
-	-- Not a free-standing editable road — owned by the roundabout mesh.
-	feeder:SetAttribute("RW_Road", nil)
-	feeder.Name = "RoundaboutFeeder"
-
-	-- Cross-section edge points where the feeder meets the ring, so the caller
-	-- can build the mouth curb-return corners against them.
-	local ringStation = feederCurve.Length
-	local endTangent = feederCurve:TangentAt(ringStation)
-	local ringEdges = edgePointsAt(feederCurve, profile, ringStation, endTangent, settings.MetersToStuds)
-	return feeder, ringEdges
-end
-
 local DOWN = Vector3.new(0, -1, 0)
 
 -- The angular slice of the ring one entry occupies, centred on the mouth's
@@ -5369,17 +5310,6 @@ end
 -- ring band, leaving a roundabout with no carriageway edge at all.
 local MIN_KERB_GAP_RAD = math.rad(12)
 local MAX_SECTOR_HALF_RAD = math.rad(60)
-
--- Entry/exit deflection: per-side multipliers on a mouth's symmetric flare,
--- and the matching corner bulge. A tight entry is the deflection that slows
--- traffic joining the ring; a generous exit lets it leave freely. Applied to
--- the CORNERS only - swinging the feeder centreline instead just produces a
--- hairpin, since the feeder is barely a setback long (see TODO history).
-local ENTRY_FLARE_SCALE = 0.55
-local EXIT_FLARE_SCALE = 1.55
-local ENTRY_BULGE = 0.18
-local EXIT_BULGE = 0.42
-local SYMMETRIC_BULGE = 0.25
 
 -- Shrink sectors until each leaves MIN_KERB_GAP_RAD of kerb to its angular
 -- neighbours. Each sector may claim at most half of the gap on either side
@@ -5463,32 +5393,168 @@ local function flatUnit(v: Vector3): Vector3
 	return flat.Unit
 end
 
--- Curb-return corners where a feeder meets the ring. Each feeder is a straight
--- road butting into the ring at an angle, so on each side its edge leaves a
--- triangular notch against the ring's outer circle and its kerb line stops
--- dead. This closes both notches (per side) with a bounded quadratic-Bezier
--- corner (BezierCorner - cannot spike at any mouth angle) from the feeder's
--- edge to the radially-projected ring edge, filled as a raised sidewalk band
--- plus roadway asphalt, mirroring the junction curb returns in JunctionBuilder.
-local function buildMouthCorners(
+-- Split entry/exit arms --------------------------------------------------------
+--
+-- Angle between a mouth's centreline and each of its two merge points on the
+-- ring, the floor it may be squeezed to when the legs are crowded, and the strip
+-- of untouched kerb kept just outside each mouth. Because both arms approach
+-- their merge points from the mouth side, the pair's whole angular footprint
+-- lies INSIDE the split - so the sector is the split plus that margin, and
+-- nothing extra for the arms' own width.
+local SPLIT_ANGLE_RAD = math.rad(38)
+local MIN_SPLIT_RAD = math.rad(14)
+local SECTOR_MARGIN_RAD = math.rad(5)
+-- Cubic handle as a fraction of the arm's chord. Both ends fight each other
+-- here: the ring-end tangent runs sideways to the approach, so a long handle
+-- walks that control point across the gore and the entry and its own exit close
+-- up against each other, while a short one buys the clearance back by kinking
+-- the arm into a hairpin at the ring. 0.30 is the measured middle - roughly a
+-- 20-stud minimum radius on a 4-leg ring with a full carriageway of gore left
+-- between the arms.
+local ARM_HANDLE = 0.30
+-- Tight entry, generous exit: the entry merges closer to the mouth, and that
+-- deflection is what slows traffic joining the ring (Settings.RoundaboutEntryCurve).
+local ENTRY_SPLIT_SCALE = 0.8
+-- Splitter island: how far along the arm pair the gore fill runs, and the widest
+-- rung it may reach. It has to die well short of the ring, or the last rung lays
+-- a raised band straight across the mouth it exists to divide.
+local GORE_FRACTION = 0.45
+local GORE_SAMPLES = 12
+local GORE_WIDTH_FACTOR = 2
+-- ...and the thinnest rung worth filling. On a ring too crowded for the mouths
+-- it carries - many legs, or wide approaches on a small radius - the split gets
+-- squeezed until the two arms run right up against each other partway along, and
+-- the island has to give out there rather than trail off into slivers. The mouth
+-- still builds; it just reads as one wide opening, which is what a roundabout
+-- that tight looks like.
+local MIN_GORE_WIDTH_STUDS = 1.5
+-- Gap left between the two arms' inner edges where they leave the approach, as
+-- a multiple of the pavement width - the splitter island's narrow end.
+local SPLITTER_WIDTH_FACTOR = 2
+-- Arms are dropped a hair below the ring deck. Near the merge an arm's inner
+-- half necessarily lies over the ring's own carriageway (that overlap IS the
+-- merge), and two coplanar asphalt decks z-fight. Same colour and material, so
+-- letting the ring win is invisible - except that it also hides the arm's edge
+-- lines where they run inside the ring, which is what we want anyway.
+local ARM_SINK_STUDS = 0.05
+
+local function rightOf(tangent: Vector3): Vector3
+	return Vector3.new(-tangent.Z, 0, tangent.X)
+end
+
+-- Ring tangent/point at an angle, matching circleSegments' own sign convention
+-- so an arm that ends here is genuinely tangent to the circulating carriageway.
+local function ringTangentAt(angle: number, flow: number): Vector3
+	return Vector3.new(-math.sin(angle), 0, math.cos(angle)) * flow
+end
+
+local function ringPointAt(center: Vector3, angle: number, radiusStuds: number, y: number): Vector3
+	return Vector3.new(center.X + math.cos(angle) * radiusStuds, y, center.Z + math.sin(angle) * radiusStuds)
+end
+
+-- Cubic with BOTH end tangents pinned, so the arm leaves the approach along the
+-- road and arrives on the ring along the ring.
+local function armSegment(p0: Vector3, t0: Vector3, p1: Vector3, t1: Vector3, handle: number): CurveSegment.Segment
+	local h = math.max(2, distanceXZ(p0, p1) * handle)
+	return CurveSegment.Cubic(p0, p0 + t0 * h, p1 - t1 * h, p1)
+end
+
+type ArmProfile = {
+	Profile: RoadProfile.RoadProfile,
+	-- Centreline to roadway edge, on the side facing away from / toward the gore.
+	OuterOffsetStuds: number,
+	InnerOffsetStuds: number,
+}
+
+-- One-way half of an approach: half its running lanes, plus a single pavement on
+-- the arm's OUTER side. A pavement on both sides would lay a raised strip down
+-- the middle of the mouth, since the gore side is where the splitter island goes.
+local function armProfileFor(
+	spokeProfile: RoadProfile.RoadProfile,
+	fallbackLaneWidthM: number,
+	style: RegionStyles.RegionStyle,
+	scale: number
+): ArmProfile
+	local widths: { number } = {}
+	for _, component in spokeProfile.Components do
+		if component.Kind == "Drive" then
+			table.insert(widths, component.WidthM)
+		end
+	end
+	if #widths == 0 then
+		widths = { fallbackLaneWidthM }
+	end
+	local lanes = math.max(1, math.floor(#widths / 2))
+	local components: { RoadProfile.ProfileComponent } = {}
+	for i = 1, lanes do
+		table.insert(components, { Kind = "Drive", WidthM = widths[i] or widths[#widths], Direction = 1 })
+	end
+	local sidewalk: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
+	-- Same placement rule as ringComponents: under the ring's sign convention the
+	-- outward side is the right of travel for left-hand drive, the left for
+	-- right-hand - which is exactly the side the ring puts its own pavement on.
+	if style.DriveOnLeft then
+		table.insert(components, sidewalk)
+	else
+		table.insert(components, 1, sidewalk)
+	end
+	local profile: RoadProfile.RoadProfile = {
+		Id = "roundabout_arm",
+		Name = "Roundabout arm",
+		Category = "Custom",
+		BuiltIn = false,
+		Components = components,
+	}
+	local leftM, rightM = roadwayEdgeOffsetsM(profile)
+	return {
+		Profile = profile,
+		OuterOffsetStuds = (if style.DriveOnLeft then rightM else -leftM) * scale,
+		InnerOffsetStuds = (if style.DriveOnLeft then -leftM else rightM) * scale,
+	}
+end
+
+local function buildArm(
+	curve: PolyCurve.PolyCurve,
+	arm: ArmProfile,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): Model
+	local model = RoadBuilder.Build({
+		Curve = curve,
+		ProfileStart = arm.Profile,
+		Style = style,
+		Settings = flatSettings(settings),
+		Preview = false,
+	})
+	-- Not a free-standing editable road - owned by the roundabout mesh.
+	model:SetAttribute("RW_Road", nil)
+	model.Name = "RoundaboutArm"
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			descendant.CFrame = descendant.CFrame - Vector3.new(0, ARM_SINK_STUDS, 0)
+		end
+	end
+	return model
+end
+
+-- Raised splitter island in the gore between an entry and its exit, bounded by
+-- the two arms' inner roadway edges.
+local function buildSplitterIsland(
 	ring: Model,
-	ringEdges: SpokeCutEdges,
-	center: Vector3,
-	outerRadiusStuds: number,
-	ringSidewalkStuds: number,
+	entryCurve: PolyCurve.PolyCurve,
+	exitCurve: PolyCurve.PolyCurve,
+	arm: ArmProfile,
+	flow: number,
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings
 )
 	local scale = settings.MetersToStuds
-	local thickness = settings.RoadThicknessStuds
 	local curbHeight = style.CurbHeightM * scale
-	local sidewalkDepth = thickness + curbHeight
-	local ringKerbRadius = math.max(1, outerRadiusStuds - ringSidewalkStuds)
-	local SAMPLES = 6
-
-	local function makePart(material: Enum.Material, color: Color3): Part
+	local depth = settings.RoadThicknessStuds + curbHeight
+	local maxWidth = (arm.OuterOffsetStuds + arm.InnerOffsetStuds) * GORE_WIDTH_FACTOR
+	local function makeSidewalkPart(): Part
 		local part = Instance.new("Part")
-		part.Name = "RoundaboutMouth"
+		part.Name = "Sidewalk"
 		part.Anchored = true
 		part.CanCollide = false
 		part.CanTouch = false
@@ -5496,190 +5562,168 @@ local function buildMouthCorners(
 		part.CastShadow = false
 		part.TopSurface = Enum.SurfaceType.Smooth
 		part.BottomSurface = Enum.SurfaceType.Smooth
-		part.Material = material
-		part.Color = color
+		part.Material = Enum.Material.Concrete
+		part.Color = style.SidewalkColor
 		return part
 	end
-	local function makeAsphaltPart(): Part
-		return makePart(Enum.Material.Asphalt, style.AsphaltColor)
-	end
-	local function makeSidewalkPart(): Part
-		return makePart(Enum.Material.Concrete, style.SidewalkColor)
-	end
-	local function raise(p: Vector3): Vector3
-		return p + Vector3.new(0, curbHeight, 0)
-	end
-	local function projectTo(p: Vector3, radius: number): Vector3
-		local u = flatUnit(p - center)
-		if u.Magnitude &lt; 1e-6 then
-			return p
+	-- Gore-side roadway edge: the inner offset lies on +flow * right-of-travel for
+	-- both arms (the exit's travel is reversed, and so is its own right).
+	local function goreEdge(curve: PolyCurve.PolyCurve, station: number): Vector3
+		local s = math.clamp(station, 0, curve.Length)
+		local position = curve:PosAt(s)
+		local tangent = flatUnit(curve:TangentAt(s))
+		if tangent.Magnitude &lt; 1e-6 then
+			return position
 		end
-		return Vector3.new(center.X + u.X * radius, p.Y, center.Z + u.Z * radius)
+		return position + rightOf(tangent) * (arm.InnerOffsetStuds * flow) + Vector3.new(0, curbHeight, 0)
 	end
+	-- Rungs are paired by DISTANCE FROM THE APPROACH, not by curve fraction: the
+	-- entry and exit are different lengths, so equal fractions sit at different
+	-- distances back from the cut and the island comes out sheared.
+	local reach = math.min(entryCurve.Length, exitCurve.Length) * GORE_FRACTION
+	local entrySide: { Vector3 } = {}
+	local exitSide: { Vector3 } = {}
+	for i = 0, GORE_SAMPLES do
+		local along = (i / GORE_SAMPLES) * reach
+		local a = goreEdge(entryCurve, along)
+		local b = goreEdge(exitCurve, exitCurve.Length - along)
+		local width = distanceXZ(a, b)
+		if i &gt; 0 and (width &gt; maxWidth or width &lt; MIN_GORE_WIDTH_STUDS) then
+			break
+		end
+		table.insert(entrySide, a)
+		table.insert(exitSide, b)
+	end
+	for j = 1, #entrySide - 1 do
+		FillTriangle(entrySide[j], exitSide[j], exitSide[j + 1], depth, DOWN, makeSidewalkPart, ring)
+		FillTriangle(entrySide[j], exitSide[j + 1], entrySide[j + 1], depth, DOWN, makeSidewalkPart, ring)
+	end
+end
 
-	local dir = flatUnit(ringEdges.Inward)
+-- Everything about a mouth that is fixed by the approach alone. Worked out for
+-- every leg BEFORE any arm is built, because how far a mouth may split depends
+-- on where its neighbours actually landed.
+type MouthPlan = {
+	CutMid: Vector3,
+	Direction: Vector3,
+	Arm: ArmProfile,
+	MergeRadius: number,
+	-- Ring angle the approach aims at.
+	Angle: number,
+}
+
+local function planMouth(
+	cutMid: Vector3,
+	inward: Vector3,
+	spokeProfile: RoadProfile.RoadProfile,
+	center: Vector3,
+	ringKerbRadiusStuds: number,
+	laneWidthM: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): MouthPlan?
+	local dir = flatUnit(inward)
 	if dir.Magnitude &lt; 1e-6 then
-		return
-	end
-	-- Roadway corner apex: the ring kerb point on the feeder's own centreline.
-	local mouthMid = ringEdges.LeftKerb:Lerp(ringEdges.RightKerb, 0.5)
-	local apexAsphalt = projectTo(mouthMid, ringKerbRadius)
-
-	-- A clamped quadratic-Bezier corner from `aEdge` (edge line along `aDir`) to
-	-- `bEdge` (along `bDir`). The raw control is where the two edge lines meet,
-	-- but that point sits well outside the chord and bowing the curve all the
-	-- way out to it makes the corner bulge into a flower-petal lobe past the
-	-- ring. Keep only a gentle round: pull the control to at most a small
-	-- fraction of the chord length off the midpoint. Bounded inside
-	-- {aEdge, control, bEdge} either way.
-	local function cornerPolyline(
-		aEdge: Vector3,
-		aDir: Vector3,
-		bEdge: Vector3,
-		bDir: Vector3,
-		bulgeCap: number
-	): { Vector3 }
-		local control = BezierCorner.ControlPoint(aEdge, aDir, bEdge, bDir)
-		local mid = aEdge:Lerp(bEdge, 0.5)
-		local off = Vector3.new(control.X - mid.X, 0, control.Z - mid.Z)
-		local maxBulge = distanceXZ(aEdge, bEdge) * bulgeCap
-		if off.Magnitude &gt; maxBulge and off.Magnitude &gt; 1e-6 then
-			local capped = off.Unit * maxBulge
-			control = Vector3.new(mid.X + capped.X, control.Y, mid.Z + capped.Z)
-		end
-		local points: { Vector3 } = table.create(SAMPLES + 2)
-		for i = 0, SAMPLES + 1 do
-			table.insert(points, BezierCorner.PointAt(aEdge, control, bEdge, i / (SAMPLES + 1)))
-		end
-		return points
-	end
-
-	-- How far each side's ring attachment is swung AWAY from the mouth centre,
-	-- as an arc distance converted to an angle. This is what makes the entry
-	-- flare OPEN into the ring (a trumpet, like a real roundabout) instead of
-	-- the corners closing it back down to plain road width.
-	-- Bounded in BOTH studs and angle. A multi-lane entry is already angularly
-	-- wide at the ring, so letting the flare keep scaling with road width piles
-	-- a ~30 deg swing on top of an already-huge mouth and the entries end up
-	-- eating the whole carriageway edge (measured: 4-lane entries on a 4-leg
-	-- ring wanted 133% of the ring band). The flare should add roughly a lane
-	-- of extra width, not a proportion of an arbitrarily wide road.
-	local flareStuds = math.clamp(ringEdges.HalfWidthStuds * 0.9, 6, 14)
-	local flareRad = math.clamp(flareStuds / outerRadiusStuds, math.rad(6), math.rad(20))
-	local mouthDir = flatUnit(mouthMid - center)
-	-- Widest angular offset any flared corner reaches, so the caller can open
-	-- the ring's own pavement over exactly this sector.
-	local sectorHalf = 0
-	-- Which way traffic circulates, matching circleSegments' own sign: +1
-	-- (increasing angle) for right-hand drive, -1 for left-hand.
-	local flow = if style.DriveOnLeft then -1 else 1
-	local deflect = settings.RoundaboutEntryCurve
-
-	local function rotateXZ(v: Vector3, angle: number): Vector3
-		local ca, sa = math.cos(angle), math.sin(angle)
-		return Vector3.new(v.X * ca - v.Z * sa, v.Y, v.X * sa + v.Z * ca)
-	end
-
-	local MIN_CORNER_STUDS = 0.75
-	local function cornerSide(fKerb: Vector3, fOuter: Vector3)
-		-- Attach BOTH boundaries at one ring angle so the band's ring end is a
-		-- clean radial segment. Giving the kerb and outer ends their own radial
-		-- projections puts them at different angles for a steeply-angled
-		-- approach, which twists the band into a triangular flap across the
-		-- mouth (the "wrong way" corner).
-		local ringDir = flatUnit(fOuter - center)
-		if ringDir.Magnitude &lt; 1e-6 then
-			return
-		end
-		-- Swing that angle away from the mouth centre so the mouth opens out,
-		-- by a per-side amount when entry deflection is on.
-		local bulgeCap = SYMMETRIC_BULGE
-		if mouthDir.Magnitude &gt; 1e-6 then
-			local cross = mouthDir.X * ringDir.Z - mouthDir.Z * ringDir.X
-			if math.abs(cross) &lt; 1e-6 then
-				-- Side radial coincides with the mouth centre radial: take the
-				-- side from the edge point's own lateral offset instead.
-				local lateral = fOuter - mouthMid
-				cross = mouthDir.X * lateral.Z - mouthDir.Z * lateral.X
-			end
-			local sign = if cross &gt;= 0 then 1 else -1
-			local sideFlare = flareRad
-			if deflect then
-				-- Going round the ring you meet a mouth's EXIT corner first
-				-- (behind, against the flow) and its ENTRY corner after
-				-- (ahead, with the flow). Standard practice is a tight entry
-				-- radius - that is the deflection that slows traffic joining -
-				-- and a generous exit so traffic leaves freely.
-				local isEntry = sign == flow
-				sideFlare = flareRad * (if isEntry then ENTRY_FLARE_SCALE else EXIT_FLARE_SCALE)
-				bulgeCap = if isEntry then ENTRY_BULGE else EXIT_BULGE
-			end
-			sideFlare = math.clamp(sideFlare, math.rad(4), math.rad(30))
-			ringDir = flatUnit(rotateXZ(ringDir, sign * sideFlare))
-			-- Track how far out this side reaches (signed angle to mouth centre).
-			local dot = math.clamp(mouthDir.X * ringDir.X + mouthDir.Z * ringDir.Z, -1, 1)
-			sectorHalf = math.max(sectorHalf, math.acos(dot))
-		end
-		local rKerb = Vector3.new(center.X + ringDir.X * ringKerbRadius, fKerb.Y, center.Z + ringDir.Z * ringKerbRadius)
-		local rOuter =
-			Vector3.new(center.X + ringDir.X * outerRadiusStuds, fOuter.Y, center.Z + ringDir.Z * outerRadiusStuds)
-		-- Feeder edge already at the ring edge on this side: no notch to fill.
-		if distanceXZ(fOuter, rOuter) &lt; MIN_CORNER_STUDS and distanceXZ(fKerb, rKerb) &lt; MIN_CORNER_STUDS then
-			return
-		end
-		-- Both corner points share the ring tangent at that single angle.
-		local ringTan = BezierCorner.Perpendicular(ringDir)
-		local kerbB = cornerPolyline(fKerb, dir, rKerb, ringTan, bulgeCap)
-		local outerB = cornerPolyline(fOuter, dir, rOuter, ringTan, bulgeCap)
-		local n = math.min(#kerbB, #outerB)
-		-- Raised sidewalk band between the kerb and outer boundaries.
-		for j = 1, n - 1 do
-			FillTriangle(
-				raise(outerB[j]),
-				raise(kerbB[j]),
-				raise(kerbB[j + 1]),
-				sidewalkDepth,
-				DOWN,
-				makeSidewalkPart,
-				ring
-			)
-			FillTriangle(
-				raise(outerB[j]),
-				raise(kerbB[j + 1]),
-				raise(outerB[j + 1]),
-				sidewalkDepth,
-				DOWN,
-				makeSidewalkPart,
-				ring
-			)
-		end
-		-- Roadway asphalt inside the kerb: fan from the mouth-centre apex.
-		for j = 1, #kerbB - 1 do
-			FillTriangle(apexAsphalt, kerbB[j], kerbB[j + 1], thickness, DOWN, makeAsphaltPart, ring)
-		end
-	end
-
-	cornerSide(ringEdges.LeftKerb, ringEdges.LeftOuter)
-	cornerSide(ringEdges.RightKerb, ringEdges.RightOuter)
-
-	-- Central throat: both side fans start at `apexAsphalt`, so the wedge
-	-- straight between the feeder's two kerb points is left open (the dark
-	-- notch at the mouth centre). Close it with the roadway between the feeder
-	-- end and the ring's kerb.
-	FillTriangle(
-		apexAsphalt,
-		ringEdges.LeftKerb,
-		ringEdges.RightKerb,
-		settings.RoadThicknessStuds,
-		DOWN,
-		makeAsphaltPart,
-		ring
-	)
-
-	if mouthDir.Magnitude &lt; 1e-6 or sectorHalf &lt;= 0 then
 		return nil
 	end
-	return { Angle = math.atan2(mouthDir.Z, mouthDir.X), Half = sectorHalf }
+	local arm = armProfileFor(spokeProfile, laneWidthM, style, settings.MetersToStuds)
+	-- Centreline radius that puts the arm's OUTER roadway edge exactly on the
+	-- ring's kerb - so its pavement band lands on the ring's pavement band and
+	-- the kerb line runs on unbroken from the approach round onto the ring.
+	local mergeRadius = ringKerbRadiusStuds - arm.OuterOffsetStuds
+	if mergeRadius &lt;= 1 then
+		return nil
+	end
+	-- Mouth angle: where the approach's OWN centreline, continued, first meets
+	-- the merge circle. Taking the cut point's radial instead swings the whole
+	-- mouth off the road line for any approach that doesn't aim at the centre.
+	local aim = rayCircleFirstHit(cutMid, dir, center, mergeRadius) or cutMid
+	local aimDir = flatUnit(aim - center)
+	if aimDir.Magnitude &lt; 1e-6 then
+		return nil
+	end
+	return {
+		CutMid = cutMid,
+		Direction = dir,
+		Arm = arm,
+		MergeRadius = mergeRadius,
+		Angle = math.atan2(aimDir.Z, aimDir.X),
+	}
+end
+
+-- How far either side of its centreline one mouth may swing, from the angular
+-- room its nearest neighbour actually leaves - not from an assumed even spread
+-- of legs, which hands a mouth wedged 45 degrees from its neighbour the same
+-- budget as one with the ring to itself.
+local function splitBudgetFor(plans: { MouthPlan }, index: number): number
+	local angle = plans[index].Angle
+	local nearest = 2 * math.pi
+	for i, other in plans do
+		if i ~= index then
+			local ahead = (other.Angle - angle) % (2 * math.pi)
+			nearest = math.min(nearest, ahead, 2 * math.pi - ahead)
+		end
+	end
+	return math.max(MIN_SPLIT_RAD, nearest / 2 - MIN_KERB_GAP_RAD / 2)
+end
+
+-- One mouth: entry arm, exit arm, splitter island. Returns the angular sector
+-- the mouth occupies so the caller can open the ring's own pavement over it.
+local function buildMouth(
+	ring: Model,
+	plan: MouthPlan,
+	center: Vector3,
+	splitBudgetRad: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): MouthSector
+	local scale = settings.MetersToStuds
+	-- Which way traffic circulates, matching circleSegments' own sign.
+	local flow = if style.DriveOnLeft then -1 else 1
+	local arm = plan.Arm
+	local dir = plan.Direction
+	local mergeRadius = plan.MergeRadius
+
+	-- The split comes out of the room the neighbouring legs leave, keeping the
+	-- kerb margin clear on both sides.
+	local split =
+		math.clamp(SPLIT_ANGLE_RAD, MIN_SPLIT_RAD, math.max(MIN_SPLIT_RAD, splitBudgetRad - SECTOR_MARGIN_RAD))
+	local deflect = settings.RoundaboutEntryCurve
+	local entrySplit = if deflect then math.max(MIN_SPLIT_RAD, split * ENTRY_SPLIT_SCALE) else split
+
+	-- Going round the ring you meet a mouth's EXIT first (upstream, against the
+	-- flow) and its ENTRY after (downstream, with it).
+	local entryAngle = plan.Angle + flow * entrySplit
+	local exitAngle = plan.Angle - flow * split
+
+	-- At the cut the pair straddles the approach centreline, leaving a splitter's
+	-- width between their inner edges for the island to grow out of.
+	local splitterHalf = style.SidewalkWidthM * scale * SPLITTER_WIDTH_FACTOR * 0.5
+	local lateral = rightOf(dir) * ((arm.InnerOffsetStuds + splitterHalf) * flow)
+	local entryCurve = PolyCurve.new({
+		armSegment(
+			plan.CutMid - lateral,
+			dir,
+			ringPointAt(center, entryAngle, mergeRadius, plan.CutMid.Y),
+			ringTangentAt(entryAngle, flow),
+			ARM_HANDLE
+		),
+	})
+	local exitCurve = PolyCurve.new({
+		armSegment(
+			ringPointAt(center, exitAngle, mergeRadius, plan.CutMid.Y),
+			ringTangentAt(exitAngle, flow),
+			plan.CutMid + lateral,
+			-dir,
+			ARM_HANDLE
+		),
+	})
+
+	buildArm(entryCurve, arm, style, settings).Parent = ring
+	buildArm(exitCurve, arm, style, settings).Parent = ring
+	buildSplitterIsland(ring, entryCurve, exitCurve, arm, flow, style, settings)
+
+	return { Angle = plan.Angle, Half = math.max(entrySplit, split) + SECTOR_MARGIN_RAD }
 end
 
 function RoundaboutBuilder.CreateAtJunction(
@@ -5730,8 +5774,8 @@ function RoundaboutBuilder.CreateAtJunction(
 	ring.Name = "Roundabout"
 	stampRingMeta(ring, center, radiusStuds, outerRadiusStuds, laneCount, laneWidthM)
 
-	-- The ring's OWN outer pavement, captured before any feeder/corner parts are
-	-- parented in. It is built as one unbroken circle, so without this it runs a
+	-- The ring's OWN outer pavement, captured before any arm parts are parented
+	-- in. It is built as one unbroken circle, so without this it runs a
 	-- raised kerb + pavement band straight across every entry - the mouth reads
 	-- as walled off rather than open ("the mouth still has to open, not close
 	-- into it"). Each mouth below reports the angular sector it occupies and we
@@ -5745,13 +5789,16 @@ function RoundaboutBuilder.CreateAtJunction(
 
 	buildIsland(ring, center, radiusStuds, profile, style, settings)
 
-	local mouthSectors: { MouthSector } = {}
+	local ringKerbRadius = outerRadiusStuds - style.SidewalkWidthM * scale
 
-	-- Setback: full cross-section beyond outer pavement so feeders have length.
-	local trimTarget = outerRadiusStuds + SETBACK_STUDS
-	-- Feeder centerline ends just inside outer pavement (blend, no gap).
-	local feedAttachR = math.max(radiusStuds, outerRadiusStuds - FEED_OVERLAP_STUDS)
+	-- Cut every approach back past the outer pavement so its entry/exit pair has
+	-- the room to split apart and swing round onto the rim.
+	local trimTarget = outerRadiusStuds + armRunStuds(outerRadiusStuds)
 
+	-- Trim and PLAN every leg before building any of them: how far a mouth may
+	-- split depends on where its neighbours actually landed, which isn't known
+	-- until they have all been measured.
+	local plans: { MouthPlan } = {}
 	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
 		local data = RoadInstance.Read(road)
 		if not data then
@@ -5770,27 +5817,25 @@ function RoundaboutBuilder.CreateAtJunction(
 			continue
 		end
 		local cutStation = if atStart then 0 else trimmed.Curve.Length
-		local cutMid = trimmed.Curve:PosAt(cutStation)
 		local spokeProfile = if atStart then trimmed.ProfileStart else (trimmed.ProfileEnd or trimmed.ProfileStart)
-		local feeder, ringEdges =
-			buildFeederRoad(cutMid, edges.Inward, center, feedAttachR, spokeProfile, style, settings)
-		if feeder then
-			feeder.Parent = ring
+		local plan = planMouth(
+			trimmed.Curve:PosAt(cutStation),
+			edges.Inward,
+			spokeProfile,
+			center,
+			ringKerbRadius,
+			laneWidthM,
+			style,
+			settings
+		)
+		if plan then
+			table.insert(plans, plan)
 		end
-		if ringEdges then
-			local sector = buildMouthCorners(
-				ring,
-				ringEdges,
-				center,
-				outerRadiusStuds,
-				style.SidewalkWidthM * scale,
-				style,
-				settings
-			)
-			if sector then
-				table.insert(mouthSectors, sector)
-			end
-		end
+	end
+
+	local mouthSectors: { MouthSector } = {}
+	for i, plan in plans do
+		table.insert(mouthSectors, buildMouth(ring, plan, center, splitBudgetFor(plans, i), style, settings))
 	end
 
 	-- Open the ring's outer pavement over every entry so traffic actually flows
@@ -5802,7 +5847,6 @@ function RoundaboutBuilder.CreateAtJunction(
 	-- hardcoded 1-stud margin any region whose MarkingWidthM is 0.2 or more
 	-- pushes the edge line inside the bound, and it survives as a white line
 	-- painted straight across the mouth.
-	local ringKerbRadius = outerRadiusStuds - style.SidewalkWidthM * scale
 	local edgeLineInset = style.MarkingWidthM * 1.5 * scale
 	openRingPavement(ringPavement, center, mouthSectors, ringKerbRadius - edgeLineInset - 0.5)
 
@@ -5833,7 +5877,7 @@ function RoundaboutBuilder.FindNear(pos: Vector3, snapRadiusStuds: number): (Mod
 		-- Include the setback zone: a road drawn toward the ring but stopping a
 		-- little short (within the feeder setback) should still connect, matching
 		-- the collection band ConnectRoad uses when it rebuilds.
-		if d &lt;= outerR + snapRadiusStuds + SETBACK_STUDS then
+		if d &lt;= outerR + snapRadiusStuds + armRunStuds(outerR) then
 			local score = math.abs(d - outerR)
 			if score &lt; bestScore then
 				bestScore = score
@@ -5891,7 +5935,7 @@ function RoundaboutBuilder.ConnectRoad(
 	end
 	local roads = collectNearbyRoads(
 		center,
-		outerR + SETBACK_STUDS + settings.SnapRadiusStuds + 8,
+		outerR + armRunStuds(outerR) + settings.SnapRadiusStuds + 8,
 		math.max(1, radiusStuds * 0.25)
 	)
 	local has = false
@@ -5956,7 +6000,7 @@ function RoundaboutBuilder.Place(
 	end
 	local nearby = collectNearbyRoads(
 		center,
-		outerR + SETBACK_STUDS + settings.SnapRadiusStuds + 8,
+		outerR + armRunStuds(outerR) + settings.SnapRadiusStuds + 8,
 		math.max(1, radiusStuds * 0.25)
 	)
 	if #nearby == 0 then
@@ -9164,8 +9208,9 @@ export type EasyRoadSettings = {
 	-- for a road that's deliberately meant to run free of the existing
 	-- network (an overpass with no at-grade connection, etc).
 	SnapToRoad: boolean,
-	-- Deflect roundabout entries: tight entry corner / generous exit corner on
-	-- each mouth (see RoundaboutBuilder). Off = symmetric corners.
+	-- Deflect roundabout entries: each mouth's entry arm merges closer in to the
+	-- mouth than its exit arm peels off, so traffic joining the ring is turned
+	-- harder than traffic leaving (see RoundaboutBuilder). Off = a symmetric pair.
 	RoundaboutEntryCurve: boolean,
 	ElevationStepStuds: number,
 	-- Remembered so the next building session starts where the last one

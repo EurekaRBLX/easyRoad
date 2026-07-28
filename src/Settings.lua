@@ -65,8 +65,9 @@ export type EasyRoadSettings = {
 	-- for a road that's deliberately meant to run free of the existing
 	-- network (an overpass with no at-grade connection, etc).
 	SnapToRoad: boolean,
-	-- Deflect roundabout entries: tight entry corner / generous exit corner on
-	-- each mouth (see RoundaboutBuilder). Off = symmetric corners.
+	-- Deflect roundabout entries: each mouth's entry arm merges closer in to the
+	-- mouth than its exit arm peels off, so traffic joining the ring is turned
+	-- harder than traffic leaving (see RoundaboutBuilder). Off = a symmetric pair.
 	RoundaboutEntryCurve: boolean,
 	ElevationStepStuds: number,
 	-- Remembered so the next building session starts where the last one
