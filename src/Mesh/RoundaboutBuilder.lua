@@ -569,6 +569,20 @@ local GORE_SAMPLES = 18
 -- against the ring, and left bare kerb at the mouth.
 -- Arc step for the island's nose fan where it meets the ring kerb.
 local NOSE_ARC_STEP_RAD = math.rad(2)
+-- Narrowest gore that counts as a splitter island. The gore is the gap between
+-- the two arms' INNER roadway edges, so on an approach with a median it starts
+-- out that median's width, and on one WITHOUT a median it starts at zero and
+-- only opens up as the arms diverge toward the ring.
+--
+-- Filling from the cut regardless put a raised strip down the middle of an
+-- approach whose road has no median at all - reported live as "there is median
+-- when there is no median for the type of road used", with the taper reading as
+-- an indentation. Starting the island where the gore first reaches a width a
+-- median could actually have needs no "does this road have a median" test: an
+-- approach that has one is already wider than this at the cut and is unchanged,
+-- and one that doesn't gets island only where the two carriageways have genuinely
+-- separated - which is the part of a splitter that does real work anyway.
+local MIN_GORE_WIDTH_M = 0.5
 -- Arms are dropped a hair below the ring deck. Near the merge an arm's inner
 -- half necessarily lies over the ring's own carriageway (that overlap IS the
 -- merge), and two coplanar asphalt decks z-fight. Same colour and material, so
@@ -859,6 +873,7 @@ local function buildSplitterIsland(
 	-- entry and exit are different lengths, so equal fractions sit at different
 	-- distances back from the cut and the island comes out sheared.
 	local reach = math.min(entryCurve.Length, exitCurve.Length)
+	local minGoreStuds = MIN_GORE_WIDTH_M * scale
 	local entrySide: { Vector3 } = {}
 	local exitSide: { Vector3 } = {}
 	local lastAlong = 0
@@ -872,6 +887,13 @@ local function buildSplitterIsland(
 		-- instead of stopping, which paved the mouth shut.
 		if i > 0 and (distanceXZ(a, center) <= ringKerbRadiusStuds or distanceXZ(b, center) <= ringKerbRadiusStuds) then
 			break
+		end
+		-- Don't start the island until the gore is wide enough to be one. Only
+		-- skips leading samples: once the strip has started, a later pinch is
+		-- carried through (see the waist note above), it is only the approach
+		-- end that must not invent a median.
+		if #entrySide == 0 and distanceXZ(a, b) < minGoreStuds then
+			continue
 		end
 		table.insert(entrySide, a)
 		table.insert(exitSide, b)

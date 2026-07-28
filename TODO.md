@@ -84,18 +84,9 @@ well understood they are, not by value.
    back the angles it used) so the island rim is the same polygon by
    construction rather than by a matching constant.
 
-2. **A median appears on approaches whose road type has no median**, plus an
-   "indentation" down the middle of the approach. HYPOTHESIS, not yet
-   verified: `armProfileFor` gives a non-solo arm a pavement only on its outer
-   side, so the gore is bare, and `buildSplitterIsland` fills it only from the
-   ring back to where the two arms' edges drop inside the kerb. Between the
-   end of that island and the untrimmed road there would then be a sliver of
-   open ground between the two arms - which would read as both the phantom
-   median and the indentation. Confirm by measuring the gore gap along the
-   arm, not by eye.
-
-   Consistent with the user's own observation that wide roads (which already
-   carry a median) do not show it.
+2. ~~A median appears on approaches whose road type has no median~~ - FIXED,
+   see the SHIPPED.md entry. The splitter island now starts where the gore
+   first reaches `MIN_GORE_WIDTH_M`. Not confirmed live yet.
 
 3. **Markings on the built roundabout do not match what the preview renders.**
    No diagnosis yet. `roundabout_preview.py` simulates markings, so a diff is

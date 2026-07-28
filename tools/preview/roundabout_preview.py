@@ -43,6 +43,10 @@ SECTOR_INSET_RAD = math.radians(3)
 ARM_HANDLE = 0.30
 ENTRY_SPLIT_SCALE = 0.8
 GORE_SAMPLES = 18
+# Narrowest gore that counts as a splitter island - see RoundaboutBuilder.
+# An approach with a median already exceeds this at the cut and is unchanged;
+# one without a median gets island only where the arms have actually parted.
+MIN_GORE_WIDTH_M = 0.5
 NOSE_ARC_STEP_RAD = math.radians(2)
 ARM_SINK = 0.05
 ARM_RUN_FACTOR, ARM_RUN_MIN, ARM_RUN_MAX = 0.85, 28, 90
@@ -490,6 +494,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag):
                 return sc
 
             reach = min(entry.length, exit_.length)
+            min_gore = MIN_GORE_WIDTH_M * SCALE
             L, R, last_along = [], [], 0.0
             for i in range(GORE_SAMPLES+1):
                 along = (i/GORE_SAMPLES)*reach
@@ -497,6 +502,8 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag):
                 pb = gore_edge(exit_, exit_.length-along, exit_arm)
                 if i > 0 and (math.hypot(*pa) <= ring_kerb or math.hypot(*pb) <= ring_kerb):
                     break
+                if not L and math.dist(pa, pb) < min_gore:
+                    continue
                 L.append(pa); R.append(pb); last_along = along
             for j in range(len(L)-1):
                 gore_tris.append([L[j], R[j], R[j+1]])

@@ -4,6 +4,48 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: stop the splitter island inventing a median
+
+An approach whose road type has no median came out of the roundabout with a
+raised strip down the middle of it, tapering to nothing — reported live as
+"there is median when there is no median for the type of road used", with the
+taper reading as an indentation.
+
+The splitter island is filled between the two arms' INNER ROADWAY EDGES, and
+it ran from the approach cut all the way to the ring. On an approach that has
+a median those two edges start that median's width apart, so the gore is a
+real one for the whole run. On an approach that has none they start touching,
+and only separate as the arms diverge toward the ring — so the first part of
+that fill was a raised median the source road does not have.
+
+The fix is the user's own suggestion, applied to the gore width rather than to
+a profile component: the island now starts at the first sample where the gore
+reaches `MIN_GORE_WIDTH_M` (0.5m). Expressing it that way removes the need for
+a "does this road have a median" test entirely — an approach with a median is
+already wider than the threshold at the cut and is untouched, and one without
+gets island only where its two carriageways have genuinely parted, which is
+the part of a splitter that does real work. It skips leading samples only; a
+later pinch mid-run is still carried through, which is what the waist note in
+that function is about.
+
+Measured in `tools/preview/roundabout_preview.py`:
+
+- Island reach back from the ring grows with median width — 1.0m median: 6
+  studs, 2.0m: 30, 4.0m: 38. Wider median, more island, as intended.
+- Gore triangles on the standard cases roughly halved (uk4 and us4: 132 → 68).
+- All nine cases (uk4 uk3 us4 stress stress_us liveX2 liveX4 liveT2 liveT4)
+  keep zero bare ground and a 0.00-stud approach/arm seam.
+
+A wide approach with no median still gets a long island, and that is correct
+rather than a leftover: once the two arms have separated by more than the
+threshold the space between them is a genuine gore, and filling it is the
+right answer. The bug was only ever the near-zero-width part at the cut.
+
+Constant is mirrored in the preview, so `check_parity.py` covers it (15
+shared constants).
+
+Not confirmed in Studio yet.
+
 ## Junction pad: fix the outer corner arc and make the fill defensive
 
 A junction between roads meeting at a bend rendered as a jagged, spiked,
