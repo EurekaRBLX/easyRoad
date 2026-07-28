@@ -68,6 +68,34 @@ and deletions surface. It does **not** compare the algorithm - two
 implementations can agree on every number and still do different things with
 them. Run it alongside `roundabout_preview.py` after touching either file.
 
+## Behavioural comparison (`dump_compare.py`)
+
+`check_parity.py` compares constants. This compares what the two
+implementations actually *do*, which is the part that matters.
+
+1. In Studio, select the junction, set Radius / Lanes / Lane width, press
+   **Print geometry to Output**. That calls
+   `RoundaboutBuilder.DescribeJunction`, which reuses `planMouth`,
+   `splitBudgetFor` and `resolveSplits` - the same functions the real build
+   calls - and does not modify anything.
+2. Run the preview side with the same inputs:
+
+   ```sh
+   python3 dump_compare.py --radius 30 --lanes 1 --legs 0,90,180,270
+   ```
+
+3. Diff. Same field order and precision on both sides, so plain `diff` works.
+
+A mismatch is a real divergence and preview results cannot be trusted until it
+is explained. A match means the difference between preview renders and Studio
+is the RENDERER - idealised polygons versus rigid parts - and not the geometry.
+
+Known caveat: the preview's legs are radial, so its mouth angle is simply the
+leg bearing. The plugin aims along the approach's own centreline
+(`rayCircleFirstHit`), which only coincides for radial approaches. Expect
+`mouthAngle` to differ for legs that do not point at the centre - which is
+common for roads produced by an X-split.
+
 ## Caveats
 
 It models part **footprints in plan**. It does not model heights, render order,

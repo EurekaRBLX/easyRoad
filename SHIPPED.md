@@ -42,6 +42,43 @@ remain in place. This round changes the missing interior-to-interior case and
 the feedback around all placement snapping; it does not add transition/bay
 subdivision.
 
+## Behavioural dump: prove the preview and the plugin agree
+
+`tools/preview` is a Python re-implementation of `RoundaboutBuilder.lua`, not
+an execution of it, so "the preview says it is clean" only ever meant the
+preview agrees with itself. `check_parity.py` closed the constants half of that
+gap. This closes the behaviour half, which is the half that matters - two
+implementations can agree on every number and still do different things.
+
+Plugin side: `RoundaboutBuilder.DescribeJunction` prints every figure the
+roundabout would be built from - per leg the mouth angle, split budget, split
+and entry split, both merge angles, and per arm the merge radius, lateral
+offset, outer/inner offsets and total width - plus the requested, minimum and
+actually-used radius. Reached from a **Print geometry to Output** button on the
+Junction panel.
+
+Two properties it was built to have:
+
+- **It reuses the real functions.** `planMouth`, `splitBudgetFor` and
+  `resolveSplits` are called, not reimplemented, so the dump cannot quietly
+  become a third implementation that agrees with neither. `resolveSplits` was
+  extracted from `buildMouth` for exactly this - the split maths now has one
+  home.
+- **It does not build anything.** The trim station is found on the road's
+  existing curve rather than by trimming it, so it is safe to press on a live
+  junction.
+
+Preview side: `tools/preview/dump_compare.py` prints the same fields, in the
+same order and precision, for the same inputs, so a plain `diff` settles it.
+
+Recorded in advance, because it is a known modelling gap rather than a
+surprise: the preview's legs are radial, so its mouth angle is just the leg
+bearing, while the plugin aims along the approach's own centreline via
+`rayCircleFirstHit`. Those coincide only for radial approaches. Roads produced
+by an X-split frequently are not radial - so `mouthAngle` is the field most
+likely to differ, and that difference would be informative rather than a bug in
+either side.
+
 ## Roundabout radius: suggest an optimal one, let the user decide
 
 Following the radius floor, the Radius box no longer starts at a fixed 30. The

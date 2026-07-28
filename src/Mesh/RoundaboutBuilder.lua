@@ -1025,6 +1025,25 @@ local function splitBudgetFor(plans: { MouthPlan }, index: number): number
 	return math.max(MIN_SPLIT_RAD, nearest / 2 - MIN_KERB_GAP_RAD / 2)
 end
 
+-- The two split angles for a mouth, and where each arm therefore meets the
+-- ring. Shared by the builder and the debug dump on purpose: a dump that
+-- recomputes these itself is a third implementation to disagree with.
+local function resolveSplits(
+	plan: MouthPlan,
+	splitBudgetRad: number,
+	flow: number,
+	settings: Settings.EasyRoadSettings
+): (number, number, number, number)
+	local split =
+		math.clamp(SPLIT_ANGLE_RAD, MIN_SPLIT_RAD, math.max(MIN_SPLIT_RAD, splitBudgetRad - SECTOR_MARGIN_RAD))
+	local entrySplit = if settings.RoundaboutEntryCurve
+		then math.max(MIN_SPLIT_RAD, split * ENTRY_SPLIT_SCALE)
+		else split
+	-- Going round the ring you meet a mouth's EXIT first (upstream, against the
+	-- flow) and its ENTRY after (downstream, with it).
+	return split, entrySplit, plan.Angle + flow * entrySplit, plan.Angle - flow * split
+end
+
 -- One mouth: entry arm, exit arm, splitter island. Returns the angular sector
 -- the mouth occupies so the caller can open the ring's own pavement over it.
 local function buildMouth(
@@ -1040,17 +1059,7 @@ local function buildMouth(
 	local dir = plan.Direction
 	local side = rightOf(dir)
 
-	-- The split comes out of the room the neighbouring legs leave, keeping the
-	-- kerb margin clear on both sides.
-	local split =
-		math.clamp(SPLIT_ANGLE_RAD, MIN_SPLIT_RAD, math.max(MIN_SPLIT_RAD, splitBudgetRad - SECTOR_MARGIN_RAD))
-	local deflect = settings.RoundaboutEntryCurve
-	local entrySplit = if deflect then math.max(MIN_SPLIT_RAD, split * ENTRY_SPLIT_SCALE) else split
-
-	-- Going round the ring you meet a mouth's EXIT first (upstream, against the
-	-- flow) and its ENTRY after (downstream, with it).
-	local entryAngle = plan.Angle + flow * entrySplit
-	local exitAngle = plan.Angle - flow * split
+	local split, entrySplit, entryAngle, exitAngle = resolveSplits(plan, splitBudgetRad, flow, settings)
 
 	local entryCurve: PolyCurve.PolyCurve? = nil
 	local exitCurve: PolyCurve.PolyCurve? = nil
@@ -1366,6 +1375,148 @@ function RoundaboutBuilder.CreateAtJunction(
 	ring.Parent = getRoundaboutsFolder()
 	JunctionInstance.Delete(junctionModel)
 	return ring
+end
+
+-- Debug dump: every number the roundabout would be built from, without
+-- building it.
+--
+-- `tools/preview` is a Python re-implementation of this file, so "the preview
+-- says it is fine" only ever meant "the preview agrees with itself".
+-- check_parity.py compares the two sides' CONSTANTS; this compares their
+-- BEHAVIOUR. It deliberately reuses planMouth, splitBudgetFor and
+-- resolveSplits - the same functions CreateAtJunction calls - so it cannot
+-- quietly become a third implementation.
+--
+-- Non-destructive: the trim station is found on the road's existing curve
+-- instead of trimming it, so this is safe to run on a live junction.
+function RoundaboutBuilder.DescribeJunction(
+	junctionId: string,
+	radiusStuds: number,
+	laneCount: number,
+	laneWidthM: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): string
+	local junctionModel = JunctionInstance.FindById(junctionId)
+	local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
+	if not junctionData then
+		return "roundabout dump: junction not found"
+	end
+	local center = junctionData.Position
+	local scale = settings.MetersToStuds
+	local minimum = RoundaboutBuilder.MinimumRadiusStuds(junctionId, laneCount, laneWidthM, style, settings)
+	local grown = math.max(radiusStuds, minimum)
+
+	local components = ringComponents(laneCount, laneWidthM, style)
+	local profile: RoadProfile.RoadProfile = {
+		Id = "roundabout_ring",
+		Name = "Roundabout",
+		Category = "Custom",
+		BuiltIn = false,
+		Components = components,
+	}
+	local outerRadiusStuds = grown + RoadProfile.TotalWidthM(profile) / 2 * scale
+	local ringKerbRadius = outerRadiusStuds - style.SidewalkWidthM * scale
+	local trimTarget = outerRadiusStuds + armRunStuds(outerRadiusStuds)
+	local flow = if style.DriveOnLeft then 1 else -1
+
+	local lines = {
+		string.format("=== roundabout dump: junction %s ===", junctionId),
+		string.format(
+			"scale=%.4f driveOnLeft=%s deflect=%s",
+			scale,
+			tostring(style.DriveOnLeft),
+			tostring(settings.RoundaboutEntryCurve)
+		),
+		string.format(
+			"radius requested=%.3f minimum=%.3f used=%.3f outer=%.3f kerb=%.3f flow=%d",
+			radiusStuds,
+			minimum,
+			grown,
+			outerRadiusStuds,
+			ringKerbRadius,
+			flow
+		),
+	}
+
+	local plans: { MouthPlan } = {}
+	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
+		local data = RoadInstance.Read(road)
+		if not data or #data.Curve.Segments ~= 1 then
+			continue
+		end
+		local atStart = data.StartJunctionId == junctionId
+		if not atStart and data.EndJunctionId ~= junctionId then
+			continue
+		end
+		local spokeProfile = if atStart then data.ProfileStart else (data.ProfileEnd or data.ProfileStart)
+		local fromStation = if atStart then 0 else data.Curve.Length
+		local towardStation = if atStart then data.Curve.Length else 0
+		local crossing =
+			findProfileRingCrossing(data.Curve, spokeProfile, fromStation, towardStation, center, trimTarget, scale)
+		if not crossing then
+			table.insert(lines, string.format("leg %s: no pad crossing - would be skipped", road.Name))
+			continue
+		end
+		local tangent = data.Curve:TangentAt(crossing)
+		local inward = if atStart then tangent else -tangent
+		local plan = planMouth(
+			data.Curve:PosAt(crossing),
+			inward,
+			spokeProfile,
+			atStart,
+			center,
+			ringKerbRadius,
+			laneWidthM,
+			style,
+			settings
+		)
+		if plan then
+			table.insert(plans, plan)
+		else
+			table.insert(lines, string.format("leg %s: planMouth returned nil", road.Name))
+		end
+	end
+
+	table.insert(lines, string.format("legs planned=%d", #plans))
+	for index, plan in plans do
+		local budget = splitBudgetFor(plans, index)
+		local split, entrySplit, entryAngle, exitAngle = resolveSplits(plan, budget, flow, settings)
+		table.insert(
+			lines,
+			string.format(
+				"leg %d mouthAngle=%.4f budget=%.4f split=%.4f entrySplit=%.4f entryAngle=%.4f exitAngle=%.4f",
+				index,
+				math.deg(plan.Angle),
+				math.deg(budget),
+				math.deg(split),
+				math.deg(entrySplit),
+				math.deg(entryAngle),
+				math.deg(exitAngle)
+			)
+		)
+		local function describeArm(label: string, arm: MouthArm?)
+			if not arm then
+				table.insert(lines, string.format("     %s: none", label))
+				return
+			end
+			table.insert(
+				lines,
+				string.format(
+					"     %s: merge=%.4f lateral=%.4f outer=%.4f inner=%.4f width=%.4f",
+					label,
+					arm.MergeRadius,
+					arm.LateralStuds,
+					arm.Profile.OuterOffsetStuds,
+					arm.Profile.InnerOffsetStuds,
+					RoadProfile.TotalWidthM(arm.Profile.Profile) * scale
+				)
+			)
+		end
+		describeArm("entry", plan.Entry)
+		describeArm("exit", plan.Exit)
+	end
+	return table.concat(lines, "\n")
 end
 
 function RoundaboutBuilder.FindNear(pos: Vector3, snapRadiusStuds: number): (Model?, Vector3?, Vector3?)

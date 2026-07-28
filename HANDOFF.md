@@ -73,6 +73,24 @@ see TODO for the path. Note it needs scope awareness: the name in that crash
 was a real parameter of a *different* function in the same file, so a
 whole-file global scan would not have caught it.
 
+## Is the preview actually the same algorithm?
+
+Fair question, and it was asked. `tools/preview` is a hand-written Python
+re-implementation of `RoundaboutBuilder.lua`, not an execution of it, so
+"the preview says it is fine" on its own only means the preview agrees with
+itself. Two checks exist:
+
+- `check_parity.py` - every constant present on both sides must match. Caught
+  real orphans the day it was written.
+- `dump_compare.py` + the **Print geometry to Output** button on the Junction
+  panel - compares BEHAVIOUR. The plugin side
+  (`RoundaboutBuilder.DescribeJunction`) reuses `planMouth`, `splitBudgetFor`
+  and `resolveSplits`, so it cannot drift into being a third implementation.
+  Run both, diff the text.
+
+Until that diff has actually been run on a live junction, treat preview results
+as strong but unconfirmed.
+
 ## `tools/preview` — read its README first
 
 `tools/preview/roundabout_preview.py` simulates the **parts `RoadBuilder`

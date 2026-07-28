@@ -733,6 +733,23 @@ return function(
 				OnRebuild = junctionEditSession.RebuildSelected,
 				OnDelete = junctionEditSession.DeleteJunction,
 				GetRoundaboutRadii = getRoundaboutRadii,
+				OnDumpRoundabout = function(radiusStuds: number, laneCount: number, laneWidthM: number)
+					local junctionModel = junctionEditSession.GetSelectedJunction()
+					local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
+					if not junctionData then
+						return
+					end
+					print(
+						RoundaboutBuilder.DescribeJunction(
+							junctionData.Id,
+							radiusStuds,
+							laneCount,
+							laneWidthM,
+							getStyle(),
+							settings
+						)
+					)
+				end,
 				OnMakeRoundabout = function(radiusStuds: number, laneCount: number, laneWidthM: number)
 					local junctionModel = junctionEditSession.GetSelectedJunction()
 					if not junctionModel then

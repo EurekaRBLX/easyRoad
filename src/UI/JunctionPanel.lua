@@ -31,6 +31,10 @@ local function JunctionPanel(
 		-- comfortable suggestion above it. Both depend on the ring's own lane
 		-- settings, which live here, so this is asked again as those change.
 		GetRoundaboutRadii: (laneCount: number, laneWidthM: number) -> (number, number),
+		-- Prints every number the roundabout would be built from, without
+		-- building it, so the shipped geometry can be diffed against the
+		-- headless preview in tools/preview.
+		OnDumpRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number) -> (),
 	}
 )
 	local laneCount, setLaneCount = React.useState(DEFAULT_LANE_COUNT)
@@ -173,6 +177,14 @@ local function JunctionPanel(
 				hint = string.format("Minimum for these approaches: %d studs. Suggested: %d.", minimum, suggested)
 			end
 		end
+		children.RoundaboutDump = e(Components.Button, {
+			Text = "Print geometry to Output",
+			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
+			LayoutOrder = 14.5,
+			OnClick = function()
+				props.OnDumpRoundabout(radiusStuds, laneCount, laneWidthM)
+			end,
+		})
 		children.RoundaboutHint = e(Components.Label, {
 			Text = hint,
 			Dim = true,
