@@ -25,6 +25,49 @@ in where the entry arm merges, not in corner fillets.
   a 4-leg ring still dips ~0.7 studs partway along before opening out. A
   nose-to-tail taper would need the island built from its own curve rather than
   from the two arm edges.
+## L-shaped roads get a semicircle: diagnosed, design agreed, not yet built
+
+**Symptom (live):** two roads meeting at a bend render with a quasi-semicircular
+bulge on the OUTER edge of the L.
+
+**Cause, traced:** `JunctionBuilder.isSmoothPassThrough` only skips junction
+geometry when `tangentA:Dot(tangentB) < PASS_THROUGH_DOT_THRESHOLD` (-0.85),
+which is a bend of just **32 degrees from straight**. A real L is ~90 degrees,
+fails the test, and is therefore treated as an INTERSECTION. It then reaches
+the fallback at the bottom of `Rebuild` - a plain `Enum.PartType.Cylinder` pad
+of radius `maxHalfWidth + PAD_MARGIN_STUDS` centred on the node. That cylinder
+is the semicircle. It is meant for the rare "no road contributed a usable edge
+pair" case, but a two-road bend lands in it.
+
+**Both references and the literature agree a two-road node is not an
+intersection:**
+
+- CivicArc RoadToolkit gates on `canUseCornerPath = ... and angleDegrees >= 18`
+  and builds a *corner path* (a curve joining the two roads) rather than a
+  junction whenever two roads meet at a bend.
+- The clipping-circle paper the user supplied shows an L-shaped road in its
+  intersection-type panel with **no clipping lines at all** - unlike the T and
+  Y cases, which get them. An L is a curve, not a node.
+
+**Design to build:**
+
+1. A two-road node with matching profiles is a CORNER at any angle - drop the
+   dot threshold from the decision entirely, and never let a two-road node
+   reach the cylinder fallback.
+2. Relaxing the threshold alone is NOT enough, and must not be shipped alone: at
+   a sharp bend the two end cross-sections no longer nearly align, so the inner
+   edges overlap and the outer edges leave a wedge. The corner needs real
+   geometry:
+   - inner edges: miter to their intersection point;
+   - outer edges: a fillet arc of the corner radius, tangent to both;
+   - asphalt filled between with `FillTriangle`, raised sidewalk band over it,
+     and the kerb line carried around the arc - the same primitives the
+     junction curb returns already use (`cornerBoundaries`,
+     `offsetKerbPolyline`, `BezierCorner`).
+3. Verify before shipping. `tools/preview` currently only knows how to build a
+   ring; it needs a corner scenario, or this repeats the roundabout pattern of
+   shipping geometry that looks right in theory and cursed in Studio.
+
 - **Static identifier checking.** HIGHEST VALUE. There is no Luau runtime or
   typechecker in the dev environment: `stylua` proves a file parses, nothing
   proves an identifier exists. A misplaced edit shipped `ringComponents`
