@@ -4973,16 +4973,7 @@ local function ringComponents(
 	for _ = 1, math.max(1, math.floor(laneCount)) do
 		table.insert(components, { Kind = "Drive", WidthM = laneWidthM, Direction = 1 })
 	end
-	-- Pavement width copied from the approach's own, not the region default, so
-	-- the kerb line and the pavement's outer edge both run on unbroken from the
-	-- road into the arm instead of stepping at the cut.
-	local pavementM = style.SidewalkWidthM
-	for _, component in spokeProfile.Components do
-		if component.Kind == "Sidewalk" then
-			pavementM = math.max(pavementM, component.WidthM)
-		end
-	end
-	local sidewalk: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = pavementM, Direction = 0 }
+	local sidewalk: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
 	-- Right of travel is -sign * radially-outward, so the OUTWARD side is the
 	-- left of travel when circulating clockwise (left-hand drive) and the right
 	-- when anticlockwise. The pavement always belongs on the outward side.
@@ -5495,32 +5486,26 @@ type ArmProfile = {
 	-- Centreline to roadway edge, on the side facing away from / toward the gore.
 	OuterOffsetStuds: number,
 	InnerOffsetStuds: number,
+	-- Centre of the arm's ROADWAY relative to its centreline. The two differ
+	-- because the pavement sits on one side only, and it is the roadway that has
+	-- to land on the lanes the arm is replacing.
+	RoadwayCentreM: number,
 }
 
--- One-way half of an approach: half its running lanes, plus a single pavement on
--- the arm's OUTER side. A pavement on both sides would lay a raised strip down
--- the middle of the mouth, since the gore side is where the splitter island goes.
-local function armProfileFor(
-	spokeProfile: RoadProfile.RoadProfile,
-	fallbackLaneWidthM: number,
-	style: RegionStyles.RegionStyle,
-	scale: number
-): ArmProfile
-	local widths: { number } = {}
-	for _, component in spokeProfile.Components do
-		if component.Kind == "Drive" then
-			table.insert(widths, component.WidthM)
-		end
-	end
-	if #widths == 0 then
-		widths = { fallbackLaneWidthM }
-	end
-	local lanes = math.max(1, math.floor(#widths / 2))
+-- The lanes of an approach travelling one way, and the span they occupy in the
+-- approach profile's own frame.
+type LaneGroup = { Widths: { number }, LeftM: number, RightM: number, PavementM: number }
+
+-- One direction's worth of an approach, as a one-way road: the lanes that
+-- actually travel that way, plus a single pavement on the arm's OUTER side. A
+-- pavement on both sides would lay a raised strip down the middle of the mouth,
+-- since the gore side is where the splitter island goes.
+local function armProfileFor(group: LaneGroup, style: RegionStyles.RegionStyle, scale: number): ArmProfile
 	local components: { RoadProfile.ProfileComponent } = {}
-	for i = 1, lanes do
-		table.insert(components, { Kind = "Drive", WidthM = widths[i] or widths[#widths], Direction = 1 })
+	for _, widthM in group.Widths do
+		table.insert(components, { Kind = "Drive", WidthM = widthM, Direction = 1 })
 	end
-	local sidewalk: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
+	local sidewalk: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = group.PavementM, Direction = 0 }
 	-- Same placement rule as ringComponents, and it lands on the same world side:
 	-- an arm merges tangentially, so at the merge its right of travel is the ring's
 	-- right of travel, and the outward side is the same one either way.
@@ -5541,6 +5526,107 @@ local function armProfileFor(
 		Profile = profile,
 		OuterOffsetStuds = (if style.DriveOnLeft then -leftM else rightM) * scale,
 		InnerOffsetStuds = (if style.DriveOnLeft then rightM else -leftM) * scale,
+		RoadwayCentreM = (leftM + rightM) / 2,
+	}
+end
+
+-- Split an approach into the lanes running INTO the ring and the lanes running
+-- out of it, by each lane's own Direction rather than by halving the count.
+-- Halving is wrong the moment a road isn't symmetric: a 3/1 dual carriageway
+-- gets two 2-lane arms that don't line up with either side, and a one-way road
+-- gets an entry AND an exit where only one of them exists.
+--
+-- `inboundSign` is the Direction value that means "toward the ring": lanes are
+-- tagged relative to the curve's own travel, so it flips depending on which end
+-- of the road the junction sits at.
+local function splitApproachLanes(
+	profile: RoadProfile.RoadProfile,
+	inboundSign: number,
+	style: RegionStyles.RegionStyle
+): (LaneGroup?, LaneGroup?)
+	local offsets = RoadProfile.ComponentOffsetsM(profile)
+	local function newGroup(): LaneGroup
+		return { Widths = {}, LeftM = math.huge, RightM = -math.huge, PavementM = style.SidewalkWidthM }
+	end
+	local inbound, outbound = newGroup(), newGroup()
+	local function add(group: LaneGroup, index: number)
+		table.insert(group.Widths, profile.Components[index].WidthM)
+		group.LeftM = math.min(group.LeftM, offsets[index].Left)
+		group.RightM = math.max(group.RightM, offsets[index].Right)
+	end
+	for i, component in profile.Components do
+		if not RoadProfile.IsRoadway(component.Kind) then
+			continue
+		end
+		if component.Direction == inboundSign then
+			add(inbound, i)
+		elseif component.Direction == -inboundSign then
+			add(outbound, i)
+		end
+	end
+	-- Undirected roadway (shoulders, parking) belongs to whichever side it abuts;
+	-- anything left in the middle is a median and becomes the splitter gore.
+	for i, component in profile.Components do
+		if not RoadProfile.IsRoadway(component.Kind) or component.Direction ~= 0 then
+			continue
+		end
+		local edge = offsets[i]
+		for _, group in { inbound, outbound } do
+			if
+				#group.Widths &gt; 0
+				and (math.abs(edge.Right - group.LeftM) &lt; 1e-6 or math.abs(edge.Left - group.RightM) &lt; 1e-6)
+			then
+				add(group, i)
+				break
+			end
+		end
+	end
+	-- Pavement width per side, taken from the footway the approach actually has
+	-- outboard of those lanes, so the kerb line runs on unbroken.
+	local function adoptPavement(group: LaneGroup)
+		for i, component in profile.Components do
+			if component.Kind ~= "Sidewalk" then
+				continue
+			end
+			local edge = offsets[i]
+			if math.abs(edge.Right - group.LeftM) &lt; 1e-6 or math.abs(edge.Left - group.RightM) &lt; 1e-6 then
+				group.PavementM = component.WidthM
+			end
+		end
+	end
+	local function finish(group: LaneGroup): LaneGroup?
+		if #group.Widths == 0 then
+			return nil
+		end
+		adoptPavement(group)
+		return group
+	end
+	return finish(inbound), finish(outbound)
+end
+
+-- Fallback for a profile whose lanes carry no direction at all: split the
+-- roadway down the middle, which is what the old halving did for everything.
+local function splitUndirected(
+	profile: RoadProfile.RoadProfile,
+	fallbackLaneWidthM: number,
+	style: RegionStyles.RegionStyle
+): (LaneGroup?, LaneGroup?)
+	local leftM, rightM = roadwayEdgeOffsetsM(profile)
+	if rightM - leftM &lt; 1e-6 then
+		leftM, rightM = -fallbackLaneWidthM / 2, fallbackLaneWidthM / 2
+	end
+	local midM = (leftM + rightM) / 2
+	local pavement = style.SidewalkWidthM
+	for _, component in profile.Components do
+		if component.Kind == "Sidewalk" then
+			pavement = math.max(pavement, component.WidthM)
+		end
+	end
+	return { Widths = { midM - leftM }, LeftM = leftM, RightM = midM, PavementM = pavement }, {
+		Widths = { rightM - midM },
+		LeftM = midM,
+		RightM = rightM,
+		PavementM = pavement,
 	}
 end
 
@@ -5694,24 +5780,29 @@ end
 -- Everything about a mouth that is fixed by the approach alone. Worked out for
 -- every leg BEFORE any arm is built, because how far a mouth may split depends
 -- on where its neighbours actually landed.
+type MouthArm = {
+	Profile: ArmProfile,
+	MergeRadius: number,
+	-- Centreline offset at the cut, measured from the approach's centreline along
+	-- the RIGHT OF THE INWARD direction, so both arms use one frame.
+	LateralStuds: number,
+}
+
 type MouthPlan = {
 	CutMid: Vector3,
 	Direction: Vector3,
-	Arm: ArmProfile,
-	MergeRadius: number,
+	-- Either may be absent: a one-way approach only has the one.
+	Entry: MouthArm?,
+	Exit: MouthArm?,
 	-- Ring angle the approach aims at.
 	Angle: number,
-	-- Where each arm's centreline sits at the cut, measured from the approach's
-	-- centreline along its right-of-travel. Derived from the APPROACH's own
-	-- roadway edges so the pair tiles the road exactly.
-	EntryLateralStuds: number,
-	ExitLateralStuds: number,
 }
 
 local function planMouth(
 	cutMid: Vector3,
 	inward: Vector3,
 	spokeProfile: RoadProfile.RoadProfile,
+	atStart: boolean,
 	center: Vector3,
 	ringKerbRadiusStuds: number,
 	laneWidthM: number,
@@ -5722,46 +5813,65 @@ local function planMouth(
 	if dir.Magnitude &lt; 1e-6 then
 		return nil
 	end
-	local arm = armProfileFor(spokeProfile, laneWidthM, style, settings.MetersToStuds)
-	-- Centreline radius that puts the arm's OUTER roadway edge exactly on the
-	-- ring's kerb - so its pavement band lands on the ring's pavement band and
-	-- the kerb line runs on unbroken from the approach round onto the ring.
-	local mergeRadius = ringKerbRadiusStuds - arm.OuterOffsetStuds
-	if mergeRadius &lt;= 1 then
+	local scale = settings.MetersToStuds
+
+	-- Lanes are tagged relative to the curve's own travel, so which sign means
+	-- "toward the ring" depends on which end of the road the junction is at.
+	local inboundSign = if atStart then -1 else 1
+	local inbound, outbound = splitApproachLanes(spokeProfile, inboundSign, style)
+	if not inbound and not outbound then
+		inbound, outbound = splitUndirected(spokeProfile, laneWidthM, style)
+	end
+	if not inbound and not outbound then
 		return nil
 	end
+
+	-- Spoke profile offsets are in the CURVE's frame; the arms are laid out in
+	-- the inward frame. They are the same frame only when the junction is at the
+	-- far end of the road.
+	local toInward = if atStart then -1 else 1
+
+	local function makeArm(group: LaneGroup?, travelsInward: boolean): MouthArm?
+		if not group then
+			return nil
+		end
+		local profile = armProfileFor(group, style, scale)
+		local mergeRadius = ringKerbRadiusStuds - profile.OuterOffsetStuds
+		if mergeRadius &lt;= 1 then
+			return nil
+		end
+		-- Land the arm's ROADWAY on the very lanes it replaces, so asphalt, kerb
+		-- and pavement all run straight through the cut. An arm running outward
+		-- has its own right-of-travel reversed against the inward frame, so its
+		-- roadway offset flips with it.
+		local spanCentreInward = (group.LeftM + group.RightM) / 2 * toInward
+		local lateralM = if travelsInward
+			then spanCentreInward - profile.RoadwayCentreM
+			else spanCentreInward + profile.RoadwayCentreM
+		return { Profile = profile, MergeRadius = mergeRadius, LateralStuds = lateralM * scale }
+	end
+
+	local entry = makeArm(inbound, true)
+	local exit = makeArm(outbound, false)
+	if not entry and not exit then
+		return nil
+	end
+
 	-- Mouth angle: where the approach's OWN centreline, continued, first meets
 	-- the merge circle. Taking the cut point's radial instead swings the whole
 	-- mouth off the road line for any approach that doesn't aim at the centre.
-	local aim = rayCircleFirstHit(cutMid, dir, center, mergeRadius) or cutMid
+	local aimRadius = if entry then entry.MergeRadius else (exit :: MouthArm).MergeRadius
+	local aim = rayCircleFirstHit(cutMid, dir, center, aimRadius) or cutMid
 	local aimDir = flatUnit(aim - center)
 	if aimDir.Magnitude &lt; 1e-6 then
 		return nil
 	end
-	-- Align each arm to the approach's own roadway edge rather than giving the
-	-- pair its own half-width plus a splitter. Sized the latter way the pair
-	-- comes out wider than the road it replaces, and every mouth steps outward
-	-- at the cut - asphalt, kerb and pavement all breaking at once. Aligned, the
-	-- two arms tile the approach exactly and whatever is left over in the middle
-	-- becomes the splitter, which is where that width belongs anyway.
-	local flow = if style.DriveOnLeft then 1 else -1
-	local spokeLeftM, spokeRightM = roadwayEdgeOffsetsM(spokeProfile)
-	local entryEdgeM = if flow &gt; 0 then -spokeLeftM else spokeRightM
-	local exitEdgeM = if flow &gt; 0 then spokeRightM else -spokeLeftM
-	-- Floored at the inner offset: that puts an arm's inner edge on the
-	-- approach's centreline, so a road too narrow to split gives two arms that
-	-- abut rather than two that overlap.
-	local function lateralFor(edgeM: number): number
-		return math.max(arm.InnerOffsetStuds, edgeM * settings.MetersToStuds - arm.OuterOffsetStuds)
-	end
 	return {
 		CutMid = cutMid,
 		Direction = dir,
-		Arm = arm,
-		MergeRadius = mergeRadius,
+		Entry = entry,
+		Exit = exit,
 		Angle = math.atan2(aimDir.Z, aimDir.X),
-		EntryLateralStuds = lateralFor(entryEdgeM),
-		ExitLateralStuds = lateralFor(exitEdgeM),
 	}
 end
 
@@ -5793,9 +5903,8 @@ local function buildMouth(
 ): MouthSector
 	-- Which way traffic circulates, matching circleSegments' own sign.
 	local flow = if style.DriveOnLeft then 1 else -1
-	local arm = plan.Arm
 	local dir = plan.Direction
-	local mergeRadius = plan.MergeRadius
+	local side = rightOf(dir)
 
 	-- The split comes out of the room the neighbouring legs leave, keeping the
 	-- kerb margin clear on both sides.
@@ -5809,44 +5918,66 @@ local function buildMouth(
 	local entryAngle = plan.Angle + flow * entrySplit
 	local exitAngle = plan.Angle - flow * split
 
-	-- At the cut each arm sits where the approach's own roadway edge puts it, so
-	-- the pair tiles the road; the leftover in the middle is the splitter's nose.
-	local side = rightOf(dir)
-	local entryLateral = side * (plan.EntryLateralStuds * flow)
-	local exitLateral = side * (plan.ExitLateralStuds * flow)
-	local entryCurve = PolyCurve.new({
-		armSegment(
-			plan.CutMid - entryLateral,
-			dir,
-			ringPointAt(center, entryAngle, mergeRadius, plan.CutMid.Y),
-			ringTangentAt(entryAngle, flow),
-			ARM_HANDLE
-		),
-	})
-	local exitCurve = PolyCurve.new({
-		armSegment(
-			ringPointAt(center, exitAngle, mergeRadius, plan.CutMid.Y),
-			ringTangentAt(exitAngle, flow),
-			plan.CutMid + exitLateral,
-			-dir,
-			ARM_HANDLE
-		),
-	})
+	local entryCurve: PolyCurve.PolyCurve? = nil
+	local exitCurve: PolyCurve.PolyCurve? = nil
+	local ringKerbRadius = 0
 
-	buildArm(entryCurve, arm, style, settings).Parent = ring
-	buildArm(exitCurve, arm, style, settings).Parent = ring
-	-- The kerb radius the arms were aimed at, back out of the merge radius.
-	local ringKerbRadius = mergeRadius + arm.OuterOffsetStuds
-	buildSplitterIsland(ring, entryCurve, exitCurve, arm, center, ringKerbRadius, flow, style, settings)
+	local entry = plan.Entry
+	if entry then
+		entryCurve = PolyCurve.new({
+			armSegment(
+				plan.CutMid + side * entry.LateralStuds,
+				dir,
+				ringPointAt(center, entryAngle, entry.MergeRadius, plan.CutMid.Y),
+				ringTangentAt(entryAngle, flow),
+				ARM_HANDLE
+			),
+		})
+		buildArm(entryCurve :: PolyCurve.PolyCurve, entry.Profile, style, settings).Parent = ring
+		ringKerbRadius = entry.MergeRadius + entry.Profile.OuterOffsetStuds
+	end
+
+	local exit = plan.Exit
+	if exit then
+		exitCurve = PolyCurve.new({
+			armSegment(
+				ringPointAt(center, exitAngle, exit.MergeRadius, plan.CutMid.Y),
+				ringTangentAt(exitAngle, flow),
+				plan.CutMid + side * exit.LateralStuds,
+				-dir,
+				ARM_HANDLE
+			),
+		})
+		buildArm(exitCurve :: PolyCurve.PolyCurve, exit.Profile, style, settings).Parent = ring
+		ringKerbRadius = exit.MergeRadius + exit.Profile.OuterOffsetStuds
+	end
+
+	-- Splitter island only where there are actually two carriageways to divide.
+	-- A one-way approach has a single arm and no gore, and building one would
+	-- put a raised island alongside a road with nothing on the other side of it.
+	if entry and exit and entryCurve and exitCurve then
+		buildSplitterIsland(
+			ring,
+			entryCurve :: PolyCurve.PolyCurve,
+			exitCurve :: PolyCurve.PolyCurve,
+			entry.Profile,
+			center,
+			ringKerbRadius,
+			flow,
+			style,
+			settings
+		)
+	end
 
 	-- Open exactly as far as each arm actually reaches, inset so the opening can
-	-- never outrun them. `flow` says which of the two lands on the +angle side.
-	local aheadSplit = if flow &gt; 0 then entrySplit else split
-	local behindSplit = if flow &gt; 0 then split else entrySplit
+	-- never outrun them, and not at all on a side with no arm. `flow` says which
+	-- of the two lands on the +angle side.
+	local entryHalf = if entry then math.max(0, entrySplit - SECTOR_INSET_RAD) else 0
+	local exitHalf = if exit then math.max(0, split - SECTOR_INSET_RAD) else 0
 	return {
 		Angle = plan.Angle,
-		Ahead = math.max(0, aheadSplit - SECTOR_INSET_RAD),
-		Behind = math.max(0, behindSplit - SECTOR_INSET_RAD),
+		Ahead = if flow &gt; 0 then entryHalf else exitHalf,
+		Behind = if flow &gt; 0 then exitHalf else entryHalf,
 	}
 end
 
@@ -5946,6 +6077,7 @@ function RoundaboutBuilder.CreateAtJunction(
 			trimmed.Curve:PosAt(cutStation),
 			edges.Inward,
 			spokeProfile,
+			atStart,
 			center,
 			ringKerbRadius,
 			laneWidthM,
