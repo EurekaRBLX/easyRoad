@@ -616,19 +616,32 @@ type LaneGroup = { Widths: { number }, LeftM: number, RightM: number, PavementM:
 -- actually travel that way, plus a single pavement on the arm's OUTER side. A
 -- pavement on both sides would lay a raised strip down the middle of the mouth,
 -- since the gore side is where the splitter island goes.
-local function armProfileFor(group: LaneGroup, style: RegionStyles.RegionStyle, scale: number): ArmProfile
+local function armProfileFor(
+	group: LaneGroup,
+	solo: boolean,
+	style: RegionStyles.RegionStyle,
+	scale: number
+): ArmProfile
 	local components: { RoadProfile.ProfileComponent } = {}
 	for _, widthM in group.Widths do
 		table.insert(components, { Kind = "Drive", WidthM = widthM, Direction = 1 })
 	end
-	local sidewalk: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = group.PavementM, Direction = 0 }
-	-- Same placement rule as ringComponents, and it lands on the same world side:
-	-- an arm merges tangentially, so at the merge its right of travel is the ring's
-	-- right of travel, and the outward side is the same one either way.
-	if style.DriveOnLeft then
-		table.insert(components, 1, sidewalk)
+	local function pavement(): RoadProfile.ProfileComponent
+		return { Kind = "Sidewalk", WidthM = group.PavementM, Direction = 0 }
+	end
+	if solo then
+		-- A one-way approach has no sibling arm and so no splitter island: its gore
+		-- side is open ground, and the road it replaces carries a footway there.
+		-- Give it both, or the mouth comes out a pavement narrower than the road.
+		table.insert(components, 1, pavement())
+		table.insert(components, pavement())
+	elseif style.DriveOnLeft then
+		-- Same placement rule as ringComponents, and it lands on the same world
+		-- side: an arm merges tangentially, so at the merge its right of travel is
+		-- the ring's, and the outward side is the same one either way.
+		table.insert(components, 1, pavement())
 	else
-		table.insert(components, sidewalk)
+		table.insert(components, pavement())
 	end
 	local profile: RoadProfile.RoadProfile = {
 		Id = "roundabout_arm",
@@ -776,7 +789,8 @@ local function buildSplitterIsland(
 	ring: Model,
 	entryCurve: PolyCurve.PolyCurve,
 	exitCurve: PolyCurve.PolyCurve,
-	arm: ArmProfile,
+	entryArm: ArmProfile,
+	exitArm: ArmProfile,
 	center: Vector3,
 	ringKerbRadiusStuds: number,
 	flow: number,
@@ -802,7 +816,10 @@ local function buildSplitterIsland(
 	end
 	-- Gore-side roadway edge: the inner offset lies on +flow * right-of-travel for
 	-- both arms (the exit's travel is reversed, and so is its own right).
-	local function goreEdge(curve: PolyCurve.PolyCurve, station: number): Vector3
+	-- Each arm gets its OWN inner offset. Sharing the entry's is only right when
+	-- the two are the same width; on a 3/1 approach it tracks the narrow exit's
+	-- edge a lane and a half out of place, and the island misses the carriageway.
+	local function goreEdge(curve: PolyCurve.PolyCurve, station: number, arm: ArmProfile): Vector3
 		local s = math.clamp(station, 0, curve.Length)
 		local position = curve:PosAt(s)
 		local tangent = flatUnit(curve:TangentAt(s))
@@ -814,7 +831,7 @@ local function buildSplitterIsland(
 	-- Station at which one arm's gore edge first drops inside the ring's kerb,
 	-- searched forward from `station` in `direction` (+1 along the entry, -1
 	-- along the exit, which is parameterised from the ring outward).
-	local function kerbCrossing(curve: PolyCurve.PolyCurve, station: number, direction: number): number
+	local function kerbCrossing(curve: PolyCurve.PolyCurve, station: number, direction: number, arm: ArmProfile): number
 		local step = curve.Length / 128
 		local s = station
 		for _ = 1, 160 do
@@ -822,11 +839,11 @@ local function buildSplitterIsland(
 			if nextS < 0 or nextS > curve.Length then
 				return math.clamp(nextS, 0, curve.Length)
 			end
-			if distanceXZ(goreEdge(curve, nextS), center) <= ringKerbRadiusStuds then
+			if distanceXZ(goreEdge(curve, nextS, arm), center) <= ringKerbRadiusStuds then
 				local lo, hi = s, nextS
 				for _ = 1, 24 do
 					local mid = (lo + hi) / 2
-					if distanceXZ(goreEdge(curve, mid), center) > ringKerbRadiusStuds then
+					if distanceXZ(goreEdge(curve, mid, arm), center) > ringKerbRadiusStuds then
 						lo = mid
 					else
 						hi = mid
@@ -847,8 +864,8 @@ local function buildSplitterIsland(
 	local lastAlong = 0
 	for i = 0, GORE_SAMPLES do
 		local along = (i / GORE_SAMPLES) * reach
-		local a = goreEdge(entryCurve, along)
-		local b = goreEdge(exitCurve, exitCurve.Length - along)
+		local a = goreEdge(entryCurve, along, entryArm)
+		local b = goreEdge(exitCurve, exitCurve.Length - along, exitArm)
 		-- Stop once either edge has dropped inside the kerb. Past that the island
 		-- would be laid over the circulating carriageway, not beside it - an
 		-- earlier attempt projected these points radially out onto the kerb
@@ -875,8 +892,8 @@ local function buildSplitterIsland(
 	if not nose or not tail then
 		return
 	end
-	local noseEnd = goreEdge(entryCurve, kerbCrossing(entryCurve, lastAlong, 1))
-	local tailEnd = goreEdge(exitCurve, kerbCrossing(exitCurve, exitCurve.Length - lastAlong, -1))
+	local noseEnd = goreEdge(entryCurve, kerbCrossing(entryCurve, lastAlong, 1, entryArm), entryArm)
+	local tailEnd = goreEdge(exitCurve, kerbCrossing(exitCurve, exitCurve.Length - lastAlong, -1, exitArm), exitArm)
 	local a0 = math.atan2(noseEnd.Z - center.Z, noseEnd.X - center.X)
 	local a1 = math.atan2(tailEnd.Z - center.Z, tailEnd.X - center.X)
 	local sweep = angleDelta(a1, a0)
@@ -947,11 +964,12 @@ local function planMouth(
 	-- far end of the road.
 	local toInward = if atStart then -1 else 1
 
+	local solo = (inbound == nil) ~= (outbound == nil)
 	local function makeArm(group: LaneGroup?, travelsInward: boolean): MouthArm?
 		if not group then
 			return nil
 		end
-		local profile = armProfileFor(group, style, scale)
+		local profile = armProfileFor(group, solo, style, scale)
 		local mergeRadius = ringKerbRadiusStuds - profile.OuterOffsetStuds
 		if mergeRadius <= 1 then
 			return nil
@@ -1077,6 +1095,7 @@ local function buildMouth(
 			entryCurve :: PolyCurve.PolyCurve,
 			exitCurve :: PolyCurve.PolyCurve,
 			entry.Profile,
+			exit.Profile,
 			center,
 			ringKerbRadius,
 			flow,
@@ -1085,11 +1104,34 @@ local function buildMouth(
 		)
 	end
 
+	-- With BOTH arms the sector spans the mouth: the arms bound it and the
+	-- splitter island fills the middle, so opening from the mouth centre out to
+	-- each arm is covered throughout. With only ONE arm there is no island and
+	-- nothing holds the middle, so the opening shrinks to the arm itself -
+	-- centred where it merges, one arm-width wide. Opening the full sector there
+	-- strips the kerb off ground the single arm never reaches.
+	if not (entry and exit) then
+		local only = (entry or exit) :: MouthArm
+		local onlyCurve = (entryCurve or exitCurve) :: PolyCurve.PolyCurve
+		local mergeAngle = if entry then entryAngle else exitAngle
+		local outerRadius = ringKerbRadius + style.SidewalkWidthM * settings.MetersToStuds
+		local edgeAngle = bandExitAngle(
+			onlyCurve,
+			only.Profile,
+			if entry then onlyCurve.Length else 0,
+			if entry then -1 else 1,
+			center,
+			outerRadius,
+			flow
+		)
+		local sweep = angleDelta(mergeAngle, edgeAngle)
+		local half = math.max(0, math.abs(sweep) / 2 - SECTOR_INSET_RAD)
+		return { Angle = edgeAngle + sweep / 2, Ahead = half, Behind = half }
+	end
 	-- Open exactly as far as each arm actually reaches, inset so the opening can
-	-- never outrun them, and not at all on a side with no arm. `flow` says which
-	-- of the two lands on the +angle side.
-	local entryHalf = if entry then math.max(0, entrySplit - SECTOR_INSET_RAD) else 0
-	local exitHalf = if exit then math.max(0, split - SECTOR_INSET_RAD) else 0
+	-- never outrun them.
+	local entryHalf = math.max(0, entrySplit - SECTOR_INSET_RAD)
+	local exitHalf = math.max(0, split - SECTOR_INSET_RAD)
 	return {
 		Angle = plan.Angle,
 		Ahead = if flow > 0 then entryHalf else exitHalf,

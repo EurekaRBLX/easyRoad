@@ -227,9 +227,12 @@ def split_approach_lanes(components, inbound_sign, style_pav=SW_M):
             groups[-1] if groups[-1]["widths"] else None)
 
 
-def arm_from_group(group, drive_on_left):
+def arm_from_group(group, drive_on_left, solo=False):
     comps = [("Drive", w) for w in group["widths"]]
-    if drive_on_left:
+    if solo:
+        comps.insert(0, ("Sidewalk", group["pav"]))
+        comps.append(("Sidewalk", group["pav"]))
+    elif drive_on_left:
         comps.insert(0, ("Sidewalk", group["pav"]))
     else:
         comps.append(("Sidewalk", group["pav"]))
@@ -438,10 +441,12 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag):
         # junction is at the far end of the approach here, so inbound sign is +1
         inbound, outbound = split_approach_lanes(spoke_profile, 1)
 
+        solo = (inbound is None) != (outbound is None)
+
         def make(group, travels_inward):
             if not group:
                 return None
-            comps, outer, inner, road_centre = arm_from_group(group, drive_on_left)
+            comps, outer, inner, road_centre = arm_from_group(group, drive_on_left, solo)
             merge = ring_kerb - outer
             span_centre = (group["left"] + group["right"]) / 2
             lat_m = (span_centre - road_centre) if travels_inward else (span_centre + road_centre)
@@ -462,24 +467,23 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag):
             arm_parts += emit_road(exit_, exit_arm["comps"], -ARM_SINK)
 
         if entry and exit_:
-            inner_off = entry_arm["inner"]
-
-            def gore_edge(curve, sst):
+            def gore_edge(curve, sst, arm):
                 p, rt_, _ = curve.frame(max(0.0, min(curve.length, sst)))
-                return (p[0]+rt_[0]*inner_off*flow, p[1]+rt_[1]*inner_off*flow)
+                io = arm["inner"]
+                return (p[0]+rt_[0]*io*flow, p[1]+rt_[1]*io*flow)
 
-            def kerb_crossing(curve, station, direction):
+            def kerb_crossing(curve, station, direction, arm):
                 step = curve.length/128
                 sc = station
                 for _ in range(160):
                     nxt = sc + direction*step
                     if nxt < 0 or nxt > curve.length:
                         return max(0.0, min(curve.length, nxt))
-                    if math.hypot(*gore_edge(curve, nxt)) <= ring_kerb:
+                    if math.hypot(*gore_edge(curve, nxt, arm)) <= ring_kerb:
                         lo, hi = sc, nxt
                         for _ in range(24):
                             mid = (lo+hi)/2
-                            if math.hypot(*gore_edge(curve, mid)) > ring_kerb:
+                            if math.hypot(*gore_edge(curve, mid, arm)) > ring_kerb:
                                 lo = mid
                             else:
                                 hi = mid
@@ -491,8 +495,8 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag):
             L, R, last_along = [], [], 0.0
             for i in range(GORE_SAMPLES+1):
                 along = (i/GORE_SAMPLES)*reach
-                pa = gore_edge(entry, along)
-                pb = gore_edge(exit_, exit_.length-along)
+                pa = gore_edge(entry, along, entry_arm)
+                pb = gore_edge(exit_, exit_.length-along, exit_arm)
                 if i > 0 and (math.hypot(*pa) <= ring_kerb or math.hypot(*pb) <= ring_kerb):
                     break
                 L.append(pa); R.append(pb); last_along = along
@@ -501,8 +505,8 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag):
                 gore_tris.append([L[j], R[j+1], L[j+1]])
             if L and R:
                 nose, tail = L[-1], R[-1]
-                nose_end = gore_edge(entry, kerb_crossing(entry, last_along, 1))
-                tail_end = gore_edge(exit_, kerb_crossing(exit_, exit_.length-last_along, -1))
+                nose_end = gore_edge(entry, kerb_crossing(entry, last_along, 1, entry_arm), entry_arm)
+                tail_end = gore_edge(exit_, kerb_crossing(exit_, exit_.length-last_along, -1, exit_arm), exit_arm)
                 a0 = math.atan2(nose_end[1], nose_end[0])
                 a1 = math.atan2(tail_end[1], tail_end[0])
                 sweep = angle_delta(a1, a0)
@@ -516,9 +520,35 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag):
                 for k in range(len(boundary)-1):
                     gore_tris.append([apex, boundary[k], boundary[k+1]])
 
-        e_half = max(0, esplit-SECTOR_INSET_RAD) if entry else 0
-        x_half = max(0, split-SECTOR_INSET_RAD) if exit_ else 0
-        sectors.append((a, e_half if flow > 0 else x_half, x_half if flow > 0 else e_half))
+        if not (entry and exit_):
+            only = entry_arm or exit_arm
+            only_curve = entry or exit_
+            merge_angle = ea if entry else xa
+            outer_radius = ring_kerb + SW_M*SCALE
+
+            def outer_edge(st):
+                pp, rr, _ = only_curve.frame(max(0.0, min(only_curve.length, st)))
+                return (pp[0]-rr[0]*only["outer"]*flow, pp[1]-rr[1]*only["outer"]*flow)
+
+            st = only_curve.length if entry else 0.0
+            away = -1 if entry else 1
+            step = only_curve.length/96
+            for _ in range(120):
+                nxt = st + away*step
+                if nxt < 0 or nxt > only_curve.length:
+                    break
+                st = nxt
+                if math.hypot(*outer_edge(st)) > outer_radius:
+                    break
+            pe = outer_edge(st)
+            edge_angle = math.atan2(pe[1], pe[0])
+            sweep = angle_delta(merge_angle, edge_angle)
+            half = max(0, abs(sweep)/2 - SECTOR_INSET_RAD)
+            sectors.append((edge_angle + sweep/2, half, half))
+        else:
+            e_half = max(0, esplit-SECTOR_INSET_RAD)
+            x_half = max(0, split-SECTOR_INSET_RAD)
+            sectors.append((a, e_half if flow > 0 else x_half, x_half if flow > 0 else e_half))
         leg_info.append(dict(cut=cut, inward=inward))
 
         far = (cut[0]-inward[0]*70, cut[1]-inward[1]*70)
