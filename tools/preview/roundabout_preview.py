@@ -42,9 +42,7 @@ MAX_SECTOR_HALF_RAD = math.radians(60)
 SECTOR_INSET_RAD = math.radians(3)
 ARM_HANDLE = 0.30
 ENTRY_SPLIT_SCALE = 0.8
-SPLITTER_WIDTH_FACTOR = 0.5
 GORE_SAMPLES = 18
-MIN_GORE_WIDTH_STUDS = 1.5
 NOSE_ARC_STEP_RAD = math.radians(2)
 ARM_SINK = 0.05
 ARM_RUN_FACTOR, ARM_RUN_MIN, ARM_RUN_MAX = 0.85, 28, 90
@@ -735,6 +733,15 @@ def CASE_TABLE(dol_default=True):
         "uk3": case(60, 1, True, [(a, two_way(1, 1, True)) for a in (270, 30, 150)]),
         "us4": case(70, 2, False, [(a, two_way(2, 2, False)) for a in (90, 180, 270, 0)]),
         "uk5mini": case(40, 1, True, [(a, two_way(1, 1, True)) for a in (0, 72, 144, 216, 288)]),
+        # Live reports: an X and a T turned into a roundabout at radius 30,
+        # which is below what the approaches can fit. CreateAtJunction now grows
+        # the radius; these carry the grown values.
+        "liveX2": case(43, 1, True, [(a, two_way(1, 1, True)) for a in (0, 90, 180, 270)]),
+        "liveX4": case(71, 2, True, [(a, two_way(2, 2, True)) for a in (0, 90, 180, 270)]),
+        "liveT2": case(30, 1, True, [(90, two_way(1, 1, True)), (215, two_way(1, 1, True)),
+                                     (325, two_way(1, 1, True))]),
+        "liveT4": case(45, 2, True, [(90, two_way(2, 2, True)), (215, two_way(2, 2, True)),
+                                     (325, two_way(2, 2, True))]),
         # Stress: every approach a different shape on one ring.
         "stress": case(70, 2, True, [
             (0, two_way(1, 1, True)),          # 2 lanes, one each way

@@ -6270,6 +6270,77 @@ local function buildMouth(
 	}
 end
 
+-- Smallest ring that can actually carry the approaches meeting here.
+--
+-- A roundabout is not free to be any size. Every leg needs its two arms plus a
+-- deflection split between them, and a strip of kerb before the next leg
+-- starts. Add those up and they must fit in 360 degrees:
+--
+--   sum(armWidth_i) / R  +  legs * (2*MIN_SPLIT + MIN_KERB_GAP)  &lt;=  2*pi
+--
+-- Below that radius the mouths overrun each other and the result is not a
+-- roundabout at all - it is a blob with slivers of island where the splitters
+-- collapsed. Measured on the live report: four 2-lane legs on a radius-30 ring
+-- demanded 479 degrees of a 360 degree ring, and looked exactly as bad as that
+-- sounds. The tool used to build it anyway.
+function RoundaboutBuilder.MinimumRadiusStuds(
+	junctionId: string,
+	laneCount: number,
+	laneWidthM: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): number
+	local scale = settings.MetersToStuds
+	local totalArmStuds = 0
+	local widestArmStuds = 0
+	local outerOffsetStuds = 0
+	local legs = 0
+	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
+		local data = RoadInstance.Read(road)
+		if not data then
+			continue
+		end
+		local atStart = data.StartJunctionId == junctionId
+		if not atStart and data.EndJunctionId ~= junctionId then
+			continue
+		end
+		legs += 1
+		local profile = if atStart then data.ProfileStart else (data.ProfileEnd or data.ProfileStart)
+		local inbound, outbound = splitApproachLanes(profile, if atStart then -1 else 1, style)
+		if not inbound and not outbound then
+			inbound, outbound = splitUndirected(profile, style.DefaultLaneWidthM, style)
+		end
+		local solo = (inbound == nil) ~= (outbound == nil)
+		for _, group in { inbound, outbound } do
+			local arm = armProfileFor(group :: LaneGroup, solo, style, scale)
+			-- FULL width, pavement included. The kerb is what must not overrun
+			-- the next mouth's kerb; counting only the roadway lets two mouths
+			-- sit a pavement's width inside each other.
+			local width = RoadProfile.TotalWidthM(arm.Profile) * scale
+			totalArmStuds += width
+			widestArmStuds = math.max(widestArmStuds, width)
+			outerOffsetStuds = math.max(outerOffsetStuds, arm.OuterOffsetStuds)
+		end
+	end
+	if legs == 0 then
+		return 0
+	end
+	-- Angular fit. The denominator is what is left of the circle once every leg
+	-- has taken its split and its kerb; if the legs alone have eaten the circle
+	-- there is no radius that works, so fall back to a wide multiple of the
+	-- approaches rather than dividing by zero or a negative.
+	local perLeg = 2 * MIN_SPLIT_RAD + MIN_KERB_GAP_RAD
+	local spare = 2 * math.pi - legs * perLeg
+	local mergeRadius = if spare &gt; 0.2 then totalArmStuds / spare else totalArmStuds
+	-- The circulating carriageway should be at least as wide as the widest thing
+	-- merging onto it; a ring narrower than its own entries reads as a blob.
+	local ringWidthM = math.max(1, math.floor(laneCount)) * laneWidthM + style.SidewalkWidthM
+	local ringHalfStuds = math.max(ringWidthM * scale, widestArmStuds) / 2
+	-- Convert the merge radius back to the ring's CENTRELINE radius, which is
+	-- what the caller passes: merge = centreline + ringHalf - pavement - armOuter.
+	return mergeRadius + outerOffsetStuds + style.SidewalkWidthM * scale - ringHalfStuds
+end
+
 function RoundaboutBuilder.CreateAtJunction(
 	junctionId: string,
 	radiusStuds: number,
@@ -6288,6 +6359,12 @@ function RoundaboutBuilder.CreateAtJunction(
 	end
 	local center = junctionData.Position
 	local scale = settings.MetersToStuds
+
+	-- Grow rather than build garbage. A radius the approaches cannot fit into
+	-- produces overrunning mouths and collapsed splitters, and there is no
+	-- meaningful "best effort" version of that.
+	radiusStuds =
+		math.max(radiusStuds, RoundaboutBuilder.MinimumRadiusStuds(junctionId, laneCount, laneWidthM, style, settings))
 
 	local stale = junctionModel:FindFirstChild("Geometry")
 	if stale then

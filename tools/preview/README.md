@@ -52,6 +52,22 @@ innermost strips are chords of the island circle, so their inner edge stands
 off it by about 0.05 studs at default settings, and no padding removes that
 without overlapping the island instead.
 
+## Parity with the Lua
+
+`roundabout_preview.py` is a hand-written Python **re-implementation** of
+`RoundaboutBuilder.lua`, not an execution of it. Nothing keeps the two in sync,
+so a constant tuned on one side and forgotten on the other lets the preview
+quietly certify geometry the plugin never builds.
+
+```sh
+python3 check_parity.py     # exits non-zero on drift
+```
+
+It compares every constant present on both sides and flags orphans, so renames
+and deletions surface. It does **not** compare the algorithm - two
+implementations can agree on every number and still do different things with
+them. Run it alongside `roundabout_preview.py` after touching either file.
+
 ## Caveats
 
 It models part **footprints in plan**. It does not model heights, render order,

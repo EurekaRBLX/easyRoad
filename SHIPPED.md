@@ -42,6 +42,51 @@ remain in place. This round changes the missing interior-to-interior case and
 the feedback around all placement snapping; it does not add transition/bay
 subdivision.
 
+## Roundabout: enforce a minimum radius; parity check for the preview
+
+Two live reports - an X intersection and a T turned into roundabouts - came out
+cursed: a tiny island, mouths overrunning each other, and the splitter islands
+collapsed into almond-shaped slivers. Reproduced exactly by feeding the live
+settings (radius 30, 1 lane) into `tools/preview`.
+
+**Codex did not cause it.** `RoundaboutBuilder.lua` is not in `6b1405d`'s diff;
+the X-intersection commit only touched CurveIntersections, RoadSplit,
+JunctionBuilder and createRoadSession. This was our own geometry failing below
+a radius it never enforced.
+
+The arithmetic, once measured: four 2-lane legs on a radius-30 ring demand
+**479 degrees of a 360 degree ring**. Every leg needs two arms, a deflection
+split between them and a strip of kerb before the next leg, and below a certain
+radius those simply do not fit. `RoundaboutBuilder.MinimumRadiusStuds` now
+solves
+
+    sum(armWidth_i) / R + legs * (2*MIN_SPLIT + MIN_KERB_GAP) <= 2*pi
+
+for R, using each arm's FULL width (pavement included - the kerb is what must
+not overrun, and counting only roadway lets two mouths sit a pavement's width
+inside each other), then converts back to the ring's centreline radius and also
+requires the circulating carriageway to be at least as wide as the widest thing
+merging onto it. `CreateAtJunction` grows the requested radius to meet it
+rather than building garbage. The live cases grow 30 -> 43 (2-lane X), 30 -> 71
+(4-lane X) and 30 -> 45 (4-lane T); a 2-lane T already fitted at 30.
+
+**`tools/preview/check_parity.py`** is new, and answers a question worth asking
+of any simulator: is it still the same algorithm? The preview is a hand-written
+Python re-implementation, not an execution of the Lua, and nothing kept the two
+in sync. It compares every constant present on both sides and flags orphans.
+It immediately found two - `SPLITTER_WIDTH_FACTOR` and `MIN_GORE_WIDTH_STUDS`,
+both deleted from the Lua rounds ago and still sitting in the preview. They
+turned out to be dead there too, so no result was wrong, but that is luck
+rather than process. It does NOT compare the algorithm; two implementations can
+agree on every number and still differ.
+
+Preview gains `liveX2/liveX4/liveT2/liveT4` covering the reported shapes. All
+nine cases pass with a flush seam and no bare ground.
+
+Still open and visible: the splitter islands go thin and needle-like once the
+mouths are wide relative to the ring. That is the almond-sliver artifact in the
+reports; the radius floor makes it far less severe but does not remove it.
+
 ## Roundabout: crash fix, direction-aware arms, mixed-approach stress test
 
 **A crash shipped in `3fd2066` and broke Make Roundabout entirely.** A
