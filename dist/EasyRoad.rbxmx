@@ -4926,8 +4926,13 @@ local function armRunStuds(outerRadiusStuds: number): number
 	return math.clamp(outerRadiusStuds * ARM_RUN_FACTOR, ARM_RUN_MIN_STUDS, ARM_RUN_MAX_STUDS)
 end
 
+-- Circulation sign. Increasing angle runs from +X toward +Z, which viewed from
+-- above (down -Y) is CLOCKWISE - so left-hand drive, which circulates
+-- clockwise, is +1. Everything downstream reads its handedness off this: the
+-- side the ring's own pavement goes on, and which of a mouth's two arms is the
+-- entry (see armProfileFor / buildMouth).
 local function circleSegments(center: Vector3, radiusStuds: number, driveOnLeft: boolean): { CurveSegment.Segment }
-	local sign = if driveOnLeft then -1 else 1
+	local sign = if driveOnLeft then 1 else -1
 	local function pointAt(angle: number): Vector3
 		return center + Vector3.new(math.cos(angle) * radiusStuds, 0, math.sin(angle) * radiusStuds)
 	end
@@ -4969,20 +4974,25 @@ local function ringComponents(
 		table.insert(components, { Kind = "Drive", WidthM = laneWidthM, Direction = 1 })
 	end
 	local sidewalk: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
+	-- Right of travel is -sign * radially-outward, so the OUTWARD side is the
+	-- left of travel when circulating clockwise (left-hand drive) and the right
+	-- when anticlockwise. The pavement always belongs on the outward side.
 	if style.DriveOnLeft then
-		table.insert(components, sidewalk)
-	else
 		table.insert(components, 1, sidewalk)
+	else
+		table.insert(components, sidewalk)
 	end
 	return components
 end
 
+-- Centreline to the ring's INNER edge, i.e. the side the central island is on -
+-- the opposite side from the pavement (see ringComponents).
 local function ringInnerHalfWidthM(profile: RoadProfile.RoadProfile, style: RegionStyles.RegionStyle): number
 	local offsets = RoadProfile.ComponentOffsetsM(profile)
 	if style.DriveOnLeft then
-		return -offsets[1].Left
+		return offsets[#offsets].Right
 	end
-	return offsets[#offsets].Right
+	return -offsets[1].Left
 end
 
 local function buildIsland(
@@ -5308,7 +5318,7 @@ end
 -- any single entry may open. Without these, wide (multi-lane) entries produce
 -- sectors that overlap their neighbours and between them delete the entire
 -- ring band, leaving a roundabout with no carriageway edge at all.
-local MIN_KERB_GAP_RAD = math.rad(12)
+local MIN_KERB_GAP_RAD = math.rad(8)
 local MAX_SECTOR_HALF_RAD = math.rad(60)
 
 -- Shrink sectors until each leaves MIN_KERB_GAP_RAD of kerb to its angular
@@ -5403,7 +5413,7 @@ end
 -- nothing extra for the arms' own width.
 local SPLIT_ANGLE_RAD = math.rad(38)
 local MIN_SPLIT_RAD = math.rad(14)
-local SECTOR_MARGIN_RAD = math.rad(5)
+local SECTOR_MARGIN_RAD = math.rad(3)
 -- Cubic handle as a fraction of the arm's chord. Both ends fight each other
 -- here: the ring-end tangent runs sideways to the approach, so a long handle
 -- walks that control point across the gore and the entry and its own exit close
@@ -5415,12 +5425,11 @@ local ARM_HANDLE = 0.30
 -- Tight entry, generous exit: the entry merges closer to the mouth, and that
 -- deflection is what slows traffic joining the ring (Settings.RoundaboutEntryCurve).
 local ENTRY_SPLIT_SCALE = 0.8
--- Splitter island: how far along the arm pair the gore fill runs, and the widest
--- rung it may reach. It has to die well short of the ring, or the last rung lays
--- a raised band straight across the mouth it exists to divide.
-local GORE_FRACTION = 0.45
-local GORE_SAMPLES = 12
-local GORE_WIDTH_FACTOR = 2
+-- Splitter island: the gore fill runs from the approach right up to the ring's
+-- kerb, where it stops - past that the "gap" between the two arms is the
+-- circulating carriageway itself, so filling further would lay a raised band
+-- across the mouth the island exists to divide.
+local GORE_SAMPLES = 18
 -- ...and the thinnest rung worth filling. On a ring too crowded for the mouths
 -- it carries - many legs, or wide approaches on a small radius - the split gets
 -- squeezed until the two arms run right up against each other partway along, and
@@ -5429,8 +5438,11 @@ local GORE_WIDTH_FACTOR = 2
 -- that tight looks like.
 local MIN_GORE_WIDTH_STUDS = 1.5
 -- Gap left between the two arms' inner edges where they leave the approach, as
--- a multiple of the pavement width - the splitter island's narrow end.
-local SPLITTER_WIDTH_FACTOR = 2
+-- a multiple of the pavement width. This is the splitter's NARROW end: a metre
+-- or so of painted island running back up the approach, which then opens into a
+-- broad wedge at the ring. Starting it wide instead gives an island that is
+-- fattest where it matters least and pinches in the middle.
+local SPLITTER_WIDTH_FACTOR = 0.5
 -- Arms are dropped a hair below the ring deck. Near the merge an arm's inner
 -- half necessarily lies over the ring's own carriageway (that overlap IS the
 -- merge), and two coplanar asphalt decks z-fight. Same colour and material, so
@@ -5490,13 +5502,13 @@ local function armProfileFor(
 		table.insert(components, { Kind = "Drive", WidthM = widths[i] or widths[#widths], Direction = 1 })
 	end
 	local sidewalk: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
-	-- Same placement rule as ringComponents: under the ring's sign convention the
-	-- outward side is the right of travel for left-hand drive, the left for
-	-- right-hand - which is exactly the side the ring puts its own pavement on.
+	-- Same placement rule as ringComponents, and it lands on the same world side:
+	-- an arm merges tangentially, so at the merge its right of travel is the ring's
+	-- right of travel, and the outward side is the same one either way.
 	if style.DriveOnLeft then
-		table.insert(components, sidewalk)
-	else
 		table.insert(components, 1, sidewalk)
+	else
+		table.insert(components, sidewalk)
 	end
 	local profile: RoadProfile.RoadProfile = {
 		Id = "roundabout_arm",
@@ -5508,8 +5520,8 @@ local function armProfileFor(
 	local leftM, rightM = roadwayEdgeOffsetsM(profile)
 	return {
 		Profile = profile,
-		OuterOffsetStuds = (if style.DriveOnLeft then rightM else -leftM) * scale,
-		InnerOffsetStuds = (if style.DriveOnLeft then -leftM else rightM) * scale,
+		OuterOffsetStuds = (if style.DriveOnLeft then -leftM else rightM) * scale,
+		InnerOffsetStuds = (if style.DriveOnLeft then rightM else -leftM) * scale,
 	}
 end
 
@@ -5544,6 +5556,8 @@ local function buildSplitterIsland(
 	entryCurve: PolyCurve.PolyCurve,
 	exitCurve: PolyCurve.PolyCurve,
 	arm: ArmProfile,
+	center: Vector3,
+	ringKerbRadiusStuds: number,
 	flow: number,
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings
@@ -5551,7 +5565,6 @@ local function buildSplitterIsland(
 	local scale = settings.MetersToStuds
 	local curbHeight = style.CurbHeightM * scale
 	local depth = settings.RoadThicknessStuds + curbHeight
-	local maxWidth = (arm.OuterOffsetStuds + arm.InnerOffsetStuds) * GORE_WIDTH_FACTOR
 	local function makeSidewalkPart(): Part
 		local part = Instance.new("Part")
 		part.Name = "Sidewalk"
@@ -5580,15 +5593,19 @@ local function buildSplitterIsland(
 	-- Rungs are paired by DISTANCE FROM THE APPROACH, not by curve fraction: the
 	-- entry and exit are different lengths, so equal fractions sit at different
 	-- distances back from the cut and the island comes out sheared.
-	local reach = math.min(entryCurve.Length, exitCurve.Length) * GORE_FRACTION
+	local reach = math.min(entryCurve.Length, exitCurve.Length)
 	local entrySide: { Vector3 } = {}
 	local exitSide: { Vector3 } = {}
 	for i = 0, GORE_SAMPLES do
 		local along = (i / GORE_SAMPLES) * reach
 		local a = goreEdge(entryCurve, along)
 		local b = goreEdge(exitCurve, exitCurve.Length - along)
-		local width = distanceXZ(a, b)
-		if i &gt; 0 and (width &gt; maxWidth or width &lt; MIN_GORE_WIDTH_STUDS) then
+		-- Stop at the ring: from here on the two arms are separated by the
+		-- circulating carriageway, not by island.
+		if i &gt; 0 and math.min(distanceXZ(a, center), distanceXZ(b, center)) &lt;= ringKerbRadiusStuds then
+			break
+		end
+		if i &gt; 0 and distanceXZ(a, b) &lt; MIN_GORE_WIDTH_STUDS then
 			break
 		end
 		table.insert(entrySide, a)
@@ -5679,7 +5696,7 @@ local function buildMouth(
 ): MouthSector
 	local scale = settings.MetersToStuds
 	-- Which way traffic circulates, matching circleSegments' own sign.
-	local flow = if style.DriveOnLeft then -1 else 1
+	local flow = if style.DriveOnLeft then 1 else -1
 	local arm = plan.Arm
 	local dir = plan.Direction
 	local mergeRadius = plan.MergeRadius
@@ -5721,7 +5738,9 @@ local function buildMouth(
 
 	buildArm(entryCurve, arm, style, settings).Parent = ring
 	buildArm(exitCurve, arm, style, settings).Parent = ring
-	buildSplitterIsland(ring, entryCurve, exitCurve, arm, flow, style, settings)
+	-- The kerb radius the arms were aimed at, back out of the merge radius.
+	local ringKerbRadius = mergeRadius + arm.OuterOffsetStuds
+	buildSplitterIsland(ring, entryCurve, exitCurve, arm, center, ringKerbRadius, flow, style, settings)
 
 	return { Angle = plan.Angle, Half = math.max(entrySplit, split) + SECTOR_MARGIN_RAD }
 end

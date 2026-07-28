@@ -4,6 +4,52 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: circulation direction was inverted; splitter reshaped
+
+Checked the shipped geometry against the reference sketches and two things
+were off.
+
+**Circulation ran the wrong way.** `circleSegments` had
+`sign = if driveOnLeft then -1 else 1`. Increasing angle runs from +X toward
++Z, which viewed from above (down -Y) is CLOCKWISE - so left-hand drive, which
+circulates clockwise, needed +1. The old sign was internally consistent (the
+pavement still landed on the outer edge, because `ringComponents` put it on the
+side that happened to be outward under that sign) which is exactly why it
+survived: nothing looked broken until the arms encoded direction and the entry
+and exit landed on the wrong sides of every approach.
+
+Fixed at the source and followed through everywhere handedness is read off it:
+
+- `circleSegments`: `sign = if driveOnLeft then 1 else -1`
+- `ringComponents` / `armProfileFor`: pavement placement swapped, since
+  right-of-travel is `-sign * outward` - the outward side is the LEFT of travel
+  when circulating clockwise
+- `ringInnerHalfWidthM`: island is on the opposite side from the pavement
+- `buildMouth`: `flow` follows the same sign
+
+Verified by rendering the arrowed diagram in the reference's own style: ring
+clockwise, and on a north approach the exit sits west and the entry east, which
+is what driving on the left gives you.
+
+**The splitter island was the wrong shape** - fattest at the approach, pinched
+in the middle, and cut off short of the ring by a fixed 0.45 length fraction.
+It should be a thin painted slit running back up the approach that opens into a
+broad wedge at the ring. Three changes:
+
+- `SPLITTER_WIDTH_FACTOR` 2 -> 0.5, so the arms leave the approach about a
+  metre apart instead of two pavements apart
+- the gore now runs until an edge reaches the ring kerb, where it stops -
+  past that the "gap" between the arms is the circulating carriageway itself
+- `MIN_KERB_GAP_RAD` 12 -> 8 deg and `SECTOR_MARGIN_RAD` 5 -> 3 deg, which
+  gives a 4-leg ring the full 38 deg split instead of 34
+
+That last one is what actually fixes the pinch: the waist comes from the
+ring-end control point pulling across the gore, and a wider split outruns it.
+Measured on a 4-leg 2-lane ring with 4-lane approaches, the island now goes
+3.6 studs at the approach -> 13.2 at the ring (was 14.3 -> 6.7 -> 10.4), and on
+a 3-leg it widens monotonically the whole way. 3- and 4-leg rings pass clean in
+both drive-side conventions; the crowded-ring limit below is unchanged.
+
 ## Roundabout mouths: split entry/exit arms merging on the rim
 
 Replaces the single full-width feeder per approach. Each approach is now cut

@@ -21,15 +21,10 @@ in where the entry arm merges, not in corner fillets.
 - **Give-way / yield markings** across each entry arm at the merge, and the
   circulating-lane arrows. The arms are ordinary one-way roads, so this is a
   Markings.lua job, not a geometry one.
-- **Splitter island waist.** The gore is widest at the approach and at the ring
-  and narrowest in between, because the arms bow toward each other where the
-  ring-end control point pulls across. Cosmetic; a nose-to-tail taper would
-  need the island built from its own curve rather than the two arm edges.
-- **Circulation direction.** `circleSegments` picks its sign from
-  `DriveOnLeft`, and everything here is consistent with it (island on the
-  correct side of travel, entry downstream of exit). Whether the resulting
-  absolute direction reads clockwise in Studio for a UK ring has never been
-  confirmed against a live screenshot - worth one look.
+- **Splitter island waist.** Mostly gone once the split widened to 38 deg, but
+  a 4-leg ring still dips ~0.7 studs partway along before opening out. A
+  nose-to-tail taper would need the island built from its own curve rather than
+  from the two arm edges.
 
 ## History: the failed centreline-swing attempt
 
