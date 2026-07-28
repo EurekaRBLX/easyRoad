@@ -39,6 +39,7 @@ PASS_THROUGH_DOT_THRESHOLD = -0.85
 MAX_VERTEX_CHORD_RATIO = 4
 FILLET_ARC_SAMPLES = 4
 HERMITE_SAMPLES = 5
+THROUGH_SAMPLES = 12
 
 
 def sub(a, b):
@@ -141,6 +142,8 @@ def hermite_boundary(p0, d0, p1, d1, samples):
 
 
 MAX_HERMITE_EXCURSION = 0.6  # multiples of the chord
+# A break this small at the mouth reads as continuous at Studio zoom.
+SEAM_KINK_LIMIT_DEG = 2.0
 
 
 def excursion(poly):
@@ -193,6 +196,41 @@ def corner_kerb(a, b, radius, exterior, mode):
     return kerb, "fillet"
 
 
+def through_kerb(a, b, mode):
+    """The wide-gap branch's KERB boundary.
+
+    `legacy` chords straight across it, which is right only when the two
+    roads are collinear. On a shallow bend they are not, and the chord shows
+    up as a hard facet where the road's own kerb line should carry through.
+    The OUTER sidewalk edge in this branch was always a Hermite, so the two
+    edges of the same band disagreed.
+    """
+    if mode == "legacy":
+        return [a["Kerb"], b["Kerb"]], "chord"
+    kerb = hermite_boundary(a["Kerb"], mul(a["Out"], -1), b["Kerb"], b["Out"], THROUGH_SAMPLES)
+    if excursion(kerb) > MAX_HERMITE_EXCURSION:
+        return [a["Kerb"], b["Kerb"]], "chord"
+    return kerb, "through"
+
+
+def seam_kink_deg(boundary, a, b):
+    """Worst tangent break, degrees, where the pad boundary meets a mouth.
+
+    The road's kerb line arrives at `a` travelling along -outwardA and leaves
+    `b` along +outwardB, so a boundary continuous with both roads starts and
+    ends on exactly those directions. Anything else is a visible crease.
+    """
+    if len(boundary) < 2:
+        return 180.0
+    worst = 0.0
+    for seg, want in ((sub(boundary[1], boundary[0]), mul(a["Out"], -1)),
+                      (sub(boundary[-1], boundary[-2]), b["Out"])):
+        d = unit(seg)
+        dot = max(-1.0, min(1.0, d[0] * want[0] + d[1] * want[1]))
+        worst = max(worst, math.degrees(math.acos(dot)))
+    return worst
+
+
 # -------------------------------------------------------------- the walk
 
 
@@ -235,7 +273,7 @@ def build_pad(bearings_deg, kerb_half, trim, radius, mode):
             return
         pad.append(p)
 
-    spans = []
+    spans, kinks = [], []
     for i in range(len(approaches)):
         nxt = (i + 1) % len(approaches)
         span = approaches[nxt]["Angle"] - approaches[i]["Angle"]
@@ -250,14 +288,13 @@ def build_pad(bearings_deg, kerb_half, trim, radius, mode):
         real = MAX_CORNER_SPAN_RAD >= turn >= math.radians(20)
         if real:
             kerb, kind = corner_kerb(a, b, radius, exterior, mode)
-            for p in kerb:
-                append_unique(p)
         else:
-            kind = "chord"
-            append_unique(a["Kerb"])
-            append_unique(b["Kerb"])
+            kerb, kind = through_kerb(a, b, mode)
+        for p in kerb:
+            append_unique(p)
+        kinks.append(seam_kink_deg(kerb, a, b))
         spans.append((math.degrees(span), math.degrees(turn), exterior, kind))
-    return pad, spans
+    return pad, spans, (max(kinks) if kinks else 0.0)
 
 
 # ---------------------------------------------------------------- checks
@@ -442,8 +479,8 @@ def main():
     print(f"fillet radius {args.radius:g}; road shapes (kerb half-width, trim): "
           + ", ".join(f"({w:g},{t:g})" for w, t in shapes))
     print()
-    print(f"{'case':>10} {'mode':>7} {'w':>4} {'t':>4}  {'walk cross?':>11} {'walk over':>9}  {'used':<12} {'final':>10}  spans")
-    bad = 0
+    print(f"{'case':>10} {'mode':>7} {'w':>4} {'t':>4}  {'walk cross?':>11} {'walk over':>9}  {'used':<12} {'final':>8} {'kink':>7}  spans")
+    bad = warned = 0
     for label, bearings in cases:
         if len(bearings) == 2:
             dot = math.cos(math.radians(bearings[1] - bearings[0]))
@@ -452,7 +489,7 @@ def main():
                 continue
         for mode in modes:
             for kerb_half, trim in shapes:
-                pad, spans = build_pad(bearings, kerb_half, trim, args.radius, mode)
+                pad, spans, kink = build_pad(bearings, kerb_half, trim, args.radius, mode)
                 crossed = len(pad) < 3 or self_intersects(pad)
                 walk_over = ear_overdraw(pad) if len(pad) >= 3 else float("inf")
                 tris, used_poly, path = fill_pad(pad, kerb_points(bearings, kerb_half, trim))
@@ -464,16 +501,33 @@ def main():
                     final = total / area if area > 1e-9 else float("inf")
                     ok = not self_intersects(used_poly) and final <= 1.001
                 kinds = ",".join(f"{'ext' if e else 'int'}:{k}" for _, _, e, k in spans)
-                if mode == "shipped" and not ok:
-                    bad += 1
-                flag = "" if ok or mode == "legacy" else "  <-- BROKEN"
+                # Seam continuity is tracked separately from integrity.
+                # Integrity - simple outline, tiles exactly once - is
+                # guaranteed everywhere and is what fails the run. Continuity
+                # is only promised for turns an ordinary junction actually
+                # makes; past that the node is a hairpin doubling back on
+                # itself, and it also falls back to the convex hull, whose
+                # edges are straight lines between kerb points and never match
+                # the roads' tangents by construction.
+                kinked = (path == "corner walk" and kink > SEAM_KINK_LIMIT_DEG
+                          and min(spans[0][1], 180 - spans[0][1]) < 45)
+                if mode == "shipped":
+                    if not ok:
+                        bad += 1
+                    elif kinked:
+                        warned += 1
+                flag = "" if mode == "legacy" else ("" if ok else "  <-- BROKEN")
+                if mode == "shipped" and ok and kinked:
+                    flag = "  <-- seam kink (hairpin)"
                 print(f"{label:>10} {mode:>7} {kerb_half:4g} {trim:4g}  {str(crossed):>11} {walk_over:9.3f}"
-                      f"  {path:<12} {final:10.3f}  {kinds}{flag}")
+                      f"  {path:<12} {final:8.3f} {kink:6.1f}d  {kinds}{flag}")
         print()
     print("'walk over' is the corner walk's own ear-clip overdraw (inf = outline unusable);")
     print("'final' is the overdraw of what actually gets filled. 1.000 means the triangles")
     print("tile the pad exactly once - no double-cover, no overhang, no spikes.")
     print()
+    if warned:
+        print(f"{warned} hairpin case(s) fill cleanly but leave a visible seam kink")
     if bad:
         print(f"{bad} case(s) BROKEN")
     else:

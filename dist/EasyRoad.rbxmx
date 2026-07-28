@@ -3143,6 +3143,12 @@ local function hermiteBoundary(p0: Vector3, d0: Vector3, p1: Vector3, d1: Vector
 end
 
 local HERMITE_SAMPLES = 5
+-- Wide gaps get more samples than corners do. A corner's Hermite spans a
+-- short curb return; a wide gap spans the whole open side of the pad, and
+-- the rendered edge IS the polyline, so a coarse one shows its first chord
+-- as a visible break against the road's kerb line. Measured at a 35 degree
+-- bend: 5 samples leaves 3.1 degrees of break, 12 leaves 1.4.
+local THROUGH_SAMPLES = 12
 
 -- How far a corner polyline may stray from its own straight chord, as a
 -- multiple of that chord's length, before it is discarded for the chord.
@@ -3508,29 +3514,48 @@ function JunctionBuilder.Rebuild(
 					appendUnique(p)
 				end
 			else
-				-- Through-gap (~180° on a T): pad kerb is a straight chord, but
-				-- the OUTER sidewalk must still connect (live: T missing sidewalk
-				-- on the open side). Hermite the outer edge so it follows both
-				-- roads' sidewalk directions instead of a hard cut.
+				-- Wide gap. On a T's through-pair the two roads are collinear
+				-- and a straight edge across it is genuinely right. On a
+				-- SHALLOW BEND - a two-road node whose turn is too gentle to
+				-- read as a corner but too sharp for isSmoothPassThrough to
+				-- skip - it is not: chording straight across left a hard facet
+				-- exactly where the road's own kerb line should carry through,
+				-- reported live as "straight lines not continuous curves".
+				--
+				-- The OUTER sidewalk edge here was already a Hermite while the
+				-- kerb was a chord, so the two edges of one band disagreed: the
+				-- asphalt edge cut the corner while the pavement edge curved
+				-- around it. Both now follow the same directions.
+				--
+				-- This does not change a T. For a collinear through-pair
+				-- -outwardA and outwardB are the same direction, so the Hermite
+				-- degenerates to exactly the straight chord it replaced.
 				local outwardA = outwardTangentAt(a.Road, junctionId)
 				local outwardB = outwardTangentAt(b.Road, junctionId)
-				local kerbChord = { a.Kerb, b.Kerb }
-				local outerBand: { Vector3 }
+				local kerbBand: { Vector3 } = { a.Kerb, b.Kerb }
+				local outerBand: { Vector3 } = { a.Outer, b.Outer }
 				if outwardA and outwardB then
-					outerBand = hermiteBoundary(a.Outer, -outwardA, b.Outer, outwardB, HERMITE_SAMPLES)
-				else
-					outerBand = { a.Outer, b.Outer }
+					local curvedKerb = hermiteBoundary(a.Kerb, -outwardA, b.Kerb, outwardB, THROUGH_SAMPLES)
+					if chordExcursion(curvedKerb) &lt;= MAX_HERMITE_EXCURSION then
+						kerbBand = curvedKerb
+						outerBand = hermiteBoundary(a.Outer, -outwardA, b.Outer, outwardB, THROUGH_SAMPLES)
+					else
+						-- Kerb curve unusable, but the sidewalk still has to
+						-- connect (live: T missing sidewalk on the open side).
+						outerBand = hermiteBoundary(a.Outer, -outwardA, b.Outer, outwardB, HERMITE_SAMPLES)
+					end
 				end
 				-- Sidewalk only if outers actually sit outside the kerb (has
 				-- a sidewalk/median strip).
 				local hasSidewalk = distanceXZ(a.Outer, a.Kerb) &gt; 0.15 or distanceXZ(b.Outer, b.Kerb) &gt; 0.15
 				table.insert(builtCorners, {
-					Kerb = kerbChord,
+					Kerb = kerbBand,
 					Outer = outerBand,
 					Sidewalk = hasSidewalk,
 				})
-				appendUnique(a.Kerb)
-				appendUnique(b.Kerb)
+				for _, point in kerbBand do
+					appendUnique(point)
+				end
 			end
 		end
 
