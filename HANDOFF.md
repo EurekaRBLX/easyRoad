@@ -1,0 +1,114 @@
+# EasyRoad — handoff
+
+Written for whoever picks this up next. `SHIPPED.md` is the full history
+(most recent first), `TODO.md` the backlog, `KNOWN_ISSUES.md` confirmed bugs.
+This file is the short version of **where the roundabout work actually stands**,
+because that is the thread that was live when the session ended.
+
+## Ground rules for this repo
+
+- Work directly on `main`. Rebuild `dist/EasyRoad.rbxmx` with
+  `python3 tools/build_rbxmx.py` in the **same commit** as any `src/` change —
+  the user installs that file, so a stale dist means they test old code.
+- `stylua src/ && stylua --check src/` before committing. Note the repo is not
+  globally stylua-clean under the currently installed version; only keep the
+  files you touch clean.
+- Commit trailer, exactly:
+  `Co-Authored-By: Gameson <79436209+gamesonrblx@users.noreply.github.com>`
+  No `Claude-Session:` trailer, no model identifier anywhere in commits, PRs,
+  code or artifacts.
+- Log every round in `SHIPPED.md` (newest at top) and update `TODO.md`.
+
+## There is no Luau runtime or typechecker here
+
+This is the single biggest hazard, and it has already cost a shipped crash.
+`stylua` only proves the file **parses**. Nothing checks that an identifier
+exists. In `3fd2066` an edit landed in the wrong function and left
+`ringComponents` referencing `spokeProfile` — a nil global — so **every**
+`Make Roundabout` threw on its first line and built nothing. Fixed in
+`152b233`.
+
+Two lessons worth keeping:
+
+1. When patching by matched text, anchor on something unique. That bug came
+   from a `replace(..., 1)` whose anchor line appears in two functions and
+   matched the wrong one first.
+2. `tools/preview` did **not** catch it, and structurally cannot: it is a
+   Python re-implementation of the geometry, not an execution of the Lua. It
+   validates the algorithm, never that the code runs.
+
+Getting `luau-analyze` into CI would close this. It is the highest-value
+unbuilt item in `TODO.md`.
+
+## `tools/preview` — read its README first
+
+`tools/preview/roundabout_preview.py` simulates the **parts `RoadBuilder`
+actually emits** (rigid boxes per station interval, not idealised polygons)
+and reports two things:
+
+- **bare ground** — polar scan of the ring footprint, clustered by angle with
+  a depth in studs; hairlines under `--hairline` (0.15) are reported, not failed
+- **approach/arm seam** — sweeps the road's perpendicular either side of the
+  cut and measures the cross-section step; 0.00 is flush
+
+```sh
+cd tools/preview && python3 roundabout_preview.py            # uk4 uk3 us4
+python3 roundabout_preview.py stress stress_us --no-render
+```
+
+Exits non-zero on visible bare ground, so it works as a check. **Run it after
+any `RoundaboutBuilder` change.** All six cases currently pass.
+
+It models footprints in plan only — not heights, render order, dash phase or
+z-fighting. Those remain Studio-only checks.
+
+## Roundabout geometry, as it now stands
+
+The ring is one continuous annulus, never sliced. Each approach is trimmed
+back and split into one-way arms that merge **tangentially onto the ring's
+rim**: an arm's centreline ends at the radius that puts its outer roadway edge
+exactly on the ring's kerb, carrying the ring's own tangent, so kerb, pavement
+and carriageway all flow in rather than butting into it.
+
+Things that are settled, and why — don't re-litigate these blind:
+
+- **Circulation sign.** `circleSegments` uses `sign = if driveOnLeft then 1`.
+  Increasing angle runs +X toward +Z, which viewed from above is clockwise, so
+  left-hand drive is `+1`. Everything downstream reads handedness off this:
+  pavement side in `ringComponents`/`armProfileFor`, island side in
+  `ringInnerHalfWidthM`, `flow` in `buildMouth`. It was inverted before
+  `cfe4ca9` and was internally consistent, which is exactly why it survived so
+  long — nothing looked wrong until the arms encoded direction.
+- **Arms are aligned to the approach's own roadway edges**, not sized from
+  their own half-width plus a splitter. Sizing them the latter way makes the
+  pair wider than the road and steps the whole cross-section at the cut.
+- **Lanes split by `Direction`**, not by halving the count. Direction is
+  relative to the curve's travel, so the inbound sign flips with `atStart`.
+  One-way approaches get a single arm with pavements on both sides and no
+  splitter island.
+- **The mouth sector is inset, never expanded.** Deleting less ring pavement
+  than the arms cover is invisible; deleting more is bare ground in a ring of
+  pavement.
+- **Cubic handle is 0.30.** Both ends fight: a long handle walks the ring-end
+  control point across the gore until entry and exit close on each other, a
+  short one kinks the arm into a hairpin. 0.30 was measured, not chosen.
+
+## Known limits, honestly stated
+
+- **Crowded rings.** 5+ legs, or wide approaches on a ~40-stud radius, squeeze
+  the split until the arms run up against each other partway along. Nothing
+  overlaps; the mouth just reads as one wide opening and the island pinches.
+  The real fix is auto-sizing a minimum radius from entry width and leg count.
+- **Splitter waist.** A 4-leg ring still dips ~0.7 studs partway along.
+  Cosmetic.
+- **Hairlines at the island rim.** ~0.05 studs where the ring's innermost
+  strips chord across the island circle. Unfixable by padding without
+  overlapping the island instead.
+- **Nothing has been confirmed in Studio since the arm rewrite.** The last
+  live signal was the crash. The geometry is verified headless only.
+
+## Immediate next step
+
+Have the user reinstall `dist/EasyRoad.rbxmx` and place a roundabout among a
+few roads. That confirms the crash fix and gives the first live look at the
+split-arm mouths. Everything after that is in `TODO.md`.

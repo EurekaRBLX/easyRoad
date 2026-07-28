@@ -4,6 +4,51 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: crash fix, direction-aware arms, mixed-approach stress test
+
+**A crash shipped in `3fd2066` and broke Make Roundabout entirely.** A
+pavement-width edit meant for `armProfileFor` landed in `ringComponents`
+instead - the anchor text it matched appears in both, and the first match won -
+leaving `ringComponents` referencing `spokeProfile`, a nil global. Every
+`CreateAtJunction` and `Create` threw on its first line and the tool silently
+built nothing. Fixed in `152b233`.
+
+`tools/preview` did not catch it and structurally cannot: it re-implements the
+geometry in Python rather than executing the Lua, so it validates the algorithm
+and never that the code runs. `stylua` only proves the file parses. Getting
+`luau-analyze` into CI is now the highest-value unbuilt item in TODO.
+
+**Then a mixed-approach stress test** - one ring carrying a 2-lane two-way, a
+1-lane one-way, a 4-lane 2/2 and a 4-lane 3/1 - broke the arm sizing three
+ways. Arms were built by halving the approach's lane count, which is only ever
+right for a symmetric two-way road.
+
+Lanes are now split by their own `Direction`. It is tagged relative to the
+curve's travel, so the sign meaning "toward the ring" flips with which end of
+the road the junction sits at. Inbound lanes become the entry arm, outbound the
+exit arm: exact on 3/1, and on a one-way road one group is simply empty.
+
+- **One-way approaches** build a single arm, no splitter island, and that arm
+  keeps a pavement on BOTH sides - with no sibling arm its gore side is open
+  ground and the road it replaces has a footway there. Before, the mouth came
+  out one pavement narrower than the road: a 7.1-stud seam step.
+- **A solo arm's pavement opening** is now found by walking the arm until its
+  outer edge lifts clear of the ring's band, instead of being assumed from the
+  split angle. A tangential merge runs inside that band for ~24 degrees on a
+  70-stud ring, so guessing left bare kerb at one end and an uncut kerb across
+  the carriageway at the other.
+- **The splitter island takes each arm's OWN inner offset.** Sharing the
+  entry's is only correct when both arms are the same width; on the 3/1 leg it
+  tracked the exit's edge a lane and a half out of place and the island missed
+  the carriageway entirely, leaving a 7-stud bare wedge.
+
+`tools/preview` gained `stress` and `stress_us` cases covering all four
+approach shapes on one ring. All six cases now report a flush 0.00-stud
+approach/arm seam and no visible bare ground.
+
+Also added `HANDOFF.md`, a short statement of where the roundabout work stands
+and which decisions are settled, for picking this up cold.
+
 ## Roundabout: arms aligned to the approach's own cross-section
 
 The mouth had a seam. Each arm was sized from its own half-width plus a
