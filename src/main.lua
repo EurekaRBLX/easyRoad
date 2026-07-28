@@ -707,6 +707,23 @@ return function(
 				Size = UDim2.new(1, -24, 0, 420),
 			}
 		elseif junctionEditSession.GetSelectedJunction() then
+			-- Both radius figures depend on the approaches meeting here AND on the
+			-- ring's own lane settings, which live in the panel - so this is a
+			-- callback it invokes with its current values rather than a number
+			-- computed once with assumed ones.
+			local function getRoundaboutRadii(laneCount: number, laneWidthM: number): (number, number)
+				local junctionModel = junctionEditSession.GetSelectedJunction()
+				if not junctionModel then
+					return 0, 0
+				end
+				local junctionData = JunctionInstance.Read(junctionModel)
+				if not junctionData then
+					return 0, 0
+				end
+				local style = getStyle()
+				return RoundaboutBuilder.MinimumRadiusStuds(junctionData.Id, laneCount, laneWidthM, style, settings),
+					RoundaboutBuilder.SuggestedRadiusStuds(junctionData.Id, laneCount, laneWidthM, style, settings)
+			end
 			bottomContent = React.createElement(JunctionPanel, {
 				ConnectedRoadCount = junctionEditSession.GetConnectedRoadCount(),
 				FilletRadiusM = junctionEditSession.GetFilletRadiusM(),
@@ -715,6 +732,7 @@ return function(
 				OnPadMarginChanged = junctionEditSession.SetPadMarginStuds,
 				OnRebuild = junctionEditSession.RebuildSelected,
 				OnDelete = junctionEditSession.DeleteJunction,
+				GetRoundaboutRadii = getRoundaboutRadii,
 				OnMakeRoundabout = function(radiusStuds: number, laneCount: number, laneWidthM: number)
 					local junctionModel = junctionEditSession.GetSelectedJunction()
 					if not junctionModel then

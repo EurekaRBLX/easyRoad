@@ -42,6 +42,32 @@ remain in place. This round changes the missing interior-to-interior case and
 the feedback around all placement snapping; it does not add transition/bay
 subdivision.
 
+## Roundabout radius: suggest an optimal one, let the user decide
+
+Following the radius floor, the Radius box no longer starts at a fixed 30. The
+Junction panel asks the builder what these particular approaches need and
+pre-fills a suggestion - `MinimumRadiusStuds` rounded up to a 5-stud step with
+15% headroom, because the minimum is a hard floor where every mouth touches its
+neighbour's kerb with nothing spare, and handing that over as the default gives
+the tightest legal roundabout rather than a good one.
+
+The suggestion follows the lane count and lane width, since those change what
+fits, and stops following the moment the user types their own number - a stale
+suggestion sitting in the box after changing lanes is how you build the tight
+version by accident. The hint line underneath states the actual minimum and the
+suggestion, and if the typed radius is under the floor it says so and that it
+will be grown, rather than silently correcting after the click.
+
+Both figures come from the builder via a callback the panel invokes with its
+current lane settings, not a number computed once in `main.lua` with assumed
+ones - the first cut of this hardcoded `laneCount = 1` and would have quoted the
+wrong minimum for every multi-lane ring.
+
+`check_parity.py` earned itself immediately: it failed the moment the two new
+suggestion constants were added on the Lua side only, which is exactly the
+silent drift it exists to catch. They are UI-side rounding with no preview
+counterpart, so they are whitelisted rather than mirrored.
+
 ## Roundabout: enforce a minimum radius; parity check for the preview
 
 Two live reports - an X intersection and a T turned into roundabouts - came out

@@ -6341,6 +6341,28 @@ function RoundaboutBuilder.MinimumRadiusStuds(
 	return mergeRadius + outerOffsetStuds + style.SidewalkWidthM * scale - ringHalfStuds
 end
 
+-- What to actually put in the Radius box. The minimum is a hard geometric
+-- floor - at it, every mouth is touching its neighbour's kerb with nothing to
+-- spare - so offering it as the default hands the user the tightest legal
+-- roundabout and no room to breathe. Rounded up to a 5-stud step with a margin
+-- so the suggestion looks like a decision rather than a solver output.
+local SUGGESTED_RADIUS_HEADROOM = 1.15
+local SUGGESTED_RADIUS_STEP_STUDS = 5
+
+function RoundaboutBuilder.SuggestedRadiusStuds(
+	junctionId: string,
+	laneCount: number,
+	laneWidthM: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): number
+	local minimum = RoundaboutBuilder.MinimumRadiusStuds(junctionId, laneCount, laneWidthM, style, settings)
+	if minimum &lt;= 0 then
+		return 0
+	end
+	return math.ceil(minimum * SUGGESTED_RADIUS_HEADROOM / SUGGESTED_RADIUS_STEP_STUDS) * SUGGESTED_RADIUS_STEP_STUDS
+end
+
 function RoundaboutBuilder.CreateAtJunction(
 	junctionId: string,
 	radiusStuds: number,
@@ -11432,19 +11454,37 @@ local DEFAULT_RADIUS_STUDS = 30
 local DEFAULT_LANE_COUNT = 1
 local DEFAULT_LANE_WIDTH_M = 3.65
 
-local function JunctionPanel(props: {
-	ConnectedRoadCount: number,
-	FilletRadiusM: number,
-	PadMarginStuds: number,
-	OnFilletRadiusChanged: (value: number) -&gt; (),
-	OnPadMarginChanged: (value: number) -&gt; (),
-	OnRebuild: () -&gt; (),
-	OnDelete: () -&gt; (),
-	OnMakeRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number) -&gt; (),
-})
-	local radiusStuds, setRadiusStuds = React.useState(DEFAULT_RADIUS_STUDS)
+local function JunctionPanel(
+	props: {
+		ConnectedRoadCount: number,
+		FilletRadiusM: number,
+		PadMarginStuds: number,
+		OnFilletRadiusChanged: (value: number) -&gt; (),
+		OnPadMarginChanged: (value: number) -&gt; (),
+		OnRebuild: () -&gt; (),
+		OnDelete: () -&gt; (),
+		OnMakeRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number) -&gt; (),
+		-- Smallest radius the approaches meeting here physically fit into, and a
+		-- comfortable suggestion above it. Both depend on the ring's own lane
+		-- settings, which live here, so this is asked again as those change.
+		GetRoundaboutRadii: (laneCount: number, laneWidthM: number) -&gt; (number, number),
+	}
+)
 	local laneCount, setLaneCount = React.useState(DEFAULT_LANE_COUNT)
 	local laneWidthM, setLaneWidthM = React.useState(DEFAULT_LANE_WIDTH_M)
+	local minimum, suggested = props.GetRoundaboutRadii(laneCount, laneWidthM)
+	local radiusStuds, setRadiusStuds = React.useState(if suggested &gt; 0 then suggested else DEFAULT_RADIUS_STUDS)
+	local touched, setTouched = React.useState(false)
+
+	-- Follow the suggestion while the user has not overridden it. Changing lane
+	-- count or width changes what actually fits, and silently leaving a stale
+	-- number in the box is how you end up building the tight version by
+	-- accident.
+	React.useEffect(function()
+		if not touched and suggested &gt; 0 and suggested ~= radiusStuds then
+			setRadiusStuds(suggested)
+		end
+	end, { suggested, touched } :: { any })
 
 	local children: { [string]: any } = {}
 	RoadDesigner.DecorateCard(children)
@@ -11514,7 +11554,10 @@ local function JunctionPanel(props: {
 			Field = e(Components.NumberField, {
 				Value = radiusStuds,
 				Min = 5,
-				OnChanged = setRadiusStuds,
+				OnChanged = function(value: number)
+					setTouched(true)
+					setRadiusStuds(value)
+				end,
 				LayoutOrder = 2,
 			}),
 			Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 3 }),
@@ -11549,8 +11592,26 @@ local function JunctionPanel(props: {
 				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM)
 			end,
 		})
+		-- Say what the geometry needs and what was suggested, rather than
+		-- silently correcting the number after the fact. A radius under the
+		-- minimum cannot be built as asked - the mouths would overrun each other
+		-- - so it gets grown, and the user should hear that before clicking.
+		local hint = "Replaces this junction with a polar ring and trims approaches to the outer edge."
+		if minimum &gt; 0 then
+			local floor = math.ceil(minimum)
+			if radiusStuds &lt; floor then
+				hint = string.format(
+					"These approaches need at least %d studs - %d will be grown to fit. Suggested: %d.",
+					minimum,
+					radiusStuds,
+					suggested
+				)
+			else
+				hint = string.format("Minimum for these approaches: %d studs. Suggested: %d.", minimum, suggested)
+			end
+		end
 		children.RoundaboutHint = e(Components.Label, {
-			Text = "Replaces this junction with a polar ring and trims approaches to the outer edge.",
+			Text = hint,
 			Dim = true,
 			LayoutOrder = 15,
 		})
@@ -17404,6 +17465,23 @@ return function(
 				Size = UDim2.new(1, -24, 0, 420),
 			}
 		elseif junctionEditSession.GetSelectedJunction() then
+			-- Both radius figures depend on the approaches meeting here AND on the
+			-- ring's own lane settings, which live in the panel - so this is a
+			-- callback it invokes with its current values rather than a number
+			-- computed once with assumed ones.
+			local function getRoundaboutRadii(laneCount: number, laneWidthM: number): (number, number)
+				local junctionModel = junctionEditSession.GetSelectedJunction()
+				if not junctionModel then
+					return 0, 0
+				end
+				local junctionData = JunctionInstance.Read(junctionModel)
+				if not junctionData then
+					return 0, 0
+				end
+				local style = getStyle()
+				return RoundaboutBuilder.MinimumRadiusStuds(junctionData.Id, laneCount, laneWidthM, style, settings),
+					RoundaboutBuilder.SuggestedRadiusStuds(junctionData.Id, laneCount, laneWidthM, style, settings)
+			end
 			bottomContent = React.createElement(JunctionPanel, {
 				ConnectedRoadCount = junctionEditSession.GetConnectedRoadCount(),
 				FilletRadiusM = junctionEditSession.GetFilletRadiusM(),
@@ -17412,6 +17490,7 @@ return function(
 				OnPadMarginChanged = junctionEditSession.SetPadMarginStuds,
 				OnRebuild = junctionEditSession.RebuildSelected,
 				OnDelete = junctionEditSession.DeleteJunction,
+				GetRoundaboutRadii = getRoundaboutRadii,
 				OnMakeRoundabout = function(radiusStuds: number, laneCount: number, laneWidthM: number)
 					local junctionModel = junctionEditSession.GetSelectedJunction()
 					if not junctionModel then

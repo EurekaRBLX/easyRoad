@@ -17,19 +17,37 @@ local DEFAULT_RADIUS_STUDS = 30
 local DEFAULT_LANE_COUNT = 1
 local DEFAULT_LANE_WIDTH_M = 3.65
 
-local function JunctionPanel(props: {
-	ConnectedRoadCount: number,
-	FilletRadiusM: number,
-	PadMarginStuds: number,
-	OnFilletRadiusChanged: (value: number) -> (),
-	OnPadMarginChanged: (value: number) -> (),
-	OnRebuild: () -> (),
-	OnDelete: () -> (),
-	OnMakeRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number) -> (),
-})
-	local radiusStuds, setRadiusStuds = React.useState(DEFAULT_RADIUS_STUDS)
+local function JunctionPanel(
+	props: {
+		ConnectedRoadCount: number,
+		FilletRadiusM: number,
+		PadMarginStuds: number,
+		OnFilletRadiusChanged: (value: number) -> (),
+		OnPadMarginChanged: (value: number) -> (),
+		OnRebuild: () -> (),
+		OnDelete: () -> (),
+		OnMakeRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number) -> (),
+		-- Smallest radius the approaches meeting here physically fit into, and a
+		-- comfortable suggestion above it. Both depend on the ring's own lane
+		-- settings, which live here, so this is asked again as those change.
+		GetRoundaboutRadii: (laneCount: number, laneWidthM: number) -> (number, number),
+	}
+)
 	local laneCount, setLaneCount = React.useState(DEFAULT_LANE_COUNT)
 	local laneWidthM, setLaneWidthM = React.useState(DEFAULT_LANE_WIDTH_M)
+	local minimum, suggested = props.GetRoundaboutRadii(laneCount, laneWidthM)
+	local radiusStuds, setRadiusStuds = React.useState(if suggested > 0 then suggested else DEFAULT_RADIUS_STUDS)
+	local touched, setTouched = React.useState(false)
+
+	-- Follow the suggestion while the user has not overridden it. Changing lane
+	-- count or width changes what actually fits, and silently leaving a stale
+	-- number in the box is how you end up building the tight version by
+	-- accident.
+	React.useEffect(function()
+		if not touched and suggested > 0 and suggested ~= radiusStuds then
+			setRadiusStuds(suggested)
+		end
+	end, { suggested, touched } :: { any })
 
 	local children: { [string]: any } = {}
 	RoadDesigner.DecorateCard(children)
@@ -99,7 +117,10 @@ local function JunctionPanel(props: {
 			Field = e(Components.NumberField, {
 				Value = radiusStuds,
 				Min = 5,
-				OnChanged = setRadiusStuds,
+				OnChanged = function(value: number)
+					setTouched(true)
+					setRadiusStuds(value)
+				end,
 				LayoutOrder = 2,
 			}),
 			Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 3 }),
@@ -134,8 +155,26 @@ local function JunctionPanel(props: {
 				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM)
 			end,
 		})
+		-- Say what the geometry needs and what was suggested, rather than
+		-- silently correcting the number after the fact. A radius under the
+		-- minimum cannot be built as asked - the mouths would overrun each other
+		-- - so it gets grown, and the user should hear that before clicking.
+		local hint = "Replaces this junction with a polar ring and trims approaches to the outer edge."
+		if minimum > 0 then
+			local floor = math.ceil(minimum)
+			if radiusStuds < floor then
+				hint = string.format(
+					"These approaches need at least %d studs - %d will be grown to fit. Suggested: %d.",
+					minimum,
+					radiusStuds,
+					suggested
+				)
+			else
+				hint = string.format("Minimum for these approaches: %d studs. Suggested: %d.", minimum, suggested)
+			end
+		end
 		children.RoundaboutHint = e(Components.Label, {
-			Text = "Replaces this junction with a polar ring and trims approaches to the outer edge.",
+			Text = hint,
 			Dim = true,
 			LayoutOrder = 15,
 		})

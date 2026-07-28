@@ -1210,6 +1210,28 @@ function RoundaboutBuilder.MinimumRadiusStuds(
 	return mergeRadius + outerOffsetStuds + style.SidewalkWidthM * scale - ringHalfStuds
 end
 
+-- What to actually put in the Radius box. The minimum is a hard geometric
+-- floor - at it, every mouth is touching its neighbour's kerb with nothing to
+-- spare - so offering it as the default hands the user the tightest legal
+-- roundabout and no room to breathe. Rounded up to a 5-stud step with a margin
+-- so the suggestion looks like a decision rather than a solver output.
+local SUGGESTED_RADIUS_HEADROOM = 1.15
+local SUGGESTED_RADIUS_STEP_STUDS = 5
+
+function RoundaboutBuilder.SuggestedRadiusStuds(
+	junctionId: string,
+	laneCount: number,
+	laneWidthM: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): number
+	local minimum = RoundaboutBuilder.MinimumRadiusStuds(junctionId, laneCount, laneWidthM, style, settings)
+	if minimum <= 0 then
+		return 0
+	end
+	return math.ceil(minimum * SUGGESTED_RADIUS_HEADROOM / SUGGESTED_RADIUS_STEP_STUDS) * SUGGESTED_RADIUS_STEP_STUDS
+end
+
 function RoundaboutBuilder.CreateAtJunction(
 	junctionId: string,
 	radiusStuds: number,

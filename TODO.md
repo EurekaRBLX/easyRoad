@@ -45,6 +45,18 @@ in where the entry arm merges, not in corner fillets.
 - **Auto-size a minimum ring radius** from entry width and leg count, and warn
   when the requested radius cannot carry the mouths. This is the real fix for
   the crowded-ring limit below, which currently just degrades quietly.
+- **The preview only ever tests RADIAL legs.** Every case builds approaches
+  that aim straight at the ring centre, so `rayCircleFirstHit` - the path that
+  places a mouth for an approach which does NOT aim at the centre - is never
+  exercised. Roads produced by an X-split frequently do not aim at the centre,
+  so this is an untested path on exactly the geometry the live reports came
+  from. Add an off-centre case.
+- **Verify the preview against the Lua by BEHAVIOUR, not constants.**
+  `check_parity.py` compares numbers; two implementations can agree on every
+  constant and still diverge in logic. The way to settle it is a debug dump
+  from the plugin - each arm's merge radius, merge angle, lateral offset and
+  sector Ahead/Behind for a real junction - diffed against what the preview
+  computes for the same input.
 - **Extend `tools/preview` past the roundabout.** It only knows how to build a
   ring + arms right now. The emission port itself (`build_stations`,
   `emit_road`) is generic, so junctions, bus bays and lane-width transitions -

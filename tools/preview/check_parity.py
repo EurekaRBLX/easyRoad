@@ -34,7 +34,9 @@ ALIASES = {
 # Names that legitimately exist on one side only.
 # The preview inlines this as a one-letter local inside circle_segments,
 # which the scanner skips on purpose (single letters are loop noise).
-LUA_ONLY = {"BEZIER_CIRCLE_K"}
+# UI-side only: how the suggested radius is rounded for the panel. The
+# preview has no UI, so it has nothing to compare against.
+LUA_ONLY = {"BEZIER_CIRCLE_K", "SUGGESTED_RADIUS_HEADROOM", "SUGGESTED_RADIUS_STEP_STUDS"}
 PY_ONLY = {"CHORD_TOLERANCE", "MIN_STEP", "MAX_TURN_PER_STEP", "MARKING_THICKNESS",
            "MAX_SEGMENT_LENGTH", "ARC_SAMPLES", "SCALE", "SW_M", "LANE_M",
            "MARKING_W_M", "THICKNESS",
