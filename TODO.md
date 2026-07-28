@@ -55,6 +55,63 @@ Corrections to earlier entries here, so they are not acted on again:
   perimeter order, and collinear input could empty the hull and produce a NaN
   apex.
 
+## Roundabout: open live reports (not yet fixed)
+
+All six came from one Studio session and none is built yet. Ordered by how
+well understood they are, not by value.
+
+1. **Centre island is a true cylinder; the ring around it is a polygon.**
+   `buildIsland` sets `Shape = Enum.PartType.Cylinder`, so the island is a
+   perfect circle, while the ring is emitted by `RoadBuilder` as rigid boxes
+   between adaptive stations - a polygon inscribed in its own circle. The
+   island therefore pokes out past the ring's inner edge at every chord
+   midpoint. This is the same mismatch as the "hairlines at the island rim"
+   note further down, seen from the other side.
+
+   The vertex count is not arbitrary and is worth knowing before fixing it.
+   `RoadBuilder.buildStations` uses `step = min(maxStep, sqrt(8*tol/k),
+   MAX_TURN_PER_STEP/k)` floored at `MIN_STEP`. On a circle `k = 1/R` is
+   constant, so with `CHORD_TOLERANCE = 0.05` the chord term governs for any
+   `R > 10` and the side count is about `2*pi*sqrt(R/0.4)`, i.e. ~9.9*sqrt(R):
+   **31 sides at R=10**, 63 at R=40, 99 at R=100. The reported "32-gon" is a
+   small ring, and it matches this formula.
+
+   Wanted behaviour (user, verbatim): "if small a cylinder is ok but if large
+   nah" - so keep the cylinder under some radius and fan the island as a
+   polygon above it. **Do not re-derive the station formula in
+   RoundaboutBuilder** - that is exactly the parity drift this repo already
+   fights. Have `RoadBuilder` expose the station list (or the ring build hand
+   back the angles it used) so the island rim is the same polygon by
+   construction rather than by a matching constant.
+
+2. **A median appears on approaches whose road type has no median**, plus an
+   "indentation" down the middle of the approach. HYPOTHESIS, not yet
+   verified: `armProfileFor` gives a non-solo arm a pavement only on its outer
+   side, so the gore is bare, and `buildSplitterIsland` fills it only from the
+   ring back to where the two arms' edges drop inside the kerb. Between the
+   end of that island and the untrimmed road there would then be a sliver of
+   open ground between the two arms - which would read as both the phantom
+   median and the indentation. Confirm by measuring the gore gap along the
+   arm, not by eye.
+
+   Consistent with the user's own observation that wide roads (which already
+   carry a median) do not show it.
+
+3. **Markings on the built roundabout do not match what the preview renders.**
+   No diagnosis yet. `roundabout_preview.py` simulates markings, so a diff is
+   possible - run it against the same radius/lane count and compare.
+
+4. **The radius suggestion is not offered by the Roundabout tool in the Road
+   Builder widget**, only on the junction panel. `RoundaboutBuilder.SuggestedRadiusStuds`
+   already exists and is UI-agnostic; this is wiring.
+
+5. **The suggestion does not adapt to the lane count of the roads actually
+   connected** - it uses the panel's lane count. It should take the maximum
+   over the connected approaches. `MinimumRadiusStuds` already walks the legs
+   and knows each one's width, so the input is there.
+
+6. **Cul-de-sacs**: asked for, nothing exists. Open question, not a bug.
+
 ## Junction corners: remaining work
 
 - **Bunched legs fall back to the convex hull.** When several legs sit within
