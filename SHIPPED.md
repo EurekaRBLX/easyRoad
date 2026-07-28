@@ -4,6 +4,68 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Junction pad: fix the outer corner arc and make the fill defensive
+
+A junction between roads meeting at a bend rendered as a jagged, spiked,
+self-intersecting slab. The cause was one direction convention, and it is
+provable rather than a guess.
+
+`cornerBoundaries` took an `exterior` flag and, on any gap wider than 180
+degrees, aimed its edge directions along `+outward` instead of `-outward`.
+That is wrong: take an L of two roads of half-width w, with A's outer edge
+running along `z = -w` and B's along `x = +w`. Those lines meet at `(w, -w)`,
+the outside corner of the L, and from A's kerb point at `(-d, -w)` that vertex
+lies in `+X` — which is `-outwardA`. The corner vertex is toward `-outward` on
+both the short and the long way round; there is no side of a bend on which the
+edges converge the other way.
+
+The cost was not a poor fillet, it was **no** fillet. `Fillet.Compute`
+correctly rejects a vertex sitting behind the ray, so every exterior span fell
+through to the Hermite fallback, which was then handed mismatched directions
+(`+outwardA` at one end, `-outwardB` at the other) and looped the outer
+boundary back *across* the pad interior. The assembled outline crossed itself
+at every bend from 45 to 150 degrees, and the centroid fan over that crossing
+outline is what put spikes on screen.
+
+Spans over 180 degrees are not exclusive to two-road bends: any junction whose
+legs bunch to one side has one, so T, X and 5-leg nodes were exposed too.
+
+Changed in `Mesh/JunctionBuilder.lua`:
+
+- The `exterior` flag is gone from `cornerBoundaries`. Both sides aim at the
+  corner vertex along `-outward`.
+- The Hermite fallback is bounded. It is right for near-parallel edges but
+  wrong for a sharp hairpin whose two trimmed ends have already passed each
+  other, where chord-length tangents loop it out of the pad; a Hermite that
+  strays more than 0.6 of its own chord is discarded for the straight chord.
+- The pad is filled by **ear clipping**, following CART `JunctionTool`'s
+  `_triangulatePolygon`, not a centroid fan. A fan is only valid for a polygon
+  star-shaped about the point it fans from, and a pad carrying a corner
+  treatment per gap is concave by construction — an L-bend has a short inner
+  corner and a long outer wrap-around, and its centroid can fall outside the
+  pad entirely.
+- The outline is validated before it is trusted: duplicate and collinear
+  vertices merged, then rejected outright if it self-crosses. Anything that
+  fails drops to the convex hull of the kerb points, which is convex by
+  construction and so always fillable. A blunter pad, never a torn one.
+- `convexHull` itself is now trustworthy enough to be that fallback. It used to
+  return three-or-fewer points unchanged, in whatever order the roads were read
+  in — "already convex" is true of any three points and is not the property
+  that matters, perimeter order is — and fully collinear input could empty the
+  hull, which the caller then averaged into a NaN apex. Three points now go
+  through the same chain construction as any other count, the chain trim is
+  conditional, and a degenerate result falls back to angular order.
+
+`tools/preview/junction_pad_preview.py` is new and is the regression test: a
+line-by-line port of the real walk, scoring every case on whether the outline
+self-crosses and whether the triangles tile the pad exactly once. It reproduces
+the bug under `--legacy` (fan overdraw up to 800x) and passes all 66 shipped
+cases at exactly 1.000 — two-road bends from 35 to 170 degrees, square, skewed
+and bunched T and X, and a 5-leg node, across three road widths.
+
+Not yet confirmed in Studio. The next live check is the shallow bend that was
+reported, plus a T and an X.
+
 ## True X intersections and visible road snapping
 
 Drawing a new road all the way across an existing road now creates a real

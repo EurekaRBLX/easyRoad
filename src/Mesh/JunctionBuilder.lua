@@ -20,17 +20,21 @@
 --    boundary is skipped, so re-running when another road joins later only
 --    trims further if the pad radius actually grew.
 --
--- 2. Rebuild: the pad's BASE asphalt - the CONVEX HULL of every connected
---    road's KERB points (the roadway/non-roadway boundary at each trimmed
---    end), fan-triangulated from one of its own hull vertices. A convex
---    polygon can ALWAYS be fanned from any of its own vertices without
---    self-intersection - a property, not a heuristic, adopted after
---    several rounds of per-pair corner constructions (Bézier arcs,
---    chamfers, angle-sorted point walks) each producing broken geometry on
---    some junction shape. The hull is deliberately kept as the
---    unconditional base fill even now that corners are driven by the
---    per-approach node model below - it's the guarantee that no corner
---    logic failure can ever leave the pad itself torn or holed.
+-- 2. Rebuild: the pad's asphalt, filled from the OUTLINE walked in point 3
+--    below - each approach's mouth joined to the next by that gap's corner
+--    treatment - triangulated by EAR CLIPPING. Ear clipping, not a fan:
+--    a fan is only valid for a polygon that is star-shaped about the point
+--    it fans from, and a pad carrying a corner treatment per gap is
+--    concave by construction (an L-bend has a short inner corner and a
+--    long outer wrap-around, and its centroid can fall outside the pad).
+--    The outline is validated before it is trusted - cleaned of duplicate
+--    and collinear vertices, then rejected outright if it crosses itself.
+--    Anything that fails validation falls back to the CONVEX HULL of every
+--    connected road's KERB points, which is convex by construction and so
+--    can always be triangulated: a blunter pad than intended, but never a
+--    torn one. That fallback is the standing guarantee that no corner
+--    logic failure can leave the pad itself holed, and it is the reason
+--    the hull code is kept even though corners no longer come from it.
 --
 -- Skips itself entirely for a plain two-road pass-through (matching
 -- profiles, roughly opposite outward directions) - a chained straight or
@@ -570,16 +574,50 @@ local function segmentsCross2D(a1: Vector3, a2: Vector3, b1: Vector3, b2: Vector
 	return o1 * o2 < 0 and o3 * o4 < 0
 end
 
+-- Angular order about the centroid. Not a hull - just an ordering, used as
+-- the last-resort perimeter order when the hull construction below has
+-- nothing convex to work with.
+local function sortAroundCentroid(points: { EdgePoint }): { EdgePoint }
+	local cx, cz = 0, 0
+	for _, p in points do
+		cx += p.Kerb.X
+		cz += p.Kerb.Z
+	end
+	cx /= #points
+	cz /= #points
+	local sorted = table.clone(points)
+	table.sort(sorted, function(a: EdgePoint, b: EdgePoint): boolean
+		return math.atan2(a.Kerb.Z - cz, a.Kerb.X - cx) < math.atan2(b.Kerb.Z - cz, b.Kerb.X - cx)
+	end)
+	return sorted
+end
+
 -- The convex hull of `points`' Kerb positions (2D, ground plane), via the
 -- standard Andrew's monotone chain construction: sort by X (ties by Z),
 -- then sweep building a lower and upper chain, popping the last point
 -- whenever the turn it makes isn't a left turn. Returns hull vertices in
--- order (their EdgePoint records, not just positions) - a point that ends
+-- ORDER (their EdgePoint records, not just positions) - a point that ends
 -- up strictly inside the hull (dominated by its neighbours) is dropped
--- entirely, same as any convex hull algorithm. Degenerates to returning
--- `points` unchanged when there are 3 or fewer (always already convex).
+-- entirely, same as any convex hull algorithm.
+--
+-- The ORDER is the entire value of this function: it is the pad's
+-- guaranteed-safe fallback shape, and a convex polygon taken in perimeter
+-- order can always be triangulated without self-intersection. Two ways
+-- that guarantee used to be silently lost, both closed here:
+--
+--  * the old `if #points <= 3 then return points end` early-out handed the
+--    points back in whatever order the ROADS happened to be read in.
+--    "Already convex" is true of any 3 points and is not the property that
+--    matters - perimeter ORDER is - so the supposedly-always-safe fallback
+--    could itself wind backwards and fold. Three points now go through the
+--    same chain construction as any other count.
+--  * fully collinear or coincident input collapses both chains to one
+--    point each, and the unconditional `table.remove` that followed could
+--    leave the hull EMPTY - which the caller then averaged (a divide by
+--    zero) into a NaN apex and fed to the part builder. The chain trim is
+--    now conditional and a degenerate result falls back to angular order.
 local function convexHull(points: { EdgePoint }): { EdgePoint }
-	if #points <= 3 then
+	if #points < 3 then
 		return points
 	end
 	local sorted = table.clone(points)
@@ -604,8 +642,14 @@ local function convexHull(points: { EdgePoint }): { EdgePoint }
 		end
 		table.insert(upper, p)
 	end
-	table.remove(lower) -- last point of each chain is the first of the other
-	table.remove(upper)
+	-- Each chain's last point is the other chain's first, so one copy of
+	-- each is dropped - but only when both chains actually have a point to
+	-- spare. Collinear input leaves chains of one, and trimming those
+	-- unconditionally emptied the hull.
+	if #lower >= 2 and #upper >= 2 then
+		table.remove(lower)
+		table.remove(upper)
+	end
 	local hull: { EdgePoint } = {}
 	for _, p in lower do
 		table.insert(hull, p)
@@ -613,7 +657,157 @@ local function convexHull(points: { EdgePoint }): { EdgePoint }
 	for _, p in upper do
 		table.insert(hull, p)
 	end
+	if #hull < 3 then
+		return sortAroundCentroid(points) -- degenerate: collinear or coincident
+	end
 	return hull
+end
+
+-- Twice the signed area of a ground-plane polygon (shoelace). The sign is
+-- the winding direction, which the ear clipper needs; the magnitude is
+-- twice the area, which the collapse check needs.
+local function polygonArea2(poly: { Vector3 }): number
+	local sum = 0
+	for i, p in poly do
+		local q = poly[if i < #poly then i + 1 else 1]
+		sum += p.X * q.Z - q.X * p.Z
+	end
+	return sum
+end
+
+-- Vertices closer together than this merge; vertices this close to the
+-- straight line between their neighbours are dropped as collinear.
+local POLY_MERGE_STUDS = 0.05
+local POLY_COLLINEAR_STUDS = 0.02
+
+-- Merges coincident vertices (including across the closing wrap) and thins
+-- collinear runs. Both matter to the ear clipper below: a repeated vertex
+-- makes a zero-area "ear" and a straight run makes a corner that is never
+-- a valid ear, either of which stalls it on an otherwise fine polygon.
+-- Same preparation CART's JunctionTool does before triangulating a traced
+-- junction outline.
+local function cleanPolygon(poly: { Vector3 }): { Vector3 }
+	local out: { Vector3 } = {}
+	for _, p in poly do
+		if #out == 0 or distanceXZ(out[#out], p) > POLY_MERGE_STUDS then
+			table.insert(out, p)
+		end
+	end
+	while #out >= 2 and distanceXZ(out[1], out[#out]) <= POLY_MERGE_STUDS do
+		table.remove(out)
+	end
+	local changed = true
+	while changed and #out > 3 do
+		changed = false
+		for i = 1, #out do
+			local prev = out[if i > 1 then i - 1 else #out]
+			local nextPoint = out[if i < #out then i + 1 else 1]
+			local base = distanceXZ(prev, nextPoint)
+			if base > 1e-6 and math.abs(cross2D(prev, nextPoint, out[i])) / base <= POLY_COLLINEAR_STUDS then
+				table.remove(out, i)
+				changed = true
+				break
+			end
+		end
+	end
+	return out
+end
+
+-- True when any two non-adjacent edges of the closed polygon cross. A
+-- boundary that crosses itself has no well-defined interior, so anything
+-- filled from it is guesswork - the caller drops to the convex hull.
+local function polygonSelfIntersects(poly: { Vector3 }): boolean
+	local n = #poly
+	if n < 4 then
+		return false
+	end
+	for i = 1, n do
+		local nextI = if i < n then i + 1 else 1
+		for j = i + 1, n do
+			local nextJ = if j < n then j + 1 else 1
+			if nextI ~= j and nextJ ~= i then
+				if segmentsCross2D(poly[i], poly[nextI], poly[j], poly[nextJ]) then
+					return true
+				end
+			end
+		end
+	end
+	return false
+end
+
+local function pointInTriangle2D(p: Vector3, a: Vector3, b: Vector3, c: Vector3, orientation: number): boolean
+	return cross2D(a, b, p) * orientation >= -1e-5
+		and cross2D(b, c, p) * orientation >= -1e-5
+		and cross2D(c, a, p) * orientation >= -1e-5
+end
+
+-- Bound on the ear-clipping loop. Each successful pass removes one vertex,
+-- so a well-formed polygon finishes in #poly - 3 passes; the guard only
+-- fires on input the ear test cannot make progress on.
+local EAR_CLIP_GUARD = 512
+
+-- Ear-clipping triangulation of a closed ground-plane polygon, following
+-- CART's JunctionTool `_triangulatePolygon`. Returns nil - never a partial
+-- or approximate answer - when the outline cannot be triangulated, so the
+-- caller can fall back to a shape that provably can be.
+--
+-- Why not a centroid fan, which is what this replaced: a fan is only valid
+-- for a polygon that is star-shaped about the point it fans from. A pad
+-- with a corner treatment on each gap is CONCAVE by construction - an
+-- L-bend has a short inner corner and a long outer wrap-around, and its
+-- centroid can sit outside the pad entirely. Fanning that double-covers
+-- part of the pad and hangs the rest outside the boundary, which is the
+-- spiked, jagged pad reported live. Ear clipping is correct on any simple
+-- polygon, concave included.
+local function triangulatePolygon(poly: { Vector3 }): { { Vector3 } }?
+	if #poly < 3 then
+		return nil
+	end
+	local area2 = polygonArea2(poly)
+	if math.abs(area2) < 1e-4 then
+		return nil -- collapsed to a line
+	end
+	local orientation = if area2 >= 0 then 1 else -1
+	local indices: { number } = {}
+	for i = 1, #poly do
+		table.insert(indices, i)
+	end
+	local triangles: { { Vector3 } } = {}
+	local guard = 0
+	while #indices > 3 and guard < EAR_CLIP_GUARD do
+		guard += 1
+		local found = false
+		for i = 1, #indices do
+			local prevIndex = indices[((i - 2) % #indices) + 1]
+			local currIndex = indices[i]
+			local nextIndex = indices[(i % #indices) + 1]
+			local a, b, c = poly[prevIndex], poly[currIndex], poly[nextIndex]
+			if cross2D(a, b, c) * orientation > 1e-5 then
+				local blocked = false
+				for _, testIndex in indices do
+					if testIndex ~= prevIndex and testIndex ~= currIndex and testIndex ~= nextIndex then
+						if pointInTriangle2D(poly[testIndex], a, b, c, orientation) then
+							blocked = true
+							break
+						end
+					end
+				end
+				if not blocked then
+					table.insert(triangles, { a, b, c })
+					table.remove(indices, i)
+					found = true
+					break
+				end
+			end
+		end
+		if not found then
+			return nil -- outline crosses itself
+		end
+	end
+	if #indices == 3 then
+		table.insert(triangles, { poly[indices[1]], poly[indices[2]], poly[indices[3]] })
+	end
+	return triangles
 end
 
 -- Insets `point` (assumed to already lie on the fillet circle of the given
@@ -671,6 +865,38 @@ end
 
 local HERMITE_SAMPLES = 5
 
+-- How far a corner polyline may stray from its own straight chord, as a
+-- multiple of that chord's length, before it is discarded for the chord.
+-- A curb return bulges a little past the straight line between its two
+-- endpoints; it never loops. 0.6 passes every real corner measured in
+-- tools/preview/junction_pad_preview.py and rejects the runaway Hermites.
+local MAX_HERMITE_EXCURSION = 0.6
+
+-- The furthest any point of `points` sits from the straight chord between
+-- its first and last, measured as a multiple of that chord. Counts
+-- overshoot past either end as excursion too, so a polyline that doubles
+-- back along the chord is caught as well as one that bows away from it.
+local function chordExcursion(points: { Vector3 }): number
+	local first, last = points[1], points[#points]
+	local chord = distanceXZ(first, last)
+	if chord < 1e-6 then
+		return math.huge
+	end
+	local dx, dz = (last.X - first.X) / chord, (last.Z - first.Z) / chord
+	local worst = 0
+	for _, p in points do
+		local vx, vz = p.X - first.X, p.Z - first.Z
+		local along = vx * dx + vz * dz
+		worst = math.max(worst, math.abs(vx * -dz + vz * dx))
+		if along < 0 then
+			worst = math.max(worst, -along)
+		elseif along > chord then
+			worst = math.max(worst, along - chord)
+		end
+	end
+	return worst / chord
+end
+
 -- Parallel offset of a kerb polyline AWAY from the junction centre (pad
 -- asphalt is toward the centre; sidewalk is outside). Picking "toward
 -- fillet centre" alone flips on some Hermite spans and spikes sidewalk
@@ -716,21 +942,39 @@ end
 
 -- The paired KERB (asphalt-edge) and OUTER (sidewalk-outer-edge) boundaries
 -- for one corner pair. `junctionCenter` steers sidewalk offset outward.
--- `exterior` is true when this span is the long way around (e.g. outer side
--- of an L) — Fillet.Compute needs directions toward the corner VERTEX, which
--- for exterior is along +outward (away from centre), not -outward.
 --
 -- Three shapes, in order of preference:
 -- 1. FILLET: circular kerb arc + parallel-offset sidewalk
 -- 2. HERMITE: cubic kerb + parallel-offset sidewalk
--- 3. STRAIGHT chamfer when tangents unreadable
+-- 3. STRAIGHT chamfer when tangents are unreadable, when the fillet is
+--    rejected AND the Hermite comes out unbounded, or as the honest answer
+--    for a pair whose edges genuinely diverge (see below)
+--
+-- On the direction convention, which is where the live "outer arc" bug
+-- lived. This used to take an `exterior` flag and, on the long way round a
+-- bend, aim the edge directions along +outward instead of -outward. That is
+-- wrong, and provably so: take an L of two roads half-width w, A's outer
+-- edge running along z = -w and B's along x = +w. Those two lines meet at
+-- (w, -w) - the outside corner of the L - and from A's kerb point at
+-- (-d, -w) that vertex lies in +X, which is -outwardA. The corner vertex is
+-- toward -outward on BOTH the short and the long way round; a bend has no
+-- side on which the edges converge in the other direction.
+--
+-- The cost of getting it backwards was not a bad fillet, it was NO fillet:
+-- `Fillet.Compute` correctly rejects a vertex that sits behind the ray
+-- (t <= 0), so every exterior span fell through to the Hermite, which was
+-- then handed mismatched directions (+outwardA at one end, -outwardB at the
+-- other) and looped the outer boundary back ACROSS the pad interior. The
+-- assembled outline crossed itself at every bend from 45 to 150 degrees -
+-- measured, not estimated, in tools/preview/junction_pad_preview.py - and
+-- the centroid fan over that self-crossing outline is the jagged, spiked
+-- pad reported live.
 local function cornerBoundaries(
 	a: EdgePoint,
 	b: EdgePoint,
 	junctionId: string,
 	radiusStuds: number,
-	junctionCenter: Vector3,
-	exterior: boolean
+	junctionCenter: Vector3
 ): ({ Vector3 }, { Vector3 })
 	local outwardA = outwardTangentAt(a.Road, junctionId)
 	local outwardB = outwardTangentAt(b.Road, junctionId)
@@ -742,13 +986,18 @@ local function cornerBoundaries(
 	local chord = distanceXZ(a.Kerb, b.Kerb)
 	local cappedRadius = math.min(radiusStuds, chord * 0.45)
 	-- Toward the corner vertex where the two edge lines meet.
-	local dirA = if exterior then outwardA else -outwardA
-	local dirB = if exterior then outwardB else -outwardB
+	local dirA, dirB = -outwardA, -outwardB
 	local p1, filletCenter, p2, effectiveRadius = Fillet.Compute(a.Kerb, dirA, b.Kerb, dirB, cappedRadius)
 	if not p1 or not filletCenter or not p2 or not effectiveRadius then
-		local hermiteDirA = if exterior then outwardA else -outwardA
-		local hermiteDirB = if exterior then -outwardB else outwardB
-		local kerb = hermiteBoundary(a.Kerb, hermiteDirA, b.Kerb, hermiteDirB, HERMITE_SAMPLES)
+		-- No real corner here. Usually near-parallel edges, where a Hermite
+		-- is the right blend - but also the sharp-hairpin case where the two
+		-- trimmed ends have already passed each other, and there a Hermite
+		-- spun on the chord-length tangents loops right out of the pad. Only
+		-- keep it if it stays near its own chord.
+		local kerb = hermiteBoundary(a.Kerb, -outwardA, b.Kerb, outwardB, HERMITE_SAMPLES)
+		if chordExcursion(kerb) > MAX_HERMITE_EXCURSION then
+			kerb = { a.Kerb, b.Kerb }
+		end
 		local outer = offsetKerbPolyline(kerb, widthA, widthB, junctionCenter, a.Outer, b.Outer)
 		return kerb, outer
 	end
@@ -953,7 +1202,6 @@ function JunctionBuilder.Rebuild(
 			-- drew a sharp miter (live). Through-pairs on a T still sit at
 			-- ~180° short-way and stay skipped.
 			local turnAngle = math.min(span, 2 * math.pi - span)
-			local exterior = span > math.pi
 			local a = approaches[i].Ccw
 			local b = approaches[nextI].Cw
 			if a.Road == b.Road then
@@ -975,8 +1223,7 @@ function JunctionBuilder.Rebuild(
 				end
 			end
 			if isRealCorner and not crossesMouth then
-				local kerbBoundary, outerBoundary =
-					cornerBoundaries(a, b, junctionId, filletRadiusStuds, center, exterior)
+				local kerbBoundary, outerBoundary = cornerBoundaries(a, b, junctionId, filletRadiusStuds, center)
 				table.insert(builtCorners, { Kerb = kerbBoundary, Outer = outerBoundary, Sidewalk = true })
 				for _, p in kerbBoundary do
 					appendUnique(p)
@@ -1008,29 +1255,34 @@ function JunctionBuilder.Rebuild(
 			end
 		end
 
-		if #padPoly >= 3 then
-			local sum = Vector3.zero
-			for _, p in padPoly do
-				sum += p
-			end
-			local apex = sum / #padPoly
-			for i = 1, #padPoly do
-				local p0 = padPoly[i]
-				local p1 = padPoly[if i < #padPoly then i + 1 else 1]
-				FillTriangle(apex, p0, p1, thickness, DOWN, makeAsphaltPart, folder)
-			end
-		elseif #edgePoints >= 3 then
-			-- Fallback hull if polygon collapsed.
+		-- Fill the pad from the walked outline, but do NOT assume the walk
+		-- produced a usable one. A corner treatment that misbehaves - or a
+		-- hairpin bend whose two trimmed ends have already passed each
+		-- other, where no walk can produce a simple boundary at all - hands
+		-- back an outline that crosses itself, and filling from that is what
+		-- put the jagged, spiked pad in front of the user.
+		--
+		-- So: clean it, reject it if it self-crosses, and triangulate by ear
+		-- clipping (correct on the concave shapes a real pad actually has).
+		-- Anything that fails drops to the convex hull of the kerb points,
+		-- which is convex by construction and therefore always fillable -
+		-- the pad may be blunter than intended, but it is never torn.
+		local outline = cleanPolygon(padPoly)
+		local triangles: { { Vector3 } }? = nil
+		if #outline >= 3 and not polygonSelfIntersects(outline) then
+			triangles = triangulatePolygon(outline)
+		end
+		if not triangles and #edgePoints >= 3 then
 			local hull = convexHull(edgePoints)
-			local sum = Vector3.zero
-			for _, p in hull do
-				sum += p.Kerb
+			local hullPoly: { Vector3 } = table.create(#hull)
+			for _, point in hull do
+				table.insert(hullPoly, point.Kerb)
 			end
-			local apex = sum / #hull
-			for i = 1, #hull do
-				local ha = hull[i]
-				local hb = hull[if i < #hull then i + 1 else 1]
-				FillTriangle(apex, ha.Kerb, hb.Kerb, thickness, DOWN, makeAsphaltPart, folder)
+			triangles = triangulatePolygon(cleanPolygon(hullPoly))
+		end
+		if triangles then
+			for _, tri in triangles do
+				FillTriangle(tri[1], tri[2], tri[3], thickness, DOWN, makeAsphaltPart, folder)
 			end
 		end
 

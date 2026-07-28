@@ -25,82 +25,55 @@ in where the entry arm merges, not in corner fillets.
   a 4-leg ring still dips ~0.7 studs partway along before opening out. A
   nose-to-tail taper would need the island built from its own curve rather than
   from the two arm edges.
-## Two-road node produces a self-intersecting zigzag (LIVE, primary)
+## Junction pad zigzag — FIXED in code, NOT yet confirmed live
 
-**Superseded the semicircle theory below.** A live screenshot shows two roads
-meeting at a SHALLOW bend (near-collinear) whose junction geometry renders as a
-jagged, self-intersecting zigzag with spikes, hanging off one side of the road.
-It is not a circular bulge - the cylinder-pad fallback reproduced in
-`corner_preview.py --turn 90` is a different (and real, but not this) defect.
+The self-intersecting, spiked junction pad is fixed; see the SHIPPED.md entry
+"Junction pad: fix the outer corner arc and make the fill defensive" for what
+changed and why. Summary of the cause, because two earlier guesses in this
+file were wrong and worth not repeating: `cornerBoundaries` aimed its edge
+directions along **+outward** on any span wider than 180 degrees. The corner
+vertex is toward **-outward** on both sides of a bend, so `Fillet.Compute`
+correctly rejected every such span and the Hermite fallback looped the outer
+boundary back across the pad interior.
 
-What this implicates: the main junction fill path - approach edge points ->
-`convexHull` -> corner fans -> sidewalk bands - degenerating for a two-road
-node. Two specific things to check first:
+`tools/preview/junction_pad_preview.py` reproduces it (`--legacy`) and is the
+regression test - 66 cases, all filling exactly once over. Run it after any
+`JunctionBuilder` corner or fill change.
 
-- `convexHull` returns `points` UNCHANGED when `#points <= 3`, with no
-  convexity or ordering guarantee. A two-road node contributes 4 kerb points,
-  so it just clears that, but any road contributing fewer puts an unordered
-  point set straight into the fan fill - which draws exactly this kind of
-  self-crossing star.
-- Its turn test pops on `cross2D(...) <= 0`, i.e. it discards COLLINEAR points.
-  Two near-collinear roads are precisely the degenerate input that makes that
-  aggressive, and the reported bend is shallow.
+**Still needs a live check in Studio**, on the same shallow bend that was
+reported plus a T and an X.
 
-Also worth confirming before anything else: why the node was treated as a
-junction at all. `isSmoothPassThrough` should skip a shallow bend
-(dot < -0.85), so either the two profiles have different `Id`s, or more than
-two roads are attached.
+Corrections to earlier entries here, so they are not acted on again:
 
-**Next step is a reproduction, not a fix.** `tools/preview/corner_preview.py`
-exists and already models a two-road corner end to end (part emission,
-envelope, bare-ground and out-of-envelope area checks, render). It currently
-models the cylinder fallback. Port the REAL path - `approachEdges`,
-`convexHull`, the corner fans and sidewalk bands - into it so the zigzag
-appears headlessly. Fixing junction geometry without being able to see it is
-what produced three cursed roundabout rounds in a row.
+- The cylinder pad (`Enum.PartType.Cylinder`, bottom of `Rebuild`) is NOT
+  reachable from a two-road bend. It is the `else` branch of
+  `#approaches >= 2`, and a two-road bend has two approaches. It only fires
+  when no road contributed a usable edge pair, which is what it is for.
+- `convexHull` was not the cause either, though it was made defensive in the
+  same change (it is the fallback fill now, so it has to be trustworthy):
+  three-or-fewer points used to be returned in road order rather than
+  perimeter order, and collinear input could empty the hull and produce a NaN
+  apex.
 
-## L-shaped semicircle: a real but SECONDARY defect
+## Junction corners: remaining work
 
-**Symptom (live):** two roads meeting at a bend render with a quasi-semicircular
-bulge on the OUTER edge of the L.
-
-**Cause, traced:** `JunctionBuilder.isSmoothPassThrough` only skips junction
-geometry when `tangentA:Dot(tangentB) < PASS_THROUGH_DOT_THRESHOLD` (-0.85),
-which is a bend of just **32 degrees from straight**. A real L is ~90 degrees,
-fails the test, and is therefore treated as an INTERSECTION. It then reaches
-the fallback at the bottom of `Rebuild` - a plain `Enum.PartType.Cylinder` pad
-of radius `maxHalfWidth + PAD_MARGIN_STUDS` centred on the node. That cylinder
-is the semicircle. It is meant for the rare "no road contributed a usable edge
-pair" case, but a two-road bend lands in it.
-
-**Both references and the literature agree a two-road node is not an
-intersection:**
-
-- CivicArc RoadToolkit gates on `canUseCornerPath = ... and angleDegrees >= 18`
-  and builds a *corner path* (a curve joining the two roads) rather than a
-  junction whenever two roads meet at a bend.
-- The clipping-circle paper the user supplied shows an L-shaped road in its
-  intersection-type panel with **no clipping lines at all** - unlike the T and
-  Y cases, which get them. An L is a curve, not a node.
-
-**Design to build:**
-
-1. A two-road node with matching profiles is a CORNER at any angle - drop the
-   dot threshold from the decision entirely, and never let a two-road node
-   reach the cylinder fallback.
-2. Relaxing the threshold alone is NOT enough, and must not be shipped alone: at
-   a sharp bend the two end cross-sections no longer nearly align, so the inner
-   edges overlap and the outer edges leave a wedge. The corner needs real
-   geometry:
-   - inner edges: miter to their intersection point;
-   - outer edges: a fillet arc of the corner radius, tangent to both;
-   - asphalt filled between with `FillTriangle`, raised sidewalk band over it,
-     and the kerb line carried around the arc - the same primitives the
-     junction curb returns already use (`cornerBoundaries`,
-     `offsetKerbPolyline`, `BezierCorner`).
-3. Verify before shipping. `tools/preview` currently only knows how to build a
-   ring; it needs a corner scenario, or this repeats the roundabout pattern of
-   shipping geometry that looks right in theory and cursed in Studio.
+- **Bunched legs fall back to the convex hull.** When several legs sit within
+  ~45 degrees of each other the corner walk produces a self-crossing outline
+  and the fill drops to the hull - intact, but blunter than intended (no
+  curb returns on those gaps). Visible in `junction_pad_preview.py` as the
+  "T bunched" / "X bunched" cases choosing `convex hull`. The fix is a corner
+  treatment that stays simple at small gap angles, not a change to the fill.
+- **A two-road bend is arguably a CORNER PATH, not a junction.** CivicArc
+  RoadToolkit gates on `canUseCornerPath = ... and angleDegrees >= 18` and
+  joins the two roads with a curve; the clipping-circle paper draws its
+  L-shaped case with no clipping lines at all, unlike its T and Y cases. Our
+  `isSmoothPassThrough` only skips a bend under ~32 degrees, so a real L is
+  still built as a junction pad. That is now a fidelity question rather than a
+  broken-geometry one - the pad it builds is sound. Doing it properly means
+  miter on the inner edges, fillet arc on the outer, asphalt + raised sidewalk
+  band + kerb line around the arc; `corner_preview.py` already models and
+  measures that shape (0 bare ground, 0 out-of-envelope) but it is Python
+  only, and the inner-side pavement-across-carriageway problem is unsolved.
 
 - **Static identifier checking.** HIGHEST VALUE. There is no Luau runtime or
   typechecker in the dev environment: `stylua` proves a file parses, nothing
