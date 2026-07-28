@@ -38,7 +38,14 @@ Two views per case, in `out/` (gitignored):
 - `<case>_gaps.png` - **magenta is bare ground.** Anything magenta inside the
   ring footprint is a hole no part covers.
 
-The scan samples the ring footprint on a polar grid and clusters whatever it
+It also measures the **approach/arm seam**: it sweeps the road's own
+perpendicular either side of the cut and compares how far the covered material
+reaches on each side. A non-zero step is the pavement or kerb line jogging
+sideways where the road meets the mouth. Sizing the arms from their own
+half-width plus a splitter (rather than from the approach's roadway edges)
+scores 1.80 studs stepped; aligned, 0.00.
+
+The bare-ground scan samples the ring footprint on a polar grid and clusters whatever it
 finds by angle, reporting each cluster's depth in studs. Clusters shallower
 than `--hairline` (default 0.15 studs) are reported but do not fail: the ring's
 innermost strips are chords of the island circle, so their inner edge stands

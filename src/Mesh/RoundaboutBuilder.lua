@@ -89,7 +89,16 @@ local function ringComponents(
 	for _ = 1, math.max(1, math.floor(laneCount)) do
 		table.insert(components, { Kind = "Drive", WidthM = laneWidthM, Direction = 1 })
 	end
-	local sidewalk: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
+	-- Pavement width copied from the approach's own, not the region default, so
+	-- the kerb line and the pavement's outer edge both run on unbroken from the
+	-- road into the arm instead of stepping at the cut.
+	local pavementM = style.SidewalkWidthM
+	for _, component in spokeProfile.Components do
+		if component.Kind == "Sidewalk" then
+			pavementM = math.max(pavementM, component.WidthM)
+		end
+	end
+	local sidewalk: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = pavementM, Direction = 0 }
 	-- Right of travel is -sign * radially-outward, so the OUTWARD side is the
 	-- left of travel when circulating clockwise (left-hand drive) and the right
 	-- when anticlockwise. The pavement always belongs on the outward side.
@@ -569,12 +578,6 @@ local GORE_SAMPLES = 18
 -- against the ring, and left bare kerb at the mouth.
 -- Arc step for the island's nose fan where it meets the ring kerb.
 local NOSE_ARC_STEP_RAD = math.rad(2)
--- Gap left between the two arms' inner edges where they leave the approach, as
--- a multiple of the pavement width. This is the splitter's NARROW end: a metre
--- or so of painted island running back up the approach, which then opens into a
--- broad wedge at the ring. Starting it wide instead gives an island that is
--- fattest where it matters least and pinches in the middle.
-local SPLITTER_WIDTH_FACTOR = 0.5
 -- Arms are dropped a hair below the ring deck. Near the merge an arm's inner
 -- half necessarily lies over the ring's own carriageway (that overlap IS the
 -- merge), and two coplanar asphalt decks z-fight. Same colour and material, so
@@ -814,6 +817,11 @@ type MouthPlan = {
 	MergeRadius: number,
 	-- Ring angle the approach aims at.
 	Angle: number,
+	-- Where each arm's centreline sits at the cut, measured from the approach's
+	-- centreline along its right-of-travel. Derived from the APPROACH's own
+	-- roadway edges so the pair tiles the road exactly.
+	EntryLateralStuds: number,
+	ExitLateralStuds: number,
 }
 
 local function planMouth(
@@ -846,12 +854,30 @@ local function planMouth(
 	if aimDir.Magnitude < 1e-6 then
 		return nil
 	end
+	-- Align each arm to the approach's own roadway edge rather than giving the
+	-- pair its own half-width plus a splitter. Sized the latter way the pair
+	-- comes out wider than the road it replaces, and every mouth steps outward
+	-- at the cut - asphalt, kerb and pavement all breaking at once. Aligned, the
+	-- two arms tile the approach exactly and whatever is left over in the middle
+	-- becomes the splitter, which is where that width belongs anyway.
+	local flow = if style.DriveOnLeft then 1 else -1
+	local spokeLeftM, spokeRightM = roadwayEdgeOffsetsM(spokeProfile)
+	local entryEdgeM = if flow > 0 then -spokeLeftM else spokeRightM
+	local exitEdgeM = if flow > 0 then spokeRightM else -spokeLeftM
+	-- Floored at the inner offset: that puts an arm's inner edge on the
+	-- approach's centreline, so a road too narrow to split gives two arms that
+	-- abut rather than two that overlap.
+	local function lateralFor(edgeM: number): number
+		return math.max(arm.InnerOffsetStuds, edgeM * settings.MetersToStuds - arm.OuterOffsetStuds)
+	end
 	return {
 		CutMid = cutMid,
 		Direction = dir,
 		Arm = arm,
 		MergeRadius = mergeRadius,
 		Angle = math.atan2(aimDir.Z, aimDir.X),
+		EntryLateralStuds = lateralFor(entryEdgeM),
+		ExitLateralStuds = lateralFor(exitEdgeM),
 	}
 end
 
@@ -881,7 +907,6 @@ local function buildMouth(
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings
 ): MouthSector
-	local scale = settings.MetersToStuds
 	-- Which way traffic circulates, matching circleSegments' own sign.
 	local flow = if style.DriveOnLeft then 1 else -1
 	local arm = plan.Arm
@@ -900,13 +925,14 @@ local function buildMouth(
 	local entryAngle = plan.Angle + flow * entrySplit
 	local exitAngle = plan.Angle - flow * split
 
-	-- At the cut the pair straddles the approach centreline, leaving a splitter's
-	-- width between their inner edges for the island to grow out of.
-	local splitterHalf = style.SidewalkWidthM * scale * SPLITTER_WIDTH_FACTOR * 0.5
-	local lateral = rightOf(dir) * ((arm.InnerOffsetStuds + splitterHalf) * flow)
+	-- At the cut each arm sits where the approach's own roadway edge puts it, so
+	-- the pair tiles the road; the leftover in the middle is the splitter's nose.
+	local side = rightOf(dir)
+	local entryLateral = side * (plan.EntryLateralStuds * flow)
+	local exitLateral = side * (plan.ExitLateralStuds * flow)
 	local entryCurve = PolyCurve.new({
 		armSegment(
-			plan.CutMid - lateral,
+			plan.CutMid - entryLateral,
 			dir,
 			ringPointAt(center, entryAngle, mergeRadius, plan.CutMid.Y),
 			ringTangentAt(entryAngle, flow),
@@ -917,7 +943,7 @@ local function buildMouth(
 		armSegment(
 			ringPointAt(center, exitAngle, mergeRadius, plan.CutMid.Y),
 			ringTangentAt(exitAngle, flow),
-			plan.CutMid + lateral,
+			plan.CutMid + exitLateral,
 			-dir,
 			ARM_HANDLE
 		),

@@ -4,6 +4,33 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: arms aligned to the approach's own cross-section
+
+The mouth had a seam. Each arm was sized from its own half-width plus a
+splitter gap, so the pair came out one splitter WIDER than the road it
+replaces - and every approach stepped outward at the cut, asphalt, kerb and
+pavement all breaking together. It reads exactly as reported: the median and
+the pavement not properly linked to the road.
+
+Arms are now placed from the APPROACH's own roadway edges instead. Each arm's
+lateral offset is `spokeRoadwayEdge - arm.OuterOffsetStuds`, so its outer
+roadway edge lands on the approach's, its pavement lands on the approach's
+pavement, and the pair tiles the road exactly. Whatever is left over in the
+middle becomes the splitter - which is where that width belongs anyway, so the
+island now starts as a nose at the cut instead of appearing out of a step. The
+offset is floored at the arm's inner offset, so a road too narrow to split
+gives two arms that abut rather than two that overlap.
+
+The arm's pavement width is also copied from the approach's own widest
+pavement rather than the region default, so the kerb line runs on unbroken
+even where a road carries a non-standard footway.
+
+Measured, not eyeballed: `tools/preview` gained a seam check that sweeps the
+road's perpendicular either side of the cut and compares how far material
+reaches. The old sizing scores a 1.80-stud step; aligned scores 0.00 across
+4-leg (both drive-side conventions), 3-leg and a crowded 5-leg mini, all still
+with no visible bare ground.
+
 ## Roundabout: part-level preview tool, and the three defects it found
 
 Every check up to here worked on idealised geometry - centrelines and offset

@@ -300,13 +300,17 @@ def ring_components(lanes, lane_w, drive_on_left):
     return comps
 
 
-def arm_components(spoke_lanes, lane_w, drive_on_left):
+def arm_components(spoke_lanes, lane_w, drive_on_left, spoke=None):
     lanes = max(1, spoke_lanes//2)
     comps = [("Drive", lane_w) for _ in range(lanes)]
+    pav = SW_M
+    for c in (spoke or []):
+        if c[0] == "Sidewalk":
+            pav = max(pav, c[1])
     if drive_on_left:
-        comps.insert(0, ("Sidewalk", SW_M))
+        comps.insert(0, ("Sidewalk", pav))
     else:
-        comps.append(("Sidewalk", SW_M))
+        comps.append(("Sidewalk", pav))
     return comps
 
 
@@ -347,16 +351,23 @@ def build(ring_r, ring_lanes, spoke_lanes, legs, drive_on_left, tag):
     inner_half_m = ro[-1][1] if drive_on_left else -ro[0][0]
     island_r = ring_r - inner_half_m*SCALE
 
-    ac = arm_components(spoke_lanes, LANE_M, drive_on_left)
+    spoke_profile = [("Sidewalk", SW_M)] + [("Drive", LANE_M)]*spoke_lanes + [("Sidewalk", SW_M)]
+    ac = arm_components(spoke_lanes, LANE_M, drive_on_left, spoke_profile)
     a_left, a_right = roadway_edges_m(ac)
     outer_off = (-a_left if drive_on_left else a_right)*SCALE
     inner_off = (a_right if drive_on_left else -a_left)*SCALE
     merge_r = ring_kerb - outer_off
+    sp_left, sp_right = roadway_edges_m(spoke_profile)
+    entry_edge = (-sp_left if flow > 0 else sp_right) * SCALE
+    exit_edge = (sp_right if flow > 0 else -sp_left) * SCALE
+    entry_lat = max(inner_off, entry_edge - outer_off)
+    exit_lat = max(inner_off, exit_edge - outer_off)
 
     run = min(max(outerR*ARM_RUN_FACTOR, ARM_RUN_MIN), ARM_RUN_MAX)
     cutR = outerR + run
 
     parts = []
+    leg_info = []
     ring_curve = circle_segments(center, ring_r, drive_on_left)
     ring_parts = emit_road(ring_curve, rc)
     parts_ring_pavement = [p for p in ring_parts if p.name in ("Sidewalk", "Marking")]
@@ -379,8 +390,8 @@ def build(ring_r, ring_lanes, spoke_lanes, legs, drive_on_left, tag):
         cut = (math.cos(a)*cutR, math.sin(a)*cutR)
         inward = (-math.cos(a), -math.sin(a))
         r = right_of(inward)
-        lat_d = (inner_off + SW_M*SCALE*SPLITTER_WIDTH_FACTOR*0.5)*flow
-        lat = (r[0]*lat_d, r[1]*lat_d)
+        e_lat = (r[0]*entry_lat*flow, r[1]*entry_lat*flow)
+        x_lat = (r[0]*exit_lat*flow, r[1]*exit_lat*flow)
         ea, xa = a + flow*esplit, a - flow*split
         rp = lambda ang: (math.cos(ang)*merge_r, math.sin(ang)*merge_r)
         rt = lambda ang: (-math.sin(ang)*flow, math.cos(ang)*flow)
@@ -390,8 +401,8 @@ def build(ring_r, ring_lanes, spoke_lanes, legs, drive_on_left, tag):
             return PolyCurve([Cubic(p0, (p0[0]+t0[0]*h, p0[1]+t0[1]*h),
                                     (p1[0]-t1[0]*h, p1[1]-t1[1]*h), p1)])
 
-        entry = arm((cut[0]-lat[0], cut[1]-lat[1]), inward, rp(ea), rt(ea))
-        exit_ = arm(rp(xa), rt(xa), (cut[0]+lat[0], cut[1]+lat[1]),
+        entry = arm((cut[0]-e_lat[0], cut[1]-e_lat[1]), inward, rp(ea), rt(ea))
+        exit_ = arm(rp(xa), rt(xa), (cut[0]+x_lat[0], cut[1]+x_lat[1]),
                     (-inward[0], -inward[1]))
         arm_parts += emit_road(entry, ac, -ARM_SINK)
         arm_parts += emit_road(exit_, ac, -ARM_SINK)
@@ -452,13 +463,13 @@ def build(ring_r, ring_lanes, spoke_lanes, legs, drive_on_left, tag):
         ahead_s = esplit if flow > 0 else split
         behind_s = split if flow > 0 else esplit
         sectors.append((a, max(0, ahead_s-SECTOR_INSET_RAD), max(0, behind_s-SECTOR_INSET_RAD)))
+        leg_info.append(dict(cut=cut, inward=inward))
 
         # approach stem beyond the cut
         far = (cut[0]-inward[0]*70, cut[1]-inward[1]*70)
         stem = PolyCurve([Cubic(far, (far[0]+(cut[0]-far[0])/3, far[1]+(cut[1]-far[1])/3),
                                 (far[0]+2*(cut[0]-far[0])/3, far[1]+2*(cut[1]-far[1])/3), cut)])
-        spoke = [("Sidewalk", SW_M)] + [("Drive", LANE_M)]*spoke_lanes + [("Sidewalk", SW_M)]
-        arm_parts += emit_road(stem, spoke)
+        arm_parts += emit_road(stem, spoke_profile)
 
     # openRingPavement
     cl = clamp_sectors(sectors)
@@ -476,7 +487,7 @@ def build(ring_r, ring_lanes, spoke_lanes, legs, drive_on_left, tag):
                     continue
         kept.append(p)
     parts = kept + arm_parts
-    return dict(tag=tag, parts=parts, gore=gore_tris, island_r=island_r,
+    return dict(tag=tag, parts=parts, gore=gore_tris, island_r=island_r, legs=leg_info,
                 outerR=outerR, ring_kerb=ring_kerb, cutR=cutR, center=center,
                 n_ring=len(ring_parts), n_arms=len(arm_parts), removed=removed)
 
@@ -542,6 +553,36 @@ def scan_gaps(scene, rings=240):
     return holes, pitch
 
 
+def seam_steps(scene, probe=1.5, span=60.0, samples=1200):
+    """Measure the cross-section step where each approach meets its arm pair.
+
+    Sweeps the road's own perpendicular a little either side of the cut and
+    compares how far the covered material reaches. A non-zero step here is the
+    seam that reads as the pavement or kerb line jogging sideways at the mouth.
+    """
+    steps = []
+    for leg in scene.get("legs", []):
+        cut, inward = leg["cut"], leg["inward"]
+        side = right_of(inward)
+
+        def extent(at):
+            origin = (cut[0] - inward[0] * at, cut[1] - inward[1] * at)
+            lo = hi = None
+            for i in range(samples + 1):
+                d = -span + 2 * span * i / samples
+                pt = (origin[0] + side[0] * d, origin[1] + side[1] * d)
+                if any(point_in(q.poly, pt) for q in scene["parts"]):
+                    lo = d if lo is None else min(lo, d)
+                    hi = d if hi is None else max(hi, d)
+            return lo, hi
+
+        before, after = extent(probe), extent(-probe)
+        if None in before or None in after:
+            continue
+        steps.append((abs(before[0] - after[0]), abs(before[1] - after[1])))
+    return steps
+
+
 def report(scene, holes, pitch, hairline):
     """Clusters thinner than `hairline` studs are reported but not failed.
 
@@ -554,6 +595,11 @@ def report(scene, holes, pitch, hairline):
           f"({scene['n_ring']} ring, {scene['n_arms']} arms/stems), "
           f"{len(scene['gore'])} gore tris, {scene['removed']} ring pavement parts "
           f"removed in mouths")
+    steps = seam_steps(scene)
+    if steps:
+        worst = max(max(a, b) for a, b in steps)
+        print(f"    approach/arm seam: worst edge step {worst:.2f} studs "
+              f"({'flush' if worst <= 0.5 else 'STEPPED'})")
     if not holes:
         print("    no bare ground inside the ring footprint")
         return True
