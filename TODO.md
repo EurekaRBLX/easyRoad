@@ -25,7 +25,41 @@ in where the entry arm merges, not in corner fillets.
   a 4-leg ring still dips ~0.7 studs partway along before opening out. A
   nose-to-tail taper would need the island built from its own curve rather than
   from the two arm edges.
-## L-shaped roads get a semicircle: diagnosed, design agreed, not yet built
+## Two-road node produces a self-intersecting zigzag (LIVE, primary)
+
+**Superseded the semicircle theory below.** A live screenshot shows two roads
+meeting at a SHALLOW bend (near-collinear) whose junction geometry renders as a
+jagged, self-intersecting zigzag with spikes, hanging off one side of the road.
+It is not a circular bulge - the cylinder-pad fallback reproduced in
+`corner_preview.py --turn 90` is a different (and real, but not this) defect.
+
+What this implicates: the main junction fill path - approach edge points ->
+`convexHull` -> corner fans -> sidewalk bands - degenerating for a two-road
+node. Two specific things to check first:
+
+- `convexHull` returns `points` UNCHANGED when `#points <= 3`, with no
+  convexity or ordering guarantee. A two-road node contributes 4 kerb points,
+  so it just clears that, but any road contributing fewer puts an unordered
+  point set straight into the fan fill - which draws exactly this kind of
+  self-crossing star.
+- Its turn test pops on `cross2D(...) <= 0`, i.e. it discards COLLINEAR points.
+  Two near-collinear roads are precisely the degenerate input that makes that
+  aggressive, and the reported bend is shallow.
+
+Also worth confirming before anything else: why the node was treated as a
+junction at all. `isSmoothPassThrough` should skip a shallow bend
+(dot < -0.85), so either the two profiles have different `Id`s, or more than
+two roads are attached.
+
+**Next step is a reproduction, not a fix.** `tools/preview/corner_preview.py`
+exists and already models a two-road corner end to end (part emission,
+envelope, bare-ground and out-of-envelope area checks, render). It currently
+models the cylinder fallback. Port the REAL path - `approachEdges`,
+`convexHull`, the corner fans and sidewalk bands - into it so the zigzag
+appears headlessly. Fixing junction geometry without being able to see it is
+what produced three cursed roundabout rounds in a row.
+
+## L-shaped semicircle: a real but SECONDARY defect
 
 **Symptom (live):** two roads meeting at a bend render with a quasi-semicircular
 bulge on the OUTER edge of the L.
