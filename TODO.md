@@ -96,9 +96,38 @@ well understood they are, not by value.
 
    Take those in that order. Markings first.
 
-5. **Markings on the built roundabout do not match what the preview renders.**
-   No diagnosis yet. `roundabout_preview.py` simulates markings, so a diff is
-   possible - run it against the same radius/lane count and compare.
+5. **Markings on the built roundabout do not match the preview.** CAUSE
+   FOUND, not fixed.
+
+   The preview does not port `Mesh/Markings.lua` at all - it approximates it,
+   in ~30 lines inside `emit_road`: a solid line just inside each ROADWAY
+   edge, and a dashed line between any two adjacent non-Sidewalk components.
+   That is the whole rule.
+
+   `Markings.lua` is a different thing entirely. It has region-driven boundary
+   SPECS per component gap (`Solid`, `DoubleSolid`, `Dashed`, `SolidDash`,
+   `DashSolid`), kerb lines with `KerbIndent`, separate region edge lines,
+   restriction lines with their own vocabulary, per-road and per-stretch
+   dash-length/gap overrides, and colour rules. None of that exists on the
+   Python side.
+
+   So the two were never going to agree, and `check_parity.py` cannot see it:
+   it compares CONSTANTS, and this is a whole missing rule set. Every preview
+   render's markings have been indicative only - which was not stated anywhere
+   until now, and is why the mismatch read as a plugin bug.
+
+   Two honest options, pick one before touching marking geometry:
+
+   a. **Port the rule properly.** `Markings.Compute` is the single entry point,
+      so the port has a clear boundary. Then the preview can actually diff
+      against the plugin and `dump_compare.py` can cover markings too.
+   b. **Stop claiming to simulate them.** Draw markings in a flat indicative
+      grey, label the render "markings indicative", and let Studio be the only
+      authority. Cheaper, and honest.
+
+   (a) is worth it only if marking defects keep arriving. Note the mouth scan
+   counts a marking Part as coverage, so a wrong marking is invisible to it by
+   construction either way - that limit is independent of this choice.
 
 6. **The radius suggestion is not offered by the Roundabout tool in the Road
    Builder widget**, only on the junction panel. `RoundaboutBuilder.SuggestedRadiusStuds`
