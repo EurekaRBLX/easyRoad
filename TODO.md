@@ -73,8 +73,11 @@ well understood they are, not by value.
    see the SHIPPED.md entry. The splitter island now starts where the gore
    first reaches `MIN_GORE_WIDTH_M`. Not confirmed live yet.
 
-3. **Roads passing BESIDE the roundabout still are not connected.** Detection
-   was fixed (`collectNearbyRoads` now samples the curve); HANDLING was not.
+3. ~~Roads passing BESIDE the roundabout are not connected~~ - FIXED, see the
+   SHIPPED.md entry. `ConnectRoad` now cuts them at the station of closest
+   approach via `RoadSplit.SplitAtJunction`. Not confirmed live yet. The
+   original note, for context: detection was fixed
+   (`collectNearbyRoads` samples the curve); HANDLING was not.
    `ConnectRoad` calls `ringSideIsStart`, which picks whichever END of the road
    is nearer the centre and skips the road when that is unreadable. A road
    passing beside or through has both ends far away, so choosing an end is

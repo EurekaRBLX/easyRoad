@@ -85,6 +85,39 @@ All nine roundabout preview cases still report zero bare ground and a
 
 Not confirmed in Studio yet.
 
+## Roundabout: cut roads that PASS the ring instead of dropping them
+
+Fixing detection last round only moved the failure one step later.
+`collectNearbyRoads` now finds a road whose closest point is mid-span, but
+`ConnectRoad` then called `ringSideIsStart`, which picks whichever END is
+nearer the centre - meaningless when both ends are far away - and skipped the
+road. Same symptom as before, different cause, and it read to the user as the
+detection bug never having been fixed.
+
+`ConnectRoad` now runs a split pass first: for each nearby road it finds the
+station of closest approach (coarse scan then a ternary refine) and, when that
+station is genuinely interior, cuts the road there with
+`RoadSplit.SplitAtJunction`, which stamps both pieces with this junction. The
+two halves then come back through the ordinary approach path - the same shape
+an X intersection is built with.
+
+"Interior" uses the arm run as its margin, so a road that stops just short of
+the ring is still treated as ending at it rather than being cut into a stub.
+Decision rule, tested against synthetic layouts at outerR = 50.1:
+
+    case                        nearest s   length   margin   action
+    ends at the mouth                35.0     35.0     11.7   connect by end
+    passes straight through         200.0    400.0     42.6   SPLIT
+    passes beside, 30 studs off     200.0    400.0     42.6   SPLIT
+    long, ends far, grazes centre   305.9    611.9     42.6   SPLIT
+    stops just short of the ring     98.0     98.0     32.7   connect by end
+
+`RoadSplit.CanSplitAt` still gates every cut, so roads carrying a transition or
+a bay are left alone rather than split into something invalid.
+
+Not confirmed in Studio yet - and the split path has no preview equivalent, so
+only the decision rule above is machine-verified, not the cut itself.
+
 ## Roundabout: fix the bare-ground band at R=34-36
 
 A band of bare ground appeared inside the ring at radii 34-38, up to 4.4 studs

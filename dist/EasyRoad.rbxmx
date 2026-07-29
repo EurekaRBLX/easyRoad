@@ -5792,6 +5792,38 @@ export type SpokeCutEdges = {
 	HalfWidthStuds: number,
 }
 
+-- The station along `road` whose position is closest to `center`, found by a
+-- coarse scan then a bisection refine. Used to decide whether a road ENDS at
+-- the roundabout or merely PASSES it, and where to cut it if the latter.
+local function nearestStation(curve: PolyCurve.PolyCurve, center: Vector3): number
+	local length = curve.Length
+	if length &lt; 1e-3 then
+		return 0
+	end
+	local samples = math.clamp(math.ceil(length / 4), 8, 256)
+	local best, bestDist = 0, math.huge
+	for i = 0, samples do
+		local station = length * i / samples
+		local d = distanceXZ(curve:PosAt(station), center)
+		if d &lt; bestDist then
+			best, bestDist = station, d
+		end
+	end
+	local step = length / samples
+	local lo = math.max(0, best - step)
+	local hi = math.min(length, best + step)
+	for _ = 1, 24 do
+		local a = lo + (hi - lo) / 3
+		local b = hi - (hi - lo) / 3
+		if distanceXZ(curve:PosAt(a), center) &lt; distanceXZ(curve:PosAt(b), center) then
+			hi = b
+		else
+			lo = a
+		end
+	end
+	return (lo + hi) / 2
+end
+
 local function ringSideIsStart(road: Model, center: Vector3): boolean?
 	local data = RoadInstance.Read(road)
 	if not data then
@@ -7271,6 +7303,43 @@ function RoundaboutBuilder.ConnectRoad(
 		return nil
 	end
 	local jid = junctionData.Id
+
+	-- A road that merely PASSES the roundabout has to be CUT at it, not
+	-- connected by an end.
+	--
+	-- `ringSideIsStart` picks whichever end is nearer the centre, which is
+	-- meaningless when both ends are far away - and `collectNearbyRoads` now
+	-- finds those roads, since it measures the true nearest approach rather
+	-- than the endpoints. So detection stopped dropping them and this step
+	-- silently did instead, which read to the user as the same bug.
+	--
+	-- Cut at the station of closest approach and let the two pieces come back
+	-- as ordinary approaches, exactly the way an X intersection is built.
+	-- `SplitAtJunction` stamps both pieces with this junction at the cut.
+	local passing: { Model } = {}
+	for _, r in roads do
+		local data = RoadInstance.Read(r)
+		if not data then
+			continue
+		end
+		local length = data.Curve.Length
+		local station = nearestStation(data.Curve, center)
+		-- Interior means: the closest point is not simply one of the ends. The
+		-- margin is the arm run, so a road that stops just short of the ring is
+		-- still treated as ending at it rather than being cut into a stub.
+		local margin = math.min(length / 3, armRunStuds(outerR))
+		if station &gt; margin and station &lt; length - margin and RoadSplit.CanSplitAt(r, station) then
+			local first, second = RoadSplit.SplitAtJunction(r, station, jid, style, settings)
+			if first and second then
+				table.insert(passing, first)
+				table.insert(passing, second)
+				continue
+			end
+		end
+		table.insert(passing, r)
+	end
+	roads = passing
+
 	for _, r in roads do
 		local atStart = ringSideIsStart(r, center)
 		if atStart == nil then
