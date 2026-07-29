@@ -422,16 +422,14 @@ def min_radius_studs(legs, lane_count, lane_w, dol):
     return merge + outer_off + SW_M * SCALE - ring_half
 
 
-def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=True):
+def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False):
     """legs is a list of (degrees, approach component list).
 
-    `grow` mirrors the plugin: `CreateAtJunction` does
-    `grown = max(radius, MinimumRadiusStuds(...))`, so a request smaller than
-    the mouths can carry is silently enlarged. The preview did NOT do this,
-    which meant every small-radius case it certified was a ring the plugin
-    would never build - and the small-radius regime, the one reported as buggy
-    live, had therefore never actually been tested. Pass grow=False only to
-    inspect the un-grown geometry deliberately.
+    `grow` mirrors the plugin, and the plugin no longer grows: the requested
+    radius is built as asked and `MinimumRadiusStuds` is advice shown in the
+    panel. Kept as an option because the growth is still what
+    `SuggestedRadiusStuds` is derived from, so it is occasionally useful to
+    inspect the recommended ring alongside the requested one.
     """
     if grow:
         ring_r = max(ring_r, min_radius_studs(legs, ring_lanes, LANE_M, drive_on_left))

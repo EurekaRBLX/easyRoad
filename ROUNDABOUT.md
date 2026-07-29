@@ -170,12 +170,23 @@ roundabout has both ends far away, so choosing an end is meaningless — it need
 for X intersections. Until then a detected-but-unsplittable road does nothing,
 which reads exactly like a detection failure.
 
-### 5.2 Small radius requests are silently inflated
-`grown = max(radius, MinimumRadiusStuds(...))`, and for a 4-leg 1+1 ring that
-minimum is **42.8 studs** — so a 12-stud request and a 40-stud request build the
-identical ring. The minimum is also over-conservative: with growth off the
-geometry is clean at R=12, 16, 20, 25 and 30. Two jobs: re-derive the minimum,
-and surface it in the UI so the number the user typed is never silently ignored.
+### 5.2 ~~Small radius requests are silently inflated~~ — FIXED
+The requested radius is now **built as asked**. `MinimumRadiusStuds` is advice,
+shown in the panel before the click, never a clamp applied after it.
+
+The clamp was wrong on the merits as well as the UX. Measured with it disabled,
+the geometry is clean far below what it enforced:
+
+    3-leg 1+1   minimum 27.5   clean at R = 10, 14, 18, 22, 26
+    4-leg 2+2   minimum 70.5   clean at R = 10 .. 35
+
+The formula is a conservative packing estimate, not a measured failure point.
+Small rings do eventually crowd - the split gets squeezed until entry and exit
+run up against each other and the splitter pinches - but that degrades
+gradually and visibly, which the user can judge.
+
+**Still open:** re-derive the minimum from where the geometry actually fails,
+so the recommendation is worth following.
 
 ### 5.3 Markings do not match the preview
 The preview never ported `Mesh/Markings.lua`; it approximates it in ~30 lines.

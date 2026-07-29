@@ -1467,10 +1467,20 @@ function RoundaboutBuilder.CreateAtJunction(
 	local scale = settings.MetersToStuds
 
 	-- Grow rather than build garbage. A radius the approaches cannot fit into
-	-- produces overrunning mouths and collapsed splitters, and there is no
-	-- meaningful "best effort" version of that.
-	radiusStuds =
-		math.max(radiusStuds, RoundaboutBuilder.MinimumRadiusStuds(junctionId, laneCount, laneWidthM, style, settings))
+	-- The requested radius is BUILT AS ASKED. `MinimumRadiusStuds` is advice,
+	-- surfaced by the panel before the click, not a clamp applied after it.
+	--
+	-- It used to be a clamp, and that was both wrong for the user - a 12-stud
+	-- request and a 40-stud request produced the identical ring, with no
+	-- indication why - and wrong on the merits. Measured with the clamp
+	-- disabled, the geometry is clean far below the number it was enforcing:
+	-- a 3-leg 1+1 ring is clean at R=10..26 against a minimum of 27.5, and a
+	-- 4-leg 2+2 ring is clean at R=10..35 against a minimum of 70.5. The
+	-- formula is a conservative packing estimate, not a measured failure point.
+	--
+	-- Small rings do eventually crowd - the split gets squeezed until entry and
+	-- exit run up against each other and the splitter pinches - but that
+	-- degrades gradually and visibly, which the user can judge for themselves.
 
 	local stale = junctionModel:FindFirstChild("Geometry")
 	if stale then
@@ -1611,8 +1621,10 @@ function RoundaboutBuilder.DescribeJunction(
 	end
 	local center = junctionData.Position
 	local scale = settings.MetersToStuds
+	-- Reported, not applied: the build uses the requested radius as asked, so
+	-- the dump must too or it describes a ring nobody builds.
 	local minimum = RoundaboutBuilder.MinimumRadiusStuds(junctionId, laneCount, laneWidthM, style, settings)
-	local grown = math.max(radiusStuds, minimum)
+	local grown = radiusStuds
 
 	local components = ringComponents(laneCount, laneWidthM, style)
 	local profile: RoadProfile.RoadProfile = {

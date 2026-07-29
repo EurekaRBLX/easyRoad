@@ -115,7 +115,11 @@ well understood they are, not by value.
    the 0.15-stud hairline threshold the ring rim already reports. Not
    confirmed live yet.
 
-6. **Small radius requests are silently inflated.** `CreateAtJunction` does
+6. ~~Small radius requests are silently inflated~~ - FIXED; the radius is
+   built as asked and the panel warns instead. STILL OPEN: re-derive the
+   minimum from where the geometry actually fails, since it is currently a
+   conservative packing estimate (clean at R=10..35 on a 4-leg 2+2 whose
+   "minimum" is 70.5). Original note: `CreateAtJunction` does
    `grown = max(radius, MinimumRadiusStuds(...))`, and for a 4-leg 1+1 ring
    that minimum is **42.8 studs** - so a 12-stud request and a 40-stud request
    build the identical ring. That, not a geometry fault, is the most likely

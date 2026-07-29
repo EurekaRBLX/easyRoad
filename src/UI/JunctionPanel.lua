@@ -159,22 +159,27 @@ local function JunctionPanel(
 				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM)
 			end,
 		})
-		-- Say what the geometry needs and what was suggested, rather than
-		-- silently correcting the number after the fact. A radius under the
-		-- minimum cannot be built as asked - the mouths would overrun each other
-		-- - so it gets grown, and the user should hear that before clicking.
+		-- The radius is built AS ASKED, including below the recommendation.
+		-- Say what the geometry wants and what a tight ring will look like, so
+		-- the choice is informed - rather than silently overriding the number
+		-- the user typed, which is what this used to do.
 		local hint = "Replaces this junction with a polar ring and trims approaches to the outer edge."
 		if minimum > 0 then
 			local floor = math.ceil(minimum)
 			if radiusStuds < floor then
 				hint = string.format(
-					"These approaches need at least %d studs - %d will be grown to fit. Suggested: %d.",
-					minimum,
+					"%d studs is below the %d these approaches want. It will build, but the entry and exit"
+						.. " will crowd and the splitter islands will pinch. Suggested: %d.",
 					radiusStuds,
+					floor,
 					suggested
 				)
 			else
-				hint = string.format("Minimum for these approaches: %d studs. Suggested: %d.", minimum, suggested)
+				hint = string.format(
+					"Recommended minimum for these approaches: %d studs. Suggested: %d.",
+					floor,
+					suggested
+				)
 			end
 		end
 		children.RoundaboutDump = e(Components.Button, {
