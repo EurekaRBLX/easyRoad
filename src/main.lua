@@ -754,7 +754,9 @@ return function(
 					radiusStuds: number,
 					laneCount: number,
 					laneWidthM: number,
-					markings: string?
+					markings: string?,
+					sidewalk: boolean?,
+					island: boolean?
 				)
 					local junctionModel = junctionEditSession.GetSelectedJunction()
 					if not junctionModel then
@@ -764,6 +766,8 @@ return function(
 					-- Stamped BEFORE reading the junction back, because
 					-- CreateAtJunction reads the override off the junction data.
 					JunctionInstance.SetRoundaboutMarkings(junctionModel, markings)
+					JunctionInstance.SetRoundaboutSidewalk(junctionModel, sidewalk)
+					JunctionInstance.SetRoundaboutIsland(junctionModel, island)
 					local junctionData = JunctionInstance.Read(junctionModel)
 					if not junctionData then
 						if recording then

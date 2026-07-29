@@ -188,6 +188,26 @@ gradually and visibly, which the user can judge.
 **Still open:** re-derive the minimum from where the geometry actually fails,
 so the recommendation is worth following.
 
+### 5.3b Optional pavement and optional island — SHIPPED
+`RoundaboutSidewalk` and `RoundaboutIsland` on both `RegionStyle` (region
+default, checkboxes in the region editor) and `JunctionData` (per-roundabout,
+tri-state dropdowns in the junction panel). Optional, and nil reads as ENABLED,
+so nothing built before them changes.
+
+The subtle part is not the toggle, it is what the pavement width is used FOR.
+Several radii are derived by subtracting it from the ring's outer edge, so
+`ringSidewalkWidthM(style)` returns 0 when the pavement is off and every one of
+those sites goes through it. Using the region's nominal width with no pavement
+present would put the ring's kerb *inside* its own carriageway.
+
+`ringComponents` returns early rather than inserting a zero-width Sidewalk: a
+zero-width component is still emitted as a Part and still swept up by
+`openRingPavement`'s name match.
+
+Island off leaves the centre as open ground on purpose — the ring is a closed
+annulus either way, so this is a landscaped centre the user fills, not a hole.
+A flush drivable centre (mini-roundabout) is a different feature, not built.
+
 ### 5.3a Turbo vs Continuous — SHIPPED
 `RegionStyle.RoundaboutMarkings` ("Continuous" | "Turbo") sets the regional
 default; `JunctionData.RoundaboutMarkings` overrides it per roundabout. Both

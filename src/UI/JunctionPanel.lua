@@ -26,7 +26,14 @@ local function JunctionPanel(
 		OnPadMarginChanged: (value: number) -> (),
 		OnRebuild: () -> (),
 		OnDelete: () -> (),
-		OnMakeRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number, markings: string?) -> (),
+		OnMakeRoundabout: (
+			radiusStuds: number,
+			laneCount: number,
+			laneWidthM: number,
+			markings: string?,
+			sidewalk: boolean?,
+			island: boolean?
+		) -> (),
 		-- Smallest radius the approaches meeting here physically fit into, and a
 		-- comfortable suggestion above it. Both depend on the ring's own lane
 		-- settings, which live here, so this is asked again as those change.
@@ -45,6 +52,10 @@ local function JunctionPanel(
 	-- boolean: the panel has to be able to say "not overridden" as well as
 	-- which of the two styles was picked.
 	local markings, setMarkings = React.useState(nil :: string?)
+	-- Same tri-state as markings: nil follows the region, so the panel can say
+	-- "not overridden" as well as yes or no.
+	local ringWalk, setRingWalk = React.useState(nil :: boolean?)
+	local ringIsland, setRingIsland = React.useState(nil :: boolean?)
 	local touched, setTouched = React.useState(false)
 
 	-- Follow the suggestion while the user has not overridden it. Changing lane
@@ -171,12 +182,44 @@ local function JunctionPanel(
 				Grow = true,
 			}),
 		})
+		children.RoundaboutSidewalk = e(Components.Row, { LayoutOrder = 15 }, {
+			Label = e(Components.Label, { Text = "Pavement", LayoutOrder = 1, Width = 60 }),
+			Field = e(Components.Dropdown, {
+				Options = {
+					{ Id = "Region", Text = "Region default" },
+					{ Id = "Yes", Text = "Yes" },
+					{ Id = "No", Text = "No" },
+				},
+				SelectedId = if ringWalk == nil then "Region" elseif ringWalk then "Yes" else "No",
+				OnSelected = function(id: string)
+					setRingWalk(if id == "Region" then nil else id == "Yes")
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		})
+		children.RoundaboutIsland = e(Components.Row, { LayoutOrder = 16 }, {
+			Label = e(Components.Label, { Text = "Island", LayoutOrder = 1, Width = 60 }),
+			Field = e(Components.Dropdown, {
+				Options = {
+					{ Id = "Region", Text = "Region default" },
+					{ Id = "Yes", Text = "Yes" },
+					{ Id = "No", Text = "No" },
+				},
+				SelectedId = if ringIsland == nil then "Region" elseif ringIsland then "Yes" else "No",
+				OnSelected = function(id: string)
+					setRingIsland(if id == "Region" then nil else id == "Yes")
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		})
 		children.MakeRoundabout = e(Components.Button, {
 			Text = "Make Roundabout",
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 15,
+			LayoutOrder = 17,
 			OnClick = function()
-				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM, markings)
+				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM, markings, ringWalk, ringIsland)
 			end,
 		})
 		-- The radius is built AS ASKED, including below the recommendation.

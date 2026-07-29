@@ -228,6 +228,26 @@ local function RegionEditor(props: {
 
 	children.RoundaboutSection = e(Components.Section, { Text = "Roundabouts", LayoutOrder = order })
 	order += 1
+	-- `~= false` rather than `== true`: nil means "never set", which reads as
+	-- enabled, so a region predating these fields shows the behaviour it has.
+	children.RoundaboutSidewalk = e(Components.Checkbox, {
+		Label = "Ring has a pavement",
+		Checked = style.RoundaboutSidewalk ~= false,
+		LayoutOrder = order,
+		OnToggled = function(value: boolean)
+			set("RoundaboutSidewalk", value)
+		end,
+	})
+	order += 1
+	children.RoundaboutIsland = e(Components.Checkbox, {
+		Label = "Raised centre island",
+		Checked = style.RoundaboutIsland ~= false,
+		LayoutOrder = order,
+		OnToggled = function(value: boolean)
+			set("RoundaboutIsland", value)
+		end,
+	})
+	order += 1
 	children.RoundaboutMarkings = e(LabeledRow, {
 		Label = "Circulating lane markings",
 		LayoutOrder = order,

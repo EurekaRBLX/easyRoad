@@ -62,6 +62,11 @@ export type RegionStyle = {
 	WhiteMarking: Color3,
 	YellowMarking: Color3,
 
+	-- Default roundabout build options. All optional; nil reads as the value
+	-- the plugin had before the field existed, so no region needs updating.
+	RoundaboutSidewalk: boolean?, -- nil = true: ring carries an outer pavement
+	RoundaboutIsland: boolean?, -- nil = true: raised centre island
+
 	-- Default roundabout marking style. Optional: nil reads as "Continuous",
 	-- so a region that never mentions it - including every user region
 	-- serialised before this existed - keeps the previous behaviour.
@@ -392,6 +397,8 @@ function RegionStyles.Clone(style: RegionStyle): RegionStyle
 		DashGapM = style.DashGapM,
 		WhiteMarking = style.WhiteMarking,
 		YellowMarking = style.YellowMarking,
+		RoundaboutSidewalk = style.RoundaboutSidewalk,
+		RoundaboutIsland = style.RoundaboutIsland,
 		RoundaboutMarkings = style.RoundaboutMarkings,
 		MaxSuperelevation = style.MaxSuperelevation,
 		DesignSpeedKph = style.DesignSpeedKph,
@@ -469,6 +476,8 @@ function RegionStyles.Serialize(style: RegionStyle): { [string]: any }
 		DashGapM = style.DashGapM,
 		WhiteMarking = serializeColor(style.WhiteMarking),
 		YellowMarking = serializeColor(style.YellowMarking),
+		RoundaboutSidewalk = style.RoundaboutSidewalk,
+		RoundaboutIsland = style.RoundaboutIsland,
 		RoundaboutMarkings = style.RoundaboutMarkings,
 		MaxSuperelevation = style.MaxSuperelevation,
 		DesignSpeedKph = style.DesignSpeedKph,
@@ -510,6 +519,8 @@ function RegionStyles.Deserialize(raw: any): RegionStyle?
 		DashGapM = num(raw.DashGapM, fallback.DashGapM),
 		WhiteMarking = deserializeColor(raw.WhiteMarking, fallback.WhiteMarking),
 		YellowMarking = deserializeColor(raw.YellowMarking, fallback.YellowMarking),
+		RoundaboutSidewalk = if typeof(raw.RoundaboutSidewalk) == "boolean" then raw.RoundaboutSidewalk else nil,
+		RoundaboutIsland = if typeof(raw.RoundaboutIsland) == "boolean" then raw.RoundaboutIsland else nil,
 		RoundaboutMarkings = if table.find(RoundaboutMarkingStyles, raw.RoundaboutMarkings)
 			then raw.RoundaboutMarkings :: RoundaboutMarkingStyle
 			else nil,

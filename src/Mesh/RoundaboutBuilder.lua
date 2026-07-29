@@ -104,6 +104,13 @@ local function ringComponents(
 			RightBoundary = if turbo and i < lanes then "Solid" else nil,
 		})
 	end
+	-- An opted-out pavement means the ring is carriageway only. Bail before the
+	-- placement below rather than inserting a zero-width component: a zero-width
+	-- Sidewalk would still be emitted as a Part and still be swept up by
+	-- openRingPavement's name match.
+	if style.RoundaboutSidewalk == false then
+		return components
+	end
 	local sidewalk: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
 	-- Right of travel is -sign * radially-outward, so the OUTWARD side is the
 	-- left of travel when circulating clockwise (left-hand drive) and the right
@@ -114,6 +121,14 @@ local function ringComponents(
 		table.insert(components, sidewalk)
 	end
 	return components
+end
+
+-- The ring's own outer pavement width. Zero when the pavement is opted out,
+-- which matters because several radii are derived by subtracting it from the
+-- outer edge: with no pavement the ring's kerb IS its outer edge, and using the
+-- region's nominal width there would put the kerb inside the carriageway.
+local function ringSidewalkWidthM(style: RegionStyles.RegionStyle): number
+	return if style.RoundaboutSidewalk == false then 0 else style.SidewalkWidthM
 end
 
 -- Centreline to the ring's INNER edge, i.e. the side the central island is on -
@@ -187,6 +202,12 @@ local function buildIsland(
 	local scale = settings.MetersToStuds
 	local thickness = settings.RoadThicknessStuds
 	local curbHeight = style.CurbHeightM * scale
+	if style.RoundaboutIsland == false then
+		-- Centre left open on purpose. The ring is a closed annulus either way,
+		-- so this leaves ground rather than a hole in the carriageway - it is
+		-- for a landscaped or decorated centre the user fills themselves.
+		return
+	end
 	local islandRadiusStuds = radiusStuds - ringInnerHalfWidthM(profile, style) * scale
 	if islandRadiusStuds <= 1 then
 		return
@@ -1067,7 +1088,7 @@ local function buildSplitterIsland(
 	-- an earlier start covered the deleted band but ran the island 17 studs
 	-- down the approach as a thin sliver (measured at R=33: gore reaching
 	-- radius 60.3 against an outer edge of 43.1).
-	local outerRadiusStuds = ringKerbRadiusStuds + style.SidewalkWidthM * scale
+	local outerRadiusStuds = ringKerbRadiusStuds + ringSidewalkWidthM(style) * scale
 	for i = 0, probes do
 		local along = (i / probes) * reach
 		if distanceXZ(goreEdge(entryCurve, along, entryArm), center) <= outerRadiusStuds then
@@ -1344,7 +1365,7 @@ local function buildMouth(
 		local only = (entry or exit) :: MouthArm
 		local onlyCurve = (entryCurve or exitCurve) :: PolyCurve.PolyCurve
 		local mergeAngle = if entry then entryAngle else exitAngle
-		local outerRadius = ringKerbRadius + style.SidewalkWidthM * settings.MetersToStuds
+		local outerRadius = ringKerbRadius + ringSidewalkWidthM(style) * settings.MetersToStuds
 		local edgeAngle = bandExitAngle(
 			onlyCurve,
 			only.Profile,
@@ -1507,9 +1528,21 @@ function RoundaboutBuilder.CreateAtJunction(
 	-- through every builder that touches it - `ringComponents` already reads
 	-- the style, so this is the narrowest place to inject it.
 	local ringStyle = style
-	if junctionData.RoundaboutMarkings then
+	if
+		junctionData.RoundaboutMarkings ~= nil
+		or junctionData.RoundaboutSidewalk ~= nil
+		or junctionData.RoundaboutIsland ~= nil
+	then
 		ringStyle = table.clone(style)
-		ringStyle.RoundaboutMarkings = junctionData.RoundaboutMarkings :: RegionStyles.RoundaboutMarkingStyle
+		if junctionData.RoundaboutMarkings ~= nil then
+			ringStyle.RoundaboutMarkings = junctionData.RoundaboutMarkings :: RegionStyles.RoundaboutMarkingStyle
+		end
+		if junctionData.RoundaboutSidewalk ~= nil then
+			ringStyle.RoundaboutSidewalk = junctionData.RoundaboutSidewalk
+		end
+		if junctionData.RoundaboutIsland ~= nil then
+			ringStyle.RoundaboutIsland = junctionData.RoundaboutIsland
+		end
 	end
 
 	local components = ringComponents(laneCount, laneWidthM, ringStyle)
@@ -1550,9 +1583,18 @@ function RoundaboutBuilder.CreateAtJunction(
 		end
 	end
 
-	buildIsland(ring, center, radiusStuds, profile, style, settings, ringCurve, RoadBuilder.StationsFor(ringOptions))
+	buildIsland(
+		ring,
+		center,
+		radiusStuds,
+		profile,
+		ringStyle,
+		settings,
+		ringCurve,
+		RoadBuilder.StationsFor(ringOptions)
+	)
 
-	local ringKerbRadius = outerRadiusStuds - style.SidewalkWidthM * scale
+	local ringKerbRadius = outerRadiusStuds - ringSidewalkWidthM(style) * scale
 
 	-- Cut every approach back past the outer pavement so its entry/exit pair has
 	-- the room to split apart and swing round onto the rim.
@@ -1660,7 +1702,7 @@ function RoundaboutBuilder.DescribeJunction(
 		Components = components,
 	}
 	local outerRadiusStuds = grown + RoadProfile.TotalWidthM(profile) / 2 * scale
-	local ringKerbRadius = outerRadiusStuds - style.SidewalkWidthM * scale
+	local ringKerbRadius = outerRadiusStuds - ringSidewalkWidthM(style) * scale
 	local trimTarget = outerRadiusStuds + armRunStuds(outerRadiusStuds)
 	local flow = if style.DriveOnLeft then 1 else -1
 

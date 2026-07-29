@@ -348,8 +348,10 @@ def circle_segments(center, r, drive_on_left):
     return PolyCurve(segs)
 
 
-def ring_components(lanes, lane_w, drive_on_left):
+def ring_components(lanes, lane_w, drive_on_left, sidewalk=True):
     comps = [("Drive", lane_w) for _ in range(lanes)]
+    if not sidewalk:
+        return comps
     if drive_on_left:
         comps.insert(0, ("Sidewalk", SW_M))
     else:
@@ -422,7 +424,7 @@ def min_radius_studs(legs, lane_count, lane_w, dol):
     return merge + outer_off + SW_M * SCALE - ring_half
 
 
-def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False):
+def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=True, island=True):
     """legs is a list of (degrees, approach component list).
 
     `grow` mirrors the plugin, and the plugin no longer grows: the requested
@@ -435,9 +437,9 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False):
         ring_r = max(ring_r, min_radius_studs(legs, ring_lanes, LANE_M, drive_on_left))
     flow = 1 if drive_on_left else -1
     center = (0.0, 0.0)
-    rc = ring_components(ring_lanes, LANE_M, drive_on_left)
+    rc = ring_components(ring_lanes, LANE_M, drive_on_left, sidewalk)
     outerR = ring_r + sum(c[1] for c in rc)/2*SCALE
-    ring_kerb = outerR - SW_M*SCALE
+    ring_kerb = outerR - (SW_M*SCALE if sidewalk else 0.0)
     ro = offsets_m(rc)
     inner_half_m = ro[-1][1] if drive_on_left else -ro[0][0]
     island_r = ring_r - inner_half_m*SCALE
@@ -629,7 +631,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False):
                     continue
         kept.append(p)
     parts = kept + arm_parts
-    return dict(tag=tag, parts=parts, gore=gore_tris, island_r=island_r, legs=leg_info,
+    return dict(tag=tag, parts=parts, gore=gore_tris, island_r=island_r, island=island, legs=leg_info,
                 sectors=cl,
                 outerR=outerR, ring_kerb=ring_kerb, cutR=cutR, center=center,
                 n_ring=len(ring_parts), n_arms=len(arm_parts), removed=removed)
@@ -651,7 +653,8 @@ def render(scene, outdir):
         for t in scene["gore"]:
             cv.fill_poly([tx(v) for v in t], FLAT if flat else ISLAND_C)
         if scene["island_r"] > 1:
-            cv.disc(cx, cy, scene["island_r"] * S, FLAT if flat else ISLAND_C)
+            if scene.get("island", True):
+                cv.disc(cx, cy, scene["island_r"] * S, FLAT if flat else ISLAND_C)
         name = f"{scene['tag']}_{'gaps' if flat else 'parts'}.png"
         cv.save(os.path.join(outdir, name))
         written.append(name)

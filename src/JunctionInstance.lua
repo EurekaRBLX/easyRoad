@@ -27,6 +27,9 @@ export type JunctionData = {
 	-- everything else reads, and it does not otherwise depend on RegionStyles -
 	-- worth keeping that way for one field.
 	RoundaboutMarkings: string?,
+	-- Per-roundabout overrides of the region's defaults. nil = follow region.
+	RoundaboutSidewalk: boolean?,
+	RoundaboutIsland: boolean?,
 	PadMarginStuds: number?,
 }
 
@@ -118,6 +121,8 @@ function JunctionInstance.Read(model: Model): JunctionData?
 	local fillet = model:GetAttribute("RW_FilletRadiusM")
 	local margin = model:GetAttribute("RW_PadMarginStuds")
 	local markings = model:GetAttribute("RW_RoundaboutMarkings")
+	local ringWalk = model:GetAttribute("RW_RoundaboutSidewalk")
+	local ringIsland = model:GetAttribute("RW_RoundaboutIsland")
 	return {
 		Id = id,
 		Position = position,
@@ -126,6 +131,8 @@ function JunctionInstance.Read(model: Model): JunctionData?
 		RoundaboutMarkings = if typeof(markings) == "string" and table.find(ROUNDABOUT_MARKING_STYLES, markings)
 			then markings
 			else nil,
+		RoundaboutSidewalk = if typeof(ringWalk) == "boolean" then ringWalk else nil,
+		RoundaboutIsland = if typeof(ringIsland) == "boolean" then ringIsland else nil,
 	}
 end
 
@@ -139,6 +146,14 @@ end
 
 function JunctionInstance.SetRoundaboutMarkings(model: Model, kind: string?)
 	model:SetAttribute("RW_RoundaboutMarkings", kind)
+end
+
+function JunctionInstance.SetRoundaboutSidewalk(model: Model, enabled: boolean?)
+	model:SetAttribute("RW_RoundaboutSidewalk", enabled)
+end
+
+function JunctionInstance.SetRoundaboutIsland(model: Model, enabled: boolean?)
+	model:SetAttribute("RW_RoundaboutIsland", enabled)
 end
 
 function JunctionInstance.SetPadMarginStuds(model: Model, marginStuds: number?)

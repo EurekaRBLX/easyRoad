@@ -1669,6 +1669,9 @@ export type JunctionData = {
 	-- everything else reads, and it does not otherwise depend on RegionStyles -
 	-- worth keeping that way for one field.
 	RoundaboutMarkings: string?,
+	-- Per-roundabout overrides of the region's defaults. nil = follow region.
+	RoundaboutSidewalk: boolean?,
+	RoundaboutIsland: boolean?,
 	PadMarginStuds: number?,
 }
 
@@ -1760,6 +1763,8 @@ function JunctionInstance.Read(model: Model): JunctionData?
 	local fillet = model:GetAttribute("RW_FilletRadiusM")
 	local margin = model:GetAttribute("RW_PadMarginStuds")
 	local markings = model:GetAttribute("RW_RoundaboutMarkings")
+	local ringWalk = model:GetAttribute("RW_RoundaboutSidewalk")
+	local ringIsland = model:GetAttribute("RW_RoundaboutIsland")
 	return {
 		Id = id,
 		Position = position,
@@ -1768,6 +1773,8 @@ function JunctionInstance.Read(model: Model): JunctionData?
 		RoundaboutMarkings = if typeof(markings) == "string" and table.find(ROUNDABOUT_MARKING_STYLES, markings)
 			then markings
 			else nil,
+		RoundaboutSidewalk = if typeof(ringWalk) == "boolean" then ringWalk else nil,
+		RoundaboutIsland = if typeof(ringIsland) == "boolean" then ringIsland else nil,
 	}
 end
 
@@ -1781,6 +1788,14 @@ end
 
 function JunctionInstance.SetRoundaboutMarkings(model: Model, kind: string?)
 	model:SetAttribute("RW_RoundaboutMarkings", kind)
+end
+
+function JunctionInstance.SetRoundaboutSidewalk(model: Model, enabled: boolean?)
+	model:SetAttribute("RW_RoundaboutSidewalk", enabled)
+end
+
+function JunctionInstance.SetRoundaboutIsland(model: Model, enabled: boolean?)
+	model:SetAttribute("RW_RoundaboutIsland", enabled)
 end
 
 function JunctionInstance.SetPadMarginStuds(model: Model, marginStuds: number?)
@@ -5574,6 +5589,13 @@ local function ringComponents(
 			RightBoundary = if turbo and i &lt; lanes then "Solid" else nil,
 		})
 	end
+	-- An opted-out pavement means the ring is carriageway only. Bail before the
+	-- placement below rather than inserting a zero-width component: a zero-width
+	-- Sidewalk would still be emitted as a Part and still be swept up by
+	-- openRingPavement's name match.
+	if style.RoundaboutSidewalk == false then
+		return components
+	end
 	local sidewalk: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
 	-- Right of travel is -sign * radially-outward, so the OUTWARD side is the
 	-- left of travel when circulating clockwise (left-hand drive) and the right
@@ -5584,6 +5606,14 @@ local function ringComponents(
 		table.insert(components, sidewalk)
 	end
 	return components
+end
+
+-- The ring's own outer pavement width. Zero when the pavement is opted out,
+-- which matters because several radii are derived by subtracting it from the
+-- outer edge: with no pavement the ring's kerb IS its outer edge, and using the
+-- region's nominal width there would put the kerb inside the carriageway.
+local function ringSidewalkWidthM(style: RegionStyles.RegionStyle): number
+	return if style.RoundaboutSidewalk == false then 0 else style.SidewalkWidthM
 end
 
 -- Centreline to the ring's INNER edge, i.e. the side the central island is on -
@@ -5657,6 +5687,12 @@ local function buildIsland(
 	local scale = settings.MetersToStuds
 	local thickness = settings.RoadThicknessStuds
 	local curbHeight = style.CurbHeightM * scale
+	if style.RoundaboutIsland == false then
+		-- Centre left open on purpose. The ring is a closed annulus either way,
+		-- so this leaves ground rather than a hole in the carriageway - it is
+		-- for a landscaped or decorated centre the user fills themselves.
+		return
+	end
 	local islandRadiusStuds = radiusStuds - ringInnerHalfWidthM(profile, style) * scale
 	if islandRadiusStuds &lt;= 1 then
 		return
@@ -6537,7 +6573,7 @@ local function buildSplitterIsland(
 	-- an earlier start covered the deleted band but ran the island 17 studs
 	-- down the approach as a thin sliver (measured at R=33: gore reaching
 	-- radius 60.3 against an outer edge of 43.1).
-	local outerRadiusStuds = ringKerbRadiusStuds + style.SidewalkWidthM * scale
+	local outerRadiusStuds = ringKerbRadiusStuds + ringSidewalkWidthM(style) * scale
 	for i = 0, probes do
 		local along = (i / probes) * reach
 		if distanceXZ(goreEdge(entryCurve, along, entryArm), center) &lt;= outerRadiusStuds then
@@ -6814,7 +6850,7 @@ local function buildMouth(
 		local only = (entry or exit) :: MouthArm
 		local onlyCurve = (entryCurve or exitCurve) :: PolyCurve.PolyCurve
 		local mergeAngle = if entry then entryAngle else exitAngle
-		local outerRadius = ringKerbRadius + style.SidewalkWidthM * settings.MetersToStuds
+		local outerRadius = ringKerbRadius + ringSidewalkWidthM(style) * settings.MetersToStuds
 		local edgeAngle = bandExitAngle(
 			onlyCurve,
 			only.Profile,
@@ -6977,9 +7013,21 @@ function RoundaboutBuilder.CreateAtJunction(
 	-- through every builder that touches it - `ringComponents` already reads
 	-- the style, so this is the narrowest place to inject it.
 	local ringStyle = style
-	if junctionData.RoundaboutMarkings then
+	if
+		junctionData.RoundaboutMarkings ~= nil
+		or junctionData.RoundaboutSidewalk ~= nil
+		or junctionData.RoundaboutIsland ~= nil
+	then
 		ringStyle = table.clone(style)
-		ringStyle.RoundaboutMarkings = junctionData.RoundaboutMarkings :: RegionStyles.RoundaboutMarkingStyle
+		if junctionData.RoundaboutMarkings ~= nil then
+			ringStyle.RoundaboutMarkings = junctionData.RoundaboutMarkings :: RegionStyles.RoundaboutMarkingStyle
+		end
+		if junctionData.RoundaboutSidewalk ~= nil then
+			ringStyle.RoundaboutSidewalk = junctionData.RoundaboutSidewalk
+		end
+		if junctionData.RoundaboutIsland ~= nil then
+			ringStyle.RoundaboutIsland = junctionData.RoundaboutIsland
+		end
 	end
 
 	local components = ringComponents(laneCount, laneWidthM, ringStyle)
@@ -7020,9 +7068,18 @@ function RoundaboutBuilder.CreateAtJunction(
 		end
 	end
 
-	buildIsland(ring, center, radiusStuds, profile, style, settings, ringCurve, RoadBuilder.StationsFor(ringOptions))
+	buildIsland(
+		ring,
+		center,
+		radiusStuds,
+		profile,
+		ringStyle,
+		settings,
+		ringCurve,
+		RoadBuilder.StationsFor(ringOptions)
+	)
 
-	local ringKerbRadius = outerRadiusStuds - style.SidewalkWidthM * scale
+	local ringKerbRadius = outerRadiusStuds - ringSidewalkWidthM(style) * scale
 
 	-- Cut every approach back past the outer pavement so its entry/exit pair has
 	-- the room to split apart and swing round onto the rim.
@@ -7130,7 +7187,7 @@ function RoundaboutBuilder.DescribeJunction(
 		Components = components,
 	}
 	local outerRadiusStuds = grown + RoadProfile.TotalWidthM(profile) / 2 * scale
-	local ringKerbRadius = outerRadiusStuds - style.SidewalkWidthM * scale
+	local ringKerbRadius = outerRadiusStuds - ringSidewalkWidthM(style) * scale
 	local trimTarget = outerRadiusStuds + armRunStuds(outerRadiusStuds)
 	local flow = if style.DriveOnLeft then 1 else -1
 
@@ -7599,6 +7656,11 @@ export type RegionStyle = {
 	WhiteMarking: Color3,
 	YellowMarking: Color3,
 
+	-- Default roundabout build options. All optional; nil reads as the value
+	-- the plugin had before the field existed, so no region needs updating.
+	RoundaboutSidewalk: boolean?, -- nil = true: ring carries an outer pavement
+	RoundaboutIsland: boolean?, -- nil = true: raised centre island
+
 	-- Default roundabout marking style. Optional: nil reads as "Continuous",
 	-- so a region that never mentions it - including every user region
 	-- serialised before this existed - keeps the previous behaviour.
@@ -7929,6 +7991,8 @@ function RegionStyles.Clone(style: RegionStyle): RegionStyle
 		DashGapM = style.DashGapM,
 		WhiteMarking = style.WhiteMarking,
 		YellowMarking = style.YellowMarking,
+		RoundaboutSidewalk = style.RoundaboutSidewalk,
+		RoundaboutIsland = style.RoundaboutIsland,
 		RoundaboutMarkings = style.RoundaboutMarkings,
 		MaxSuperelevation = style.MaxSuperelevation,
 		DesignSpeedKph = style.DesignSpeedKph,
@@ -8006,6 +8070,8 @@ function RegionStyles.Serialize(style: RegionStyle): { [string]: any }
 		DashGapM = style.DashGapM,
 		WhiteMarking = serializeColor(style.WhiteMarking),
 		YellowMarking = serializeColor(style.YellowMarking),
+		RoundaboutSidewalk = style.RoundaboutSidewalk,
+		RoundaboutIsland = style.RoundaboutIsland,
 		RoundaboutMarkings = style.RoundaboutMarkings,
 		MaxSuperelevation = style.MaxSuperelevation,
 		DesignSpeedKph = style.DesignSpeedKph,
@@ -8047,6 +8113,8 @@ function RegionStyles.Deserialize(raw: any): RegionStyle?
 		DashGapM = num(raw.DashGapM, fallback.DashGapM),
 		WhiteMarking = deserializeColor(raw.WhiteMarking, fallback.WhiteMarking),
 		YellowMarking = deserializeColor(raw.YellowMarking, fallback.YellowMarking),
+		RoundaboutSidewalk = if typeof(raw.RoundaboutSidewalk) == "boolean" then raw.RoundaboutSidewalk else nil,
+		RoundaboutIsland = if typeof(raw.RoundaboutIsland) == "boolean" then raw.RoundaboutIsland else nil,
 		RoundaboutMarkings = if table.find(RoundaboutMarkingStyles, raw.RoundaboutMarkings)
 			then raw.RoundaboutMarkings :: RoundaboutMarkingStyle
 			else nil,
@@ -12290,7 +12358,14 @@ local function JunctionPanel(
 		OnPadMarginChanged: (value: number) -&gt; (),
 		OnRebuild: () -&gt; (),
 		OnDelete: () -&gt; (),
-		OnMakeRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number, markings: string?) -&gt; (),
+		OnMakeRoundabout: (
+			radiusStuds: number,
+			laneCount: number,
+			laneWidthM: number,
+			markings: string?,
+			sidewalk: boolean?,
+			island: boolean?
+		) -&gt; (),
 		-- Smallest radius the approaches meeting here physically fit into, and a
 		-- comfortable suggestion above it. Both depend on the ring's own lane
 		-- settings, which live here, so this is asked again as those change.
@@ -12309,6 +12384,10 @@ local function JunctionPanel(
 	-- boolean: the panel has to be able to say "not overridden" as well as
 	-- which of the two styles was picked.
 	local markings, setMarkings = React.useState(nil :: string?)
+	-- Same tri-state as markings: nil follows the region, so the panel can say
+	-- "not overridden" as well as yes or no.
+	local ringWalk, setRingWalk = React.useState(nil :: boolean?)
+	local ringIsland, setRingIsland = React.useState(nil :: boolean?)
 	local touched, setTouched = React.useState(false)
 
 	-- Follow the suggestion while the user has not overridden it. Changing lane
@@ -12435,12 +12514,44 @@ local function JunctionPanel(
 				Grow = true,
 			}),
 		})
+		children.RoundaboutSidewalk = e(Components.Row, { LayoutOrder = 15 }, {
+			Label = e(Components.Label, { Text = "Pavement", LayoutOrder = 1, Width = 60 }),
+			Field = e(Components.Dropdown, {
+				Options = {
+					{ Id = "Region", Text = "Region default" },
+					{ Id = "Yes", Text = "Yes" },
+					{ Id = "No", Text = "No" },
+				},
+				SelectedId = if ringWalk == nil then "Region" elseif ringWalk then "Yes" else "No",
+				OnSelected = function(id: string)
+					setRingWalk(if id == "Region" then nil else id == "Yes")
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		})
+		children.RoundaboutIsland = e(Components.Row, { LayoutOrder = 16 }, {
+			Label = e(Components.Label, { Text = "Island", LayoutOrder = 1, Width = 60 }),
+			Field = e(Components.Dropdown, {
+				Options = {
+					{ Id = "Region", Text = "Region default" },
+					{ Id = "Yes", Text = "Yes" },
+					{ Id = "No", Text = "No" },
+				},
+				SelectedId = if ringIsland == nil then "Region" elseif ringIsland then "Yes" else "No",
+				OnSelected = function(id: string)
+					setRingIsland(if id == "Region" then nil else id == "Yes")
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		})
 		children.MakeRoundabout = e(Components.Button, {
 			Text = "Make Roundabout",
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 15,
+			LayoutOrder = 17,
 			OnClick = function()
-				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM, markings)
+				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM, markings, ringWalk, ringIsland)
 			end,
 		})
 		-- The radius is built AS ASKED, including below the recommendation.
@@ -13620,6 +13731,26 @@ local function RegionEditor(props: {
 	end
 
 	children.RoundaboutSection = e(Components.Section, { Text = "Roundabouts", LayoutOrder = order })
+	order += 1
+	-- `~= false` rather than `== true`: nil means "never set", which reads as
+	-- enabled, so a region predating these fields shows the behaviour it has.
+	children.RoundaboutSidewalk = e(Components.Checkbox, {
+		Label = "Ring has a pavement",
+		Checked = style.RoundaboutSidewalk ~= false,
+		LayoutOrder = order,
+		OnToggled = function(value: boolean)
+			set("RoundaboutSidewalk", value)
+		end,
+	})
+	order += 1
+	children.RoundaboutIsland = e(Components.Checkbox, {
+		Label = "Raised centre island",
+		Checked = style.RoundaboutIsland ~= false,
+		LayoutOrder = order,
+		OnToggled = function(value: boolean)
+			set("RoundaboutIsland", value)
+		end,
+	})
 	order += 1
 	children.RoundaboutMarkings = e(LabeledRow, {
 		Label = "Circulating lane markings",
@@ -18400,7 +18531,9 @@ return function(
 					radiusStuds: number,
 					laneCount: number,
 					laneWidthM: number,
-					markings: string?
+					markings: string?,
+					sidewalk: boolean?,
+					island: boolean?
 				)
 					local junctionModel = junctionEditSession.GetSelectedJunction()
 					if not junctionModel then
@@ -18410,6 +18543,8 @@ return function(
 					-- Stamped BEFORE reading the junction back, because
 					-- CreateAtJunction reads the override off the junction data.
 					JunctionInstance.SetRoundaboutMarkings(junctionModel, markings)
+					JunctionInstance.SetRoundaboutSidewalk(junctionModel, sidewalk)
+					JunctionInstance.SetRoundaboutIsland(junctionModel, island)
 					local junctionData = JunctionInstance.Read(junctionModel)
 					if not junctionData then
 						if recording then
