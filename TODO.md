@@ -96,48 +96,10 @@ well understood they are, not by value.
 
    Take those in that order. Markings first.
 
-5. **PARTLY FIXED: bare-ground band at R=34-36. MY REGRESSION.** Root cause
-   found and owned; the fix is real but incomplete. Highest priority.
-
-   **Cause.** The `MIN_GORE_WIDTH_M` splitter change (commit 1505bd4) skipped
-   leading samples from a FIXED grid with `continue`. The same loop also breaks
-   when either gore edge reaches the ring kerb, so on rings where the arms
-   converge early the skipped samples were consumed and the break fired before
-   enough rungs accumulated - the island came out truncated or was never built,
-   and the ring pavement `openRingPavement` had already deleted across that
-   sector was left uncovered.
-
-   Proof, 3-leg 1+1, gore triangles / bare-ground samples:
-
-       R      with MIN_GORE      with MIN_GORE = 0 (pre-change)
-       33     51 tris /   0      93 tris / 0
-       34     15 tris / 172      93 tris / 0
-       35     18 tris / 250      96 tris / 0
-       36     24 tris /  34      96 tris / 0
-       40     36 tris /   0     102 tris / 0
-
-   Every radius was clean before that change. Not a pre-existing bug.
-
-   **Fix so far.** Both implementations now RE-PARAMETERISE the rungs from
-   where the gore first opens to island width, instead of dropping samples from
-   a fixed grid, so the full GORE_SAMPLES resolution goes to whatever island
-   does get built. That roughly halves the damage (R=35: 250 -> 150 samples)
-   but does NOT close it: R=34, 35, 36 still leave bare ground.
-
-   **Still to do.** The remaining collapse is the kerb break truncating the
-   rung span right after `startAlong` at those radii. Establish first WHERE the
-   residual holes sit - near the cut or near the ring - because that decides
-   the fix:
-   - near the RING: the island must always reach the kerb, since
-     `openRingPavement` has deleted the sector on the assumption something
-     covers it. Trim only the cut end, never the ring end.
-   - near the CUT: the sector deletion is reaching further out than the arms
-     cover, and the inset needs revisiting instead.
-
-   **Fallback if this bites before it is fixed:** `MIN_GORE_WIDTH_M = 0`
-   restores clean geometry at every radius, at the cost of bringing back the
-   phantom median on approaches with no median. Bare ground is the worse of the
-   two defects, so take the fallback rather than shipping the band.
+5. ~~Bare-ground band at R=34-36~~ - FIXED. Was my regression; see the
+   SHIPPED.md entry. Residual is 1-2 samples at 0.13-0.21 studs deep, below
+   the 0.15-stud hairline threshold the ring rim already reports. Not
+   confirmed live yet.
 
 6. **Small radius requests are silently inflated.** `CreateAtJunction` does
    `grown = max(radius, MinimumRadiusStuds(...))`, and for a 4-leg 1+1 ring

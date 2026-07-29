@@ -542,6 +542,16 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=True):
                              gore_edge(exit_, exit_.length-along, exit_arm)) >= min_gore:
                     start_along, opened = along, True
                     break
+            # The island must reach at least the ring's OUTER edge whatever the
+            # width test said - open_ring_pavement has already deleted ring
+            # pavement out to there. See RoundaboutBuilder.
+            outer_radius = ring_kerb + SW_M*SCALE
+            for i in range(65):
+                along = (i/64)*reach
+                if math.hypot(*gore_edge(entry, along, entry_arm)) <= outer_radius:
+                    # Step back one probe - see RoundaboutBuilder.
+                    start_along = min(start_along, max(0, i-1)/64*reach)
+                    break
             L, R, last_along = [], [], start_along
             if opened:
                 for i in range(GORE_SAMPLES+1):

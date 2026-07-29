@@ -1003,6 +1003,29 @@ local function buildSplitterIsland(
 	if not opened then
 		return -- the gore never reaches island width: no splitter here at all
 	end
+	-- The island must reach at least the ring's OUTER edge, whatever the width
+	-- test said. `openRingPavement` deletes ring pavement across the whole mouth
+	-- sector out to that radius on the assumption the arms and this island
+	-- replace it, so starting the island inside it leaves the deleted band bare.
+	-- That is the R=34..36 defect exactly: at R=35 the gore reached only radius
+	-- 42.3 while the ring's outer edge is 45.1, and all 150 bare-ground samples
+	-- sat in the 2.8 studs between them.
+	--
+	-- Past the outer edge there is no deleted pavement to replace, so out there
+	-- the width test is free to trim - which is what it was added for.
+	local outerRadiusStuds = ringKerbRadiusStuds + style.SidewalkWidthM * scale
+	for i = 0, probes do
+		local along = (i / probes) * reach
+		if distanceXZ(goreEdge(entryCurve, along, entryArm), center) <= outerRadiusStuds then
+			-- Step back one probe: `along` is the first sample INSIDE the outer
+			-- edge, so starting there still leaves up to one grid cell of the
+			-- deleted band uncovered. The previous sample is outside it by
+			-- construction, and starting early only means a little more island
+			-- where there is no pavement to conflict with.
+			startAlong = math.min(startAlong, math.max(0, (i - 1) / probes) * reach)
+			break
+		end
+	end
 	local entrySide: { Vector3 } = {}
 	local exitSide: { Vector3 } = {}
 	local lastAlong = startAlong

@@ -85,6 +85,53 @@ All nine roundabout preview cases still report zero bare ground and a
 
 Not confirmed in Studio yet.
 
+## Roundabout: fix the bare-ground band at R=34-36
+
+A band of bare ground appeared inside the ring at radii 34-38, up to 4.4 studs
+deep, with clean geometry either side of it. My own regression, from the
+`MIN_GORE_WIDTH_M` splitter change below.
+
+Two distinct faults, both now fixed:
+
+1. **Samples were dropped from a fixed grid.** The width test skipped leading
+   samples with `continue`, but the same loop also breaks when a gore edge
+   reaches the ring kerb - so on rings whose arms converge early the skipped
+   samples were consumed and the break fired before enough rungs accumulated.
+   The island came out truncated or was never built. Both implementations now
+   RE-PARAMETERISE the rungs from where the gore opens, so the full
+   `GORE_SAMPLES` resolution goes to whatever island is built.
+
+2. **The island could start inside the ring's outer edge.** `openRingPavement`
+   deletes ring pavement across the whole mouth sector out to that radius on
+   the assumption the arms and the island replace it, so an island starting
+   inside it leaves the deleted band bare. That was the bulk of the defect: at
+   R=35 the gore reached only radius 42.3 while the ring's outer edge is 45.1,
+   and **all 150** bare-ground samples sat in the 2.8 studs between them. The
+   island start is now clamped to the outer edge - and stepped back one probe
+   cell, since the probe grid would otherwise still land up to one cell inside
+   it. Past the outer edge there is no deleted pavement to replace, so the
+   width test is still free to trim there, which is what it was added for.
+
+Bare-ground samples on a 3-leg 1+1 ring:
+
+    R      before    after re-parameterising    after clamping
+    34     172       158                        1
+    35     250       150                        2
+    36      34        57                        0
+    38      38         0                        0
+
+The remaining 1-2 samples are 0.13 and 0.21 studs deep against a 0.084-stud
+sample pitch - at or below the 0.15-stud hairline threshold the ring rim
+already reports as below visible.
+
+Worth recording: the first hypothesis was that `openRingPavement` deleted
+parts by their CENTRE while their bodies extended past the sector edge. That
+was wrong, and the probe killed it cleanly - all 250 holes sat INSIDE the
+sectors, and the sectors are identical at R=33 (clean) and R=35 (broken).
+Deletion was never the problem.
+
+Not confirmed in Studio yet.
+
 ## Roundabout: stop the splitter island inventing a median
 
 An approach whose road type has no median came out of the roundabout with a
