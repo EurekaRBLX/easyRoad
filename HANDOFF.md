@@ -1,166 +1,167 @@
 # EasyRoad — handoff
 
-Written for whoever picks this up next. `SHIPPED.md` is the full history
-(most recent first), `TODO.md` the backlog, `KNOWN_ISSUES.md` confirmed bugs.
-This file is the short version of where the most recent intersection and
-roundabout work stands.
+Read this first. `ROUNDABOUT.md` is the deep dive on the roundabout (the most
+expensive part of this project), `TODO.md` is the live backlog, `SHIPPED.md` the
+chronological history, `KNOWN_ISSUES.md` confirmed bugs.
+
+---
 
 ## Ground rules for this repo
 
 - Work directly on `main`. Rebuild `dist/EasyRoad.rbxmx` with
-  `python3 tools/build_rbxmx.py` in the **same commit** as any `src/` change —
+  `python3 tools/build_rbxmx.py` **in the same commit** as any `src/` change —
   the user installs that file, so a stale dist means they test old code.
-- `stylua src/ && stylua --check src/` before committing. Note the repo is not
-  globally stylua-clean under the currently installed version; only keep the
-  files you touch clean.
+- `stylua src/<file>` then `stylua --check` before committing. The repo is not
+  globally stylua-clean under the installed version; only keep touched files
+  clean. (`src/Mesh/FillTriangle.lua` has a pre-existing diff — leave it.)
 - Commit trailer, exactly:
   `Co-Authored-By: Gameson <79436209+gamesonrblx@users.noreply.github.com>`
   No `Claude-Session:` trailer, no model identifier anywhere in commits, PRs,
   code or artifacts.
 - Log every round in `SHIPPED.md` (newest at top) and update `TODO.md`.
+- Push with `git push -u origin main`, retry up to 4× with backoff.
 
-## Latest: true X intersections and snap feedback
+---
 
-The user reported two related placement failures: snapping did not feel
-visible, and drawing one road through another with both ends beyond the
-crossing produced overlapping roads instead of an X junction.
+## THE standing hazard: no Luau runtime or typechecker
 
-The shipped path is now:
+`stylua` proves a file **parses**. Nothing proves an identifier exists. This has
+already shipped one live crash (`ringComponents` referencing a nil global, so
+every `Make Roundabout` threw on its first line) and produced three more
+near-misses in a single session:
 
-- `Geometry/CurveIntersections.lua` detects real line/Bezier crossings in the
-  ground plane and reports vertical separation.
-- The final point magnetically previews on endpoints, junctions, roundabouts,
-  and splittable road centrelines. Blue means snapped, green means a true
-  interior X will be created, and red explains why a detected crossing cannot
-  be split.
-- `RoadSplit.SplitMany` cuts the new and existing road(s) around caller-owned
-  shared node ids. One placement can cross multiple roads and is one Undo
-  recording.
-- `JunctionBuilder.TrimApproaches` trims both ends of a between-junctions
-  piece from the same preserved source segment, preventing one node rebuild
-  from undoing the other end's trim.
-- A vertical gap greater than `max(2, RoadThicknessStuds * 2)` is treated as
-  grade separation. Near-parallel contacts are not intersections.
+- `RegionStyles.RoundaboutMarkingStyles = ...` written ~300 lines **above**
+  `local RegionStyles = {}`.
+- A `RegionStyles.X` type reference added to `JunctionInstance.lua`, which does
+  not require `RegionStyles` at all.
+- `Components.Checkbox` given `Value`/`OnChanged` when it takes
+  `Label`/`Checked`/`OnToggled`.
 
-Still deliberately blocked, with red feedback: widening/narrowing roads, bus
-bays, missing editable curve data, and cuts that would leave a piece shorter
-than four studs. The first live Studio check should cover a straight X, a
-curve/straight X, multiple crossings in one placement, an elevated overpass,
-Undo, and one red blocked case.
+**So: after every edit, check that each new identifier is defined above its
+first use, and that the module it comes from is actually required in that
+file.** A one-off Python regex over the file is enough and takes seconds. Two
+helpers had to be physically moved (`DOWN`, `angleDelta`) when `buildIsland`
+grew to need them.
 
-## There is no Luau runtime or typechecker here
+Closing this properly is the highest-value unbuilt item in `TODO.md`. Checked,
+not assumed: GitHub and npm are blocked here (403) so `luau-analyze` cannot be
+fetched, but crates.io is reachable and `full_moon` (the Luau parser stylua
+itself uses) would do it. It needs SCOPE awareness — the name in that crash was
+a real parameter of a different function in the same file.
 
-This is the single biggest hazard, and it has already cost a shipped crash.
-`stylua` only proves the file **parses**. Nothing checks that an identifier
-exists. In `3fd2066` an edit landed in the wrong function and left
-`ringComponents` referencing `spokeProfile` — a nil global — so **every**
-`Make Roundabout` threw on its first line and built nothing. Fixed in
-`152b233`.
+---
 
-Two lessons worth keeping:
+## Current state
 
-1. When patching by matched text, anchor on something unique. That bug came
-   from a `replace(..., 1)` whose anchor line appears in two functions and
-   matched the wrong one first.
-2. `tools/preview` did **not** catch it, and structurally cannot: it is a
-   Python re-implementation of the geometry, not an execution of the Lua. It
-   validates the algorithm, never that the code runs.
+### Junctions — fixed, unconfirmed live
+The self-intersecting spiked pad and the faceted seam are both fixed.
+`cornerBoundaries` was aiming its edge directions along `+outward` on any span
+wider than 180°, so `Fillet.Compute` correctly rejected every one and the
+Hermite fallback looped the boundary across the pad interior. The pad is now
+ear-clipped (not centroid-fanned, which is invalid on the concave shapes a real
+pad has) with a convex-hull fallback, and wide gaps carry the kerb line through
+instead of chording. Regression test: `tools/preview/junction_pad_preview.py`,
+66 cases, all filling exactly once over.
 
-Closing this is the highest-value unbuilt item in `TODO.md`. Checked, not
-assumed: GitHub and npm are blocked here (403) so the official `luau-analyze`
-cannot be downloaded, but crates.io is reachable and `full_moon` parses Luau -
-see TODO for the path. Note it needs scope awareness: the name in that crash
-was a real parameter of a *different* function in the same file, so a
-whole-file global scan would not have caught it.
+### Roundabout — see ROUNDABOUT.md
+Fixed this session: the R=34–36 bare-ground band (an own-goal regression), the
+centre island's polygon mismatch, approach detection, roads passing beside the
+ring, the forced radius minimum, and the splitter running down the approach.
+Added: optional pavement, optional island, Continuous/SolidLanes markings.
 
-## Is the preview actually the same algorithm?
+**Still open, highest priority: the mouth INDENTATION** — the V-notch down each
+approach. It has now been through three wrong states because raised-or-nothing
+is a false choice; near the cut that wedge is carriageway, not median. Full
+analysis and the two-fill design in `ROUNDABOUT.md` §5.3d.
 
-Fair question, and it was asked. `tools/preview` is a hand-written Python
-re-implementation of `RoundaboutBuilder.lua`, not an execution of it, so
-"the preview says it is fine" on its own only means the preview agrees with
-itself. Two checks exist:
+### Nothing has been confirmed in Studio
+Every result in these docs is headless. The user's screenshots are the
+authority, and they have repeatedly shown defects the tooling passed.
 
-- `check_parity.py` - every constant present on both sides must match. Caught
-  real orphans the day it was written.
-- `dump_compare.py` + the **Print geometry to Output** button on the Junction
-  panel - compares BEHAVIOUR. The plugin side
-  (`RoundaboutBuilder.DescribeJunction`) reuses `planMouth`, `splitBudgetFor`
-  and `resolveSplits`, so it cannot drift into being a third implementation.
-  Run both, diff the text.
+---
 
-Until that diff has actually been run on a live junction, treat preview results
-as strong but unconfirmed.
+## How to actually make progress here
 
-## `tools/preview` — read its README first
+The pattern that works, learned the hard way over many wasted rounds:
 
-`tools/preview/roundabout_preview.py` simulates the **parts `RoadBuilder`
-actually emits** (rigid boxes per station interval, not idealised polygons)
-and reports two things:
+1. **Reproduce headlessly before fixing.** The junction zigzag survived three
+   rounds of guessing and fell in one session once `junction_pad_preview.py`
+   could reproduce it. Same for the R-band.
+2. **Measure, don't eyeball a screenshot.** Diagnosing from images produced a
+   repro of the wrong bug once, and two wrong root-cause hypotheses that probes
+   disproved outright (`openRingPavement` deleting by centre; `convexHull`
+   being the zigzag's cause).
+3. **Check what the tool does NOT cover before trusting a pass.** Every "clean"
+   this repo's preview printed for a long time was about a region that was
+   already fine — see the table in `ROUNDABOUT.md` §6.
+4. **Wait for the full run.** Twice in one session a conclusion was drawn from
+   partial output while the complete sweep was still running.
 
-- **bare ground** — polar scan of the ring footprint, clustered by angle with
-  a depth in studs; hairlines under `--hairline` (0.15) are reported, not failed
-- **approach/arm seam** — sweeps the road's perpendicular either side of the
-  cut and measures the cross-section step; 0.00 is flush
+---
+
+## tools/preview
+
+Python, stdlib only (its own PNG rasteriser). Simulates the **parts
+`RoadBuilder` actually emits** — rigid boxes per station interval, not
+idealised polygons.
 
 ```sh
-cd tools/preview && python3 roundabout_preview.py            # uk4 uk3 us4
-python3 roundabout_preview.py stress stress_us --no-render
+cd tools/preview
+python3 roundabout_preview.py                 # uk4 uk3 us4, WITH renders
+python3 roundabout_preview.py --no-render     # numbers only
+python3 junction_pad_preview.py               # junction regression, 66 cases
+python3 junction_pad_preview.py --legacy      # show the pre-fix behaviour
+python3 check_parity.py                       # constants shared with the Lua
 ```
 
-Exits non-zero on visible bare ground, so it works as a check. **Run it after
-any `RoundaboutBuilder` change.** All six cases currently pass.
+**Renders are on by default** — `out/*_parts.png` and `out/*_gaps.png`, where
+**magenta is bare ground**. Do not habitually pass `--no-render`; the images are
+the fastest way to see what a change did, and the user will ask for them.
 
-It models footprints in plan only — not heights, render order, dash phase or
-z-fighting. Those remain Studio-only checks.
+Ad-hoc probing:
 
-## Roundabout geometry, as it now stands
+```python
+import roundabout_preview as P
+legs = [(b, P.two_way(1, 1, True)) for b in (0, 120, 240)]
+sc = P.build(35.0, 1, legs, True, "probe",
+             grow=False, sidewalk=True, island=True, turbo=False)
+holes, pitch = P.scan_gaps(sc)      # ring annulus
+findings     = P.scan_mouths(sc)    # mouths: holes AND overhang
+P.render(sc, "out")
+```
 
-The ring is one continuous annulus, never sliced. Each approach is trimmed
-back and split into one-way arms that merge **tangentially onto the ring's
-rim**: an arm's centreline ends at the radius that puts its outer roadway edge
-exactly on the ring's kerb, carrying the ring's own tangent, so kerb, pavement
-and carriageway all flow in rather than butting into it.
+Its limits are written down in `ROUNDABOUT.md` §6 and matter — in particular
+`check_parity.py` compares **constants, not behaviour**, and two behaviour
+divergences slipped past it in one session.
 
-Things that are settled, and why — don't re-litigate these blind:
+---
 
-- **Circulation sign.** `circleSegments` uses `sign = if driveOnLeft then 1`.
-  Increasing angle runs +X toward +Z, which viewed from above is clockwise, so
-  left-hand drive is `+1`. Everything downstream reads handedness off this:
-  pavement side in `ringComponents`/`armProfileFor`, island side in
-  `ringInnerHalfWidthM`, `flow` in `buildMouth`. It was inverted before
-  `cfe4ca9` and was internally consistent, which is exactly why it survived so
-  long — nothing looked wrong until the arms encoded direction.
-- **Arms are aligned to the approach's own roadway edges**, not sized from
-  their own half-width plus a splitter. Sizing them the latter way makes the
-  pair wider than the road and steps the whole cross-section at the cut.
-- **Lanes split by `Direction`**, not by halving the count. Direction is
-  relative to the curve's travel, so the inbound sign flips with `atStart`.
-  One-way approaches get a single arm with pavements on both sides and no
-  splitter island.
-- **The mouth sector is inset, never expanded.** Deleting less ring pavement
-  than the arms cover is invisible; deleting more is bare ground in a ring of
-  pavement.
-- **Cubic handle is 0.30.** Both ends fight: a long handle walks the ring-end
-  control point across the gore until entry and exit close on each other, a
-  short one kinks the arm into a hairpin. 0.30 was measured, not chosen.
+## Reference sources
 
-## Known limits, honestly stated
+`reference/` is vendored read-only material, outside `src/` and not built:
+RoadCreator (Unity C#, MIT, pinned commit, `reference/roadcreator/README.md`)
+and a Lua road helper. Its algorithms may be translated with attribution.
 
-- **Crowded rings.** 5+ legs, or wide approaches on a ~40-stud radius, squeeze
-  the split until the arms run up against each other partway along. Nothing
-  overlaps; the mouth just reads as one wide opening and the island pinches.
-  The real fix is auto-sizing a minimum radius from entry width and leg count.
-- **Splitter waist.** A 4-leg ring still dips ~0.7 studs partway along.
-  Cosmetic.
-- **Hairlines at the island rim.** ~0.05 studs where the ring's innermost
-  strips chord across the island circle. Unfixable by padding without
-  overlapping the island instead.
-- **Nothing has been confirmed in Studio since the arm rewrite.** The last
-  live signal was the crash. The geometry is verified headless only.
+`src/Geometry/BezierCorner.lua` is a translation of that C# and is currently
+**unused** — nothing imports it, though it does ship in the built plugin. Either
+wire it in or delete it; it is a bounded-by-construction corner primitive, which
+is a stronger guarantee than the `chordExcursion` guard now used instead.
 
-## Immediate next step
+---
 
-Have the user reinstall `dist/EasyRoad.rbxmx` and exercise the X-intersection
-matrix above. Then place a roundabout among a few roads; that still needs the
-first live look at the split-arm mouths. Everything after that is in
-`TODO.md`.
+## Immediate next steps, in order
+
+1. **Reinstall `dist/EasyRoad.rbxmx` and look.** Nothing this session is
+   confirmed live. The indentation and the junction pad are the two to check.
+2. **The mouth indentation** (`ROUNDABOUT.md` §5.3d) — the two-fill design.
+   Note `scan_mouths` currently classifies that wedge as GORE, so the preview
+   will pass a mouth that is visibly wrong until that classification is
+   revisited.
+3. **Re-derive `MinimumRadiusStuds`.** It is now advisory, and it is 2–7× too
+   conservative — a 4-leg 2+2 ring is clean at R=10 against a "minimum" of 70.5.
+   A recommendation that wrong teaches people to ignore it. Needs a definition
+   of failure that is not bare ground, since nothing in that sweep fails.
+4. **Turbo markings** (`ROUNDABOUT.md` §5.3c) — smaller than first scoped;
+   `Markings.MarkingLine` already ramps a lateral offset along a curve.
+5. Highway shoulder treated as a lane; highway↔normal sidewalk transition;
+   cul-de-sacs. All unstarted.
