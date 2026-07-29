@@ -242,29 +242,37 @@ is profile data, not engine code.
 Requested on top of that: a **Turbo / Continuous** toggle in the roundabout
 build panel, with a default in regional settings.
 
-### 5.3c A real TURBO roundabout — NOT BUILT
-A turbo roundabout is a **spiral**, not a marking style. The inner lane is flung
-progressively outward until it becomes an exit lane, so the lane a driver enters
-commits them to a particular exit. Weaving is impossible by geometry, and the
-solid dividers merely enforce what the layout already decides.
+### 5.3c A real TURBO roundabout — NOT BUILT, but smaller than first thought
 
-That means it changes the RING GEOMETRY, and none of the current model supports
-it:
+**Correcting an earlier entry in this file.** It claimed turbo needs a second
+ring generator because "lane count and lane centres vary with angle". An aerial
+of a real spiral-marked roundabout (Tollbar End, A46) shows otherwise: the
+circulating **carriageway is a constant-width annulus**, exactly what is built
+today. Only the LANE BOUNDARIES inside it spiral, migrating outward with angle
+so the lane a driver entered is delivered to an exit.
 
-- the ring is one constant-width annulus of N concentric lanes
-  (`ringComponents` builds a fixed profile and `circleSegments` a plain
-  circle). A turbo ring's lane count and lane centres vary with angle.
-- each lane boundary would have to spiral outward between mouths rather than
-  close on itself, so `RoadBuilder`'s constant cross-section along a curve is
-  the wrong primitive for the circulating carriageway.
-- entries would have to feed specific lanes and exits take specific lanes,
-  which the mouth model does not represent - `splitApproachLanes` splits an
-  approach by `Direction` only, with no notion of which exit a lane serves.
-- the splitter islands and gores would follow the spiral, not the radial
-  mouth sectors `openRingPavement` assumes.
+So this is a markings feature after all — just not a solid/dashed flag. What it
+needs is a lane boundary whose **radial offset is a function of angle**, moving
+outward by roughly one lane width between consecutive mouths.
 
-So this is a second ring generator alongside the existing one, not an option on
-it. Worth scoping deliberately rather than growing into.
+The primitive already exists. `Markings.MarkingLine` carries `OffsetStartM` and
+`OffsetEndM` — a lateral offset that ramps along the curve — so a spiral is a
+series of lines, one per arc between mouths, each ramping outward. Nothing in
+`Markings.lua` has to change to express it.
+
+What does have to be worked out:
+
+- where each boundary starts and ends radially, given leg count and lane count
+  (they must line up with an exit, not land mid-carriageway);
+- the ring is ONE closed curve, so the lines have to be emitted per arc between
+  mouths rather than once around, and the seams have to meet;
+- what the innermost lane does when its boundary reaches the outer edge — in
+  the reference it becomes the exit lane and the next boundary takes over;
+- entry lanes would ideally feed the matching spiral lane, which the mouth
+  model does not represent (`splitApproachLanes` splits by `Direction` only).
+
+The first three are the actual build. The fourth is lane-connection work that
+can follow.
 
 ### 5.3d The mouth INDENTATION — OPEN, and the most reported defect
 Visible in every render and every Studio shot: a long thin V-shaped notch down

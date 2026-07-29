@@ -205,6 +205,14 @@ well understood they are, not by value.
 
 10. **Cul-de-sacs**: asked for, nothing exists. Open question, not a bug.
 
+## Turbo roundabout markings — scoped, not built
+
+Spiral lane boundaries on the existing constant-width ring. Smaller than the
+earlier note in this file claimed: no new ring generator, and
+`Markings.MarkingLine` already ramps a lateral offset along a curve
+(`OffsetStartM`/`OffsetEndM`), which is the primitive a spiral needs. See
+ROUNDABOUT.md 5.3c for what still has to be worked out.
+
 ## Roundabout mouth indentation — HIGHEST PRIORITY, open
 
 The V-shaped notch down the middle of each approach. Seen in all three states
