@@ -124,6 +124,15 @@ The remaining 1-2 samples are 0.13 and 0.21 studs deep against a 0.084-stud
 sample pitch - at or below the 0.15-stud hairline threshold the ring rim
 already reports as below visible.
 
+A wider sweep (17 radii x 3-leg and 4-leg) shows residual samples at R=50, 60
+and 80 as well - 5, 13 and 49. Those are NOT this defect: every one sits at
+`island_r + 0.04`, i.e. within one 0.084-stud sample pitch of the island edge,
+and the count grows with radius simply because the rim is longer. That is the
+island-rim hairline this file already documents. The sweep called `scan_gaps`
+raw; the tool's own `report()` path applies the 0.15-stud threshold and
+classifies them as below visible, which is why `uk3` has always printed its 13
+hairline clusters.
+
 Worth recording: the first hypothesis was that `openRingPavement` deleted
 parts by their CENTRE while their bodies extended past the sector edge. That
 was wrong, and the probe killed it cleanly - all 250 holes sat INSIDE the
