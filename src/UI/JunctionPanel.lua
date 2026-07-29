@@ -26,7 +26,7 @@ local function JunctionPanel(
 		OnPadMarginChanged: (value: number) -> (),
 		OnRebuild: () -> (),
 		OnDelete: () -> (),
-		OnMakeRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number) -> (),
+		OnMakeRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number, markings: string?) -> (),
 		-- Smallest radius the approaches meeting here physically fit into, and a
 		-- comfortable suggestion above it. Both depend on the ring's own lane
 		-- settings, which live here, so this is asked again as those change.
@@ -41,6 +41,10 @@ local function JunctionPanel(
 	local laneWidthM, setLaneWidthM = React.useState(DEFAULT_LANE_WIDTH_M)
 	local minimum, suggested = props.GetRoundaboutRadii(laneCount, laneWidthM)
 	local radiusStuds, setRadiusStuds = React.useState(if suggested > 0 then suggested else DEFAULT_RADIUS_STUDS)
+	-- nil means "follow the region's default", which is why this is not a
+	-- boolean: the panel has to be able to say "not overridden" as well as
+	-- which of the two styles was picked.
+	local markings, setMarkings = React.useState(nil :: string?)
 	local touched, setTouched = React.useState(false)
 
 	-- Follow the suggestion while the user has not overridden it. Changing lane
@@ -151,12 +155,28 @@ local function JunctionPanel(
 			}),
 			Unit = e(Components.Label, { Text = "meters", Dim = true, LayoutOrder = 3 }),
 		})
+		children.RoundaboutMarkings = e(Components.Row, { LayoutOrder = 14 }, {
+			Label = e(Components.Label, { Text = "Markings", LayoutOrder = 1, Width = 60 }),
+			Field = e(Components.Dropdown, {
+				Options = {
+					{ Id = "Region", Text = "Region default" },
+					{ Id = "Continuous", Text = "Continuous (dashed lanes)" },
+					{ Id = "Turbo", Text = "Turbo (solid lanes)" },
+				},
+				SelectedId = markings or "Region",
+				OnSelected = function(id: string)
+					setMarkings(if id == "Region" then nil else id)
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		})
 		children.MakeRoundabout = e(Components.Button, {
 			Text = "Make Roundabout",
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 14,
+			LayoutOrder = 15,
 			OnClick = function()
-				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM)
+				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM, markings)
 			end,
 		})
 		-- The radius is built AS ASKED, including below the recommendation.

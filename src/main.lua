@@ -750,16 +750,27 @@ return function(
 						)
 					)
 				end,
-				OnMakeRoundabout = function(radiusStuds: number, laneCount: number, laneWidthM: number)
+				OnMakeRoundabout = function(
+					radiusStuds: number,
+					laneCount: number,
+					laneWidthM: number,
+					markings: string?
+				)
 					local junctionModel = junctionEditSession.GetSelectedJunction()
 					if not junctionModel then
 						return
 					end
+					local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Make roundabout")
+					-- Stamped BEFORE reading the junction back, because
+					-- CreateAtJunction reads the override off the junction data.
+					JunctionInstance.SetRoundaboutMarkings(junctionModel, markings)
 					local junctionData = JunctionInstance.Read(junctionModel)
 					if not junctionData then
+						if recording then
+							ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Cancel)
+						end
 						return
 					end
-					local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Make roundabout")
 					RoundaboutBuilder.CreateAtJunction(
 						junctionData.Id,
 						radiusStuds,

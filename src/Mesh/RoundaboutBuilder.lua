@@ -86,8 +86,23 @@ local function ringComponents(
 	style: RegionStyles.RegionStyle
 ): { RoadProfile.ProfileComponent }
 	local components: { RoadProfile.ProfileComponent } = {}
-	for _ = 1, math.max(1, math.floor(laneCount)) do
-		table.insert(components, { Kind = "Drive", WidthM = laneWidthM, Direction = 1 })
+	-- TURBO rings hold each vehicle in the lane it entered: the boundary
+	-- between circulating lanes is SOLID, so changing lanes on the ring is
+	-- prohibited rather than merely discouraged. CONTINUOUS leaves the boundary
+	-- on "Auto", which resolves to the region's own dashed lane line.
+	--
+	-- Set on every lane but the last: `RightBoundary` describes the gap to the
+	-- component on its right, and the last lane's right-hand neighbour is the
+	-- pavement, whose edge line is the region's business rather than ours.
+	local lanes = math.max(1, math.floor(laneCount))
+	local turbo = style.RoundaboutMarkings == "Turbo"
+	for i = 1, lanes do
+		table.insert(components, {
+			Kind = "Drive",
+			WidthM = laneWidthM,
+			Direction = 1,
+			RightBoundary = if turbo and i < lanes then "Solid" else nil,
+		})
 	end
 	local sidewalk: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
 	-- Right of travel is -sign * radially-outward, so the OUTWARD side is the
@@ -1487,7 +1502,17 @@ function RoundaboutBuilder.CreateAtJunction(
 		stale:Destroy()
 	end
 
-	local components = ringComponents(laneCount, laneWidthM, style)
+	-- Per-roundabout marking override, falling back to the region's default.
+	-- Applied by cloning the style rather than threading another argument
+	-- through every builder that touches it - `ringComponents` already reads
+	-- the style, so this is the narrowest place to inject it.
+	local ringStyle = style
+	if junctionData.RoundaboutMarkings then
+		ringStyle = table.clone(style)
+		ringStyle.RoundaboutMarkings = junctionData.RoundaboutMarkings :: RegionStyles.RoundaboutMarkingStyle
+	end
+
+	local components = ringComponents(laneCount, laneWidthM, ringStyle)
 	local profile: RoadProfile.RoadProfile = {
 		Id = "roundabout_ring",
 		Name = "Roundabout",

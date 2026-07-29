@@ -226,6 +226,30 @@ local function RegionEditor(props: {
 		order += 1
 	end
 
+	children.RoundaboutSection = e(Components.Section, { Text = "Roundabouts", LayoutOrder = order })
+	order += 1
+	children.RoundaboutMarkings = e(LabeledRow, {
+		Label = "Circulating lane markings",
+		LayoutOrder = order,
+		children = {
+			Dropdown = e(Components.Dropdown, {
+				Options = {
+					{ Id = "Continuous", Text = "Continuous - dashed between lanes" },
+					{ Id = "Turbo", Text = "Turbo - solid between lanes" },
+				},
+				-- nil reads as Continuous, so a region that predates this field
+				-- shows the behaviour it actually has rather than an empty box.
+				SelectedId = style.RoundaboutMarkings or "Continuous",
+				OnSelected = function(id: string)
+					set("RoundaboutMarkings", id :: RegionStyles.RoundaboutMarkingStyle)
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		},
+	})
+	order += 1
+
 	children.SuperelevationSection = e(Components.Section, { Text = "Superelevation limits", LayoutOrder = order })
 	order += 1
 	children.MaxSuperelevation = e(LabeledRow, {

@@ -1661,6 +1661,14 @@ export type JunctionData = {
 	Position: Vector3,
 	-- Optional user overrides (node controller). nil = builder defaults.
 	FilletRadiusM: number?,
+	-- Per-roundabout override of the region's default circulating-lane marking
+	-- style: "Continuous" | "Turbo". nil = follow the region.
+	--
+	-- Typed as a plain string, and validated against the local list below,
+	-- rather than importing RegionStyles' union. This module is a leaf that
+	-- everything else reads, and it does not otherwise depend on RegionStyles -
+	-- worth keeping that way for one field.
+	RoundaboutMarkings: string?,
 	PadMarginStuds: number?,
 }
 
@@ -1739,6 +1747,10 @@ function JunctionInstance.Create(position: Vector3): Model
 	return model
 end
 
+-- Kept in step with RegionStyles.RoundaboutMarkingStyles by hand; the two are
+-- deliberately not coupled (see the JunctionData field note).
+local ROUNDABOUT_MARKING_STYLES = { "Continuous", "Turbo" }
+
 function JunctionInstance.Read(model: Model): JunctionData?
 	local id = model:GetAttribute("RW_JunctionId")
 	local position = model:GetAttribute("RW_Position")
@@ -1747,11 +1759,15 @@ function JunctionInstance.Read(model: Model): JunctionData?
 	end
 	local fillet = model:GetAttribute("RW_FilletRadiusM")
 	local margin = model:GetAttribute("RW_PadMarginStuds")
+	local markings = model:GetAttribute("RW_RoundaboutMarkings")
 	return {
 		Id = id,
 		Position = position,
 		FilletRadiusM = if typeof(fillet) == "number" then fillet else nil,
 		PadMarginStuds = if typeof(margin) == "number" then margin else nil,
+		RoundaboutMarkings = if typeof(markings) == "string" and table.find(ROUNDABOUT_MARKING_STYLES, markings)
+			then markings
+			else nil,
 	}
 end
 
@@ -1761,6 +1777,10 @@ end
 
 function JunctionInstance.SetFilletRadiusM(model: Model, radiusM: number?)
 	model:SetAttribute("RW_FilletRadiusM", radiusM)
+end
+
+function JunctionInstance.SetRoundaboutMarkings(model: Model, kind: string?)
+	model:SetAttribute("RW_RoundaboutMarkings", kind)
 end
 
 function JunctionInstance.SetPadMarginStuds(model: Model, marginStuds: number?)
@@ -5536,8 +5556,23 @@ local function ringComponents(
 	style: RegionStyles.RegionStyle
 ): { RoadProfile.ProfileComponent }
 	local components: { RoadProfile.ProfileComponent } = {}
-	for _ = 1, math.max(1, math.floor(laneCount)) do
-		table.insert(components, { Kind = "Drive", WidthM = laneWidthM, Direction = 1 })
+	-- TURBO rings hold each vehicle in the lane it entered: the boundary
+	-- between circulating lanes is SOLID, so changing lanes on the ring is
+	-- prohibited rather than merely discouraged. CONTINUOUS leaves the boundary
+	-- on "Auto", which resolves to the region's own dashed lane line.
+	--
+	-- Set on every lane but the last: `RightBoundary` describes the gap to the
+	-- component on its right, and the last lane's right-hand neighbour is the
+	-- pavement, whose edge line is the region's business rather than ours.
+	local lanes = math.max(1, math.floor(laneCount))
+	local turbo = style.RoundaboutMarkings == "Turbo"
+	for i = 1, lanes do
+		table.insert(components, {
+			Kind = "Drive",
+			WidthM = laneWidthM,
+			Direction = 1,
+			RightBoundary = if turbo and i &lt; lanes then "Solid" else nil,
+		})
 	end
 	local sidewalk: RoadProfile.ProfileComponent = { Kind = "Sidewalk", WidthM = style.SidewalkWidthM, Direction = 0 }
 	-- Right of travel is -sign * radially-outward, so the OUTWARD side is the
@@ -6937,7 +6972,17 @@ function RoundaboutBuilder.CreateAtJunction(
 		stale:Destroy()
 	end
 
-	local components = ringComponents(laneCount, laneWidthM, style)
+	-- Per-roundabout marking override, falling back to the region's default.
+	-- Applied by cloning the style rather than threading another argument
+	-- through every builder that touches it - `ringComponents` already reads
+	-- the style, so this is the narrowest place to inject it.
+	local ringStyle = style
+	if junctionData.RoundaboutMarkings then
+		ringStyle = table.clone(style)
+		ringStyle.RoundaboutMarkings = junctionData.RoundaboutMarkings :: RegionStyles.RoundaboutMarkingStyle
+	end
+
+	local components = ringComponents(laneCount, laneWidthM, ringStyle)
 	local profile: RoadProfile.RoadProfile = {
 		Id = "roundabout_ring",
 		Name = "Roundabout",
@@ -7514,6 +7559,19 @@ export type MarkingSpec = {
 	DashGapM: number?,
 }
 
+-- How a roundabout's circulating lanes are marked.
+--   Continuous - concentric dashed lane lines; changing lanes on the ring is
+--                permitted, which is the ordinary UK/US pattern.
+--   Turbo      - solid lines between circulating lanes, so a vehicle is held in
+--                the lane it entered the whole way round. Dutch "turbo"
+--                roundabout practice; safer at high flow, and the reason is
+--                that lane changing on the ring is what causes most conflicts.
+export type RoundaboutMarkingStyle = "Continuous" | "Turbo"
+
+local RoundaboutMarkingStyles: { RoundaboutMarkingStyle } = {
+	"Continuous" :: RoundaboutMarkingStyle,
+	"Turbo" :: RoundaboutMarkingStyle,
+}
 export type RegionStyle = {
 	Id: string,
 	Name: string,
@@ -7540,6 +7598,11 @@ export type RegionStyle = {
 	DashGapM: number,
 	WhiteMarking: Color3,
 	YellowMarking: Color3,
+
+	-- Default roundabout marking style. Optional: nil reads as "Continuous",
+	-- so a region that never mentions it - including every user region
+	-- serialised before this existed - keeps the previous behaviour.
+	RoundaboutMarkings: RoundaboutMarkingStyle?,
 
 	-- Superelevation design values
 	MaxSuperelevation: number, -- Max cross slope as a ratio, e.g. 0.07 = 7%
@@ -7803,6 +7866,10 @@ end
 
 local RegionStyles = {}
 
+-- Exported for the UI's dropdown. Declared here rather than beside the type
+-- above because that point is before `RegionStyles` itself exists.
+RegionStyles.RoundaboutMarkingStyles = RoundaboutMarkingStyles
+
 RegionStyles.All = Styles
 
 function RegionStyles.Get(id: string): RegionStyle
@@ -7862,6 +7929,7 @@ function RegionStyles.Clone(style: RegionStyle): RegionStyle
 		DashGapM = style.DashGapM,
 		WhiteMarking = style.WhiteMarking,
 		YellowMarking = style.YellowMarking,
+		RoundaboutMarkings = style.RoundaboutMarkings,
 		MaxSuperelevation = style.MaxSuperelevation,
 		DesignSpeedKph = style.DesignSpeedKph,
 		AsphaltColor = style.AsphaltColor,
@@ -7883,7 +7951,12 @@ local function serializeColor(color: Color3): { [string]: number }
 end
 
 local function deserializeColor(raw: any, fallback: Color3): Color3
-	if typeof(raw) ~= "table" or typeof(raw.R) ~= "number" or typeof(raw.G) ~= "number" or typeof(raw.B) ~= "number" then
+	if
+		typeof(raw) ~= "table"
+		or typeof(raw.R) ~= "number"
+		or typeof(raw.G) ~= "number"
+		or typeof(raw.B) ~= "number"
+	then
 		return fallback
 	end
 	return Color3.fromRGB(math.clamp(raw.R, 0, 255), math.clamp(raw.G, 0, 255), math.clamp(raw.B, 0, 255))
@@ -7933,6 +8006,7 @@ function RegionStyles.Serialize(style: RegionStyle): { [string]: any }
 		DashGapM = style.DashGapM,
 		WhiteMarking = serializeColor(style.WhiteMarking),
 		YellowMarking = serializeColor(style.YellowMarking),
+		RoundaboutMarkings = style.RoundaboutMarkings,
 		MaxSuperelevation = style.MaxSuperelevation,
 		DesignSpeedKph = style.DesignSpeedKph,
 		AsphaltColor = serializeColor(style.AsphaltColor),
@@ -7973,6 +8047,9 @@ function RegionStyles.Deserialize(raw: any): RegionStyle?
 		DashGapM = num(raw.DashGapM, fallback.DashGapM),
 		WhiteMarking = deserializeColor(raw.WhiteMarking, fallback.WhiteMarking),
 		YellowMarking = deserializeColor(raw.YellowMarking, fallback.YellowMarking),
+		RoundaboutMarkings = if table.find(RoundaboutMarkingStyles, raw.RoundaboutMarkings)
+			then raw.RoundaboutMarkings :: RoundaboutMarkingStyle
+			else nil,
 		MaxSuperelevation = num(raw.MaxSuperelevation, fallback.MaxSuperelevation),
 		DesignSpeedKph = num(raw.DesignSpeedKph, fallback.DesignSpeedKph),
 		AsphaltColor = deserializeColor(raw.AsphaltColor, fallback.AsphaltColor),
@@ -12213,7 +12290,7 @@ local function JunctionPanel(
 		OnPadMarginChanged: (value: number) -&gt; (),
 		OnRebuild: () -&gt; (),
 		OnDelete: () -&gt; (),
-		OnMakeRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number) -&gt; (),
+		OnMakeRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number, markings: string?) -&gt; (),
 		-- Smallest radius the approaches meeting here physically fit into, and a
 		-- comfortable suggestion above it. Both depend on the ring's own lane
 		-- settings, which live here, so this is asked again as those change.
@@ -12228,6 +12305,10 @@ local function JunctionPanel(
 	local laneWidthM, setLaneWidthM = React.useState(DEFAULT_LANE_WIDTH_M)
 	local minimum, suggested = props.GetRoundaboutRadii(laneCount, laneWidthM)
 	local radiusStuds, setRadiusStuds = React.useState(if suggested &gt; 0 then suggested else DEFAULT_RADIUS_STUDS)
+	-- nil means "follow the region's default", which is why this is not a
+	-- boolean: the panel has to be able to say "not overridden" as well as
+	-- which of the two styles was picked.
+	local markings, setMarkings = React.useState(nil :: string?)
 	local touched, setTouched = React.useState(false)
 
 	-- Follow the suggestion while the user has not overridden it. Changing lane
@@ -12338,12 +12419,28 @@ local function JunctionPanel(
 			}),
 			Unit = e(Components.Label, { Text = "meters", Dim = true, LayoutOrder = 3 }),
 		})
+		children.RoundaboutMarkings = e(Components.Row, { LayoutOrder = 14 }, {
+			Label = e(Components.Label, { Text = "Markings", LayoutOrder = 1, Width = 60 }),
+			Field = e(Components.Dropdown, {
+				Options = {
+					{ Id = "Region", Text = "Region default" },
+					{ Id = "Continuous", Text = "Continuous (dashed lanes)" },
+					{ Id = "Turbo", Text = "Turbo (solid lanes)" },
+				},
+				SelectedId = markings or "Region",
+				OnSelected = function(id: string)
+					setMarkings(if id == "Region" then nil else id)
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		})
 		children.MakeRoundabout = e(Components.Button, {
 			Text = "Make Roundabout",
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 14,
+			LayoutOrder = 15,
 			OnClick = function()
-				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM)
+				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM, markings)
 			end,
 		})
 		-- The radius is built AS ASKED, including below the recommendation.
@@ -13521,6 +13618,30 @@ local function RegionEditor(props: {
 		})
 		order += 1
 	end
+
+	children.RoundaboutSection = e(Components.Section, { Text = "Roundabouts", LayoutOrder = order })
+	order += 1
+	children.RoundaboutMarkings = e(LabeledRow, {
+		Label = "Circulating lane markings",
+		LayoutOrder = order,
+		children = {
+			Dropdown = e(Components.Dropdown, {
+				Options = {
+					{ Id = "Continuous", Text = "Continuous - dashed between lanes" },
+					{ Id = "Turbo", Text = "Turbo - solid between lanes" },
+				},
+				-- nil reads as Continuous, so a region that predates this field
+				-- shows the behaviour it actually has rather than an empty box.
+				SelectedId = style.RoundaboutMarkings or "Continuous",
+				OnSelected = function(id: string)
+					set("RoundaboutMarkings", id :: RegionStyles.RoundaboutMarkingStyle)
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		},
+	})
+	order += 1
 
 	children.SuperelevationSection = e(Components.Section, { Text = "Superelevation limits", LayoutOrder = order })
 	order += 1
@@ -18275,16 +18396,27 @@ return function(
 						)
 					)
 				end,
-				OnMakeRoundabout = function(radiusStuds: number, laneCount: number, laneWidthM: number)
+				OnMakeRoundabout = function(
+					radiusStuds: number,
+					laneCount: number,
+					laneWidthM: number,
+					markings: string?
+				)
 					local junctionModel = junctionEditSession.GetSelectedJunction()
 					if not junctionModel then
 						return
 					end
+					local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Make roundabout")
+					-- Stamped BEFORE reading the junction back, because
+					-- CreateAtJunction reads the override off the junction data.
+					JunctionInstance.SetRoundaboutMarkings(junctionModel, markings)
 					local junctionData = JunctionInstance.Read(junctionModel)
 					if not junctionData then
+						if recording then
+							ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Cancel)
+						end
 						return
 					end
-					local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Make roundabout")
 					RoundaboutBuilder.CreateAtJunction(
 						junctionData.Id,
 						radiusStuds,

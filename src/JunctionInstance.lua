@@ -19,6 +19,14 @@ export type JunctionData = {
 	Position: Vector3,
 	-- Optional user overrides (node controller). nil = builder defaults.
 	FilletRadiusM: number?,
+	-- Per-roundabout override of the region's default circulating-lane marking
+	-- style: "Continuous" | "Turbo". nil = follow the region.
+	--
+	-- Typed as a plain string, and validated against the local list below,
+	-- rather than importing RegionStyles' union. This module is a leaf that
+	-- everything else reads, and it does not otherwise depend on RegionStyles -
+	-- worth keeping that way for one field.
+	RoundaboutMarkings: string?,
 	PadMarginStuds: number?,
 }
 
@@ -97,6 +105,10 @@ function JunctionInstance.Create(position: Vector3): Model
 	return model
 end
 
+-- Kept in step with RegionStyles.RoundaboutMarkingStyles by hand; the two are
+-- deliberately not coupled (see the JunctionData field note).
+local ROUNDABOUT_MARKING_STYLES = { "Continuous", "Turbo" }
+
 function JunctionInstance.Read(model: Model): JunctionData?
 	local id = model:GetAttribute("RW_JunctionId")
 	local position = model:GetAttribute("RW_Position")
@@ -105,11 +117,15 @@ function JunctionInstance.Read(model: Model): JunctionData?
 	end
 	local fillet = model:GetAttribute("RW_FilletRadiusM")
 	local margin = model:GetAttribute("RW_PadMarginStuds")
+	local markings = model:GetAttribute("RW_RoundaboutMarkings")
 	return {
 		Id = id,
 		Position = position,
 		FilletRadiusM = if typeof(fillet) == "number" then fillet else nil,
 		PadMarginStuds = if typeof(margin) == "number" then margin else nil,
+		RoundaboutMarkings = if typeof(markings) == "string" and table.find(ROUNDABOUT_MARKING_STYLES, markings)
+			then markings
+			else nil,
 	}
 end
 
@@ -119,6 +135,10 @@ end
 
 function JunctionInstance.SetFilletRadiusM(model: Model, radiusM: number?)
 	model:SetAttribute("RW_FilletRadiusM", radiusM)
+end
+
+function JunctionInstance.SetRoundaboutMarkings(model: Model, kind: string?)
+	model:SetAttribute("RW_RoundaboutMarkings", kind)
 end
 
 function JunctionInstance.SetPadMarginStuds(model: Model, marginStuds: number?)

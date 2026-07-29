@@ -188,6 +188,24 @@ gradually and visibly, which the user can judge.
 **Still open:** re-derive the minimum from where the geometry actually fails,
 so the recommendation is worth following.
 
+### 5.3a Turbo vs Continuous — SHIPPED
+`RegionStyle.RoundaboutMarkings` ("Continuous" | "Turbo") sets the regional
+default; `JunctionData.RoundaboutMarkings` overrides it per roundabout. Both
+optional, both nil-reads-as-Continuous, so every region and junction that
+predates the field keeps its behaviour.
+
+Turbo sets `RightBoundary = "Solid"` on every circulating lane but the last, so
+a vehicle is held in the lane it entered. Continuous leaves the boundary on
+"Auto", which resolves to the region's dashed lane line. The last lane is
+skipped deliberately: `RightBoundary` describes the gap to the component on its
+right, and the last lane's neighbour is the pavement, whose edge line is the
+region's business.
+
+`JunctionInstance` validates the value against a local list rather than
+importing `RegionStyles`' union — it is a leaf module everything else reads and
+is worth keeping free of that dependency for one field. The two lists are kept
+in step by hand.
+
 ### 5.3 Markings do not match the preview
 The preview never ported `Mesh/Markings.lua`; it approximates it in ~30 lines.
 **Do not "fix" this by replacing `Markings.lua` with the Python rule** — eleven

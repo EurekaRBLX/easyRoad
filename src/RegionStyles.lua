@@ -22,6 +22,19 @@ export type MarkingSpec = {
 	DashGapM: number?,
 }
 
+-- How a roundabout's circulating lanes are marked.
+--   Continuous - concentric dashed lane lines; changing lanes on the ring is
+--                permitted, which is the ordinary UK/US pattern.
+--   Turbo      - solid lines between circulating lanes, so a vehicle is held in
+--                the lane it entered the whole way round. Dutch "turbo"
+--                roundabout practice; safer at high flow, and the reason is
+--                that lane changing on the ring is what causes most conflicts.
+export type RoundaboutMarkingStyle = "Continuous" | "Turbo"
+
+local RoundaboutMarkingStyles: { RoundaboutMarkingStyle } = {
+	"Continuous" :: RoundaboutMarkingStyle,
+	"Turbo" :: RoundaboutMarkingStyle,
+}
 export type RegionStyle = {
 	Id: string,
 	Name: string,
@@ -48,6 +61,11 @@ export type RegionStyle = {
 	DashGapM: number,
 	WhiteMarking: Color3,
 	YellowMarking: Color3,
+
+	-- Default roundabout marking style. Optional: nil reads as "Continuous",
+	-- so a region that never mentions it - including every user region
+	-- serialised before this existed - keeps the previous behaviour.
+	RoundaboutMarkings: RoundaboutMarkingStyle?,
 
 	-- Superelevation design values
 	MaxSuperelevation: number, -- Max cross slope as a ratio, e.g. 0.07 = 7%
@@ -311,6 +329,10 @@ end
 
 local RegionStyles = {}
 
+-- Exported for the UI's dropdown. Declared here rather than beside the type
+-- above because that point is before `RegionStyles` itself exists.
+RegionStyles.RoundaboutMarkingStyles = RoundaboutMarkingStyles
+
 RegionStyles.All = Styles
 
 function RegionStyles.Get(id: string): RegionStyle
@@ -370,6 +392,7 @@ function RegionStyles.Clone(style: RegionStyle): RegionStyle
 		DashGapM = style.DashGapM,
 		WhiteMarking = style.WhiteMarking,
 		YellowMarking = style.YellowMarking,
+		RoundaboutMarkings = style.RoundaboutMarkings,
 		MaxSuperelevation = style.MaxSuperelevation,
 		DesignSpeedKph = style.DesignSpeedKph,
 		AsphaltColor = style.AsphaltColor,
@@ -391,7 +414,12 @@ local function serializeColor(color: Color3): { [string]: number }
 end
 
 local function deserializeColor(raw: any, fallback: Color3): Color3
-	if typeof(raw) ~= "table" or typeof(raw.R) ~= "number" or typeof(raw.G) ~= "number" or typeof(raw.B) ~= "number" then
+	if
+		typeof(raw) ~= "table"
+		or typeof(raw.R) ~= "number"
+		or typeof(raw.G) ~= "number"
+		or typeof(raw.B) ~= "number"
+	then
 		return fallback
 	end
 	return Color3.fromRGB(math.clamp(raw.R, 0, 255), math.clamp(raw.G, 0, 255), math.clamp(raw.B, 0, 255))
@@ -441,6 +469,7 @@ function RegionStyles.Serialize(style: RegionStyle): { [string]: any }
 		DashGapM = style.DashGapM,
 		WhiteMarking = serializeColor(style.WhiteMarking),
 		YellowMarking = serializeColor(style.YellowMarking),
+		RoundaboutMarkings = style.RoundaboutMarkings,
 		MaxSuperelevation = style.MaxSuperelevation,
 		DesignSpeedKph = style.DesignSpeedKph,
 		AsphaltColor = serializeColor(style.AsphaltColor),
@@ -481,6 +510,9 @@ function RegionStyles.Deserialize(raw: any): RegionStyle?
 		DashGapM = num(raw.DashGapM, fallback.DashGapM),
 		WhiteMarking = deserializeColor(raw.WhiteMarking, fallback.WhiteMarking),
 		YellowMarking = deserializeColor(raw.YellowMarking, fallback.YellowMarking),
+		RoundaboutMarkings = if table.find(RoundaboutMarkingStyles, raw.RoundaboutMarkings)
+			then raw.RoundaboutMarkings :: RoundaboutMarkingStyle
+			else nil,
 		MaxSuperelevation = num(raw.MaxSuperelevation, fallback.MaxSuperelevation),
 		DesignSpeedKph = num(raw.DesignSpeedKph, fallback.DesignSpeedKph),
 		AsphaltColor = deserializeColor(raw.AsphaltColor, fallback.AsphaltColor),
