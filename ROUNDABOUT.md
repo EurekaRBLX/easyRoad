@@ -266,6 +266,48 @@ it:
 So this is a second ring generator alongside the existing one, not an option on
 it. Worth scoping deliberately rather than growing into.
 
+### 5.3d The mouth INDENTATION — OPEN, and the most reported defect
+Visible in every render and every Studio shot: a long thin V-shaped notch down
+the middle of each approach, from the ring back toward the cut, tapering to
+nothing.
+
+It is not a bug in the splitter island. It is a consequence of the arm model
+that the island was being used to paper over, and it has now been seen in all
+three possible states:
+
+1. **Island filled the whole gore** (before `MIN_GORE_WIDTH_M`) — a raised
+   strip down the middle of an approach with no median. Reported as "there is
+   median when there is no median for the type of road used".
+2. **Island started too far out** (the first fix) — a thin raised sliver
+   running ~17 studs down the approach. Same complaint, smaller.
+3. **Island starts at the ring's outer edge** (current) — the wedge between the
+   cut and the outer edge is now OPEN GROUND. Reported as the indentation.
+
+The wedge itself is unavoidable: entry and exit are separate one-way roads that
+coincide at the cut and diverge toward the ring, so there is always a V between
+them. The question is only what fills it.
+
+**All three states answer that wrongly, because raised-or-nothing is a false
+choice.** Between the cut and roughly where a splitter becomes physically
+plausible, that wedge is not a median at all — it is the approach's own
+carriageway widening as it fans into the mouth. It should be **flat asphalt at
+deck level**, continuous with both arms. Only further in, where the gore is wide
+enough to stand on, should it become a raised kerbed island.
+
+So the fix is a third fill, not a different threshold:
+
+    cut ......... outer edge ......... ring kerb
+    |<- flat asphalt ->|<- raised splitter island ->|
+
+`MIN_GORE_WIDTH_M` then stops being a "build or don't" switch and becomes the
+boundary between the two fills, which is what it was reaching for.
+
+Note the preview cannot currently fail this: the wedge is open ground BETWEEN
+two roads, so `scan_mouths` classifies it as GORE (open by design since the
+splitter change) rather than HOLE. That classification was right for the
+question it was asked and wrong for this one — it will need revisiting alongside
+the fix.
+
 ### 5.4 Clipping at arm ends
 A wedge of raised pavement juts across the asphalt where an arm meets its
 approach. `scan_mouths` detects this class now but **it does not reproduce**

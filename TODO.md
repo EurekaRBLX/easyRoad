@@ -205,6 +205,14 @@ well understood they are, not by value.
 
 10. **Cul-de-sacs**: asked for, nothing exists. Open question, not a bug.
 
+## Roundabout mouth indentation — HIGHEST PRIORITY, open
+
+The V-shaped notch down the middle of each approach. Seen in all three states
+now (raised full-length, raised sliver, open ground) because raised-or-nothing
+is a false choice: near the cut that wedge is the carriageway fanning out and
+should be FLAT ASPHALT, becoming a raised island only further in. See
+ROUNDABOUT.md 5.3d for the full analysis and the two-fill design.
+
 ## Junction corners: remaining work
 
 - **Bunched legs fall back to the convex hull.** When several legs sit within
