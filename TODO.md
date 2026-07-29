@@ -96,7 +96,36 @@ well understood they are, not by value.
 
    Take those in that order. Markings first.
 
-5. **Clipping: pavement over the carriageway at an arm end.** Live screenshot
+5. **Small roundabouts: the preview and the plugin build different rings.**
+   Found while chasing "bugs out on smaller intersections", and it is a
+   BEHAVIOUR parity gap, the class `check_parity.py` structurally cannot see.
+
+   `MinimumRadiusStuds` for a plain 4-leg, 1+1 roundabout is **42.8 studs**.
+   The plugin grows any smaller request up to that (`grown = max(radius,
+   minimum)`). The preview's `build()` does NOT - asked for 12 it builds 12:
+
+       asked R   island_r   outerR    cutR
+            12        1.9     22.1    50.1
+            20        9.9     30.1    58.1
+            40       29.9     50.1    92.7
+
+   So every "clean" the preview has reported at a small radius was reporting
+   on a ring the plugin would never build, and the small-radius regime the
+   user reports as buggy has never actually been tested. Note the default 40
+   is itself below the 42.8 minimum, so even the standard case is silently
+   grown in the plugin and not in the preview.
+
+   Two things to do, in order:
+   a. Apply the same growth in `roundabout_preview.build()` so the two build
+      the same ring, then re-run the small-radius sweep - it may reproduce the
+      live defect immediately.
+   b. Decide whether silently inflating a 12-stud request to 43 is the right
+      behaviour at all. It is very likely what "bugs out on smaller
+      intersections" actually is: the user asks for a small roundabout and
+      gets a large one. If so the fix is UI, not geometry - surface the
+      minimum (item 8) and let the user see why it grew.
+
+6. **Clipping: pavement over the carriageway at an arm end.** Live screenshot
    shows a wedge of raised pavement jutting across the asphalt where an arm
    meets its approach.
 
@@ -118,7 +147,7 @@ well understood they are, not by value.
    Next: compare the arm's first/last emitted Part against the approach road's
    last/first one in the LUA, not the port - part CFrame and Size, not extent.
 
-6. **Markings: match the preview's layout.** DECIDED, not built.
+7. **Markings: match the preview's layout.** DECIDED, not built.
 
    User's call, given the two renders side by side: the roundabout should look
    like `tools/preview/out/uk4_parts.png`. That is the TARGET APPEARANCE.
@@ -152,16 +181,16 @@ well understood they are, not by value.
    components, then set the specs to close the gap. Small and local; it is
    profile data, not engine code.
 
-7. **The radius suggestion is not offered by the Roundabout tool in the Road
+8. **The radius suggestion is not offered by the Roundabout tool in the Road
    Builder widget**, only on the junction panel. `RoundaboutBuilder.SuggestedRadiusStuds`
    already exists and is UI-agnostic; this is wiring.
 
-8. **The suggestion does not adapt to the lane count of the roads actually
+9. **The suggestion does not adapt to the lane count of the roads actually
    connected** - it uses the panel's lane count. It should take the maximum
    over the connected approaches. `MinimumRadiusStuds` already walks the legs
    and knows each one's width, so the input is there.
 
-9. **Cul-de-sacs**: asked for, nothing exists. Open question, not a bug.
+10. **Cul-de-sacs**: asked for, nothing exists. Open question, not a bug.
 
 ## Junction corners: remaining work
 
