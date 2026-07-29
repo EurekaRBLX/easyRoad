@@ -96,38 +96,39 @@ well understood they are, not by value.
 
    Take those in that order. Markings first.
 
-5. **Markings on the built roundabout do not match the preview.** CAUSE
-   FOUND, not fixed.
+5. **Markings: match the preview's layout.** DECIDED, not built.
 
-   The preview does not port `Mesh/Markings.lua` at all - it approximates it,
-   in ~30 lines inside `emit_road`: a solid line just inside each ROADWAY
-   edge, and a dashed line between any two adjacent non-Sidewalk components.
-   That is the whole rule.
+   User's call, given the two renders side by side: the roundabout should look
+   like `tools/preview/out/uk4_parts.png`. That is the TARGET APPEARANCE.
 
-   `Markings.lua` is a different thing entirely. It has region-driven boundary
-   SPECS per component gap (`Solid`, `DoubleSolid`, `Dashed`, `SolidDash`,
-   `DashSolid`), kerb lines with `KerbIndent`, separate region edge lines,
-   restriction lines with their own vocabulary, per-road and per-stretch
-   dash-length/gap overrides, and colour rules. None of that exists on the
-   Python side.
+   Cause of the divergence, already traced: the preview never ported
+   `Mesh/Markings.lua`. It approximates it in ~30 lines inside `emit_road` - a
+   solid line just inside each roadway edge, a dashed line between adjacent
+   non-Sidewalk components, nothing else. `Markings.lua` (569 lines) has
+   region-driven boundary specs per gap (Solid/DoubleSolid/Dashed/SolidDash/
+   DashSolid), kerb lines with `KerbIndent`, region edge lines, restriction
+   lines, per-road and per-stretch dash overrides, and colour rules.
 
-   So the two were never going to agree, and `check_parity.py` cannot see it:
-   it compares CONSTANTS, and this is a whole missing rule set. Every preview
-   render's markings have been indicative only - which was not stated anywhere
-   until now, and is why the mismatch read as a plugin bug.
+   **Do NOT reach for that by replacing `Markings.lua` with the Python rule.**
+   Eleven modules read those specs - `RegionStyles`, `RoadBuilder`,
+   `RoundaboutBuilder`, `MarkingStretchPanel`, `MarkingStretchListPanel`,
+   `KerbStretchPanel`, `RoadDesigner`, `RegionEditor`, `RegionalPreferenceGui`,
+   `RoadInspector`, `ProfileFields` - and the swap would delete the boundary
+   dropdown, kerb lines, restriction lines, dash overrides and the whole
+   marking-stretch and kerb-stretch feature set. The preview's rule has two
+   marking types and no concept of a stretch.
 
-   Two honest options, pick one before touching marking geometry:
+   The target look does not need any of that. `ringComponents` and
+   `armProfileFor` build their profiles INLINE with no marking specs at all,
+   so every gap falls through to region defaults tuned for a straight road.
+   Give the ring and arm profiles explicit specs - dashed between circulating
+   lanes, edge lines at the roadway edges - and the render matches while the
+   engine stays.
 
-   a. **Port the rule properly.** `Markings.Compute` is the single entry point,
-      so the port has a clear boundary. Then the preview can actually diff
-      against the plugin and `dump_compare.py` can cover markings too.
-   b. **Stop claiming to simulate them.** Draw markings in a flat indicative
-      grey, label the render "markings indicative", and let Studio be the only
-      authority. Cheaper, and honest.
-
-   (a) is worth it only if marking defects keep arriving. Note the mouth scan
-   counts a marking Part as coverage, so a wrong marking is invisible to it by
-   construction either way - that limit is independent of this choice.
+   Next step: diff `Markings.Compute`'s output for the inline `roundabout_ring`
+   and `roundabout_arm` profiles against the preview's rule for the same
+   components, then set the specs to close the gap. Small and local; it is
+   profile data, not engine code.
 
 6. **The radius suggestion is not offered by the Roundabout tool in the Road
    Builder widget**, only on the junction panel. `RoundaboutBuilder.SuggestedRadiusStuds`
