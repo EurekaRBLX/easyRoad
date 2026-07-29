@@ -57,7 +57,7 @@ Corrections to earlier entries here, so they are not acted on again:
 
 ## Roundabout: open live reports (not yet fixed)
 
-All six came from one Studio session and none is built yet. Ordered by how
+All of these came from Studio sessions and none is built yet. Ordered by how
 well understood they are, not by value.
 
 1. ~~Centre island is a true cylinder; the ring around it is a polygon~~ -
@@ -69,20 +69,47 @@ well understood they are, not by value.
    see the SHIPPED.md entry. The splitter island now starts where the gore
    first reaches `MIN_GORE_WIDTH_M`. Not confirmed live yet.
 
-3. **Markings on the built roundabout do not match what the preview renders.**
+3. **The preview's bare-ground scan does not cover the mouths AT ALL.** This
+   is why "preview clean, Studio broken" keeps happening on the roundabout,
+   and it is measured, not suspected:
+
+       scan_gaps covers   island_r -> outerR   =  29.9 -> 50.1 studs
+       never scanned      outerR -> cutR       =  50.1 -> 92.7 studs
+
+   That unscanned band is **68% of the built radius** on a 40-stud ring, and
+   it is exactly where the entry/exit slip lives - the arms, the gore, the
+   splitter, the arm-to-approach seam. Every "no bare ground inside the ring
+   footprint" line this tool has ever printed was reporting on the annulus
+   that was already fine. `seam_steps` probes only a thin cross-section at the
+   cut, so it does not cover the area either.
+
+   Fixing it is NOT just raising the outer bound. Outside the ring the
+   expected coverage is not a full annulus: between mouths there is
+   legitimately open ground, and since the splitter change the narrow part of
+   each gore is legitimately open ground too. The scan needs a notion of the
+   MOUTH ENVELOPE (arm footprints + splitter island + the pavement that should
+   join them) and must report ground missing from inside that envelope only.
+   Until that exists, roundabout mouth geometry has no automated check at all
+   and every mouth defect will keep arriving as a Studio screenshot.
+
+   Do this before any further mouth work - the same lesson as the junction
+   pad, where the defect only became tractable once
+   `junction_pad_preview.py` could reproduce it headlessly.
+
+4. **Markings on the built roundabout do not match what the preview renders.**
    No diagnosis yet. `roundabout_preview.py` simulates markings, so a diff is
    possible - run it against the same radius/lane count and compare.
 
-4. **The radius suggestion is not offered by the Roundabout tool in the Road
+5. **The radius suggestion is not offered by the Roundabout tool in the Road
    Builder widget**, only on the junction panel. `RoundaboutBuilder.SuggestedRadiusStuds`
    already exists and is UI-agnostic; this is wiring.
 
-5. **The suggestion does not adapt to the lane count of the roads actually
+6. **The suggestion does not adapt to the lane count of the roads actually
    connected** - it uses the panel's lane count. It should take the maximum
    over the connected approaches. `MinimumRadiusStuds` already walks the legs
    and knows each one's width, so the input is there.
 
-6. **Cul-de-sacs**: asked for, nothing exists. Open question, not a bug.
+7. **Cul-de-sacs**: asked for, nothing exists. Open question, not a bug.
 
 ## Junction corners: remaining work
 
