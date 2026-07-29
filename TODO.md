@@ -60,29 +60,10 @@ Corrections to earlier entries here, so they are not acted on again:
 All six came from one Studio session and none is built yet. Ordered by how
 well understood they are, not by value.
 
-1. **Centre island is a true cylinder; the ring around it is a polygon.**
-   `buildIsland` sets `Shape = Enum.PartType.Cylinder`, so the island is a
-   perfect circle, while the ring is emitted by `RoadBuilder` as rigid boxes
-   between adaptive stations - a polygon inscribed in its own circle. The
-   island therefore pokes out past the ring's inner edge at every chord
-   midpoint. This is the same mismatch as the "hairlines at the island rim"
-   note further down, seen from the other side.
-
-   The vertex count is not arbitrary and is worth knowing before fixing it.
-   `RoadBuilder.buildStations` uses `step = min(maxStep, sqrt(8*tol/k),
-   MAX_TURN_PER_STEP/k)` floored at `MIN_STEP`. On a circle `k = 1/R` is
-   constant, so with `CHORD_TOLERANCE = 0.05` the chord term governs for any
-   `R > 10` and the side count is about `2*pi*sqrt(R/0.4)`, i.e. ~9.9*sqrt(R):
-   **31 sides at R=10**, 63 at R=40, 99 at R=100. The reported "32-gon" is a
-   small ring, and it matches this formula.
-
-   Wanted behaviour (user, verbatim): "if small a cylinder is ok but if large
-   nah" - so keep the cylinder under some radius and fan the island as a
-   polygon above it. **Do not re-derive the station formula in
-   RoundaboutBuilder** - that is exactly the parity drift this repo already
-   fights. Have `RoadBuilder` expose the station list (or the ring build hand
-   back the angles it used) so the island rim is the same polygon by
-   construction rather than by a matching constant.
+1. ~~Centre island is a true cylinder; the ring around it is a polygon~~ -
+   FIXED, see the SHIPPED.md entry. `RoadBuilder.StationsFor` now exposes the
+   station list and the island fans onto it above a measured scallop
+   threshold. Not confirmed live yet.
 
 2. ~~A median appears on approaches whose road type has no median~~ - FIXED,
    see the SHIPPED.md entry. The splitter island now starts where the gore

@@ -4512,6 +4512,84 @@ local function buildStations(
 	return stations
 end
 
+-- Whether this build is a widening/narrowing transition, and the length of
+-- the taper it happens over.
+--
+-- Widening/narrowing happens over a standard taper at the END of the segment
+-- (UK practice: taper length proportional to the width change), not stretched
+-- across the whole road.
+local function transitionPlan(options: BuildOptions, scale: number, length: number): (boolean, number)
+	local isTransition = options.ProfileEnd ~= nil
+		and (options.ProfileEnd :: RoadProfile.RoadProfile).Id ~= options.ProfileStart.Id
+	if not isTransition then
+		return false, length
+	end
+	local widthDeltaStuds = math.abs(
+		RoadProfile.TotalWidthM(options.ProfileStart)
+			- RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
+	) * scale
+	return true, math.clamp(widthDeltaStuds * 15, 20, length)
+end
+
+-- The sample stations for `options` - the ONE place that decides where this
+-- build's strips begin and end. Factored out so `RoadBuilder.StationsFor` can
+-- hand the same list to callers that need to line other geometry up with
+-- those strips, instead of re-deriving the adaptive rule and drifting.
+local function stationsForOptions(
+	options: BuildOptions,
+	scale: number,
+	preview: boolean,
+	isTransition: boolean,
+	taperLength: number
+): { number }
+	local settings = options.Settings
+	local maxStep = if preview then settings.PreviewMaxSegmentLengthStuds else settings.MaxSegmentLengthStuds
+	if isTransition then
+		-- Widening/narrowing tapers read much better with short strips - and
+		-- since each strip's width is constant along its own length (a Part
+		-- can't taper), the width change between one strip and the next
+		-- always shows up as a small step on the non-anchor edge. Bounding
+		-- how much total width change happens per strip (rather than a flat
+		-- 4-stud cap regardless of how steep the taper is) keeps that step
+		-- small enough to read as a smooth line instead of a staircase even
+		-- on a short, steep taper.
+		local widthDeltaStuds = math.abs(
+			RoadProfile.TotalWidthM(options.ProfileStart)
+				- RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
+		) * scale
+		local changeRate = if taperLength &gt; 1e-3 then widthDeltaStuds / taperLength else 0
+		local maxStepForTaper = if changeRate &gt; 1e-3 then 0.4 / changeRate else 4
+		maxStep = math.min(maxStep, 4, math.max(maxStepForTaper, MIN_STEP))
+	end
+	local tolerance = if preview then PREVIEW_CHORD_TOLERANCE else CHORD_TOLERANCE
+	local maxOffsetStuds = math.max(
+		RoadProfile.TotalWidthM(options.ProfileStart),
+		RoadProfile.TotalWidthM(options.ProfileEnd or options.ProfileStart)
+	) / 2 * scale
+	return buildStations(options.Curve, maxStep, tolerance, maxOffsetStuds)
+end
+
+-- The stations `RoadBuilder.Build` would use for these exact options, without
+-- building anything.
+--
+-- Exists so geometry that has to meet a built road's strips edge-on can be
+-- placed on the same vertices rather than on a shape that merely looks like
+-- them. The roundabout's centre island is the case that needed it: the ring is
+-- emitted as rigid strips, so its inner edge is a POLYGON inscribed in the
+-- ring's circle, and a true cylinder island of the matching radius overlaps
+-- that edge at every chord midpoint. Deriving the station count from the
+-- adaptive rule a second time inside RoundaboutBuilder would have made the two
+-- agree only until someone retuned CHORD_TOLERANCE here.
+function RoadBuilder.StationsFor(options: BuildOptions): { number }
+	local length = options.Curve.Length
+	if length &lt; 1e-3 then
+		return { 0 }
+	end
+	local scale = options.Settings.MetersToStuds
+	local isTransition, taperLength = transitionPlan(options, scale, length)
+	return stationsForOptions(options, scale, options.Preview == true, isTransition, taperLength)
+end
+
 function RoadBuilder.Build(options: BuildOptions): Model
 	local curve = options.Curve
 	local style = options.Style
@@ -4547,20 +4625,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		return model
 	end
 
-	local isTransition = options.ProfileEnd ~= nil
-		and (options.ProfileEnd :: RoadProfile.RoadProfile).Id ~= options.ProfileStart.Id
-
-	-- Widening/narrowing happens over a standard taper at the END of the
-	-- segment (UK practice: taper length proportional to the width change),
-	-- not stretched across the whole road.
-	local taperLength = length
-	if isTransition then
-		local widthDeltaStuds = math.abs(
-			RoadProfile.TotalWidthM(options.ProfileStart)
-				- RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
-		) * scale
-		taperLength = math.clamp(widthDeltaStuds * 15, 20, length)
-	end
+	local isTransition, taperLength = transitionPlan(options, scale, length)
 	-- 0 before the taper begins, then 0 -&gt; 1 across the taper zone.
 	-- Smoothstepped (3t^2 - 2t^3) rather than a plain linear ramp: a linear
 	-- ramp has a derivative of 0 in the flat zone before it and a nonzero
@@ -4579,30 +4644,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		return t * t * (3 - 2 * t)
 	end
 
-	local maxStep = if preview then settings.PreviewMaxSegmentLengthStuds else settings.MaxSegmentLengthStuds
-	if isTransition then
-		-- Widening/narrowing tapers read much better with short strips - and
-		-- since each strip's width is constant along its own length (a Part
-		-- can't taper), the width change between one strip and the next
-		-- always shows up as a small step on the non-anchor edge. Bounding
-		-- how much total width change happens per strip (rather than a flat
-		-- 4-stud cap regardless of how steep the taper is) keeps that step
-		-- small enough to read as a smooth line instead of a staircase even
-		-- on a short, steep taper.
-		local widthDeltaStuds = math.abs(
-			RoadProfile.TotalWidthM(options.ProfileStart)
-				- RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
-		) * scale
-		local changeRate = if taperLength &gt; 1e-3 then widthDeltaStuds / taperLength else 0
-		local maxStepForTaper = if changeRate &gt; 1e-3 then 0.4 / changeRate else 4
-		maxStep = math.min(maxStep, 4, math.max(maxStepForTaper, MIN_STEP))
-	end
-	local tolerance = if preview then PREVIEW_CHORD_TOLERANCE else CHORD_TOLERANCE
-	local maxOffsetStuds = math.max(
-		RoadProfile.TotalWidthM(options.ProfileStart),
-		RoadProfile.TotalWidthM(options.ProfileEnd or options.ProfileStart)
-	) / 2 * scale
-	local stations = buildStations(curve, maxStep, tolerance, maxOffsetStuds)
+	local stations = stationsForOptions(options, scale, preview, isTransition, taperLength)
 
 	-- Per-station data ---------------------------------------------------------
 	-- Both the curvature-noise smoothing window and the end-of-segment
@@ -5519,13 +5561,63 @@ local function ringInnerHalfWidthM(profile: RoadProfile.RoadProfile, style: Regi
 	return -offsets[1].Left
 end
 
+-- Down, for FillTriangle's extrude direction. Everything this module fills
+-- is flat ground-plane geometry, so it never varies.
+local DOWN = Vector3.new(0, -1, 0)
+
+-- Shortest signed difference between two angles, in (-pi, pi].
+local function angleDelta(a: number, b: number): number
+	local d = (a - b) % (2 * math.pi)
+	if d &gt; math.pi then
+		d -= 2 * math.pi
+	end
+	return d
+end
+
+-- A Cylinder island is kept while the scallop it leaves against the ring's
+-- inner edge is narrower than this; past it the island is fanned onto the
+-- ring's own vertices instead.
+--
+-- The test is on the scallop rather than on the radius because the trade is
+-- real in both directions. A cylinder is ONE Part; a fan is one per station,
+-- and station count does not track radius the way one would guess - RoadBuilder
+-- sets it from its chord tolerance against the ring's own half-width, so a
+-- SMALL ring with a wide carriageway gets very fine stations (a 20-stud ring
+-- runs to ~64) while a large one gets stations that are coarse relative to its
+-- size. Picking a radius threshold would have spent 300-odd Parts smoothing
+-- rings whose scallop was already a thousandth of a stud.
+--
+-- Measured across realistic rings the scallop runs about 0.012 studs at R=20,
+-- 0.028 at R=40 and 0.040 at R=100 - so testing it directly still falls out as
+-- "cylinder on small rings, fan on large ones", just derived instead of
+-- asserted. 0.02 sits below anything visible at working zoom and inside
+-- RoadBuilder's own 0.05-stud chord tolerance, so the island is never the least
+-- accurate thing on screen.
+local ISLAND_FAN_MIN_SCALLOP_STUDS = 0.02
+
+-- The centre island, filling the hole inside the ring.
+--
+-- `ringStations` is where RoadBuilder put this ring's strips (via
+-- RoadBuilder.StationsFor). That matters because the ring is emitted as RIGID
+-- strips: its inner edge is not a circle, it is a POLYGON inscribed in one,
+-- pulled inside the true radius by up to RoadBuilder's own chord tolerance at
+-- every chord midpoint. A Cylinder island of the matching radius is a true
+-- circle, so it overlaps the ring's asphalt in a scallop all the way round -
+-- reported live as the island reading as a polygon against the ring.
+--
+-- Building the island's rim on the ring's OWN station angles makes the two
+-- share a boundary by construction. Sampling the ring curve rather than
+-- assuming a uniform angular step also keeps it exact if the stations are ever
+-- non-uniform (the ring is four Bezier arcs, not an analytic circle).
 local function buildIsland(
 	model: Model,
 	center: Vector3,
 	radiusStuds: number,
 	profile: RoadProfile.RoadProfile,
 	style: RegionStyles.RegionStyle,
-	settings: Settings.EasyRoadSettings
+	settings: Settings.EasyRoadSettings,
+	ringCurve: PolyCurve.PolyCurve?,
+	ringStations: { number }?
 )
 	local scale = settings.MetersToStuds
 	local thickness = settings.RoadThicknessStuds
@@ -5534,22 +5626,82 @@ local function buildIsland(
 	if islandRadiusStuds &lt;= 1 then
 		return
 	end
-	local island = Instance.new("Part")
-	island.Name = "Island"
-	island.Anchored = true
-	island.CanCollide = false
-	island.CanTouch = false
-	island.CanQuery = false
-	island.CastShadow = false
-	island.TopSurface = Enum.SurfaceType.Smooth
-	island.BottomSurface = Enum.SurfaceType.Smooth
-	island.Material = Enum.Material.Concrete
-	island.Color = style.SidewalkColor
-	island.Shape = Enum.PartType.Cylinder
-	island.Size = Vector3.new(thickness + curbHeight, islandRadiusStuds * 2, islandRadiusStuds * 2)
-	island.CFrame = CFrame.new(center + Vector3.new(0, curbHeight - (thickness + curbHeight) / 2, 0))
-		* CFrame.Angles(0, 0, math.rad(90))
-	island.Parent = model
+
+	local function makeIslandPart(): Part
+		local part = Instance.new("Part")
+		part.Name = "Island"
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanTouch = false
+		part.CanQuery = false
+		part.CastShadow = false
+		part.TopSurface = Enum.SurfaceType.Smooth
+		part.BottomSurface = Enum.SurfaceType.Smooth
+		part.Material = Enum.Material.Concrete
+		part.Color = style.SidewalkColor
+		return part
+	end
+
+	-- The ring's station angles, deduplicated. The curve is closed, so its
+	-- last station lands back on the first and must not become a zero-width
+	-- wedge.
+	local angles: { number } = {}
+	local rim: { Vector3 } = {}
+	if ringCurve and ringStations then
+		local seenAngles: { number } = {}
+		local seenRim: { Vector3 } = {}
+		local innerHalfStuds = ringInnerHalfWidthM(profile, style) * scale
+		for _, station in ringStations do
+			local point = ringCurve:PosAt(math.clamp(station, 0, ringCurve.Length))
+			local dx, dz = point.X - center.X, point.Z - center.Z
+			local radius = math.sqrt(dx * dx + dz * dz)
+			if radius &gt; 1e-3 then
+				table.insert(seenAngles, math.atan2(dz, dx))
+				-- Pull the ring's own point radially inward by the ring's inner
+				-- half-width, rather than reprojecting onto a nominal radius.
+				-- The ring curve is four Bezier arcs approximating a circle, not
+				-- an exact one, so a nominal radius would reintroduce that
+				-- approximation's error - about 0.03 studs at a 120-stud ring,
+				-- the same size as the scallop this exists to remove.
+				local inner = (radius - innerHalfStuds) / radius
+				table.insert(seenRim, Vector3.new(center.X + dx * inner, center.Y + curbHeight, center.Z + dz * inner))
+			end
+		end
+		for i, angle in seenAngles do
+			local previous = if i &gt; 1 then seenAngles[i - 1] else seenAngles[#seenAngles] - 2 * math.pi
+			if math.abs(angleDelta(angle, previous)) &gt; 1e-4 then
+				table.insert(angles, angle)
+				table.insert(rim, seenRim[i])
+			end
+		end
+	end
+
+	-- Worst scallop a Cylinder would leave: the sagitta of the widest gap
+	-- between two adjacent ring vertices, at the island's own radius.
+	local widestGap = 0
+	for i, angle in angles do
+		local previous = if i &gt; 1 then angles[i - 1] else angles[#angles] - 2 * math.pi
+		widestGap = math.max(widestGap, math.abs(angleDelta(angle, previous)))
+	end
+	local scallopStuds = islandRadiusStuds * (1 - math.cos(widestGap / 2))
+
+	if #angles &lt; 3 or scallopStuds &lt; ISLAND_FAN_MIN_SCALLOP_STUDS then
+		-- No station list, or a scallop too small to see: a Cylinder is one
+		-- Part instead of one per station, and nothing is gained by the fan.
+		local island = makeIslandPart()
+		island.Shape = Enum.PartType.Cylinder
+		island.Size = Vector3.new(thickness + curbHeight, islandRadiusStuds * 2, islandRadiusStuds * 2)
+		island.CFrame = CFrame.new(center + Vector3.new(0, curbHeight - (thickness + curbHeight) / 2, 0))
+			* CFrame.Angles(0, 0, math.rad(90))
+		island.Parent = model
+		return
+	end
+
+	local top = Vector3.new(center.X, center.Y + curbHeight, center.Z)
+	local depth = thickness + curbHeight
+	for i = 1, #rim do
+		FillTriangle(top, rim[i], rim[if i &lt; #rim then i + 1 else 1], depth, DOWN, makeIslandPart, model)
+	end
 end
 
 local function flatSettings(settings: Settings.EasyRoadSettings): Settings.EasyRoadSettings
@@ -5591,18 +5743,19 @@ function RoundaboutBuilder.Create(
 		BuiltIn = false,
 		Components = components,
 	}
-	local model = RoadBuilder.Build({
+	local ringOptions = {
 		Curve = curve,
 		ProfileStart = profile,
 		Style = style,
 		Settings = flatSettings(settings),
 		Preview = false,
-	})
+	}
+	local model = RoadBuilder.Build(ringOptions)
 	model:SetAttribute("RW_Road", nil)
 	model.Name = "Roundabout"
 	local halfW = RoadProfile.TotalWidthM(profile) / 2 * settings.MetersToStuds
 	stampRingMeta(model, center, radiusStuds, radiusStuds + halfW, laneCount, laneWidthM)
-	buildIsland(model, center, radiusStuds, profile, style, settings)
+	buildIsland(model, center, radiusStuds, profile, style, settings, curve, RoadBuilder.StationsFor(ringOptions))
 	model.Parent = getRoundaboutsFolder()
 	return model
 end
@@ -5823,22 +5976,11 @@ local function rayCircleFirstHit(from: Vector3, dir: Vector3, center: Vector3, R
 	return Vector3.new(from.X + ux * t, from.Y, from.Z + uz * t)
 end
 
-local DOWN = Vector3.new(0, -1, 0)
-
 -- The angular slice of the ring one mouth occupies. ASYMMETRIC: a mouth's two
 -- arms merge at different distances from its centreline (the entry closer, when
 -- deflection is on), so a single half-angle either under-opens one side or
 -- over-opens the other. `Ahead` extends in the +angle direction, `Behind` in -.
 export type MouthSector = { Angle: number, Ahead: number, Behind: number }
-
--- Shortest signed difference between two angles, in (-pi, pi].
-local function angleDelta(a: number, b: number): number
-	local d = (a - b) % (2 * math.pi)
-	if d &gt; math.pi then
-		d -= 2 * math.pi
-	end
-	return d
-end
 
 -- Minimum kerb that must survive between two adjacent entries, and the most
 -- any single entry may open. Without these, wide (multi-lane) entries produce
@@ -6714,13 +6856,14 @@ function RoundaboutBuilder.CreateAtJunction(
 
 	-- ONE continuous ring — never slice (knotted arcs).
 	local ringCurve = PolyCurve.new(circleSegments(center, radiusStuds, style.DriveOnLeft))
-	local ring = RoadBuilder.Build({
+	local ringOptions = {
 		Curve = ringCurve,
 		ProfileStart = profile,
 		Style = style,
 		Settings = flatSettings(settings),
 		Preview = false,
-	})
+	}
+	local ring = RoadBuilder.Build(ringOptions)
 	ring:SetAttribute("RW_Road", nil)
 	ring.Name = "Roundabout"
 	stampRingMeta(ring, center, radiusStuds, outerRadiusStuds, laneCount, laneWidthM)
@@ -6738,7 +6881,7 @@ function RoundaboutBuilder.CreateAtJunction(
 		end
 	end
 
-	buildIsland(ring, center, radiusStuds, profile, style, settings)
+	buildIsland(ring, center, radiusStuds, profile, style, settings, ringCurve, RoadBuilder.StationsFor(ringOptions))
 
 	local ringKerbRadius = outerRadiusStuds - style.SidewalkWidthM * scale
 

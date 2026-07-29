@@ -4,6 +4,57 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: match the centre island to the ring instead of a true circle
+
+The ring is emitted by `RoadBuilder` as rigid strips, so its inner edge is not
+a circle - it is a POLYGON inscribed in one, pulled inside the true radius at
+every chord midpoint. The island was a single `Enum.PartType.Cylinder`, a true
+circle of the matching radius, so it overlapped the ring's asphalt in a scallop
+all the way round.
+
+`RoadBuilder.StationsFor(options)` is new: the stations `Build` would use for
+those exact options, without building anything. The station rule is adaptive
+(chord tolerance against the road's own half-width) and re-deriving it inside
+`RoundaboutBuilder` would have made the two agree only until someone retuned
+`CHORD_TOLERANCE`. `Build` and `StationsFor` now share one private helper, so
+there is still exactly one place that decides stations.
+
+The island's rim is built by offsetting the ring curve's OWN station points
+radially inward by the ring's inner half-width - not by reprojecting onto a
+nominal radius. The ring is four Bezier arcs approximating a circle, and a
+nominal radius would reintroduce that approximation's error, about 0.03 studs
+at a 120-stud ring, which is the same size as the scallop being removed.
+
+**The cylinder is kept when it is the better answer**, and the test is on the
+scallop rather than the radius. Station count does not track radius the way one
+would guess - it is set from the chord tolerance against the ring's half-width,
+so a SMALL ring with a wide carriageway gets very fine stations (a 20-stud ring
+runs to ~64) while a large one gets stations that are coarse relative to its
+size. A radius threshold would have spent 300-odd Parts smoothing rings whose
+scallop was already a thousandth of a stud. Measured:
+
+    ring R   lanes   island R   stations   scallop   built as   parts
+        15       1        4.9         96   0.0026s   cylinder       1
+        20       1        9.9         64   0.0119s   cylinder       1
+        30       1       19.9         67   0.0219s   fan           67
+        40       1       29.9         73   0.0277s   fan           73
+       120       1      109.9        114   0.0417s   fan          114
+        40       2       23.4         83   0.0168s   cylinder       1
+        60       2       43.4         91   0.0259s   fan           91
+
+So it still falls out as "cylinder on small rings, fan on large ones" - just
+derived rather than asserted, and it gets the two-lane cases right, where a
+radius rule would have fanned a ring whose scallop was already invisible.
+
+Worth stating plainly: the scallop this removes is 0.01-0.04 studs. This is a
+polish fix, not a visible-geometry bug - the fan's own overlap is zero by
+construction, since its rim vertices ARE the ring's.
+
+All nine roundabout preview cases still report zero bare ground and a
+0.00-stud approach/arm seam.
+
+Not confirmed in Studio yet.
+
 ## Roundabout: stop the splitter island inventing a median
 
 An approach whose road type has no median came out of the roundabout with a

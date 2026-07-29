@@ -36,7 +36,11 @@ ALIASES = {
 # which the scanner skips on purpose (single letters are loop noise).
 # UI-side only: how the suggested radius is rounded for the panel. The
 # preview has no UI, so it has nothing to compare against.
-LUA_ONLY = {"BEZIER_CIRCLE_K", "SUGGESTED_RADIUS_HEADROOM", "SUGGESTED_RADIUS_STEP_STUDS"}
+# Render-detail only: whether the centre island is emitted as one Cylinder Part
+# or as a fan on the ring's own stations. The preview models the island as an
+# AREA, not as Parts, so nothing it reports can change with this value.
+LUA_ONLY = {"BEZIER_CIRCLE_K", "SUGGESTED_RADIUS_HEADROOM", "SUGGESTED_RADIUS_STEP_STUDS",
+            "ISLAND_FAN_MIN_SCALLOP_STUDS"}
 PY_ONLY = {"CHORD_TOLERANCE", "MIN_STEP", "MAX_TURN_PER_STEP", "MARKING_THICKNESS",
            "MAX_SEGMENT_LENGTH", "ARC_SAMPLES", "SCALE", "SW_M", "LANE_M",
            "MARKING_W_M", "THICKNESS",

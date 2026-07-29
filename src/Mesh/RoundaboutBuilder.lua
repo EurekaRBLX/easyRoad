@@ -111,13 +111,63 @@ local function ringInnerHalfWidthM(profile: RoadProfile.RoadProfile, style: Regi
 	return -offsets[1].Left
 end
 
+-- Down, for FillTriangle's extrude direction. Everything this module fills
+-- is flat ground-plane geometry, so it never varies.
+local DOWN = Vector3.new(0, -1, 0)
+
+-- Shortest signed difference between two angles, in (-pi, pi].
+local function angleDelta(a: number, b: number): number
+	local d = (a - b) % (2 * math.pi)
+	if d > math.pi then
+		d -= 2 * math.pi
+	end
+	return d
+end
+
+-- A Cylinder island is kept while the scallop it leaves against the ring's
+-- inner edge is narrower than this; past it the island is fanned onto the
+-- ring's own vertices instead.
+--
+-- The test is on the scallop rather than on the radius because the trade is
+-- real in both directions. A cylinder is ONE Part; a fan is one per station,
+-- and station count does not track radius the way one would guess - RoadBuilder
+-- sets it from its chord tolerance against the ring's own half-width, so a
+-- SMALL ring with a wide carriageway gets very fine stations (a 20-stud ring
+-- runs to ~64) while a large one gets stations that are coarse relative to its
+-- size. Picking a radius threshold would have spent 300-odd Parts smoothing
+-- rings whose scallop was already a thousandth of a stud.
+--
+-- Measured across realistic rings the scallop runs about 0.012 studs at R=20,
+-- 0.028 at R=40 and 0.040 at R=100 - so testing it directly still falls out as
+-- "cylinder on small rings, fan on large ones", just derived instead of
+-- asserted. 0.02 sits below anything visible at working zoom and inside
+-- RoadBuilder's own 0.05-stud chord tolerance, so the island is never the least
+-- accurate thing on screen.
+local ISLAND_FAN_MIN_SCALLOP_STUDS = 0.02
+
+-- The centre island, filling the hole inside the ring.
+--
+-- `ringStations` is where RoadBuilder put this ring's strips (via
+-- RoadBuilder.StationsFor). That matters because the ring is emitted as RIGID
+-- strips: its inner edge is not a circle, it is a POLYGON inscribed in one,
+-- pulled inside the true radius by up to RoadBuilder's own chord tolerance at
+-- every chord midpoint. A Cylinder island of the matching radius is a true
+-- circle, so it overlaps the ring's asphalt in a scallop all the way round -
+-- reported live as the island reading as a polygon against the ring.
+--
+-- Building the island's rim on the ring's OWN station angles makes the two
+-- share a boundary by construction. Sampling the ring curve rather than
+-- assuming a uniform angular step also keeps it exact if the stations are ever
+-- non-uniform (the ring is four Bezier arcs, not an analytic circle).
 local function buildIsland(
 	model: Model,
 	center: Vector3,
 	radiusStuds: number,
 	profile: RoadProfile.RoadProfile,
 	style: RegionStyles.RegionStyle,
-	settings: Settings.EasyRoadSettings
+	settings: Settings.EasyRoadSettings,
+	ringCurve: PolyCurve.PolyCurve?,
+	ringStations: { number }?
 )
 	local scale = settings.MetersToStuds
 	local thickness = settings.RoadThicknessStuds
@@ -126,22 +176,82 @@ local function buildIsland(
 	if islandRadiusStuds <= 1 then
 		return
 	end
-	local island = Instance.new("Part")
-	island.Name = "Island"
-	island.Anchored = true
-	island.CanCollide = false
-	island.CanTouch = false
-	island.CanQuery = false
-	island.CastShadow = false
-	island.TopSurface = Enum.SurfaceType.Smooth
-	island.BottomSurface = Enum.SurfaceType.Smooth
-	island.Material = Enum.Material.Concrete
-	island.Color = style.SidewalkColor
-	island.Shape = Enum.PartType.Cylinder
-	island.Size = Vector3.new(thickness + curbHeight, islandRadiusStuds * 2, islandRadiusStuds * 2)
-	island.CFrame = CFrame.new(center + Vector3.new(0, curbHeight - (thickness + curbHeight) / 2, 0))
-		* CFrame.Angles(0, 0, math.rad(90))
-	island.Parent = model
+
+	local function makeIslandPart(): Part
+		local part = Instance.new("Part")
+		part.Name = "Island"
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanTouch = false
+		part.CanQuery = false
+		part.CastShadow = false
+		part.TopSurface = Enum.SurfaceType.Smooth
+		part.BottomSurface = Enum.SurfaceType.Smooth
+		part.Material = Enum.Material.Concrete
+		part.Color = style.SidewalkColor
+		return part
+	end
+
+	-- The ring's station angles, deduplicated. The curve is closed, so its
+	-- last station lands back on the first and must not become a zero-width
+	-- wedge.
+	local angles: { number } = {}
+	local rim: { Vector3 } = {}
+	if ringCurve and ringStations then
+		local seenAngles: { number } = {}
+		local seenRim: { Vector3 } = {}
+		local innerHalfStuds = ringInnerHalfWidthM(profile, style) * scale
+		for _, station in ringStations do
+			local point = ringCurve:PosAt(math.clamp(station, 0, ringCurve.Length))
+			local dx, dz = point.X - center.X, point.Z - center.Z
+			local radius = math.sqrt(dx * dx + dz * dz)
+			if radius > 1e-3 then
+				table.insert(seenAngles, math.atan2(dz, dx))
+				-- Pull the ring's own point radially inward by the ring's inner
+				-- half-width, rather than reprojecting onto a nominal radius.
+				-- The ring curve is four Bezier arcs approximating a circle, not
+				-- an exact one, so a nominal radius would reintroduce that
+				-- approximation's error - about 0.03 studs at a 120-stud ring,
+				-- the same size as the scallop this exists to remove.
+				local inner = (radius - innerHalfStuds) / radius
+				table.insert(seenRim, Vector3.new(center.X + dx * inner, center.Y + curbHeight, center.Z + dz * inner))
+			end
+		end
+		for i, angle in seenAngles do
+			local previous = if i > 1 then seenAngles[i - 1] else seenAngles[#seenAngles] - 2 * math.pi
+			if math.abs(angleDelta(angle, previous)) > 1e-4 then
+				table.insert(angles, angle)
+				table.insert(rim, seenRim[i])
+			end
+		end
+	end
+
+	-- Worst scallop a Cylinder would leave: the sagitta of the widest gap
+	-- between two adjacent ring vertices, at the island's own radius.
+	local widestGap = 0
+	for i, angle in angles do
+		local previous = if i > 1 then angles[i - 1] else angles[#angles] - 2 * math.pi
+		widestGap = math.max(widestGap, math.abs(angleDelta(angle, previous)))
+	end
+	local scallopStuds = islandRadiusStuds * (1 - math.cos(widestGap / 2))
+
+	if #angles < 3 or scallopStuds < ISLAND_FAN_MIN_SCALLOP_STUDS then
+		-- No station list, or a scallop too small to see: a Cylinder is one
+		-- Part instead of one per station, and nothing is gained by the fan.
+		local island = makeIslandPart()
+		island.Shape = Enum.PartType.Cylinder
+		island.Size = Vector3.new(thickness + curbHeight, islandRadiusStuds * 2, islandRadiusStuds * 2)
+		island.CFrame = CFrame.new(center + Vector3.new(0, curbHeight - (thickness + curbHeight) / 2, 0))
+			* CFrame.Angles(0, 0, math.rad(90))
+		island.Parent = model
+		return
+	end
+
+	local top = Vector3.new(center.X, center.Y + curbHeight, center.Z)
+	local depth = thickness + curbHeight
+	for i = 1, #rim do
+		FillTriangle(top, rim[i], rim[if i < #rim then i + 1 else 1], depth, DOWN, makeIslandPart, model)
+	end
 end
 
 local function flatSettings(settings: Settings.EasyRoadSettings): Settings.EasyRoadSettings
@@ -183,18 +293,19 @@ function RoundaboutBuilder.Create(
 		BuiltIn = false,
 		Components = components,
 	}
-	local model = RoadBuilder.Build({
+	local ringOptions = {
 		Curve = curve,
 		ProfileStart = profile,
 		Style = style,
 		Settings = flatSettings(settings),
 		Preview = false,
-	})
+	}
+	local model = RoadBuilder.Build(ringOptions)
 	model:SetAttribute("RW_Road", nil)
 	model.Name = "Roundabout"
 	local halfW = RoadProfile.TotalWidthM(profile) / 2 * settings.MetersToStuds
 	stampRingMeta(model, center, radiusStuds, radiusStuds + halfW, laneCount, laneWidthM)
-	buildIsland(model, center, radiusStuds, profile, style, settings)
+	buildIsland(model, center, radiusStuds, profile, style, settings, curve, RoadBuilder.StationsFor(ringOptions))
 	model.Parent = getRoundaboutsFolder()
 	return model
 end
@@ -415,22 +526,11 @@ local function rayCircleFirstHit(from: Vector3, dir: Vector3, center: Vector3, R
 	return Vector3.new(from.X + ux * t, from.Y, from.Z + uz * t)
 end
 
-local DOWN = Vector3.new(0, -1, 0)
-
 -- The angular slice of the ring one mouth occupies. ASYMMETRIC: a mouth's two
 -- arms merge at different distances from its centreline (the entry closer, when
 -- deflection is on), so a single half-angle either under-opens one side or
 -- over-opens the other. `Ahead` extends in the +angle direction, `Behind` in -.
 export type MouthSector = { Angle: number, Ahead: number, Behind: number }
-
--- Shortest signed difference between two angles, in (-pi, pi].
-local function angleDelta(a: number, b: number): number
-	local d = (a - b) % (2 * math.pi)
-	if d > math.pi then
-		d -= 2 * math.pi
-	end
-	return d
-end
 
 -- Minimum kerb that must survive between two adjacent entries, and the most
 -- any single entry may open. Without these, wide (multi-lane) entries produce
@@ -1306,13 +1406,14 @@ function RoundaboutBuilder.CreateAtJunction(
 
 	-- ONE continuous ring — never slice (knotted arcs).
 	local ringCurve = PolyCurve.new(circleSegments(center, radiusStuds, style.DriveOnLeft))
-	local ring = RoadBuilder.Build({
+	local ringOptions = {
 		Curve = ringCurve,
 		ProfileStart = profile,
 		Style = style,
 		Settings = flatSettings(settings),
 		Preview = false,
-	})
+	}
+	local ring = RoadBuilder.Build(ringOptions)
 	ring:SetAttribute("RW_Road", nil)
 	ring.Name = "Roundabout"
 	stampRingMeta(ring, center, radiusStuds, outerRadiusStuds, laneCount, laneWidthM)
@@ -1330,7 +1431,7 @@ function RoundaboutBuilder.CreateAtJunction(
 		end
 	end
 
-	buildIsland(ring, center, radiusStuds, profile, style, settings)
+	buildIsland(ring, center, radiusStuds, profile, style, settings, ringCurve, RoadBuilder.StationsFor(ringOptions))
 
 	local ringKerbRadius = outerRadiusStuds - style.SidewalkWidthM * scale
 

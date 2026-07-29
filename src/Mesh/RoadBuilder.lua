@@ -201,6 +201,84 @@ local function buildStations(
 	return stations
 end
 
+-- Whether this build is a widening/narrowing transition, and the length of
+-- the taper it happens over.
+--
+-- Widening/narrowing happens over a standard taper at the END of the segment
+-- (UK practice: taper length proportional to the width change), not stretched
+-- across the whole road.
+local function transitionPlan(options: BuildOptions, scale: number, length: number): (boolean, number)
+	local isTransition = options.ProfileEnd ~= nil
+		and (options.ProfileEnd :: RoadProfile.RoadProfile).Id ~= options.ProfileStart.Id
+	if not isTransition then
+		return false, length
+	end
+	local widthDeltaStuds = math.abs(
+		RoadProfile.TotalWidthM(options.ProfileStart)
+			- RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
+	) * scale
+	return true, math.clamp(widthDeltaStuds * 15, 20, length)
+end
+
+-- The sample stations for `options` - the ONE place that decides where this
+-- build's strips begin and end. Factored out so `RoadBuilder.StationsFor` can
+-- hand the same list to callers that need to line other geometry up with
+-- those strips, instead of re-deriving the adaptive rule and drifting.
+local function stationsForOptions(
+	options: BuildOptions,
+	scale: number,
+	preview: boolean,
+	isTransition: boolean,
+	taperLength: number
+): { number }
+	local settings = options.Settings
+	local maxStep = if preview then settings.PreviewMaxSegmentLengthStuds else settings.MaxSegmentLengthStuds
+	if isTransition then
+		-- Widening/narrowing tapers read much better with short strips - and
+		-- since each strip's width is constant along its own length (a Part
+		-- can't taper), the width change between one strip and the next
+		-- always shows up as a small step on the non-anchor edge. Bounding
+		-- how much total width change happens per strip (rather than a flat
+		-- 4-stud cap regardless of how steep the taper is) keeps that step
+		-- small enough to read as a smooth line instead of a staircase even
+		-- on a short, steep taper.
+		local widthDeltaStuds = math.abs(
+			RoadProfile.TotalWidthM(options.ProfileStart)
+				- RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
+		) * scale
+		local changeRate = if taperLength > 1e-3 then widthDeltaStuds / taperLength else 0
+		local maxStepForTaper = if changeRate > 1e-3 then 0.4 / changeRate else 4
+		maxStep = math.min(maxStep, 4, math.max(maxStepForTaper, MIN_STEP))
+	end
+	local tolerance = if preview then PREVIEW_CHORD_TOLERANCE else CHORD_TOLERANCE
+	local maxOffsetStuds = math.max(
+		RoadProfile.TotalWidthM(options.ProfileStart),
+		RoadProfile.TotalWidthM(options.ProfileEnd or options.ProfileStart)
+	) / 2 * scale
+	return buildStations(options.Curve, maxStep, tolerance, maxOffsetStuds)
+end
+
+-- The stations `RoadBuilder.Build` would use for these exact options, without
+-- building anything.
+--
+-- Exists so geometry that has to meet a built road's strips edge-on can be
+-- placed on the same vertices rather than on a shape that merely looks like
+-- them. The roundabout's centre island is the case that needed it: the ring is
+-- emitted as rigid strips, so its inner edge is a POLYGON inscribed in the
+-- ring's circle, and a true cylinder island of the matching radius overlaps
+-- that edge at every chord midpoint. Deriving the station count from the
+-- adaptive rule a second time inside RoundaboutBuilder would have made the two
+-- agree only until someone retuned CHORD_TOLERANCE here.
+function RoadBuilder.StationsFor(options: BuildOptions): { number }
+	local length = options.Curve.Length
+	if length < 1e-3 then
+		return { 0 }
+	end
+	local scale = options.Settings.MetersToStuds
+	local isTransition, taperLength = transitionPlan(options, scale, length)
+	return stationsForOptions(options, scale, options.Preview == true, isTransition, taperLength)
+end
+
 function RoadBuilder.Build(options: BuildOptions): Model
 	local curve = options.Curve
 	local style = options.Style
@@ -236,20 +314,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		return model
 	end
 
-	local isTransition = options.ProfileEnd ~= nil
-		and (options.ProfileEnd :: RoadProfile.RoadProfile).Id ~= options.ProfileStart.Id
-
-	-- Widening/narrowing happens over a standard taper at the END of the
-	-- segment (UK practice: taper length proportional to the width change),
-	-- not stretched across the whole road.
-	local taperLength = length
-	if isTransition then
-		local widthDeltaStuds = math.abs(
-			RoadProfile.TotalWidthM(options.ProfileStart)
-				- RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
-		) * scale
-		taperLength = math.clamp(widthDeltaStuds * 15, 20, length)
-	end
+	local isTransition, taperLength = transitionPlan(options, scale, length)
 	-- 0 before the taper begins, then 0 -> 1 across the taper zone.
 	-- Smoothstepped (3t^2 - 2t^3) rather than a plain linear ramp: a linear
 	-- ramp has a derivative of 0 in the flat zone before it and a nonzero
@@ -268,30 +333,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		return t * t * (3 - 2 * t)
 	end
 
-	local maxStep = if preview then settings.PreviewMaxSegmentLengthStuds else settings.MaxSegmentLengthStuds
-	if isTransition then
-		-- Widening/narrowing tapers read much better with short strips - and
-		-- since each strip's width is constant along its own length (a Part
-		-- can't taper), the width change between one strip and the next
-		-- always shows up as a small step on the non-anchor edge. Bounding
-		-- how much total width change happens per strip (rather than a flat
-		-- 4-stud cap regardless of how steep the taper is) keeps that step
-		-- small enough to read as a smooth line instead of a staircase even
-		-- on a short, steep taper.
-		local widthDeltaStuds = math.abs(
-			RoadProfile.TotalWidthM(options.ProfileStart)
-				- RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
-		) * scale
-		local changeRate = if taperLength > 1e-3 then widthDeltaStuds / taperLength else 0
-		local maxStepForTaper = if changeRate > 1e-3 then 0.4 / changeRate else 4
-		maxStep = math.min(maxStep, 4, math.max(maxStepForTaper, MIN_STEP))
-	end
-	local tolerance = if preview then PREVIEW_CHORD_TOLERANCE else CHORD_TOLERANCE
-	local maxOffsetStuds = math.max(
-		RoadProfile.TotalWidthM(options.ProfileStart),
-		RoadProfile.TotalWidthM(options.ProfileEnd or options.ProfileStart)
-	) / 2 * scale
-	local stations = buildStations(curve, maxStep, tolerance, maxOffsetStuds)
+	local stations = stationsForOptions(options, scale, preview, isTransition, taperLength)
 
 	-- Per-station data ---------------------------------------------------------
 	-- Both the curvature-noise smoothing window and the end-of-segment
