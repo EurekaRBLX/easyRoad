@@ -1752,7 +1752,7 @@ end
 
 -- Kept in step with RegionStyles.RoundaboutMarkingStyles by hand; the two are
 -- deliberately not coupled (see the JunctionData field note).
-local ROUNDABOUT_MARKING_STYLES = { "Continuous", "Turbo" }
+local ROUNDABOUT_MARKING_STYLES = { "Continuous", "SolidLanes" }
 
 function JunctionInstance.Read(model: Model): JunctionData?
 	local id = model:GetAttribute("RW_JunctionId")
@@ -5571,22 +5571,24 @@ local function ringComponents(
 	style: RegionStyles.RegionStyle
 ): { RoadProfile.ProfileComponent }
 	local components: { RoadProfile.ProfileComponent } = {}
-	-- TURBO rings hold each vehicle in the lane it entered: the boundary
-	-- between circulating lanes is SOLID, so changing lanes on the ring is
-	-- prohibited rather than merely discouraged. CONTINUOUS leaves the boundary
-	-- on "Auto", which resolves to the region's own dashed lane line.
+	-- SolidLanes marks the boundary between circulating lanes SOLID, to
+	-- discourage weaving on the ring. CONTINUOUS leaves it on "Auto", which
+	-- resolves to the region's own dashed lane line.
+	--
+	-- Neither is a turbo roundabout: that is a spiral, not a marking choice.
+	-- See ROUNDABOUT.md 5.3c.
 	--
 	-- Set on every lane but the last: `RightBoundary` describes the gap to the
 	-- component on its right, and the last lane's right-hand neighbour is the
 	-- pavement, whose edge line is the region's business rather than ours.
 	local lanes = math.max(1, math.floor(laneCount))
-	local turbo = style.RoundaboutMarkings == "Turbo"
+	local solidLanes = style.RoundaboutMarkings == "SolidLanes"
 	for i = 1, lanes do
 		table.insert(components, {
 			Kind = "Drive",
 			WidthM = laneWidthM,
 			Direction = 1,
-			RightBoundary = if turbo and i &lt; lanes then "Solid" else nil,
+			RightBoundary = if solidLanes and i &lt; lanes then "Solid" else nil,
 		})
 	end
 	-- An opted-out pavement means the ring is carriageway only. Bail before the
@@ -7619,15 +7621,19 @@ export type MarkingSpec = {
 -- How a roundabout's circulating lanes are marked.
 --   Continuous - concentric dashed lane lines; changing lanes on the ring is
 --                permitted, which is the ordinary UK/US pattern.
---   Turbo      - solid lines between circulating lanes, so a vehicle is held in
---                the lane it entered the whole way round. Dutch "turbo"
---                roundabout practice; safer at high flow, and the reason is
---                that lane changing on the ring is what causes most conflicts.
-export type RoundaboutMarkingStyle = "Continuous" | "Turbo"
+--   SolidLanes - solid dividers between circulating lanes, discouraging
+--                weaving on the ring.
+--
+-- NOT turbo. A real turbo roundabout is a SPIRAL: the inner lane is flung
+-- progressively outward until it becomes an exit lane, so the lane you enter
+-- commits you to an exit. That changes the ring's GEOMETRY, not just its
+-- markings, and is not built - see ROUNDABOUT.md 5.3c. "SolidLanes" was
+-- briefly shipped under the name "Turbo", which it is not.
+export type RoundaboutMarkingStyle = "Continuous" | "SolidLanes"
 
 local RoundaboutMarkingStyles: { RoundaboutMarkingStyle } = {
 	"Continuous" :: RoundaboutMarkingStyle,
-	"Turbo" :: RoundaboutMarkingStyle,
+	"SolidLanes" :: RoundaboutMarkingStyle,
 }
 export type RegionStyle = {
 	Id: string,
@@ -12504,7 +12510,7 @@ local function JunctionPanel(
 				Options = {
 					{ Id = "Region", Text = "Region default" },
 					{ Id = "Continuous", Text = "Continuous (dashed lanes)" },
-					{ Id = "Turbo", Text = "Turbo (solid lanes)" },
+					{ Id = "SolidLanes", Text = "Solid lane dividers" },
 				},
 				SelectedId = markings or "Region",
 				OnSelected = function(id: string)
@@ -13759,7 +13765,7 @@ local function RegionEditor(props: {
 			Dropdown = e(Components.Dropdown, {
 				Options = {
 					{ Id = "Continuous", Text = "Continuous - dashed between lanes" },
-					{ Id = "Turbo", Text = "Turbo - solid between lanes" },
+					{ Id = "SolidLanes", Text = "Solid dividers between lanes" },
 				},
 				-- nil reads as Continuous, so a region that predates this field
 				-- shows the behaviour it actually has rather than an empty box.

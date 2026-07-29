@@ -208,15 +208,18 @@ Island off leaves the centre as open ground on purpose — the ring is a closed
 annulus either way, so this is a landscaped centre the user fills, not a hole.
 A flush drivable centre (mini-roundabout) is a different feature, not built.
 
-### 5.3a Turbo vs Continuous — SHIPPED
+### 5.3a Continuous vs SolidLanes — SHIPPED
 `RegionStyle.RoundaboutMarkings` ("Continuous" | "Turbo") sets the regional
 default; `JunctionData.RoundaboutMarkings` overrides it per roundabout. Both
 optional, both nil-reads-as-Continuous, so every region and junction that
 predates the field keeps its behaviour.
 
-Turbo sets `RightBoundary = "Solid"` on every circulating lane but the last, so
-a vehicle is held in the lane it entered. Continuous leaves the boundary on
-"Auto", which resolves to the region's dashed lane line. The last lane is
+`SolidLanes` sets `RightBoundary = "Solid"` on every circulating lane but the
+last, discouraging weaving on the ring. `Continuous` leaves the boundary on
+"Auto", which resolves to the region's dashed lane line.
+
+**This was briefly shipped with the value named "Turbo", which it is not** —
+see 5.3c. Renamed before anyone could build against it. The last lane is
 skipped deliberately: `RightBoundary` describes the gap to the component on its
 right, and the last lane's neighbour is the pavement, whose edge line is the
 region's business.
@@ -238,6 +241,30 @@ is profile data, not engine code.
 
 Requested on top of that: a **Turbo / Continuous** toggle in the roundabout
 build panel, with a default in regional settings.
+
+### 5.3c A real TURBO roundabout — NOT BUILT
+A turbo roundabout is a **spiral**, not a marking style. The inner lane is flung
+progressively outward until it becomes an exit lane, so the lane a driver enters
+commits them to a particular exit. Weaving is impossible by geometry, and the
+solid dividers merely enforce what the layout already decides.
+
+That means it changes the RING GEOMETRY, and none of the current model supports
+it:
+
+- the ring is one constant-width annulus of N concentric lanes
+  (`ringComponents` builds a fixed profile and `circleSegments` a plain
+  circle). A turbo ring's lane count and lane centres vary with angle.
+- each lane boundary would have to spiral outward between mouths rather than
+  close on itself, so `RoadBuilder`'s constant cross-section along a curve is
+  the wrong primitive for the circulating carriageway.
+- entries would have to feed specific lanes and exits take specific lanes,
+  which the mouth model does not represent - `splitApproachLanes` splits an
+  approach by `Direction` only, with no notion of which exit a lane serves.
+- the splitter islands and gores would follow the spiral, not the radial
+  mouth sectors `openRingPavement` assumes.
+
+So this is a second ring generator alongside the existing one, not an option on
+it. Worth scoping deliberately rather than growing into.
 
 ### 5.4 Clipping at arm ends
 A wedge of raised pavement juts across the asphalt where an arm meets its

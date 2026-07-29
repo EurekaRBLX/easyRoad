@@ -25,15 +25,19 @@ export type MarkingSpec = {
 -- How a roundabout's circulating lanes are marked.
 --   Continuous - concentric dashed lane lines; changing lanes on the ring is
 --                permitted, which is the ordinary UK/US pattern.
---   Turbo      - solid lines between circulating lanes, so a vehicle is held in
---                the lane it entered the whole way round. Dutch "turbo"
---                roundabout practice; safer at high flow, and the reason is
---                that lane changing on the ring is what causes most conflicts.
-export type RoundaboutMarkingStyle = "Continuous" | "Turbo"
+--   SolidLanes - solid dividers between circulating lanes, discouraging
+--                weaving on the ring.
+--
+-- NOT turbo. A real turbo roundabout is a SPIRAL: the inner lane is flung
+-- progressively outward until it becomes an exit lane, so the lane you enter
+-- commits you to an exit. That changes the ring's GEOMETRY, not just its
+-- markings, and is not built - see ROUNDABOUT.md 5.3c. "SolidLanes" was
+-- briefly shipped under the name "Turbo", which it is not.
+export type RoundaboutMarkingStyle = "Continuous" | "SolidLanes"
 
 local RoundaboutMarkingStyles: { RoundaboutMarkingStyle } = {
 	"Continuous" :: RoundaboutMarkingStyle,
-	"Turbo" :: RoundaboutMarkingStyle,
+	"SolidLanes" :: RoundaboutMarkingStyle,
 }
 export type RegionStyle = {
 	Id: string,

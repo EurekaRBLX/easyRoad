@@ -255,7 +255,7 @@ local function RegionEditor(props: {
 			Dropdown = e(Components.Dropdown, {
 				Options = {
 					{ Id = "Continuous", Text = "Continuous - dashed between lanes" },
-					{ Id = "Turbo", Text = "Turbo - solid between lanes" },
+					{ Id = "SolidLanes", Text = "Solid dividers between lanes" },
 				},
 				-- nil reads as Continuous, so a region that predates this field
 				-- shows the behaviour it actually has rather than an empty box.

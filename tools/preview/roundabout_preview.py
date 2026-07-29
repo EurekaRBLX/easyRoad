@@ -261,7 +261,7 @@ def rect(center, right, forward, half_w, half_l):
             (center[0]-a[0]+b[0], center[1]-a[1]+b[1])]
 
 
-def emit_road(curve, components, y_base=0.0):
+def emit_road(curve, components, y_base=0.0, solid_lane_lines=False):
     """Port of the deck-strip + marking emission for a flat (unbanked) road."""
     parts = []
     total_m = sum(c[1] for c in components)
@@ -301,7 +301,12 @@ def emit_road(curve, components, y_base=0.0):
     lines = [(left_m+inset, True), (right_m-inset, True)]
     for c in range(len(components)-1):
         if components[c][0] != "Sidewalk" and components[c+1][0] != "Sidewalk":
-            lines.append((offs[c][1], False))
+            # `solid_lane_lines` is the preview's minimal stand-in for
+            # RoadProfile's RightBoundary = "Solid", which is what the plugin
+            # sets on a TURBO ring's circulating lanes. It is not a port of
+            # Markings.lua - see ROUNDABOUT.md 5.3 - just enough for the
+            # Turbo/Continuous choice to be visible here at all.
+            lines.append((offs[c][1], solid_lane_lines))
 
     for off_m, solid in lines:
         off = off_m*SCALE
@@ -424,7 +429,7 @@ def min_radius_studs(legs, lane_count, lane_w, dol):
     return merge + outer_off + SW_M * SCALE - ring_half
 
 
-def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=True, island=True):
+def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=True, island=True, turbo=False):
     """legs is a list of (degrees, approach component list).
 
     `grow` mirrors the plugin, and the plugin no longer grows: the requested
@@ -448,7 +453,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
 
     leg_info = []
     ring_curve = circle_segments(center, ring_r, drive_on_left)
-    ring_parts = emit_road(ring_curve, rc)
+    ring_parts = emit_road(ring_curve, rc, solid_lane_lines=turbo)
     parts_ring_pavement = [p for p in ring_parts if p.name in ("Sidewalk", "Marking")]
 
     sectors, arm_parts, gore_tris = [], [], []

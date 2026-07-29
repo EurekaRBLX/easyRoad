@@ -172,7 +172,7 @@ local function JunctionPanel(
 				Options = {
 					{ Id = "Region", Text = "Region default" },
 					{ Id = "Continuous", Text = "Continuous (dashed lanes)" },
-					{ Id = "Turbo", Text = "Turbo (solid lanes)" },
+					{ Id = "SolidLanes", Text = "Solid lane dividers" },
 				},
 				SelectedId = markings or "Region",
 				OnSelected = function(id: string)

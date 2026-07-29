@@ -86,22 +86,24 @@ local function ringComponents(
 	style: RegionStyles.RegionStyle
 ): { RoadProfile.ProfileComponent }
 	local components: { RoadProfile.ProfileComponent } = {}
-	-- TURBO rings hold each vehicle in the lane it entered: the boundary
-	-- between circulating lanes is SOLID, so changing lanes on the ring is
-	-- prohibited rather than merely discouraged. CONTINUOUS leaves the boundary
-	-- on "Auto", which resolves to the region's own dashed lane line.
+	-- SolidLanes marks the boundary between circulating lanes SOLID, to
+	-- discourage weaving on the ring. CONTINUOUS leaves it on "Auto", which
+	-- resolves to the region's own dashed lane line.
+	--
+	-- Neither is a turbo roundabout: that is a spiral, not a marking choice.
+	-- See ROUNDABOUT.md 5.3c.
 	--
 	-- Set on every lane but the last: `RightBoundary` describes the gap to the
 	-- component on its right, and the last lane's right-hand neighbour is the
 	-- pavement, whose edge line is the region's business rather than ours.
 	local lanes = math.max(1, math.floor(laneCount))
-	local turbo = style.RoundaboutMarkings == "Turbo"
+	local solidLanes = style.RoundaboutMarkings == "SolidLanes"
 	for i = 1, lanes do
 		table.insert(components, {
 			Kind = "Drive",
 			WidthM = laneWidthM,
 			Direction = 1,
-			RightBoundary = if turbo and i < lanes then "Solid" else nil,
+			RightBoundary = if solidLanes and i < lanes then "Solid" else nil,
 		})
 	end
 	-- An opted-out pavement means the ring is carriageway only. Bail before the
