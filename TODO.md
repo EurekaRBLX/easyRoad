@@ -96,38 +96,48 @@ well understood they are, not by value.
 
    Take those in that order. Markings first.
 
-5. **REPRODUCED: a bare-ground band at R=34-38.** The first roundabout defect
-   this tooling has caught headlessly. Fix this before anything else on the
-   roundabout.
+5. **PARTLY FIXED: bare-ground band at R=34-36. MY REGRESSION.** Root cause
+   found and owned; the fix is real but incomplete. Highest priority.
 
-   3-leg, 1+1 approaches, radii the plugin builds AS ASKED (minimum is 27.5,
-   so growth does not mask any of these):
+   **Cause.** The `MIN_GORE_WIDTH_M` splitter change (commit 1505bd4) skipped
+   leading samples from a FIXED grid with `continue`. The same loop also breaks
+   when either gore edge reaches the ring kerb, so on rings where the arms
+   converge early the skipped samples were consumed and the break fired before
+   enough rungs accumulated - the island came out truncated or was never built,
+   and the ring pavement `openRingPavement` had already deleted across that
+   sector was left uncovered.
 
-       R      ring bare-ground     worst depth
-       33     clean
-       34     172 samples          4.41 studs
-       34.5   212 samples          4.41 studs
-       35     250 samples          4.33 studs
-       35.5   291 samples          4.33 studs
-       36      34 samples          0.80 studs
-       38      38 samples          0.63 studs
-       40     clean
+   Proof, 3-leg 1+1, gore triangles / bare-ground samples:
 
-   Not radius-monotonic - clean either side of a band - so this is a
-   discretisation effect, not a sizing one. Prime suspect is the ring's
-   station count beating against the mouth SECTOR deletion: `openRingPavement`
-   destroys ring pavement parts whose CENTRE falls inside a sector, so as the
-   station count changes with radius, a part whose centre sits just inside a
-   sector boundary while its body extends well outside gets deleted whole,
-   taking pavement with it. 4.4 studs of depth is about one strip's width,
-   which fits. Verify by instrumenting the deleted parts' extents against the
-   sector edges, not by eye.
+       R      with MIN_GORE      with MIN_GORE = 0 (pre-change)
+       33     51 tris /   0      93 tris / 0
+       34     15 tris / 172      93 tris / 0
+       35     18 tris / 250      96 tris / 0
+       36     24 tris /  34      96 tris / 0
+       40     36 tris /   0     102 tris / 0
 
-   The 4-leg case shows the same thing at R=35 but its minimum is 42.8, so
-   growth hides it there. A 3-leg roundabout has no such protection - and the
-   live reports have included 3-leg rings.
+   Every radius was clean before that change. Not a pre-existing bug.
 
-   Reproduce: `build(R, 1, legs, True, tag, grow=False)` then `scan_gaps`.
+   **Fix so far.** Both implementations now RE-PARAMETERISE the rungs from
+   where the gore first opens to island width, instead of dropping samples from
+   a fixed grid, so the full GORE_SAMPLES resolution goes to whatever island
+   does get built. That roughly halves the damage (R=35: 250 -> 150 samples)
+   but does NOT close it: R=34, 35, 36 still leave bare ground.
+
+   **Still to do.** The remaining collapse is the kerb break truncating the
+   rung span right after `startAlong` at those radii. Establish first WHERE the
+   residual holes sit - near the cut or near the ring - because that decides
+   the fix:
+   - near the RING: the island must always reach the kerb, since
+     `openRingPavement` has deleted the sector on the assumption something
+     covers it. Trim only the cut end, never the ring end.
+   - near the CUT: the sector deletion is reaching further out than the arms
+     cover, and the inset needs revisiting instead.
+
+   **Fallback if this bites before it is fixed:** `MIN_GORE_WIDTH_M = 0`
+   restores clean geometry at every radius, at the cost of bringing back the
+   phantom median on approaches with no median. Bare ground is the worse of the
+   two defects, so take the fallback rather than shipping the band.
 
 6. **Small radius requests are silently inflated.** `CreateAtJunction` does
    `grown = max(radius, MinimumRadiusStuds(...))`, and for a 4-leg 1+1 ring

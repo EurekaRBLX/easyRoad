@@ -531,16 +531,26 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=True):
 
             reach = min(entry.length, exit_.length)
             min_gore = MIN_GORE_WIDTH_M * SCALE
-            L, R, last_along = [], [], 0.0
-            for i in range(GORE_SAMPLES+1):
-                along = (i/GORE_SAMPLES)*reach
-                pa = gore_edge(entry, along, entry_arm)
-                pb = gore_edge(exit_, exit_.length-along, exit_arm)
-                if i > 0 and (math.hypot(*pa) <= ring_kerb or math.hypot(*pb) <= ring_kerb):
+            # Re-parameterise from where the gore opens to island width; do NOT
+            # drop samples from a fixed grid. See RoundaboutBuilder for why -
+            # dropping them let the kerb break fire before enough rungs
+            # accumulated, leaving the gore bare at some radii.
+            start_along, opened = 0.0, False
+            for i in range(65):
+                along = (i/64)*reach
+                if math.dist(gore_edge(entry, along, entry_arm),
+                             gore_edge(exit_, exit_.length-along, exit_arm)) >= min_gore:
+                    start_along, opened = along, True
                     break
-                if not L and math.dist(pa, pb) < min_gore:
-                    continue
-                L.append(pa); R.append(pb); last_along = along
+            L, R, last_along = [], [], start_along
+            if opened:
+                for i in range(GORE_SAMPLES+1):
+                    along = start_along + (i/GORE_SAMPLES)*(reach-start_along)
+                    pa = gore_edge(entry, along, entry_arm)
+                    pb = gore_edge(exit_, exit_.length-along, exit_arm)
+                    if i > 0 and (math.hypot(*pa) <= ring_kerb or math.hypot(*pb) <= ring_kerb):
+                        break
+                    L.append(pa); R.append(pb); last_along = along
             for j in range(len(L)-1):
                 gore_tris.append([L[j], R[j], R[j+1]])
                 gore_tris.append([L[j], R[j+1], L[j+1]])
@@ -612,6 +622,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=True):
         kept.append(p)
     parts = kept + arm_parts
     return dict(tag=tag, parts=parts, gore=gore_tris, island_r=island_r, legs=leg_info,
+                sectors=cl,
                 outerR=outerR, ring_kerb=ring_kerb, cutR=cutR, center=center,
                 n_ring=len(ring_parts), n_arms=len(arm_parts), removed=removed)
 

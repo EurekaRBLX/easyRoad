@@ -974,11 +974,40 @@ local function buildSplitterIsland(
 	-- distances back from the cut and the island comes out sheared.
 	local reach = math.min(entryCurve.Length, exitCurve.Length)
 	local minGoreStuds = MIN_GORE_WIDTH_M * scale
+	-- Where the gore first opens out to island width. This RE-PARAMETERISES the
+	-- rungs below; it does not drop samples from a fixed grid.
+	--
+	-- Dropping them is what the first version did, and it was wrong in a way
+	-- that only showed at some radii: the loop also breaks when either edge
+	-- reaches the ring kerb, so on a ring whose arms converge early the skipped
+	-- samples were consumed and the break then fired before enough rungs had
+	-- accumulated to build anything. The island came out truncated or never
+	-- started, leaving the gore bare - measured as a band of bare ground at
+	-- R=34..38 on a 3-leg ring, up to 4.4 studs deep, with clean geometry
+	-- either side of it. Re-parameterising keeps the full GORE_SAMPLES
+	-- resolution for whatever island does get built.
+	local startAlong = 0
+	local probes = 64
+	local opened = false
+	for i = 0, probes do
+		local along = (i / probes) * reach
+		if
+			distanceXZ(goreEdge(entryCurve, along, entryArm), goreEdge(exitCurve, exitCurve.Length - along, exitArm))
+			>= minGoreStuds
+		then
+			startAlong = along
+			opened = true
+			break
+		end
+	end
+	if not opened then
+		return -- the gore never reaches island width: no splitter here at all
+	end
 	local entrySide: { Vector3 } = {}
 	local exitSide: { Vector3 } = {}
-	local lastAlong = 0
+	local lastAlong = startAlong
 	for i = 0, GORE_SAMPLES do
-		local along = (i / GORE_SAMPLES) * reach
+		local along = startAlong + (i / GORE_SAMPLES) * (reach - startAlong)
 		local a = goreEdge(entryCurve, along, entryArm)
 		local b = goreEdge(exitCurve, exitCurve.Length - along, exitArm)
 		-- Stop once either edge has dropped inside the kerb. Past that the island
@@ -987,13 +1016,6 @@ local function buildSplitterIsland(
 		-- instead of stopping, which paved the mouth shut.
 		if i > 0 and (distanceXZ(a, center) <= ringKerbRadiusStuds or distanceXZ(b, center) <= ringKerbRadiusStuds) then
 			break
-		end
-		-- Don't start the island until the gore is wide enough to be one. Only
-		-- skips leading samples: once the strip has started, a later pinch is
-		-- carried through (see the waist note above), it is only the approach
-		-- end that must not invent a median.
-		if #entrySide == 0 and distanceXZ(a, b) < minGoreStuds then
-			continue
 		end
 		table.insert(entrySide, a)
 		table.insert(exitSide, b)
