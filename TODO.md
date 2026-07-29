@@ -1,5 +1,9 @@
 # EasyRoad — To Do (New Features)
 
+> **Working on the roundabout? Read `ROUNDABOUT.md` first.** It carries the
+> vision, the settled decisions that must not be re-litigated blind, the
+> defects already paid for, and what each preview check is blind to.
+
 Planned/requested work not yet built, roughly ordered by how developed the
 plan is. Not user-facing; internal planning only. See `SHIPPED.md` for
 what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
@@ -69,11 +73,18 @@ well understood they are, not by value.
    see the SHIPPED.md entry. The splitter island now starts where the gore
    first reaches `MIN_GORE_WIDTH_M`. Not confirmed live yet.
 
-3. ~~Roundabout does not detect some existing road connections~~ - FIXED,
-   see the SHIPPED.md entry. `collectNearbyRoads` measured only endpoints.
-   Not confirmed live yet. NOTE while here: `ConnectRoad` already re-collects
-   and connects every nearby road itself, so `Place` passing `nearby[1]` is
-   NOT a bug - do not "fix" it.
+3. **Roads passing BESIDE the roundabout still are not connected.** Detection
+   was fixed (`collectNearbyRoads` now samples the curve); HANDLING was not.
+   `ConnectRoad` calls `ringSideIsStart`, which picks whichever END of the road
+   is nearer the centre and skips the road when that is unreadable. A road
+   passing beside or through has both ends far away, so choosing an end is
+   meaningless - it needs SPLITTING at the nearest point, the way
+   `RoadSplit.SplitMany` already does for X intersections. Until then a
+   detected-but-unsplittable road does nothing, which reads exactly like a
+   detection failure. See ROUNDABOUT.md section 5.1.
+
+   NOTE while here: `ConnectRoad` re-collects and connects every nearby road
+   itself, so `Place` passing `nearby[1]` is NOT a bug - do not "fix" it.
 
 4. ~~The preview's bare-ground scan does not cover the mouths~~ - CLOSED.
    `scan_mouths` now sweeps each mouth from the approach cut to the ring with

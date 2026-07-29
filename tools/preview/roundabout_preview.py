@@ -550,7 +550,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=True):
                 along = (i/64)*reach
                 if math.hypot(*gore_edge(entry, along, entry_arm)) <= outer_radius:
                     # Step back one probe - see RoundaboutBuilder.
-                    start_along = min(start_along, max(0, i-1)/64*reach)
+                    start_along = max(0, i-1)/64*reach
                     break
             L, R, last_along = [], [], start_along
             if opened:

@@ -1011,8 +1011,15 @@ local function buildSplitterIsland(
 	-- 42.3 while the ring's outer edge is 45.1, and all 150 bare-ground samples
 	-- sat in the 2.8 studs between them.
 	--
-	-- Past the outer edge there is no deleted pavement to replace, so out there
-	-- the width test is free to trim - which is what it was added for.
+	-- It is also where the island STOPS going outward. The width test's job was
+	-- to keep a raised strip off an approach with no median, and the ring's
+	-- outer edge is exactly that boundary: inside it the island replaces
+	-- deleted ring pavement, outside it there is nothing to replace and any
+	-- island is a median the road does not have. Taking the crossing directly,
+	-- rather than the earlier of it and the width test, does both jobs at once -
+	-- an earlier start covered the deleted band but ran the island 17 studs
+	-- down the approach as a thin sliver (measured at R=33: gore reaching
+	-- radius 60.3 against an outer edge of 43.1).
 	local outerRadiusStuds = ringKerbRadiusStuds + style.SidewalkWidthM * scale
 	for i = 0, probes do
 		local along = (i / probes) * reach
@@ -1022,7 +1029,7 @@ local function buildSplitterIsland(
 			-- deleted band uncovered. The previous sample is outside it by
 			-- construction, and starting early only means a little more island
 			-- where there is no pavement to conflict with.
-			startAlong = math.min(startAlong, math.max(0, (i - 1) / probes) * reach)
+			startAlong = math.max(0, (i - 1) / probes) * reach
 			break
 		end
 	end
