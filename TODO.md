@@ -96,34 +96,57 @@ well understood they are, not by value.
 
    Take those in that order. Markings first.
 
-5. **Small roundabouts: the preview and the plugin build different rings.**
-   Found while chasing "bugs out on smaller intersections", and it is a
-   BEHAVIOUR parity gap, the class `check_parity.py` structurally cannot see.
+5. **REPRODUCED: a bare-ground band at R=34-38.** The first roundabout defect
+   this tooling has caught headlessly. Fix this before anything else on the
+   roundabout.
 
-   `MinimumRadiusStuds` for a plain 4-leg, 1+1 roundabout is **42.8 studs**.
-   The plugin grows any smaller request up to that (`grown = max(radius,
-   minimum)`). The preview's `build()` does NOT - asked for 12 it builds 12:
+   3-leg, 1+1 approaches, radii the plugin builds AS ASKED (minimum is 27.5,
+   so growth does not mask any of these):
 
-       asked R   island_r   outerR    cutR
-            12        1.9     22.1    50.1
-            20        9.9     30.1    58.1
-            40       29.9     50.1    92.7
+       R      ring bare-ground     worst depth
+       33     clean
+       34     172 samples          4.41 studs
+       34.5   212 samples          4.41 studs
+       35     250 samples          4.33 studs
+       35.5   291 samples          4.33 studs
+       36      34 samples          0.80 studs
+       38      38 samples          0.63 studs
+       40     clean
 
-   So every "clean" the preview has reported at a small radius was reporting
-   on a ring the plugin would never build, and the small-radius regime the
-   user reports as buggy has never actually been tested. Note the default 40
-   is itself below the 42.8 minimum, so even the standard case is silently
-   grown in the plugin and not in the preview.
+   Not radius-monotonic - clean either side of a band - so this is a
+   discretisation effect, not a sizing one. Prime suspect is the ring's
+   station count beating against the mouth SECTOR deletion: `openRingPavement`
+   destroys ring pavement parts whose CENTRE falls inside a sector, so as the
+   station count changes with radius, a part whose centre sits just inside a
+   sector boundary while its body extends well outside gets deleted whole,
+   taking pavement with it. 4.4 studs of depth is about one strip's width,
+   which fits. Verify by instrumenting the deleted parts' extents against the
+   sector edges, not by eye.
 
-   Two things to do, in order:
-   a. Apply the same growth in `roundabout_preview.build()` so the two build
-      the same ring, then re-run the small-radius sweep - it may reproduce the
-      live defect immediately.
-   b. Decide whether silently inflating a 12-stud request to 43 is the right
-      behaviour at all. It is very likely what "bugs out on smaller
-      intersections" actually is: the user asks for a small roundabout and
-      gets a large one. If so the fix is UI, not geometry - surface the
-      minimum (item 8) and let the user see why it grew.
+   The 4-leg case shows the same thing at R=35 but its minimum is 42.8, so
+   growth hides it there. A 3-leg roundabout has no such protection - and the
+   live reports have included 3-leg rings.
+
+   Reproduce: `build(R, 1, legs, True, tag, grow=False)` then `scan_gaps`.
+
+6. **Small radius requests are silently inflated.** `CreateAtJunction` does
+   `grown = max(radius, MinimumRadiusStuds(...))`, and for a 4-leg 1+1 ring
+   that minimum is **42.8 studs** - so a 12-stud request and a 40-stud request
+   build the identical ring. That, not a geometry fault, is the most likely
+   thing behind "bugs out on smaller intersections": the user asks small and
+   gets large, with no indication why.
+
+   The growth also turns out to be OVER-CONSERVATIVE. With `grow=False` the
+   un-grown geometry is clean at R=12, 16, 20, 25 and 30 for a 4-leg ring, so
+   the minimum is well above where the geometry actually fails. Worth
+   re-deriving it rather than just surfacing it - but surface it either way
+   (item 8), because silently ignoring the number the user typed is the
+   underlying complaint.
+
+   `roundabout_preview.build()` now applies the same growth (`grow=True` by
+   default, `min_radius_studs` moved in from dump_compare) so the two finally
+   build the same ring. Every earlier small-radius "clean" was reported about
+   a ring the plugin would never have built.
 
 6. **Clipping: pavement over the carriageway at an arm end.** Live screenshot
    shows a wedge of raised pavement jutting across the asphalt where an arm

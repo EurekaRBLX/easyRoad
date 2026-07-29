@@ -397,8 +397,44 @@ def clamp_sectors(sectors):
     return out
 
 
-def build(ring_r, ring_lanes, legs, drive_on_left, tag):
-    """legs is a list of (degrees, approach component list)."""
+def min_radius_studs(legs, lane_count, lane_w, dol):
+    """Port of RoundaboutBuilder.MinimumRadiusStuds.
+
+    Lives here rather than in dump_compare.py so `build` can apply the same
+    growth the plugin applies - see the note in `build`.
+    """
+    total = widest = outer_off = 0.0
+    for _, spoke in legs:
+        inbound, outbound = split_approach_lanes(spoke, 1)
+        solo = (inbound is None) != (outbound is None)
+        for group in (inbound, outbound):
+            if not group:
+                continue
+            comps, outer, _inner, _centre = arm_from_group(group, dol, solo)
+            width = sum(c[1] for c in comps) * SCALE
+            total += width
+            widest = max(widest, width)
+            outer_off = max(outer_off, outer)
+    spare = 2 * math.pi - len(legs) * (2 * MIN_SPLIT_RAD + MIN_KERB_GAP_RAD)
+    merge = total / spare if spare > 0.2 else total
+    ring_w = max(1, lane_count) * lane_w + SW_M
+    ring_half = max(ring_w * SCALE, widest) / 2
+    return merge + outer_off + SW_M * SCALE - ring_half
+
+
+def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=True):
+    """legs is a list of (degrees, approach component list).
+
+    `grow` mirrors the plugin: `CreateAtJunction` does
+    `grown = max(radius, MinimumRadiusStuds(...))`, so a request smaller than
+    the mouths can carry is silently enlarged. The preview did NOT do this,
+    which meant every small-radius case it certified was a ring the plugin
+    would never build - and the small-radius regime, the one reported as buggy
+    live, had therefore never actually been tested. Pass grow=False only to
+    inspect the un-grown geometry deliberately.
+    """
+    if grow:
+        ring_r = max(ring_r, min_radius_studs(legs, ring_lanes, LANE_M, drive_on_left))
     flow = 1 if drive_on_left else -1
     center = (0.0, 0.0)
     rc = ring_components(ring_lanes, LANE_M, drive_on_left)
