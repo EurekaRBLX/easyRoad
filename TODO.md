@@ -69,7 +69,13 @@ well understood they are, not by value.
    see the SHIPPED.md entry. The splitter island now starts where the gore
    first reaches `MIN_GORE_WIDTH_M`. Not confirmed live yet.
 
-3. **The preview's bare-ground scan does not cover the mouths AT ALL.** This
+3. ~~Roundabout does not detect some existing road connections~~ - FIXED,
+   see the SHIPPED.md entry. `collectNearbyRoads` measured only endpoints.
+   Not confirmed live yet. NOTE while here: `ConnectRoad` already re-collects
+   and connects every nearby road itself, so `Place` passing `nearby[1]` is
+   NOT a bug - do not "fix" it.
+
+4. **The preview's bare-ground scan does not cover the mouths AT ALL.** This
    is why "preview clean, Studio broken" keeps happening on the roundabout,
    and it is measured, not suspected:
 
@@ -96,20 +102,20 @@ well understood they are, not by value.
    pad, where the defect only became tractable once
    `junction_pad_preview.py` could reproduce it headlessly.
 
-4. **Markings on the built roundabout do not match what the preview renders.**
+5. **Markings on the built roundabout do not match what the preview renders.**
    No diagnosis yet. `roundabout_preview.py` simulates markings, so a diff is
    possible - run it against the same radius/lane count and compare.
 
-5. **The radius suggestion is not offered by the Roundabout tool in the Road
+6. **The radius suggestion is not offered by the Roundabout tool in the Road
    Builder widget**, only on the junction panel. `RoundaboutBuilder.SuggestedRadiusStuds`
    already exists and is UI-agnostic; this is wiring.
 
-6. **The suggestion does not adapt to the lane count of the roads actually
+7. **The suggestion does not adapt to the lane count of the roads actually
    connected** - it uses the panel's lane count. It should take the maximum
    over the connected approaches. `MinimumRadiusStuds` already walks the legs
    and knows each one's width, so the input is there.
 
-7. **Cul-de-sacs**: asked for, nothing exists. Open question, not a bug.
+8. **Cul-de-sacs**: asked for, nothing exists. Open question, not a bug.
 
 ## Junction corners: remaining work
 

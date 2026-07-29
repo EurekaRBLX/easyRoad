@@ -4,6 +4,36 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: find approach roads by their nearest point, not their ends
+
+Placing a roundabout sometimes ignored a road that was plainly next to it.
+`collectNearbyRoads` measured each candidate by the smaller of its two
+ENDPOINT distances to the centre, so any road whose closest point is mid-span
+had both ends far away and was silently dropped - a road running past or
+through where the roundabout is going, or a curved approach that bows out
+before coming back in.
+
+It now samples the curve for the road's true nearest approach and tests that
+against `maxDist`. Measured against the old behaviour, with a 40-stud ring:
+
+    case                              endpoint d   nearest d   was      now
+    road ending at the mouth                60.0        60.0   found    found
+    road passing beside, 30 off            202.2        30.0   MISSED   found
+    road passing straight through          200.0         0.0   MISSED   found
+    long road, ends far, grazes            305.9         0.0   MISSED   found
+    road well away                         500.0       300.0   missed   missed
+
+The `minDist` test deliberately still uses the ENDPOINT distance. Switching it
+to the nearest approach too would reject strictly more roads rather than fewer,
+since anything passing through the middle has a nearest approach near zero -
+the opposite of the bug.
+
+Worth recording because it looks wrong and is not: `ConnectRoad` re-collects
+and connects every nearby road itself, so `Place` handing it `nearby[1]` is
+not a "only connects one road" bug.
+
+Not confirmed in Studio yet.
+
 ## Roundabout: match the centre island to the ring instead of a true circle
 
 The ring is emitted by `RoadBuilder` as rigid strips, so its inner edge is not

@@ -1697,9 +1697,33 @@ local function collectNearbyRoads(center: Vector3, maxDist: number, minDist: num
 		if not data then
 			continue
 		end
-		local dNear =
-			math.min(distanceXZ(data.Curve:PosAt(0), center), distanceXZ(data.Curve:PosAt(data.Curve.Length), center))
-		if dNear <= maxDist and dNear >= minDist then
+		-- Two distances, because the two tests ask different questions.
+		--
+		-- "Is this road near enough to be an approach?" must use the road's TRUE
+		-- nearest approach to the centre, sampled along the curve. Testing only
+		-- the endpoints - which is what this did - misses every road whose
+		-- closest point is mid-span: a road running past or through where the
+		-- roundabout is being placed has both ends far away and was silently
+		-- dropped. That is the live "sometimes does not detect existing
+		-- connections". A curved approach that bows out before coming back in
+		-- was lost the same way.
+		--
+		-- "Is this road too close to treat as an approach?" keeps using the
+		-- ENDPOINT distance. Switching that one to the nearest approach as well
+		-- would reject strictly MORE roads rather than fewer - anything passing
+		-- through the middle has a nearest approach near zero - which is the
+		-- opposite of the bug being fixed.
+		local length = data.Curve.Length
+		local endpointDist =
+			math.min(distanceXZ(data.Curve:PosAt(0), center), distanceXZ(data.Curve:PosAt(length), center))
+		local nearestDist = endpointDist
+		if length > 1e-3 then
+			local samples = math.clamp(math.ceil(length / 4), 8, 256)
+			for i = 1, samples - 1 do
+				nearestDist = math.min(nearestDist, distanceXZ(data.Curve:PosAt(length * i / samples), center))
+			end
+		end
+		if nearestDist <= maxDist and endpointDist >= minDist then
 			table.insert(out, child :: Model)
 		end
 	end
