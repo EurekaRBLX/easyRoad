@@ -700,6 +700,14 @@ def scan_mouths(scene, span=70.0, samples=420, steps=40, min_gap=0.2):
         reported for information, not failed.
       * HOLE - does not touch the centre: a tear inside one arm's own width, or
         between an arm and the pavement that should meet it. A real defect.
+
+    Also reports OVERHANG: raised kerb material lying over the carriageway.
+    That is the opposite failure and the gap search structurally cannot see it -
+    a gap search looks for material that is MISSING, and this is material that
+    should not be there. It is the live "clipping" defect, a wedge of pavement
+    jutting out across the asphalt at an arm end. Detected by classifying each
+    swept sample as deck or raised and flagging raised material strictly inside
+    the carriageway's own lateral span at that station.
     """
     # Bounding boxes first. A mouth sweep is tens of thousands of point tests
     # against every Part in the scene; without culling it takes minutes.
@@ -707,18 +715,27 @@ def scan_mouths(scene, span=70.0, samples=420, steps=40, min_gap=0.2):
     for q in scene["parts"]:
         xs = [v[0] for v in q.poly]
         ys = [v[1] for v in q.poly]
-        boxed.append((min(xs), max(xs), min(ys), max(ys), q.poly))
+        boxed.append((min(xs), max(xs), min(ys), max(ys), q.poly, q.name))
     for t in scene["gore"]:
         xs = [v[0] for v in t]
         ys = [v[1] for v in t]
-        boxed.append((min(xs), max(xs), min(ys), max(ys), t))
+        boxed.append((min(xs), max(xs), min(ys), max(ys), t, "Sidewalk"))
+
+    def hits_at(pt):
+        """(anything covers it, asphalt covers it, raised kerb material does)."""
+        x, y = pt
+        any_hit = deck = raised = False
+        for x0, x1, y0, y1, poly, name in boxed:
+            if x0 <= x <= x1 and y0 <= y <= y1 and point_in(poly, pt):
+                any_hit = True
+                if name == "Sidewalk":
+                    raised = True
+                elif name != "Marking":
+                    deck = True
+        return any_hit, deck, raised
 
     def covered_at(pt):
-        x, y = pt
-        for x0, x1, y0, y1, poly in boxed:
-            if x0 <= x <= x1 and y0 <= y <= y1 and point_in(poly, pt):
-                return True
-        return False
+        return hits_at(pt)[0]
 
     findings = []
     for index, leg in enumerate(scene.get("legs", [])):
@@ -730,14 +747,33 @@ def scan_mouths(scene, span=70.0, samples=420, steps=40, min_gap=0.2):
         for si in range(steps + 1):
             at = reach * si / steps           # 0 = the cut, reach = the ring
             origin = (cut[0] - inward[0] * at, cut[1] - inward[1] * at)
-            swept = []
+            swept, classed = [], []
             for i in range(samples + 1):
                 d = -span + 2 * span * i / samples
                 pt = (origin[0] + side[0] * d, origin[1] + side[1] * d)
-                swept.append((d, covered_at(pt)))
+                any_hit, deck, raised = hits_at(pt)
+                swept.append((d, any_hit))
+                classed.append((d, deck, raised))
             hits = [d for d, h in swept if h]
             if len(hits) < 2:
                 continue
+            # OVERHANG: raised kerb material lying over the carriageway. The
+            # gap search below can never see this - it looks for MISSING
+            # material, and this is material that should not be there. It is
+            # the live "clipping" defect: a wedge of pavement jutting out
+            # across the asphalt at the arm end.
+            deck_at = [d for d, dk, _ in classed if dk]
+            if len(deck_at) >= 2:
+                dlo, dhi = min(deck_at), max(deck_at)
+                run = None
+                for d, dk, rs in classed:
+                    if rs and not dk and dlo < d < dhi:
+                        run = d if run is None else run
+                    elif run is not None:
+                        if d - run >= min_gap:
+                            findings.append(dict(leg=index + 1, at=at,
+                                                 width=d - run, kind="overhang"))
+                        run = None
             lo, hi = min(hits), max(hits)
             run_start = None
             for d, h in swept:
@@ -769,6 +805,10 @@ def report(scene, holes, pitch, hairline):
     mouth = scan_mouths(scene)
     mouth_holes = [m for m in mouth if m["kind"] == "hole"]
     mouth_gore = [m for m in mouth if m["kind"] == "gore"]
+    mouth_over = [m for m in mouth if m["kind"] == "overhang"]
+    if mouth_over:
+        print(f"    MOUTH: {len(mouth_over)} OVERHANG samples - pavement over the "
+              f"carriageway, worst {max(m['width'] for m in mouth_over):.2f} studs")
     if mouth_holes:
         worst = max(m["width"] for m in mouth_holes)
         print(f"    MOUTH: {len(mouth_holes)} bare-ground samples inside the mouth, "

@@ -96,7 +96,29 @@ well understood they are, not by value.
 
    Take those in that order. Markings first.
 
-5. **Markings: match the preview's layout.** DECIDED, not built.
+5. **Clipping: pavement over the carriageway at an arm end.** Live screenshot
+   shows a wedge of raised pavement jutting across the asphalt where an arm
+   meets its approach.
+
+   `scan_mouths` now DETECTS this class - it classifies each swept sample as
+   deck or raised and flags raised material strictly inside the carriageway's
+   own lateral span. That closes the tool's other structural blind spot: the
+   gap search can only find material that is MISSING, never material that
+   should not be there.
+
+   **It does not reproduce.** Clean across 1+1, 2+2, 1+1 with a 2m median,
+   2+2 with a 3m median, and a 3/1 asymmetric approach, at R=40 and R=55. So
+   the defect is not in the geometry the preview models, and the suspects are
+   the same three as the mouth holes - most likely the arm's END-CAP shape at
+   the seam, which the preview idealises as a rotated rectangle while
+   RoadBuilder emits a real Part whose corners can overhang on a curve.
+   `seam_steps` reports 0.00 flush there, but it measures lateral EXTENT, not
+   the shape of the cap, so a diagonal corner poking out would not move it.
+
+   Next: compare the arm's first/last emitted Part against the approach road's
+   last/first one in the LUA, not the port - part CFrame and Size, not extent.
+
+6. **Markings: match the preview's layout.** DECIDED, not built.
 
    User's call, given the two renders side by side: the roundabout should look
    like `tools/preview/out/uk4_parts.png`. That is the TARGET APPEARANCE.
@@ -130,16 +152,16 @@ well understood they are, not by value.
    components, then set the specs to close the gap. Small and local; it is
    profile data, not engine code.
 
-6. **The radius suggestion is not offered by the Roundabout tool in the Road
+7. **The radius suggestion is not offered by the Roundabout tool in the Road
    Builder widget**, only on the junction panel. `RoundaboutBuilder.SuggestedRadiusStuds`
    already exists and is UI-agnostic; this is wiring.
 
-7. **The suggestion does not adapt to the lane count of the roads actually
+8. **The suggestion does not adapt to the lane count of the roads actually
    connected** - it uses the panel's lane count. It should take the maximum
    over the connected approaches. `MinimumRadiusStuds` already walks the legs
    and knows each one's width, so the input is there.
 
-8. **Cul-de-sacs**: asked for, nothing exists. Open question, not a bug.
+9. **Cul-de-sacs**: asked for, nothing exists. Open question, not a bug.
 
 ## Junction corners: remaining work
 
