@@ -75,32 +75,26 @@ well understood they are, not by value.
    and connects every nearby road itself, so `Place` passing `nearby[1]` is
    NOT a bug - do not "fix" it.
 
-4. **The preview's bare-ground scan does not cover the mouths AT ALL.** This
-   is why "preview clean, Studio broken" keeps happening on the roundabout,
-   and it is measured, not suspected:
+4. ~~The preview's bare-ground scan does not cover the mouths~~ - CLOSED.
+   `scan_mouths` now sweeps each mouth from the approach cut to the ring with
+   a self-defining envelope (the outermost covered points either side ARE the
+   mouth's edges at that station), splitting interior gaps into GORE (open by
+   design since the splitter change) and HOLE (a real defect). Runs by default.
 
-       scan_gaps covers   island_r -> outerR   =  29.9 -> 50.1 studs
-       never scanned      outerR -> cutR       =  50.1 -> 92.7 studs
+   **Result: zero holes on every case, gore closed.** That is the important
+   finding and it redirects the search. The mouths are clean in the geometry
+   the preview models, so the defects still visible in Studio are NOT in that
+   geometry. They are in one of:
 
-   That unscanned band is **68% of the built radius** on a 40-stud ring, and
-   it is exactly where the entry/exit slip lives - the arms, the gore, the
-   splitter, the arm-to-approach seam. Every "no bare ground inside the ring
-   footprint" line this tool has ever printed was reporting on the annulus
-   that was already fine. `seam_steps` probes only a thin cross-section at the
-   cut, so it does not cover the area either.
+   - **markings** (item 5 below) - the preview simulates them but the mouth
+     scan treats a marking as coverage, so a wrong marking is invisible to it;
+   - **part heights / render order / z-fighting** - explicitly out of the
+     preview's plan-only model;
+   - **the Lua diverging from the Python port** - `check_parity.py` compares
+     constants only, and `dump_compare.py` has still never been run against a
+     live junction.
 
-   Fixing it is NOT just raising the outer bound. Outside the ring the
-   expected coverage is not a full annulus: between mouths there is
-   legitimately open ground, and since the splitter change the narrow part of
-   each gore is legitimately open ground too. The scan needs a notion of the
-   MOUTH ENVELOPE (arm footprints + splitter island + the pavement that should
-   join them) and must report ground missing from inside that envelope only.
-   Until that exists, roundabout mouth geometry has no automated check at all
-   and every mouth defect will keep arriving as a Studio screenshot.
-
-   Do this before any further mouth work - the same lesson as the junction
-   pad, where the defect only became tractable once
-   `junction_pad_preview.py` could reproduce it headlessly.
+   Take those in that order. Markings first.
 
 5. **Markings on the built roundabout do not match what the preview renders.**
    No diagnosis yet. `roundabout_preview.py` simulates markings, so a diff is

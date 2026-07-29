@@ -671,6 +671,89 @@ def seam_steps(scene, probe=1.5, span=60.0, samples=1200):
     return steps
 
 
+def scan_mouths(scene, span=70.0, samples=420, steps=40, min_gap=0.2):
+    """Bare ground INSIDE each mouth, between the ring and the approach cut.
+
+    `scan_gaps` only ever looks at the ring annulus (island_r -> outerR). On a
+    40-stud ring that leaves outerR -> cutR entirely unexamined - 68% of the
+    built radius, and every bit of the entry/exit slip: the arms, the gore, the
+    splitter, the arm-to-approach seam. Everything this tool has certified
+    about the mouths was certified about ground it never sampled.
+
+    The hard part is that expected coverage out here is NOT a full annulus:
+    between mouths there is legitimately open ground, so simply raising the
+    annulus scan's outer bound flags acres of grass and gets ignored.
+
+    So the envelope is SELF-DEFINING rather than modelled. Sweeping the road's
+    own perpendicular at one station, the outermost covered points either side
+    ARE the mouth's outer edges there - that is what got built. A gap strictly
+    BETWEEN them is material missing from inside the mouth; anything past them
+    is outside the road and none of this check's business. Nothing has to be
+    described in advance, and the check cannot drift from the geometry because
+    it is derived from it.
+
+    Interior gaps are split by cause, because only one kind is a defect:
+
+      * GORE - spans the mouth's own centreline, i.e. the space between a
+        diverging entry and exit. Since the splitter island starts only where
+        the gore reaches MIN_GORE_WIDTH_M, open ground here is BY DESIGN;
+        reported for information, not failed.
+      * HOLE - does not touch the centre: a tear inside one arm's own width, or
+        between an arm and the pavement that should meet it. A real defect.
+    """
+    # Bounding boxes first. A mouth sweep is tens of thousands of point tests
+    # against every Part in the scene; without culling it takes minutes.
+    boxed = []
+    for q in scene["parts"]:
+        xs = [v[0] for v in q.poly]
+        ys = [v[1] for v in q.poly]
+        boxed.append((min(xs), max(xs), min(ys), max(ys), q.poly))
+    for t in scene["gore"]:
+        xs = [v[0] for v in t]
+        ys = [v[1] for v in t]
+        boxed.append((min(xs), max(xs), min(ys), max(ys), t))
+
+    def covered_at(pt):
+        x, y = pt
+        for x0, x1, y0, y1, poly in boxed:
+            if x0 <= x <= x1 and y0 <= y <= y1 and point_in(poly, pt):
+                return True
+        return False
+
+    findings = []
+    for index, leg in enumerate(scene.get("legs", [])):
+        cut, inward = leg["cut"], leg["inward"]
+        side = right_of(inward)
+        reach = math.hypot(cut[0] - scene["center"][0], cut[1] - scene["center"][1]) - scene["outerR"]
+        if reach <= 0:
+            continue
+        for si in range(steps + 1):
+            at = reach * si / steps           # 0 = the cut, reach = the ring
+            origin = (cut[0] - inward[0] * at, cut[1] - inward[1] * at)
+            swept = []
+            for i in range(samples + 1):
+                d = -span + 2 * span * i / samples
+                pt = (origin[0] + side[0] * d, origin[1] + side[1] * d)
+                swept.append((d, covered_at(pt)))
+            hits = [d for d, h in swept if h]
+            if len(hits) < 2:
+                continue
+            lo, hi = min(hits), max(hits)
+            run_start = None
+            for d, h in swept:
+                if d < lo or d > hi:
+                    continue
+                if not h and run_start is None:
+                    run_start = d
+                elif h and run_start is not None:
+                    width = d - run_start
+                    if width >= min_gap:
+                        findings.append(dict(leg=index + 1, at=at, width=width,
+                                             kind="gore" if run_start <= 0.0 <= d else "hole"))
+                    run_start = None
+    return findings
+
+
 def report(scene, holes, pitch, hairline):
     """Clusters thinner than `hairline` studs are reported but not failed.
 
@@ -683,6 +766,18 @@ def report(scene, holes, pitch, hairline):
           f"({scene['n_ring']} ring, {scene['n_arms']} arms/stems), "
           f"{len(scene['gore'])} gore tris, {scene['removed']} ring pavement parts "
           f"removed in mouths")
+    mouth = scan_mouths(scene)
+    mouth_holes = [m for m in mouth if m["kind"] == "hole"]
+    mouth_gore = [m for m in mouth if m["kind"] == "gore"]
+    if mouth_holes:
+        worst = max(m["width"] for m in mouth_holes)
+        print(f"    MOUTH: {len(mouth_holes)} bare-ground samples inside the mouth, "
+              f"worst {worst:.2f} studs wide")
+        for m in sorted(mouth_holes, key=lambda m: -m["width"])[:4]:
+            print(f"        leg {m['leg']} at {m['at']:.1f} studs from the cut: {m['width']:.2f} studs")
+    else:
+        print("    MOUTH: no bare ground inside the mouth envelope "
+              f"({'gore open by design at ' + str(len(mouth_gore)) + ' samples' if mouth_gore else 'gore closed'})")
     steps = seam_steps(scene)
     if steps:
         worst = max(max(a, b) for a, b in steps)
