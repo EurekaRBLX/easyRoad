@@ -6204,6 +6204,9 @@ local TURBO_ARC_STEP_RAD = math.rad(2)
 -- evenly instead reads as a slow drift and loses the thing that makes a turbo
 -- legible - that the lane you are in is committed to the next exit.
 local TURBO_FLING_FRACTION = 0.35
+-- Dash geometry for the circulating divider, deliberately not the region's
+-- open-road LaneLine - see where they are used.
+local TURBO_DASH_M, TURBO_GAP_M = 1.0, 1.5
 
 -- TURBO markings: lane boundaries that spiral outward, so the lane a driver is
 -- in is carried to an exit rather than needing a lane change on the ring. The
@@ -6261,8 +6264,13 @@ local function buildTurboMarkings(
 	-- Dashed, like the ordinary circulating lane line it is for most of its
 	-- length, and like the reference. Solid would read as no-lane-change all the
 	-- way round, which is not what a turbo marks.
-	local dashStuds = math.max(0.5, style.LaneLine.DashLengthM * scale)
-	local gapStuds = math.max(0.5, style.LaneLine.DashGapM * scale)
+	-- Marked tighter than the region's open-road lane line, which at the default
+	-- 1 m mark / 5 m gap puts about five dashes on a whole quadrant and reads as
+	-- an unmarked ring. A circulating divider is short-dashed on purpose - it is
+	-- telling you not to drift between lanes, not merely separating them - and
+	-- the reference photo is nearer 1:1.5 than 1:5.
+	local dashStuds = math.max(0.5, TURBO_DASH_M * scale)
+	local gapStuds = math.max(0.5, TURBO_GAP_M * scale)
 
 	-- Held at k lanes out for the first (1 - FLING) of the arc, then smoothly
 	-- flung one lane outward so it arrives at the exit on the outer edge.
@@ -6279,25 +6287,28 @@ local function buildTurboMarkings(
 	table.sort(sorted, function(a, b)
 		return a.Angle &lt; b.Angle
 	end)
-	-- Arcs run ENTRY EDGE to EXIT EDGE, which is what `Ahead` and `Behind` are:
-	-- the mouth's own splits, inset by SECTOR_INSET_RAD. Not mouth centre to
-	-- mouth centre - that was tried and is wrong, because the exit is not at the
-	-- centre. On a 4-leg ring the 90-degree mouth's exit edge sits at 55 degrees
-	-- while its centre is at 90, so a boundary aimed at the centre is still
-	-- drifting 34 degrees after the traffic it is meant to deliver has already
-	-- left, and only touches the kerb halfway across the opening. Aim at the
-	-- exit and the hand-off is where the exit is.
+	-- Arcs run EXIT to EXIT, so the boundary is drawn round the whole circle.
 	--
-	-- Between a mouth's exit and its entry there is deliberately no boundary:
-	-- the outer lane has gone and the entry's has not joined, so there is one
-	-- circulating lane there and nothing to divide.
+	-- Two earlier attempts each got one half of this right. Mouth centre to
+	-- mouth centre was continuous but delivered late - on a 4-leg ring the
+	-- 90-degree mouth's exit sits at 55 degrees and the boundary was only
+	-- reaching the kerb at 88.7, still drifting a half-mouth after the traffic
+	-- it is meant to hand over had left. Entry edge to exit edge delivered
+	-- exactly (53.9 against 55.0) but drew nothing across the mouths, and since
+	-- a mouth spans Ahead + Behind ~= 62 degrees at default splits that left the
+	-- divider on barely 30% of the ring: eight dashes for a whole roundabout.
+	--
+	-- Exit to exit gives both. Each arc holds its radius, flings out to the kerb
+	-- at the exit that ends it, and the next arc restarts inside - so there is a
+	-- deliberate STEP at every exit, which is the hand-off itself, and unbroken
+	-- marking everywhere else. A reference photo settles the question the second
+	-- attempt got wrong: the circulating divider does run continuously past a
+	-- mouth. Reasoning that the outer lane has left and so there is nothing to
+	-- divide was over-thinking it.
 	--
 	-- Ahead/Behind are absolute (+/- angle), not relative to travel, so which
 	-- one is the exit depends on which way round you are going.
-	local function leaveAngle(m: MouthSector): number
-		return m.Angle + (if travel &gt; 0 then m.Ahead else -m.Behind)
-	end
-	local function arriveAngle(m: MouthSector): number
+	local function exitAngle(m: MouthSector): number
 		return m.Angle + (if travel &gt; 0 then -m.Behind else m.Ahead)
 	end
 
@@ -6324,8 +6335,8 @@ local function buildTurboMarkings(
 
 	for i, mouth in sorted do
 		local nextMouth = sorted[if travel &gt; 0 then (i % #sorted) + 1 else (if i &gt; 1 then i - 1 else #sorted)]
-		local from = leaveAngle(mouth)
-		local sweep = ((arriveAngle(nextMouth) - from) * travel) % (2 * math.pi)
+		local from = exitAngle(mouth)
+		local sweep = ((exitAngle(nextMouth) - from) * travel) % (2 * math.pi)
 		if sweep &lt;= 1e-6 then
 			continue
 		end

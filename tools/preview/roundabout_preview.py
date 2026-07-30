@@ -441,7 +441,10 @@ TURBO_ARC_STEP_RAD = math.radians(2)
 # Fraction of each arc over which the boundary makes its outward move. It holds
 # a constant radius for the rest - see RoundaboutBuilder.
 TURBO_FLING_FRACTION = 0.35
-TURBO_DASH_M, TURBO_GAP_M = 1.0, 5.0     # style.LaneLine dash geometry
+# Deliberately tighter than the region's open-road LaneLine (1 m / 5 m), which
+# puts ~5 dashes on a whole quadrant and reads as an unmarked ring. See
+# RoundaboutBuilder.
+TURBO_DASH_M, TURBO_GAP_M = 1.0, 1.5
 
 
 def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, sectors):
@@ -473,10 +476,9 @@ def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, sectors
     out, spans = [], []
     for i, mouth in enumerate(ordered):
         nxt = ordered[(i + 1) % len(ordered)] if travel > 0 else ordered[i - 1]
-        # ENTRY EDGE to EXIT EDGE - see RoundaboutBuilder. The exit is not at
-        # the mouth centre, so aiming at the centre leaves the boundary still
-        # drifting well past the traffic it is meant to deliver.
-        frm = mouth[0] + (mouth[1] if travel > 0 else -mouth[2])
+        # EXIT to EXIT - see RoundaboutBuilder. Covers the whole circle, and
+        # each arc still ends its fling on the exit that terminates it.
+        frm = mouth[0] + (-mouth[2] if travel > 0 else mouth[1])
         arrive = nxt[0] + (-nxt[2] if travel > 0 else nxt[1])
         sweep = ((arrive - frm) * travel) % (2 * math.pi)
         if sweep <= 1e-6:

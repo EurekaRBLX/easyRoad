@@ -4,6 +4,42 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: turbo divider round the whole ring, and dashed tighter
+
+Reported as "why only 4 markings in the circle", with a close-up photo showing
+the circulating divider running continuously past a mouth.
+
+Both parts of that were right, and the second corrects reasoning from the
+previous round. I had argued there should be no boundary between a mouth's exit
+and its entry, because the outer lane has left and the entry's has not joined so
+there is one lane and nothing to divide. That was over-thinking it; the photo
+shows the divider carrying straight on. Since a mouth spans Ahead + Behind ~= 62
+degrees at default splits, excluding them left the divider on barely 30% of the
+ring - eight dashes for a whole roundabout.
+
+Arcs now run EXIT TO EXIT, which covers the full circle while keeping the
+delivery property the round before that was fixed to get: each arc holds its
+radius, flings out to the kerb at the exit that ends it, and the next arc
+restarts inside. There is a deliberate step at every exit - that step IS the
+hand-off - and unbroken marking everywhere else. 48 dashes on a 4-leg 2-lane
+ring against 8, all four exits reached at r=79.3 against a kerb of 79.5.
+
+Dash geometry is now TURBO_DASH_M / TURBO_GAP_M (1 m / 1.5 m) rather than the
+region's open-road LaneLine. At the region default of 1 m / 5 m a whole quadrant
+carries about five dashes and the ring reads as unmarked. A circulating divider
+is short-dashed on purpose - it is telling you not to drift between lanes, not
+merely separating them - and the reference is nearer 1:1.5 than 1:5.
+
+Three rounds on this one marking, each fixing a real defect and each exposing
+the next: even drift, then late delivery, then no coverage. All three were only
+visible in a render or a photo; every automated check was green throughout, and
+the delivery invariant only exists because one of those rounds made it
+necessary.
+
+Six turbo cases clean; both break-tests still fail as they should.
+
+Not confirmed in Studio.
+
 ## Roundabout: aim the turbo fling at the exit, not the mouth centre
 
 Correcting the previous entry, on a report that the boundary was "still drifted,

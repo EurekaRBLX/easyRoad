@@ -220,26 +220,35 @@ Two things this does NOT go through, both for the same reason:
   using `RoadBuilder.MarkingLiftStuds` / `MarkingThicknessStuds` so the two sets
   of markings cannot drift apart in height.
 
-Arcs run **entry edge to exit edge** — which is what `Ahead` and `Behind` are,
-the mouth's own splits inset by `SECTOR_INSET_RAD`. Mouth centre to mouth centre
-was tried and is wrong: the exit is not at the centre. On a 4-leg ring the
-90° mouth's exit edge sits at 55° while its centre is at 90°, so a boundary
-aimed at the centre is still drifting 34° after the traffic it is meant to
-deliver has already left, and only touches the kerb halfway across the opening.
-Measured that way round before the fix: kerb reached at 88.7° against an exit
-at 55.0°; after, at 53.9°.
+Arcs run **exit to exit**, so the boundary is drawn round the whole circle.
 
-Between a mouth's exit and its entry there is deliberately **no** boundary: the
-outer lane has gone and the entry's has not joined, so there is one circulating
-lane there and nothing to divide.
+Two earlier attempts each got one half of this right, and both are worth
+recording because the third one only makes sense against them:
 
-**That leaves the divider on only about 30% of the ring**, and it is worth
-knowing why before someone "fixes" it. A mouth spans `Ahead + Behind` ≈ 62° at
-default splits, and it does so *regardless of radius* — `SPLIT_ANGLE_RAD` is an
-angle, not a length. Four legs therefore occupy ~250° of any 4-leg ring and only
-~110° is genuine two-lane running. The markings are correct; the mouths are
-wide. Narrowing the split is the change that would make a turbo ring look like
-the reference, and it is an arm-geometry decision, not a markings one.
+- **Mouth centre to mouth centre** — continuous, but delivered late. The exit is
+  not at the centre: on a 4-leg ring the 90° mouth's exit sits at 55° and the
+  boundary was only reaching the kerb at 88.7°, still drifting a half-mouth
+  after the traffic it is meant to hand over had left.
+- **Entry edge to exit edge** — delivered exactly (53.9° against 55.0°) but drew
+  nothing across the mouths. Since a mouth spans `Ahead + Behind` ≈ 62° at
+  default splits, that left the divider on barely 30% of the ring: eight dashes
+  for a whole roundabout.
+
+Exit to exit gives both. Each arc holds its radius, flings out to the kerb at
+the exit that ends it, and the next arc restarts inside — so there is a
+deliberate **step at every exit**, which is the hand-off itself, and unbroken
+marking everywhere else. 48 dashes on a 4-leg 2-lane ring, all four exits
+reached at r=79.3 against a kerb of 79.5.
+
+A reference photo settles the question the second attempt got wrong: the
+circulating divider does run continuously past a mouth. Reasoning that the outer
+lane has left and so there is nothing to divide was over-thinking it.
+
+Dash geometry is `TURBO_DASH_M / TURBO_GAP_M` (1 m / 1.5 m), deliberately NOT
+the region's open-road `LaneLine`. At the region default of 1 m / 5 m a whole
+quadrant carries about five dashes and the ring reads as unmarked. A circulating
+divider is short-dashed on purpose — it is telling you not to drift between
+lanes, not merely separating them — and the reference is nearer 1:1.5 than 1:5.
 
 It runs after `openRingPavement`, deliberately: that pass deletes ring pavement
 and edge lines inside the mouth sectors, and these parts must survive there.
