@@ -786,15 +786,27 @@ local function buildTurboMarkings(
 	table.sort(sorted, function(a, b)
 		return a.Angle < b.Angle
 	end)
-	-- Arcs run mouth CENTRE to mouth CENTRE, not between the sector edges.
+	-- Arcs run ENTRY EDGE to EXIT EDGE, which is what `Ahead` and `Behind` are:
+	-- the mouth's own splits, inset by SECTOR_INSET_RAD. Not mouth centre to
+	-- mouth centre - that was tried and is wrong, because the exit is not at the
+	-- centre. On a 4-leg ring the 90-degree mouth's exit edge sits at 55 degrees
+	-- while its centre is at 90, so a boundary aimed at the centre is still
+	-- drifting 34 degrees after the traffic it is meant to deliver has already
+	-- left, and only touches the kerb halfway across the opening. Aim at the
+	-- exit and the hand-off is where the exit is.
 	--
-	-- The point of the spiral is that a boundary reaches the outer edge exactly
-	-- where the exit is, so the lane it was holding is delivered into that exit.
-	-- Ending it at the sector edge instead completed the migration a few degrees
-	-- early, left the line hanging in mid-carriageway, and blanked the whole
-	-- mouth of circulating markings - a bare band of asphalt at every leg.
-	-- Running centre to centre also makes the spiral continuous the whole way
-	-- round, which is what the reference shows.
+	-- Between a mouth's exit and its entry there is deliberately no boundary:
+	-- the outer lane has gone and the entry's has not joined, so there is one
+	-- circulating lane there and nothing to divide.
+	--
+	-- Ahead/Behind are absolute (+/- angle), not relative to travel, so which
+	-- one is the exit depends on which way round you are going.
+	local function leaveAngle(m: MouthSector): number
+		return m.Angle + (if travel > 0 then m.Ahead else -m.Behind)
+	end
+	local function arriveAngle(m: MouthSector): number
+		return m.Angle + (if travel > 0 then -m.Behind else m.Ahead)
+	end
 
 	local function place(p0: Vector3, p1: Vector3)
 		local span = (p1 - p0).Magnitude
@@ -819,8 +831,8 @@ local function buildTurboMarkings(
 
 	for i, mouth in sorted do
 		local nextMouth = sorted[if travel > 0 then (i % #sorted) + 1 else (if i > 1 then i - 1 else #sorted)]
-		local from = mouth.Angle
-		local sweep = ((nextMouth.Angle - from) * travel) % (2 * math.pi)
+		local from = leaveAngle(mouth)
+		local sweep = ((arriveAngle(nextMouth) - from) * travel) % (2 * math.pi)
 		if sweep <= 1e-6 then
 			continue
 		end

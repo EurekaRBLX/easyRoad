@@ -4,6 +4,40 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: aim the turbo fling at the exit, not the mouth centre
+
+Correcting the previous entry, on a report that the boundary was "still drifted,
+not seamlessly to the exit". It was, and the numbers say so plainly: on a 4-leg
+ring the 90-degree mouth's exit edge sits at 55.0 degrees, and the boundary was
+only reaching the kerb at 88.7 - still drifting 34 degrees after the traffic it
+is meant to deliver had already left, touching the kerb halfway across the
+opening. Now 53.9 against 55.0.
+
+The previous round moved the arcs from the mouth SECTOR EDGES to mouth CENTRES.
+That was my mistake. The sector edges are the entry and exit splits inset by
+SECTOR_INSET_RAD - they ARE the hand-off points - and aiming at the centre put
+the completion a whole half-mouth late. The real defects that round were the
+even drift across the arc and the dash phasing, both of which are fixed
+separately and stay fixed.
+
+Between a mouth's exit and its entry there is now deliberately no boundary: the
+outer lane has left and the entry's has not joined, so there is one circulating
+lane there and nothing to divide.
+
+KNOWN CONSEQUENCE, worth reading before anyone "fixes" it. That leaves the
+divider on only about 30% of the ring. A mouth spans Ahead + Behind ~= 62
+degrees at default splits and does so REGARDLESS OF RADIUS, because
+SPLIT_ANGLE_RAD is an angle and not a length - so four legs occupy ~250 degrees
+of any 4-leg ring and only ~110 is genuine two-lane running. The markings are
+right; the mouths are wide. Narrowing the split is what would make a turbo ring
+look like the reference aerial, and that is an arm-geometry decision, not a
+markings one.
+
+check_turbo's delivery invariant now targets the exit edge rather than the mouth
+centre. Six turbo cases clean, all break-tests still fail as they should.
+
+Not confirmed in Studio.
+
 ## Roundabout: island nose taper, and turbo markings corrected against a reference
 
 Both found by looking at the renders. Every automated check was green through

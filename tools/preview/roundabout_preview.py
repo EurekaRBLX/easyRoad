@@ -473,10 +473,12 @@ def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, sectors
     out, spans = [], []
     for i, mouth in enumerate(ordered):
         nxt = ordered[(i + 1) % len(ordered)] if travel > 0 else ordered[i - 1]
-        # Mouth CENTRE to mouth CENTRE - see RoundaboutBuilder. The boundary
-        # must reach the outer edge exactly where the exit is.
-        frm = mouth[0]
-        sweep = ((nxt[0] - frm) * travel) % (2 * math.pi)
+        # ENTRY EDGE to EXIT EDGE - see RoundaboutBuilder. The exit is not at
+        # the mouth centre, so aiming at the centre leaves the boundary still
+        # drifting well past the traffic it is meant to deliver.
+        frm = mouth[0] + (mouth[1] if travel > 0 else -mouth[2])
+        arrive = nxt[0] + (-nxt[2] if travel > 0 else nxt[1])
+        sweep = ((arrive - frm) * travel) % (2 * math.pi)
         if sweep <= 1e-6:
             continue
         steps = max(8, math.ceil(sweep / TURBO_ARC_STEP_RAD))
@@ -558,19 +560,22 @@ def check_turbo(scene, tol=0.05):
     # rather than merely relaxed, or nothing would check the mouths at all.
     lane_studs_ = LANE_M * SCALE
     outer_want = inner + lanes * lane_studs_
+    travel_ = 1 if scene["drive_on_left"] else -1
     # The window has to be wider than the dash pitch or it lands in a gap and
     # reports "no spiral" on a perfectly good ring. 12 degrees is inside the
     # fling on any arc a real ring has, so the radius there is already most of
     # the way out and the tolerance below still separates flung from held.
-    for sa, _, _ in scene["sectors"]:
+    for sa, ah, bh in scene["sectors"]:
+        # The EXIT edge, not the mouth centre - that is where the hand-off is.
+        exit_a = sa + (-bh if travel_ > 0 else ah)
         near = [r for p, r in zip(spiral, radii)
                 if abs(angle_delta(math.atan2(p.center[1] - scene["center"][1],
-                                              p.center[0] - scene["center"][0]), sa)) < math.radians(12)]
+                                              p.center[0] - scene["center"][0]), exit_a)) < math.radians(12)]
         if not near:
-            faults.append(f"no spiral at the mouth at {math.degrees(sa):.0f}deg")
+            faults.append(f"no spiral at the exit at {math.degrees(exit_a):.0f}deg")
         elif abs(max(near) - outer_want) > lane_studs_ * 0.35:
-            faults.append(f"boundary reaches r={max(near):.1f} at the mouth at "
-                          f"{math.degrees(sa):.0f}deg, want ~{outer_want:.1f} - "
+            faults.append(f"boundary reaches r={max(near):.1f} at the exit at "
+                          f"{math.degrees(exit_a):.0f}deg, want ~{outer_want:.1f} - "
                           f"the lane is not delivered to the exit")
     # Every boundary must both start one lane width off the island and finish
     # one lane width further out, or it is not delivering anything to an exit.

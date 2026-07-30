@@ -220,13 +220,26 @@ Two things this does NOT go through, both for the same reason:
   using `RoadBuilder.MarkingLiftStuds` / `MarkingThicknessStuds` so the two sets
   of markings cannot drift apart in height.
 
-Arcs run **mouth centre to mouth centre**, not between the sector edges. The
-point of the spiral is that a boundary reaches the outer edge exactly where the
-exit is, so the lane it was holding is delivered into that exit; ending it at
-the sector edge completed the migration a few degrees early, left the line
-hanging in mid-carriageway, and blanked the whole mouth of circulating markings
-— a bare band of asphalt at every leg. Centre to centre also makes the spiral
-continuous the whole way round, which is what the reference shows.
+Arcs run **entry edge to exit edge** — which is what `Ahead` and `Behind` are,
+the mouth's own splits inset by `SECTOR_INSET_RAD`. Mouth centre to mouth centre
+was tried and is wrong: the exit is not at the centre. On a 4-leg ring the
+90° mouth's exit edge sits at 55° while its centre is at 90°, so a boundary
+aimed at the centre is still drifting 34° after the traffic it is meant to
+deliver has already left, and only touches the kerb halfway across the opening.
+Measured that way round before the fix: kerb reached at 88.7° against an exit
+at 55.0°; after, at 53.9°.
+
+Between a mouth's exit and its entry there is deliberately **no** boundary: the
+outer lane has gone and the entry's has not joined, so there is one circulating
+lane there and nothing to divide.
+
+**That leaves the divider on only about 30% of the ring**, and it is worth
+knowing why before someone "fixes" it. A mouth spans `Ahead + Behind` ≈ 62° at
+default splits, and it does so *regardless of radius* — `SPLIT_ANGLE_RAD` is an
+angle, not a length. Four legs therefore occupy ~250° of any 4-leg ring and only
+~110° is genuine two-lane running. The markings are correct; the mouths are
+wide. Narrowing the split is the change that would make a turbo ring look like
+the reference, and it is an arm-geometry decision, not a markings one.
 
 It runs after `openRingPavement`, deliberately: that pass deletes ring pavement
 and edge lines inside the mouth sectors, and these parts must survive there.
