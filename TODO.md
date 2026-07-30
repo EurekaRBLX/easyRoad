@@ -213,13 +213,48 @@ earlier note in this file claimed: no new ring generator, and
 (`OffsetStartM`/`OffsetEndM`), which is the primitive a spiral needs. See
 ROUNDABOUT.md 5.3c for what still has to be worked out.
 
-## Roundabout mouth indentation — HIGHEST PRIORITY, open
+## Roundabout mouth indentation — SHIPPED, not yet confirmed live
 
-The V-shaped notch down the middle of each approach. Seen in all three states
-now (raised full-length, raised sliver, open ground) because raised-or-nothing
-is a false choice: near the cut that wedge is the carriageway fanning out and
-should be FLAT ASPHALT, becoming a raised island only further in. See
-ROUNDABOUT.md 5.3d for the full analysis and the two-fill design.
+The V-notch down the middle of each approach. Fixed with the two-fill design:
+flat asphalt apron from the cut, raised island from 2 m of gore width in. See
+ROUNDABOUT.md 3.7 for the rule and 4.4 for the measurements — including the
+`scan_mouths` sign error that let it survive three rounds, and the two further
+detector faults found while verifying the fix.
+
+Left open by that round, both cheap:
+
+- **`MEDIAN_AT_CUT_M` and `ISLAND_MIN_WIDTH_M` are not exposed.** A user with a
+  narrow median, or one who wants kerbed splitters further out, has to edit the
+  source. Natural home is the region style, beside `RoundaboutSidewalk` and
+  `RoundaboutIsland`.
+- **The apron carries no markings.** A real mouth has hatching or a ghost
+  island painted on that wedge; it is currently plain asphalt. `MarkingLine`
+  already ramps a lateral offset along a curve, so this is the same machinery
+  the turbo work needs.
+
+## Highway shoulders are built as running lanes — BUG, not a design choice
+
+Reported live, and confirmed in the source. A shoulder is `Direction = 0`
+roadway, so `RoundaboutBuilder.splitApproachLanes` sends it through the
+"undirected roadway belongs to whichever side it abuts" pass and `add()`s it
+into that side's `Widths`. `armProfileFor` then walks `Widths` and emits every
+entry as `{ Kind = "Drive" }`.
+
+So on a highway approach the shoulder arrives at the mouth as a full running
+lane: wrong kind, wrong colour (`AsphaltColor`, not `ShoulderColor`), and wrong
+markings — `Markings.lua` puts a lane-boundary line between two Drive
+components where a solid edge line belongs. A 2+2 highway with shoulders builds
+3+3 arms.
+
+The undirected pass is right for parking, which really is part of the
+carriageway edge; it is wrong for shoulders. The fix is to carry the kind
+through `LaneGroup` rather than flattening everything to a width, so
+`armProfileFor` can re-emit a shoulder as a shoulder. That is also what the
+highway↔normal transition below needs, so do them together.
+
+Check the same assumption in `RoadBuilder` on ordinary widen/narrow transitions
+between a highway and a parkway/avenue/street — the report was that both sides
+do this, and only the roundabout half has been traced.
 
 ## Junction corners: remaining work
 

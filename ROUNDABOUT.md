@@ -107,19 +107,42 @@ against the ring's own half-width, so a *small* ring with a wide carriageway
 gets very fine stations. A radius threshold would have spent 300+ Parts
 smoothing rings whose scallop was already a thousandth of a stud.
 
-### 3.7 The splitter island spans exactly [ring outer edge → ring kerb]
-`MIN_GORE_WIDTH_M` exists so an approach with no median does not get a raised
-strip down the middle of it. But the island must also cover the pavement
-`openRingPavement` deleted. Both are satisfied by one rule: **start the island
-at the ring's outer edge.** Inside it, the island replaces deleted pavement;
-outside it, there is nothing to replace and any island is a median the road does
-not have.
+### 3.7 A mouth has TWO fills, not one: flat apron, then raised island
+The gore — the wedge between a diverging entry and exit — is **never left open**.
+It carries flat asphalt at deck level from the cut until it has opened wide
+enough to be a refuge, and a raised kerbed island from there in to the ring.
 
-Getting this wrong in either direction produces a visible defect, and both have
-shipped:
-- starting too late → bare ground in the deleted band (§4.1)
-- starting too early → a thin sliver of raised island running ~17 studs down
-  the approach, which is the phantom median coming back
+    cut ............ 2 m wide ............ ring kerb
+    |<- flat apron ->|<- raised splitter island ->|
+
+Three earlier versions all asked "raised island, or nothing?", and every answer
+to that question is wrong, because near the cut that wedge is not a median at
+all — it is the approach's own carriageway fanning out into the mouth. All three
+shipped and all three were reported:
+
+1. island filled the whole gore → a raised strip down an approach with no
+   median ("there is median when there is no median for the type of road used")
+2. island started at the width crossing → the same, thinner: a raised sliver
+   ~17 studs down the approach
+3. island started at the ring's outer edge → the wedge in front of it became
+   bare ground, reported as the mouth indentation
+
+The width test now chooses **which surface**, not whether there is one, and the
+two questions it was being asked at once are separated:
+
+- `MEDIAN_AT_CUT_M = 0.5` — does this approach arrive with a median? Measured at
+  the cut, where a road without one is zero by construction. If it does, the
+  island continues it straight from the cut and no apron is laid.
+- `ISLAND_MIN_WIDTH_M = 2.0` — on an approach with no median, how wide must the
+  gore open before the splitter earns a kerb? 2 m is the usual minimum for a
+  pedestrian refuge. At the old 0.5 m the island began as a knife edge tens of
+  studs out, which is defect 2 above.
+
+This also retires the "start at the ring's outer edge" rule that used to live
+here. Its job was to cover the pavement `openRingPavement` deletes across the
+mouth sector (§4.1); the apron covers that band now, and covers it with the
+right material — a mouth is precisely where the circulatory pavement ring is
+interrupted by carriageway.
 
 ---
 
@@ -156,6 +179,55 @@ a road that has none. See §3.7 for the rule that resolves it.
 **endpoint** distances, so any road whose closest point is mid-span was silently
 dropped. Now samples the curve for the true nearest approach. **This is only
 half the problem — see §5.1.**
+
+### 4.4 The mouth indentation, and the sign error that hid it
+The V-notch (design in §3.7). What made it survive three rounds is worth more
+than the fix: **the check that was supposed to catch it was scanning the wrong
+ground.**
+
+`scan_mouths` walked `cut - inward * at` while `inward` points from the cut
+toward the centre, so `at` marched *outward down the plain approach road*
+instead of inward into the mouth. Every "no bare ground inside the mouth
+envelope" it had ever printed was measured over the one stretch of road nobody
+was worried about — the same blind spot the function's own docstring was written
+to close, reintroduced one line below the paragraph describing it.
+
+Correcting one sign failed three defects at once on the default cases:
+
+| case | GORE | HOLE | OVERHANG |
+|---|---|---|---|
+| uk4 | 32 samples, worst 7.67 studs | 56, worst 3.67 | 4, worst 8.67 |
+| uk3 | 102 samples, worst 15.00 studs | — | 3, worst 15.67 |
+| us4 | 32 samples, worst 7.67 studs | 48, worst 3.00 | 4, worst 8.67 |
+
+Open gore also stopped being excused as by-design, since under the two-fill rule
+no part of a mouth is ever legitimately bare, and `report()` started folding
+mouth findings into its pass/fail result — it had been printing them and then
+returning clean.
+
+Two further faults in the check surfaced while verifying the fix, both of which
+would have made the *next* result untrustworthy:
+
+- **The envelope reached into the neighbouring leg.** Taking the outermost
+  covered samples as the mouth's edges assumes nothing else is within the
+  sweep's 70-stud span. On a R=45 ring with legs 65° apart it hit the next road
+  and called the 44 studs of grass between them a tear inside the mouth. It now
+  walks outward from the centreline and stops at the first bare run wider than
+  `max_skip`.
+- **`min_gap` was below the sample pitch,** so one dark sample read as a hole:
+  a 0.33-stud "gore" at R=10, R=15 and on a 3/1 approach, exactly one pitch
+  wide, all gone at four times the density. `min_gap` is now floored at two
+  pitches.
+
+After the fix: **zero bare ground and zero overhang across 24 cases** — 16 radii
+from R=10 to R=70 on a 3-leg 1+1, plus 5-leg, 4-leg 2+2, a 3/1 approach, two
+median profiles, pavement off, island off, and the 65° skew. The R=34–38 band
+of §4.1 stays clean.
+
+The check was verified to still have teeth by stripping the apron back out of a
+built scene — that *is* the pre-fix geometry — and confirming it fails: uk4 back
+to 20 GORE / 44 HOLE, uk3 to 66 GORE. A fix that passes by blinding its own test
+is the one failure mode this repo cannot afford again.
 
 ---
 
@@ -274,66 +346,39 @@ What does have to be worked out:
 The first three are the actual build. The fourth is lane-connection work that
 can follow.
 
-### 5.3d The mouth INDENTATION — OPEN, and the most reported defect
-Visible in every render and every Studio shot: a long thin V-shaped notch down
-the middle of each approach, from the ring back toward the cut, tapering to
-nothing.
+### 5.3d ~~The mouth INDENTATION~~ — FIXED, see §3.7 and §4.4
+The long thin V-notch down the middle of every approach. Three rounds of
+raised-or-nothing; the answer was a second fill. Design and thresholds in §3.7,
+measurements in §4.4.
 
-It is not a bug in the splitter island. It is a consequence of the arm model
-that the island was being used to paper over, and it has now been seen in all
-three possible states:
+### 5.4 Clipping at arm ends — no longer reproduces, and the old evidence was bad
+A wedge of raised pavement jutting across the asphalt where an arm meets its
+approach. This was recorded as "detector built, does not reproduce" across 1+1,
+2+2, medians and a 3/1 approach. **That detector was scanning the wrong ground**
+— `scan_mouths` swept away from the ring down the plain approach road (§4.4), so
+it never looked anywhere the clipping could be.
 
-1. **Island filled the whole gore** (before `MIN_GORE_WIDTH_M`) — a raised
-   strip down the middle of an approach with no median. Reported as "there is
-   median when there is no median for the type of road used".
-2. **Island started too far out** (the first fix) — a thin raised sliver
-   running ~17 studs down the approach. Same complaint, smaller.
-3. **Island starts at the ring's outer edge** (current) — the wedge between the
-   cut and the outer edge is now OPEN GROUND. Reported as the indentation.
+Pointed at the mouth it fires immediately, 4 to 75 samples a case. **All of it
+is the splitter island**, which is raised material strictly inside the mouth's
+lateral span by definition — exactly what the overhang rule looks for. Excluding
+the island by identity (tagging the gore triangles, not inferring from position)
+leaves **zero** overhang across 24 cases: 16 radii from 10 to 70, plus 5-leg,
+3/1, medians, no-pavement, no-island and a 65° skew.
 
-The wedge itself is unavoidable: entry and exit are separate one-way roads that
-coincide at the cut and diverge toward the ring, so there is always a V between
-them. The question is only what fills it.
-
-**All three states answer that wrongly, because raised-or-nothing is a false
-choice.** Between the cut and roughly where a splitter becomes physically
-plausible, that wedge is not a median at all — it is the approach's own
-carriageway widening as it fans into the mouth. It should be **flat asphalt at
-deck level**, continuous with both arms. Only further in, where the gore is wide
-enough to stand on, should it become a raised kerbed island.
-
-So the fix is a third fill, not a different threshold:
-
-    cut ......... outer edge ......... ring kerb
-    |<- flat asphalt ->|<- raised splitter island ->|
-
-`MIN_GORE_WIDTH_M` then stops being a "build or don't" switch and becomes the
-boundary between the two fills, which is what it was reaching for.
-
-Note the preview cannot currently fail this: the wedge is open ground BETWEEN
-two roads, so `scan_mouths` classifies it as GORE (open by design since the
-splitter change) rather than HOLE. That classification was right for the
-question it was asked and wrong for this one — it will need revisiting alongside
-the fix.
-
-### 5.4 Clipping at arm ends
-A wedge of raised pavement juts across the asphalt where an arm meets its
-approach. `scan_mouths` detects this class now but **it does not reproduce**
-across 1+1, 2+2, medians and a 3/1 approach at R=40 and R=55. Most likely the
-arm's end-cap shape, which the preview idealises as a rotated rectangle while
-`RoadBuilder` emits a Part whose corners can overhang on a curve. Next step is
-comparing the arm's first/last emitted Part against the approach's **in the
-Lua** — CFrame and Size, not lateral extent (`seam_steps` reads 0.00 flush there
-because extent is not what differs).
+So there is no measured reproduction of this defect at all, and the earlier
+"does not reproduce" was worth nothing either way. It stays open only because
+the user has seen it in Studio. Next step is unchanged: compare the arm's
+first/last emitted Part against the approach's **in the Lua** — CFrame and Size,
+not lateral extent (`seam_steps` reads 0.00 flush there because extent is not
+what differs).
 
 ### 5.5 Smaller, known limits
 - **Crowded rings.** 5+ legs, or wide approaches on a small radius, squeeze the
-  split until the arms run up against each other partway along.
+  split until the arms run up against each other partway along. A 4-leg ring
+  with legs 65° apart at R=45 now scans clean, so this is narrower than it was.
 - **Splitter waist.** A 4-leg ring dips ~0.7 studs partway along. Cosmetic.
 - **Island rim hairline.** ~0.1 studs where the ring's innermost strips chord
   across the island. Reported by the tooling as below visible, not failed.
-- Optional sidewalk and optional centre island were both requested; neither
-  exists.
 
 ---
 
@@ -345,11 +390,18 @@ actually emits** — rigid boxes per station interval, not idealised polygons.
 | check | covers | blind to |
 |---|---|---|
 | `scan_gaps` | bare ground, `island_r` → `outerR` | everything outside the ring annulus |
-| `scan_mouths` | bare ground **and** overhang, cut → ring | a wrong marking (it counts a marking Part as coverage) |
+| `scan_mouths` | bare ground **and** overhang, cut → ring | a wrong marking (it counts a marking Part as coverage); anything narrower than two sample pitches; whether raised material *should* be raised, only that the splitter island is |
 | `seam_steps` | lateral extent at the cut | the *shape* of an end cap |
 | `check_parity.py` | constants shared with the Lua | the algorithm, and any missing rule set |
 
-Three lessons that cost real time:
+Four lessons that cost real time:
+
+0. **A check can point at the wrong ground and still print "clean".**
+   `scan_mouths` was added *because* `scan_gaps` never looked at the mouths, and
+   then swept away from the ring for its entire life (§4.4). One sign. The
+   habit that catches this: before believing a pass, make the check fail on
+   purpose. Stripping the apron out of a built scene and confirming the numbers
+   come back is what proved the mouth fix was real rather than invisible.
 
 1. **`scan_gaps` never looked at the mouths.** On a 40-stud ring it covers
    29.9→50.1 studs and never examined 50.1→92.7 — 68% of the built radius, and

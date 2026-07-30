@@ -4,6 +4,74 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout mouths: close the indentation with a flat apron
+
+The V-notch down the middle of every approach, reported more times than any
+other defect and wrong in three different ways before this.
+
+The wedge between a diverging entry and exit is unavoidable - they coincide at
+the cut and part toward the ring - so the only question is what fills it. Every
+previous answer treated `MIN_GORE_WIDTH_M` as a build-or-don't switch and so
+answered "raised island, or nothing", which is a false choice: near the cut
+that wedge is not a median at all, it is the approach's own carriageway fanning
+out into the mouth. Filling the whole gore put a raised strip down a road with
+no median; starting at the width crossing did the same thing thinner; starting
+at the ring's outer edge left the wedge in front of it bare, which is the
+indentation.
+
+A mouth now has two fills - flat asphalt apron from the cut, raised kerbed
+island from 2 m of gore width in - and the width test chooses which surface
+rather than whether there is one. The two questions it was being asked at once
+are separated: `MEDIAN_AT_CUT_M` (does this approach arrive with a median at
+all, measured at the cut) and `ISLAND_MIN_WIDTH_M` (how wide before a splitter
+earns a kerb; 2 m is the usual minimum for a pedestrian refuge, against the old
+0.5 m that made the island start as a knife edge tens of studs out).
+
+This retires the "start the island at the ring's outer edge" rule. Its job was
+to cover the pavement `openRingPavement` deletes across the mouth sector; the
+apron covers that band now, and with the right material - a mouth is exactly
+where the circulatory pavement ring is interrupted by carriageway.
+
+### The check was looking at the wrong ground
+
+`scan_mouths` swept `cut - inward * at` while `inward` points from the cut
+toward the centre, so it marched outward down the plain approach road instead
+of inward into the mouth. Every "no bare ground inside the mouth envelope" it
+had printed was about the one stretch of road nobody was worried about. That is
+the same blind spot the function was written to close - `scan_gaps` only ever
+looked at the ring annulus - reintroduced one line below the paragraph
+describing it.
+
+Correcting the sign failed three defects at once (uk3: 102 gore samples, worst
+15.00 studs). Open gore also stopped being excused as by-design, since under the
+two-fill rule no part of a mouth is legitimately bare, and `report()` started
+folding mouth findings into its result instead of printing them and returning
+clean.
+
+Two more faults in the check surfaced while verifying the fix, both of which
+would have made the next result untrustworthy: the envelope reached into a
+neighbouring leg and called 44 studs of grass between two roads a tear inside
+the mouth, and `min_gap` sat below the sample pitch so a single dark sample read
+as a 0.33-stud hole. The envelope now walks out from the centreline and stops at
+the first bare run wider than `max_skip`; `min_gap` is floored at two pitches.
+
+A correction to the previous commit message: it claimed the sign fix reproduced
+the clipping defect of ROUNDABOUT.md 5.4. It did not. All 4-75 overhang samples
+were the splitter island, which is raised material strictly inside the mouth's
+lateral span by definition and so is exactly what the overhang rule looks for.
+The island is now excluded by identity - the gore triangles are tagged, not
+inferred from position, since the asymmetric entry/exit split puts the gore
+off-axis and defeats a centreline test.
+
+Result: zero bare ground and zero overhang across 24 cases - 16 radii from R=10
+to R=70, plus 5-leg, 4-leg 2+2, a 3/1 approach, two median profiles, pavement
+off, island off, and a 65-degree skew. The R=34-38 band stays clean. Verified to
+still have teeth by stripping the apron back out of a built scene, which is the
+pre-fix geometry, and confirming it fails: uk4 back to 20 gore / 44 hole, uk3 to
+66 gore.
+
+Not confirmed in Studio.
+
 ## Roundabout: find approach roads by their nearest point, not their ends
 
 Placing a roundabout sometimes ignored a road that was plainly next to it.

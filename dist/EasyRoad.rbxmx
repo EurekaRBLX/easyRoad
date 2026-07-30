@@ -6215,6 +6215,11 @@ local ENTRY_SPLIT_SCALE = 0.8
 -- circulating carriageway itself, so filling further would lay a raised band
 -- across the mouth the island exists to divide.
 local GORE_SAMPLES = 18
+-- Rungs across the flat apron in front of the island. It is a long, very
+-- shallow taper - much longer than the island on a wide-radius ring - but both
+-- of its edges are the arms' own inner edges, so it needs only enough rungs to
+-- track their curvature, not to resolve any shape of its own.
+local APRON_SAMPLES = 24
 -- On a ring too crowded for the mouths it carries - many legs, or wide
 -- approaches on a small radius - the split gets squeezed until the two arms run
 -- right up against each other partway along. The strip runs THROUGH that waist
@@ -6224,20 +6229,25 @@ local GORE_SAMPLES = 18
 -- against the ring, and left bare kerb at the mouth.
 -- Arc step for the island's nose fan where it meets the ring kerb.
 local NOSE_ARC_STEP_RAD = math.rad(2)
--- Narrowest gore that counts as a splitter island. The gore is the gap between
--- the two arms' INNER roadway edges, so on an approach with a median it starts
--- out that median's width, and on one WITHOUT a median it starts at zero and
--- only opens up as the arms diverge toward the ring.
+-- The gore is the gap between the two arms' INNER roadway edges, so on an
+-- approach with a median it starts out that median's width at the cut, and on
+-- one WITHOUT a median it starts at zero and only opens as the arms diverge.
+-- Two different questions get asked of it, and conflating them is what put a
+-- raised strip down the middle of an approach whose road has no median -
+-- reported live as "there is median when there is no median for the type of
+-- road used".
 --
--- Filling from the cut regardless put a raised strip down the middle of an
--- approach whose road has no median at all - reported live as "there is median
--- when there is no median for the type of road used", with the taper reading as
--- an indentation. Starting the island where the gore first reaches a width a
--- median could actually have needs no "does this road have a median" test: an
--- approach that has one is already wider than this at the cut and is unchanged,
--- and one that doesn't gets island only where the two carriageways have genuinely
--- separated - which is the part of a splitter that does real work anyway.
-local MIN_GORE_WIDTH_M = 0.5
+-- Does this approach arrive with a median at all? Anything above a hairline
+-- does; a road without one measures zero here by construction.
+local MEDIAN_AT_CUT_M = 0.5
+-- On an approach with no median, how wide must the gore have opened before the
+-- splitter becomes a raised kerbed island rather than flat asphalt? This is a
+-- refuge you could stand on, not the first millimetre of daylight between two
+-- diverging kerbs: at 0.5 m the island began as a knife edge tens of studs down
+-- the approach and read as a sliver of median on a road that has none. 2 m is
+-- the usual minimum width for a pedestrian refuge and is wide enough to read as
+-- a deliberate island.
+local ISLAND_MIN_WIDTH_M = 2.0
 -- Arms are dropped a hair below the ring deck. Near the merge an arm's inner
 -- half necessarily lies over the ring's own carriageway (that overlap IS the
 -- merge), and two coplanar asphalt decks z-fight. Same colour and material, so
@@ -6469,9 +6479,9 @@ local function buildSplitterIsland(
 	local scale = settings.MetersToStuds
 	local curbHeight = style.CurbHeightM * scale
 	local depth = settings.RoadThicknessStuds + curbHeight
-	local function makeSidewalkPart(): Part
+	local function makePart(name: string, material: Enum.Material, color: Color3): Part
 		local part = Instance.new("Part")
-		part.Name = "Sidewalk"
+		part.Name = name
 		part.Anchored = true
 		part.CanCollide = false
 		part.CanTouch = false
@@ -6479,23 +6489,40 @@ local function buildSplitterIsland(
 		part.CastShadow = false
 		part.TopSurface = Enum.SurfaceType.Smooth
 		part.BottomSurface = Enum.SurfaceType.Smooth
-		part.Material = Enum.Material.Concrete
-		part.Color = style.SidewalkColor
+		part.Material = material
+		part.Color = color
 		return part
+	end
+	local function makeSidewalkPart(): Part
+		return makePart("Sidewalk", Enum.Material.Concrete, style.SidewalkColor)
+	end
+	local function makeApronPart(): Part
+		return makePart("GoreApron", Enum.Material.Asphalt, style.AsphaltColor)
 	end
 	-- Gore-side roadway edge: the inner offset lies on +flow * right-of-travel for
 	-- both arms (the exit's travel is reversed, and so is its own right).
 	-- Each arm gets its OWN inner offset. Sharing the entry's is only right when
 	-- the two are the same width; on a 3/1 approach it tracks the narrow exit's
 	-- edge a lane and a half out of place, and the island misses the carriageway.
-	local function goreEdge(curve: PolyCurve.PolyCurve, station: number, arm: ArmProfile): Vector3
+	--
+	-- `lift` is the height of the surface being laid: curb height for the raised
+	-- island, zero for the flat apron in front of it.
+	local function goreEdgeAt(curve: PolyCurve.PolyCurve, station: number, arm: ArmProfile, lift: number): Vector3
 		local s = math.clamp(station, 0, curve.Length)
 		local position = curve:PosAt(s)
 		local tangent = flatUnit(curve:TangentAt(s))
 		if tangent.Magnitude &lt; 1e-6 then
 			return position
 		end
-		return position + rightOf(tangent) * (arm.InnerOffsetStuds * flow) + Vector3.new(0, curbHeight, 0)
+		return position + rightOf(tangent) * (arm.InnerOffsetStuds * flow) + Vector3.new(0, lift, 0)
+	end
+	local function goreEdge(curve: PolyCurve.PolyCurve, station: number, arm: ArmProfile): Vector3
+		return goreEdgeAt(curve, station, arm, curbHeight)
+	end
+	-- Width of the gore `along` studs in from the cut, measured between the two
+	-- arms' own inner edges.
+	local function goreWidth(along: number): number
+		return distanceXZ(goreEdge(entryCurve, along, entryArm), goreEdge(exitCurve, exitCurve.Length - along, exitArm))
 	end
 	-- Station at which one arm's gore edge first drops inside the ring's kerb,
 	-- searched forward from `station` in `direction` (+1 along the entry, -1
@@ -6528,7 +6555,6 @@ local function buildSplitterIsland(
 	-- entry and exit are different lengths, so equal fractions sit at different
 	-- distances back from the cut and the island comes out sheared.
 	local reach = math.min(entryCurve.Length, exitCurve.Length)
-	local minGoreStuds = MIN_GORE_WIDTH_M * scale
 	-- Where the gore first opens out to island width. This RE-PARAMETERISES the
 	-- rungs below; it does not drop samples from a fixed grid.
 	--
@@ -6541,52 +6567,68 @@ local function buildSplitterIsland(
 	-- R=34..38 on a 3-leg ring, up to 4.4 studs deep, with clean geometry
 	-- either side of it. Re-parameterising keeps the full GORE_SAMPLES
 	-- resolution for whatever island does get built.
-	local startAlong = 0
-	local probes = 64
-	local opened = false
-	for i = 0, probes do
-		local along = (i / probes) * reach
-		if
-			distanceXZ(goreEdge(entryCurve, along, entryArm), goreEdge(exitCurve, exitCurve.Length - along, exitArm))
-			&gt;= minGoreStuds
-		then
-			startAlong = along
-			opened = true
-			break
-		end
-	end
-	if not opened then
-		return -- the gore never reaches island width: no splitter here at all
-	end
-	-- The island must reach at least the ring's OUTER edge, whatever the width
-	-- test said. `openRingPavement` deletes ring pavement across the whole mouth
-	-- sector out to that radius on the assumption the arms and this island
-	-- replace it, so starting the island inside it leaves the deleted band bare.
-	-- That is the R=34..36 defect exactly: at R=35 the gore reached only radius
-	-- 42.3 while the ring's outer edge is 45.1, and all 150 bare-ground samples
-	-- sat in the 2.8 studs between them.
+	-- Where the raised island starts, and by the same token where the flat
+	-- apron in front of it stops. Default `reach`: a gore that never opens to
+	-- island width gets apron for its whole length and no island at all.
 	--
-	-- It is also where the island STOPS going outward. The width test's job was
-	-- to keep a raised strip off an approach with no median, and the ring's
-	-- outer edge is exactly that boundary: inside it the island replaces
-	-- deleted ring pavement, outside it there is nothing to replace and any
-	-- island is a median the road does not have. Taking the crossing directly,
-	-- rather than the earlier of it and the width test, does both jobs at once -
-	-- an earlier start covered the deleted band but ran the island 17 studs
-	-- down the approach as a thin sliver (measured at R=33: gore reaching
-	-- radius 60.3 against an outer edge of 43.1).
-	local outerRadiusStuds = ringKerbRadiusStuds + ringSidewalkWidthM(style) * scale
-	for i = 0, probes do
-		local along = (i / probes) * reach
-		if distanceXZ(goreEdge(entryCurve, along, entryArm), center) &lt;= outerRadiusStuds then
-			-- Step back one probe: `along` is the first sample INSIDE the outer
-			-- edge, so starting there still leaves up to one grid cell of the
-			-- deleted band uncovered. The previous sample is outside it by
-			-- construction, and starting early only means a little more island
-			-- where there is no pavement to conflict with.
-			startAlong = math.max(0, (i - 1) / probes) * reach
-			break
+	-- THE GORE IS NEVER LEFT OPEN. Both earlier versions of this treated the
+	-- width test as build-or-don't and left bare ground in front of the island,
+	-- which is the V-notch reported down the middle of every approach. The
+	-- choice was never raised-or-nothing: between the cut and the point where a
+	-- splitter is wide enough to stand on, that wedge is not a median at all -
+	-- it is the approach's own carriageway fanning out into the mouth, and it
+	-- belongs at deck level, continuous with both arms. So the width test now
+	-- picks WHICH surface, not WHETHER there is one.
+	--
+	-- This also drops the outer-edge override that used to sit here. Its job
+	-- was to guarantee the island reached the ring's outer edge, because
+	-- `openRingPavement` deletes ring pavement across the mouth sector out to
+	-- that radius and anything short of it left the deleted band bare (the
+	-- R=34..36 defect: at R=35 the gore reached radius 42.3 against an outer
+	-- edge of 45.1, and all 150 bare-ground samples sat in the 2.8 studs
+	-- between). The apron covers that band now, and covers it with the right
+	-- material: a mouth is exactly where the circulatory pavement ring is
+	-- interrupted by carriageway. Forcing the island out instead is what ran a
+	-- raised sliver 17 studs down the approach.
+	local startAlong = reach
+	if goreWidth(0) &gt;= MEDIAN_AT_CUT_M * scale then
+		-- The approach arrives with a median: the island continues it straight
+		-- from the cut. Anything else makes the median stop and restart.
+		startAlong = 0
+	else
+		local probes = 64
+		for i = 0, probes do
+			local along = (i / probes) * reach
+			if goreWidth(along) &gt;= ISLAND_MIN_WIDTH_M * scale then
+				startAlong = along
+				break
+			end
 		end
+	end
+
+	-- The apron: flat asphalt from the cut to wherever the island takes over.
+	-- Its rungs are the two arms' own inner edges, so it abuts each arm exactly
+	-- and overlaps neither - at the cut the two edges coincide and it tapers to
+	-- nothing, which is what an approach with no median should look like. An
+	-- approach that DOES have one took the `startAlong = 0` branch above, so no
+	-- apron is laid at all and its median continues straight into the raised
+	-- island.
+	if startAlong &gt; 0 then
+		local apronDepth = settings.RoadThicknessStuds
+		local prevA, prevB
+		for i = 0, APRON_SAMPLES do
+			local along = (i / APRON_SAMPLES) * startAlong
+			local a = goreEdgeAt(entryCurve, along, entryArm, 0)
+			local b = goreEdgeAt(exitCurve, exitCurve.Length - along, exitArm, 0)
+			if prevA and prevB then
+				FillTriangle(prevA, prevB, b, apronDepth, DOWN, makeApronPart, ring)
+				FillTriangle(prevA, b, a, apronDepth, DOWN, makeApronPart, ring)
+			end
+			prevA, prevB = a, b
+		end
+	end
+	if startAlong &gt;= reach then
+		return -- gore too narrow for a splitter anywhere: apron only
 	end
 	local entrySide: { Vector3 } = {}
 	local exitSide: { Vector3 } = {}

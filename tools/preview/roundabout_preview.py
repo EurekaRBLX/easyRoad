@@ -43,10 +43,13 @@ SECTOR_INSET_RAD = math.radians(3)
 ARM_HANDLE = 0.30
 ENTRY_SPLIT_SCALE = 0.8
 GORE_SAMPLES = 18
-# Narrowest gore that counts as a splitter island - see RoundaboutBuilder.
-# An approach with a median already exceeds this at the cut and is unchanged;
-# one without a median gets island only where the arms have actually parted.
-MIN_GORE_WIDTH_M = 0.5
+APRON_SAMPLES = 24
+# Two separate questions about the gore - see RoundaboutBuilder. Does the
+# approach arrive with a median at all (measured at the cut), and on one that
+# does not, how wide must the gore open before the splitter becomes a raised
+# island instead of flat asphalt.
+MEDIAN_AT_CUT_M = 0.5
+ISLAND_MIN_WIDTH_M = 2.0
 NOSE_ARC_STEP_RAD = math.radians(2)
 ARM_SINK = 0.05
 ARM_RUN_FACTOR, ARM_RUN_MIN, ARM_RUN_MAX = 0.85, 28, 90
@@ -456,7 +459,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     ring_parts = emit_road(ring_curve, rc, solid_lane_lines=turbo)
     parts_ring_pavement = [p for p in ring_parts if p.name in ("Sidewalk", "Marking")]
 
-    sectors, arm_parts, gore_tris = [], [], []
+    sectors, arm_parts, gore_tris, apron_tris = [], [], [], []
     angles = [d for d, _ in legs]
     for deg, spoke_profile in legs:
         a = math.radians(deg)
@@ -535,30 +538,38 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 return sc
 
             reach = min(entry.length, exit_.length)
-            min_gore = MIN_GORE_WIDTH_M * SCALE
-            # Re-parameterise from where the gore opens to island width; do NOT
-            # drop samples from a fixed grid. See RoundaboutBuilder for why -
-            # dropping them let the kerb break fire before enough rungs
-            # accumulated, leaving the gore bare at some radii.
-            start_along, opened = 0.0, False
-            for i in range(65):
-                along = (i/64)*reach
-                if math.dist(gore_edge(entry, along, entry_arm),
-                             gore_edge(exit_, exit_.length-along, exit_arm)) >= min_gore:
-                    start_along, opened = along, True
-                    break
-            # The island must reach at least the ring's OUTER edge whatever the
-            # width test said - open_ring_pavement has already deleted ring
-            # pavement out to there. See RoundaboutBuilder.
-            outer_radius = ring_kerb + SW_M*SCALE
-            for i in range(65):
-                along = (i/64)*reach
-                if math.hypot(*gore_edge(entry, along, entry_arm)) <= outer_radius:
-                    # Step back one probe - see RoundaboutBuilder.
-                    start_along = max(0, i-1)/64*reach
-                    break
+
+            def gore_width(along):
+                return math.dist(gore_edge(entry, along, entry_arm),
+                                 gore_edge(exit_, exit_.length-along, exit_arm))
+            # Where the raised island starts, and so where the flat apron in
+            # front of it stops. The width test picks WHICH surface, not
+            # whether there is one - the gore is never left open. Default
+            # `reach`: a gore that never opens to island width is apron for its
+            # whole length. See RoundaboutBuilder.
+            start_along = reach
+            if gore_width(0) >= MEDIAN_AT_CUT_M*SCALE:
+                start_along = 0.0          # median arrives at the cut: continue it
+            else:
+                for i in range(65):
+                    along = (i/64)*reach
+                    if gore_width(along) >= ISLAND_MIN_WIDTH_M*SCALE:
+                        start_along = along
+                        break
+            # The apron: flat asphalt from the cut to the island, on the arms'
+            # own inner edges so it abuts both and overlaps neither.
+            if start_along > 0:
+                prev = None
+                for i in range(APRON_SAMPLES+1):
+                    along = (i/APRON_SAMPLES)*start_along
+                    pa = gore_edge(entry, along, entry_arm)
+                    pb = gore_edge(exit_, exit_.length-along, exit_arm)
+                    if prev:
+                        apron_tris.append([prev[0], prev[1], pb])
+                        apron_tris.append([prev[0], pb, pa])
+                    prev = (pa, pb)
             L, R, last_along = [], [], start_along
-            if opened:
+            if start_along < reach:
                 for i in range(GORE_SAMPLES+1):
                     along = start_along + (i/GORE_SAMPLES)*(reach-start_along)
                     pa = gore_edge(entry, along, entry_arm)
@@ -636,7 +647,8 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                     continue
         kept.append(p)
     parts = kept + arm_parts
-    return dict(tag=tag, parts=parts, gore=gore_tris, island_r=island_r, island=island, legs=leg_info,
+    return dict(tag=tag, parts=parts, gore=gore_tris, apron=apron_tris,
+                island_r=island_r, island=island, legs=leg_info,
                 sectors=cl,
                 outerR=outerR, ring_kerb=ring_kerb, cutR=cutR, center=center,
                 n_ring=len(ring_parts), n_arms=len(arm_parts), removed=removed)
@@ -655,6 +667,8 @@ def render(scene, outdir):
         cx, cy = tx(center)
         for p in sorted(scene["parts"], key=lambda q: q.y):
             cv.fill_poly([tx(v) for v in p.poly], FLAT if flat else p.color)
+        for t in scene["apron"]:
+            cv.fill_poly([tx(v) for v in t], FLAT if flat else ASPHALT_C)
         for t in scene["gore"]:
             cv.fill_poly([tx(v) for v in t], FLAT if flat else ISLAND_C)
         if scene["island_r"] > 1:
@@ -687,7 +701,7 @@ def scan_gaps(scene, rings=240):
     supposed to replace it, because idealised geometry has no strips.
     """
     island_r, outerR = scene["island_r"], scene["outerR"]
-    parts, gore = scene["parts"], scene["gore"]
+    parts, gore = scene["parts"], scene["gore"] + scene["apron"]
     pitch = (outerR - island_r) / rings
     holes = []
     for ri in range(rings):
@@ -734,7 +748,7 @@ def seam_steps(scene, probe=1.5, span=60.0, samples=1200):
     return steps
 
 
-def scan_mouths(scene, span=70.0, samples=420, steps=40, min_gap=0.2):
+def scan_mouths(scene, span=70.0, samples=420, steps=40, min_gap=0.2, max_skip=6.0):
     """Bare ground INSIDE each mouth, between the ring and the approach cut.
 
     `scan_gaps` only ever looks at the ring annulus (island_r -> outerR). On a
@@ -780,7 +794,25 @@ def scan_mouths(scene, span=70.0, samples=420, steps=40, min_gap=0.2):
     jutting out across the asphalt at an arm end. Detected by classifying each
     swept sample as deck or raised and flagging raised material strictly inside
     the carriageway's own lateral span at that station.
+
+    The splitter island is excluded from that by identity, not by geometry. It
+    IS raised material strictly inside the mouth's lateral span - that is what a
+    splitter is - so the overhang rule flags it on sight, and once the apron
+    stopped the island being outrun by bare ground it flagged 60 to 75 samples a
+    case of nothing but correctly built island. Testing whether a raised run
+    straddles the mouth centreline does not separate them either: the entry and
+    exit splits are asymmetric (ENTRY_SPLIT_SCALE), so the gore sits off-axis
+    and half the island reads as off-centre. Tagging the gore triangles as
+    "Island" rather than "Sidewalk" is exact, because it asks the only question
+    that matters - which builder laid this - instead of inferring it.
     """
+    # A gap narrower than the sweep's own sample pitch is one dark sample, not
+    # a hole. With min_gap below the pitch this reported its own resolution
+    # floor as geometry: a 0.33-stud "gore" at R=10, R=15 and on a 3/1
+    # approach - exactly one pitch wide, every one of them gone at four times
+    # the sample density.
+    min_gap = max(min_gap, 2 * (2 * span / samples))
+
     # Bounding boxes first. A mouth sweep is tens of thousands of point tests
     # against every Part in the scene; without culling it takes minutes.
     boxed = []
@@ -788,10 +820,11 @@ def scan_mouths(scene, span=70.0, samples=420, steps=40, min_gap=0.2):
         xs = [v[0] for v in q.poly]
         ys = [v[1] for v in q.poly]
         boxed.append((min(xs), max(xs), min(ys), max(ys), q.poly, q.name))
-    for t in scene["gore"]:
+    for t, kind in ([(t, "Island") for t in scene["gore"]]
+                    + [(t, "Apron") for t in scene["apron"]]):
         xs = [v[0] for v in t]
         ys = [v[1] for v in t]
-        boxed.append((min(xs), max(xs), min(ys), max(ys), t, "Sidewalk"))
+        boxed.append((min(xs), max(xs), min(ys), max(ys), t, kind))
 
     def hits_at(pt):
         """(anything covers it, asphalt covers it, raised kerb material does)."""
@@ -837,12 +870,42 @@ def scan_mouths(scene, span=70.0, samples=420, steps=40, min_gap=0.2):
             hits = [d for d, h in swept if h]
             if len(hits) < 2:
                 continue
+            # Bound the envelope to THIS mouth. Taking the outermost covered
+            # samples as the edges assumes the only thing the sweep can reach
+            # is the mouth itself, which stops being true once a neighbouring
+            # leg is closer than `span`: on a 45-stud ring with legs at 0 and
+            # 65 degrees the sweep ran into the next road and reported the 44
+            # studs of grass between them as a tear inside the mouth.
+            #
+            # So walk outward from the centreline instead and stop at the first
+            # run of bare ground too wide to be a defect. The walk still starts
+            # by finding material in each direction however far out it is, so a
+            # gore standing wide open at the centre - the whole point of this
+            # check - is still bracketed and still fails.
+            def edge(direction):
+                far, since = None, 0.0
+                prev = 0.0
+                for d, h in (swept if direction > 0 else reversed(swept)):
+                    if direction * d < 0:
+                        continue
+                    if h:
+                        far, since = d, 0.0
+                    elif far is not None:
+                        since += abs(d - prev)
+                        if since > max_skip:
+                            break
+                    prev = d
+                return far
+
+            lo, hi = edge(-1), edge(1)
+            if lo is None or hi is None:
+                continue
             # OVERHANG: raised kerb material lying over the carriageway. The
             # gap search below can never see this - it looks for MISSING
             # material, and this is material that should not be there. It is
             # the live "clipping" defect: a wedge of pavement jutting out
             # across the asphalt at the arm end.
-            deck_at = [d for d, dk, _ in classed if dk]
+            deck_at = [d for d, dk, _ in classed if dk and lo <= d <= hi]
             if len(deck_at) >= 2:
                 dlo, dhi = min(deck_at), max(deck_at)
                 run = None
@@ -854,7 +917,6 @@ def scan_mouths(scene, span=70.0, samples=420, steps=40, min_gap=0.2):
                             findings.append(dict(leg=index + 1, at=at,
                                                  width=d - run, kind="overhang"))
                         run = None
-            lo, hi = min(hits), max(hits)
             run_start = None
             for d, h in swept:
                 if d < lo or d > hi:
