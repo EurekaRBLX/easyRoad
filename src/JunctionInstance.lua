@@ -110,7 +110,7 @@ end
 
 -- Kept in step with RegionStyles.RoundaboutMarkingStyles by hand; the two are
 -- deliberately not coupled (see the JunctionData field note).
-local ROUNDABOUT_MARKING_STYLES = { "Continuous", "SolidLanes" }
+local ROUNDABOUT_MARKING_STYLES = { "Continuous", "SolidLanes", "Turbo" }
 
 function JunctionInstance.Read(model: Model): JunctionData?
 	local id = model:GetAttribute("RW_JunctionId")

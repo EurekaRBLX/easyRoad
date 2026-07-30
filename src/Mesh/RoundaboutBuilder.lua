@@ -86,24 +86,31 @@ local function ringComponents(
 	style: RegionStyles.RegionStyle
 ): { RoadProfile.ProfileComponent }
 	local components: { RoadProfile.ProfileComponent } = {}
-	-- SolidLanes marks the boundary between circulating lanes SOLID, to
-	-- discourage weaving on the ring. CONTINUOUS leaves it on "Auto", which
-	-- resolves to the region's own dashed lane line.
+	-- CONTINUOUS leaves the lane boundary on "Auto", which resolves to the
+	-- region's own dashed lane line. SOLIDLANES marks it solid, to discourage
+	-- weaving on the ring.
 	--
-	-- Neither is a turbo roundabout: that is a spiral, not a marking choice.
-	-- See ROUNDABOUT.md 5.3c.
+	-- TURBO suppresses it entirely with "None" and `buildTurboMarkings` lays
+	-- spiralling boundaries instead: a turbo is a spiral, not a line style, so
+	-- there is nothing here for a per-component rule to express. The straight
+	-- boundary has to go, or the spiral is drawn on top of it.
 	--
 	-- Set on every lane but the last: `RightBoundary` describes the gap to the
 	-- component on its right, and the last lane's right-hand neighbour is the
 	-- pavement, whose edge line is the region's business rather than ours.
 	local lanes = math.max(1, math.floor(laneCount))
-	local solidLanes = style.RoundaboutMarkings == "SolidLanes"
+	local between: RoadProfile.BoundaryRule? = nil
+	if style.RoundaboutMarkings == "SolidLanes" then
+		between = "Solid"
+	elseif style.RoundaboutMarkings == "Turbo" then
+		between = "None"
+	end
 	for i = 1, lanes do
 		table.insert(components, {
 			Kind = "Drive",
 			WidthM = laneWidthM,
 			Direction = 1,
-			RightBoundary = if solidLanes and i < lanes then "Solid" else nil,
+			RightBoundary = if i < lanes then between else nil,
 		})
 	end
 	-- An opted-out pavement means the ring is carriageway only. Bail before the
@@ -687,6 +694,128 @@ local function openRingPavement(
 			if delta <= sector.Ahead and -delta <= sector.Behind then
 				part:Destroy()
 				break
+			end
+		end
+	end
+end
+
+-- Angular step for one span of a spiralling lane boundary. At 2 degrees the
+-- chord sags r*(1-cos 1deg) off the true arc - 0.015 studs on a 100-stud ring,
+-- an order of magnitude under the marking's own width.
+local TURBO_ARC_STEP_RAD = math.rad(2)
+
+-- TURBO markings: lane boundaries that spiral outward, so the lane a driver is
+-- in is carried to an exit rather than needing a lane change on the ring. The
+-- circulating carriageway is a constant-width annulus either way - only the
+-- boundaries inside it move - so this is markings, not a second ring generator
+-- (ROUNDABOUT.md 5.3c corrects an earlier claim otherwise).
+--
+-- Across each arc between two mouths, every boundary migrates outward by
+-- exactly one lane width:
+--
+--     boundary k runs from  inner + k*w  to  inner + (k+1)*w
+--
+-- which conserves the carriageway without conserving the lane count. On an
+-- L-lane ring the outermost boundary reaches the outer edge - its lane has
+-- been delivered to the exit - and the innermost lane arrives at the mouth 2*w
+-- wide, which the next arc's new innermost boundary splits back into two. So a
+-- mouth is entered with L-1 lanes and left with L, the extra one being the
+-- entry's own traffic. That is the "inner lane flung out to the exit" the
+-- reference aerial shows.
+--
+-- This cannot go through RoadBuilder.Build with the rest of the ring's
+-- markings: it needs the mouth angles, and those are not known until every leg
+-- has been trimmed and planned, which happens after the ring model exists.
+-- Hence its own emitter, sharing RoadBuilder's lift and thickness so the two
+-- sets of markings sit at the same height.
+local function buildTurboMarkings(
+	ring: Model,
+	center: Vector3,
+	radiusStuds: number,
+	profile: RoadProfile.RoadProfile,
+	laneCount: number,
+	laneWidthM: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings,
+	sectors: { MouthSector }
+)
+	local lanes = math.max(1, math.floor(laneCount))
+	-- One lane has no boundary to spiral, and one mouth leaves no arc between
+	-- mouths to spiral along. Both fall back to a plain ring.
+	if lanes < 2 or #sectors < 2 then
+		return
+	end
+	local scale = settings.MetersToStuds
+	-- Profile offsets grow toward the ring's INNER edge under left-hand drive
+	-- and toward its outer edge under right-hand drive, because ringComponents
+	-- puts the pavement on the outward side either way. Working in radius
+	-- rather than in profile offset sidesteps that entirely.
+	local innerRadiusStuds = radiusStuds - ringInnerHalfWidthM(profile, style) * scale
+	local laneStuds = laneWidthM * scale
+	-- Travel runs toward increasing angle under left-hand drive; this is the
+	-- same quantity as circleSegments' `sign`.
+	local travel = if style.DriveOnLeft then 1 else -1
+	local markingWidth = style.MarkingWidthM * scale
+	local y = center.Y + RoadBuilder.MarkingLiftStuds
+
+	local sorted = table.clone(sectors)
+	table.sort(sorted, function(a, b)
+		return a.Angle < b.Angle
+	end)
+	-- Ahead/Behind are absolute (+/- angle), not relative to travel, so which
+	-- one closes a mouth behind you and which opens the next depends on which
+	-- way you are going round.
+	local function leaveAngle(m: MouthSector): number
+		return m.Angle + (if travel > 0 then m.Ahead else -m.Behind)
+	end
+	local function arriveAngle(m: MouthSector): number
+		return m.Angle + (if travel > 0 then -m.Behind else m.Ahead)
+	end
+
+	local function place(a0: number, r0: number, a1: number, r1: number)
+		local p0 = center + Vector3.new(math.cos(a0) * r0, 0, math.sin(a0) * r0)
+		local p1 = center + Vector3.new(math.cos(a1) * r1, 0, math.sin(a1) * r1)
+		p0, p1 = Vector3.new(p0.X, y, p0.Z), Vector3.new(p1.X, y, p1.Z)
+		local span = (p1 - p0).Magnitude
+		if span < 1e-4 then
+			return
+		end
+		local part = Instance.new("Part")
+		part.Name = "Marking"
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanTouch = false
+		part.CanQuery = false
+		part.CastShadow = false
+		part.TopSurface = Enum.SurfaceType.Smooth
+		part.BottomSurface = Enum.SurfaceType.Smooth
+		part.Material = Enum.Material.SmoothPlastic
+		part.Color = style.LaneLine.Color
+		-- Overlap adjacent spans slightly, as the deck's own solid lines do:
+		-- consecutive chords of a spiral meet at a shallow angle, and butting
+		-- them exactly leaves a hairline at every joint.
+		part.Size = Vector3.new(markingWidth, RoadBuilder.MarkingThicknessStuds, span + 0.02)
+		part.CFrame = CFrame.lookAt((p0 + p1) / 2, p1, Vector3.yAxis)
+		part.Parent = ring
+	end
+
+	for i, mouth in sorted do
+		local nextMouth = sorted[if travel > 0 then (i % #sorted) + 1 else (if i > 1 then i - 1 else #sorted)]
+		local from = leaveAngle(mouth)
+		local sweep = ((arriveAngle(nextMouth) - from) * travel) % (2 * math.pi)
+		if sweep <= 1e-6 then
+			continue
+		end
+		local steps = math.max(2, math.ceil(sweep / TURBO_ARC_STEP_RAD))
+		for k = 1, lanes - 1 do
+			for stepIndex = 0, steps - 1 do
+				local t0, t1 = stepIndex / steps, (stepIndex + 1) / steps
+				place(
+					from + travel * sweep * t0,
+					innerRadiusStuds + (k + t0) * laneStuds,
+					from + travel * sweep * t1,
+					innerRadiusStuds + (k + t1) * laneStuds
+				)
 			end
 		end
 	end
@@ -1699,6 +1828,24 @@ function RoundaboutBuilder.CreateAtJunction(
 	-- painted straight across the mouth.
 	local edgeLineInset = style.MarkingWidthM * 1.5 * scale
 	openRingPavement(ringPavement, center, mouthSectors, ringKerbRadius - edgeLineInset - 0.5)
+
+	-- After openRingPavement, deliberately. The spiral is laid only on the arcs
+	-- BETWEEN mouths, so there is nothing in a sector for that pass to remove -
+	-- and running it first would hand these parts to `ringPavement`, which was
+	-- captured before any of them existed.
+	if ringStyle.RoundaboutMarkings == "Turbo" then
+		buildTurboMarkings(
+			ring,
+			center,
+			radiusStuds,
+			profile,
+			laneCount,
+			laneWidthM,
+			ringStyle,
+			settings,
+			clampSectors(mouthSectors)
+		)
+	end
 
 	ring.Parent = getRoundaboutsFolder()
 	JunctionInstance.Delete(junctionModel)

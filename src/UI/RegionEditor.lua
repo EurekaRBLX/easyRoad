@@ -256,6 +256,7 @@ local function RegionEditor(props: {
 				Options = {
 					{ Id = "Continuous", Text = "Continuous - dashed between lanes" },
 					{ Id = "SolidLanes", Text = "Solid dividers between lanes" },
+					{ Id = "Turbo", Text = "Turbo - lanes spiral out to the exits" },
 				},
 				-- nil reads as Continuous, so a region that predates this field
 				-- shows the behaviour it actually has rather than an empty box.

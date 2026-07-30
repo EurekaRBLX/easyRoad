@@ -4,6 +4,58 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: turbo markings
+
+A third circulating-marking mode beside Continuous and SolidLanes, chosen per
+roundabout in the junction panel or as a regional default. Neither existing mode
+was a turbo - "continuous" is the ordinary dashed ring and "solid lanes" just
+discourages weaving. A turbo is a spiral.
+
+An earlier note claimed this needed a second ring generator because lane count
+and lane centres vary with angle. It does not: the circulating carriageway is a
+constant-width annulus, exactly what is already built, and only the boundaries
+inside it move. Across each arc between two mouths every boundary migrates
+outward by one lane width, from inner + k*w to inner + (k+1)*w. That conserves
+the carriageway without conserving the lane count - the outermost boundary
+reaches the outer edge, its lane having been delivered to the exit, and the
+innermost lane arrives at the mouth two lanes wide for the next arc's new
+boundary to split. A mouth is entered with L-1 lanes and left with L, the extra
+one being the entry's own traffic. No special case per lane count.
+
+Two things it deliberately does not go through:
+
+  - not a RightBoundary rule, because a spiral is not a line style. Turbo sets
+    the ring's lane boundaries to a new "None" BoundaryRule, which
+    Markings.addLine already drops, and lays its own lines.
+  - not RoadBuilder.Build, because the spiral needs the mouth angles and those
+    are not known until every leg has been trimmed and planned - after the ring
+    model exists. buildTurboMarkings emits its own parts, using two newly
+    exported RoadBuilder constants for lift and thickness so the two sets of
+    markings cannot drift apart in height.
+
+Runs after openRingPavement: the spiral only covers arcs between mouths, so that
+pass has nothing to remove, and going first would hand these parts to a
+ringPavement list captured before they existed. Falls back to a plain ring on
+one lane or one mouth.
+
+The preview grew a matching port and, more usefully, `check_turbo` - invariants
+rather than a re-derivation of the same formula, which would pass by
+construction. It asserts the spiral stays between island and kerb, never enters
+a mouth sector, starts one lane width off the island and finishes one further
+out, and moves outward IN THE DIRECTION OF TRAVEL.
+
+That last one earns its place. Breaking the build three ways on purpose: an
+anchor at the ring centreline instead of the island edge, and ignoring the mouth
+sectors, were both caught by the earlier checks - but winding the spiral the
+wrong way round was not. On a symmetric ring it is geometrically
+indistinguishable, right radii, right sectors, every other check green, and it
+means the exact opposite thing: the outer lane flung inward. The travel
+invariant catches it and nothing else does.
+
+Clean on both hands and on 2 and 3 lanes.
+
+Not confirmed in Studio.
+
 ## Roundabout mouths: close the indentation with a flat apron
 
 The V-notch down the middle of every approach, reported more times than any

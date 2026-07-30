@@ -144,6 +144,43 @@ mouth sector (§4.1); the apron covers that band now, and covers it with the
 right material — a mouth is precisely where the circulatory pavement ring is
 interrupted by carriageway.
 
+### 3.8 Turbo is a marking spiral, not a second ring generator
+An earlier note here claimed a turbo roundabout needs its own generator because
+"lane count and lane centres vary with angle". An aerial of a real spiral-marked
+roundabout says otherwise: the circulating **carriageway is a constant-width
+annulus**, exactly what is already built. Only the boundaries inside it move.
+
+Across each arc between two mouths, every boundary migrates outward by exactly
+one lane width:
+
+    boundary k runs from  inner + k*w  to  inner + (k+1)*w
+
+which conserves the carriageway without conserving the lane count. On an L-lane
+ring the outermost boundary reaches the outer edge — its lane has been delivered
+to the exit — and the innermost lane arrives at the mouth 2*w wide, which the
+next arc's new innermost boundary splits back in two. A mouth is entered with
+L−1 lanes and left with L, the extra one being the entry's own traffic. That is
+the "inner lane flung out to the exit" the reference shows, and it works for any
+lane count without a special case.
+
+Two things this does NOT go through, both for the same reason:
+
+- **Not a `RightBoundary` rule.** A spiral is not a line style. Turbo sets the
+  ring's lane boundaries to `"None"` (a new `RoadProfile.BoundaryRule`, which
+  `Markings.addLine` already drops) and lays its own.
+- **Not `RoadBuilder.Build`.** The spiral needs the mouth angles, and those are
+  not known until every leg has been trimmed and planned — which happens after
+  the ring model exists. `buildTurboMarkings` therefore emits its own parts,
+  using `RoadBuilder.MarkingLiftStuds` / `MarkingThicknessStuds` so the two sets
+  of markings cannot drift apart in height.
+
+It runs after `openRingPavement`, deliberately: the spiral only covers arcs
+between mouths so that pass has nothing to remove, and going first would hand
+these parts to a `ringPavement` list captured before they existed.
+
+Falls back to a plain ring on one lane (no boundary to spiral) or one mouth (no
+arc to spiral along).
+
 ---
 
 ## 4. Defects fixed, with their measurements
@@ -314,37 +351,14 @@ is profile data, not engine code.
 Requested on top of that: a **Turbo / Continuous** toggle in the roundabout
 build panel, with a default in regional settings.
 
-### 5.3c A real TURBO roundabout — NOT BUILT, but smaller than first thought
+### 5.3c ~~A real TURBO roundabout~~ — SHIPPED, see §3.8
+Built as a third `RoundaboutMarkings` mode. Rule and reasoning in §3.8.
 
-**Correcting an earlier entry in this file.** It claimed turbo needs a second
-ring generator because "lane count and lane centres vary with angle". An aerial
-of a real spiral-marked roundabout (Tollbar End, A46) shows otherwise: the
-circulating **carriageway is a constant-width annulus**, exactly what is built
-today. Only the LANE BOUNDARIES inside it spiral, migrating outward with angle
-so the lane a driver entered is delivered to an exit.
-
-So this is a markings feature after all — just not a solid/dashed flag. What it
-needs is a lane boundary whose **radial offset is a function of angle**, moving
-outward by roughly one lane width between consecutive mouths.
-
-The primitive already exists. `Markings.MarkingLine` carries `OffsetStartM` and
-`OffsetEndM` — a lateral offset that ramps along the curve — so a spiral is a
-series of lines, one per arc between mouths, each ramping outward. Nothing in
-`Markings.lua` has to change to express it.
-
-What does have to be worked out:
-
-- where each boundary starts and ends radially, given leg count and lane count
-  (they must line up with an exit, not land mid-carriageway);
-- the ring is ONE closed curve, so the lines have to be emitted per arc between
-  mouths rather than once around, and the seams have to meet;
-- what the innermost lane does when its boundary reaches the outer edge — in
-  the reference it becomes the exit lane and the next boundary takes over;
-- entry lanes would ideally feed the matching spiral lane, which the mouth
-  model does not represent (`splitApproachLanes` splits by `Direction` only).
-
-The first three are the actual build. The fourth is lane-connection work that
-can follow.
+Not built, and not needed for the markings to be right: **entry lanes are not
+matched to spiral lanes.** A driver should be committed to a destination by the
+lane they enter in, which means `splitApproachLanes` would have to know which
+circulating lane each approach lane feeds. It splits by `Direction` only. That
+is lane-connection work, not markings.
 
 ### 5.3d ~~The mouth INDENTATION~~ — FIXED, see §3.7 and §4.4
 The long thin V-notch down the middle of every approach. Three rounds of

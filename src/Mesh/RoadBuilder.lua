@@ -69,6 +69,14 @@ local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
 
 local RoadBuilder = {}
 
+-- Exported so a builder laying its own marking parts outside Build() sits at
+-- the same height and thickness as the ones Build() emits, instead of keeping
+-- a second copy of these numbers that can drift. RoundaboutBuilder's turbo
+-- spiral is the caller: it cannot go through Build() because it needs the
+-- mouth angles, which are not known until after the ring exists.
+RoadBuilder.MarkingLiftStuds = MARKING_LIFT
+RoadBuilder.MarkingThicknessStuds = MARKING_THICKNESS
+
 local function colorForKind(kind: RoadProfile.ComponentKind, style: RegionStyles.RegionStyle): Color3
 	if kind == "Drive" then
 		return style.AsphaltColor

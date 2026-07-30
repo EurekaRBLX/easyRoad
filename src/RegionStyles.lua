@@ -33,11 +33,12 @@ export type MarkingSpec = {
 -- commits you to an exit. That changes the ring's GEOMETRY, not just its
 -- markings, and is not built - see ROUNDABOUT.md 5.3c. "SolidLanes" was
 -- briefly shipped under the name "Turbo", which it is not.
-export type RoundaboutMarkingStyle = "Continuous" | "SolidLanes"
+export type RoundaboutMarkingStyle = "Continuous" | "SolidLanes" | "Turbo"
 
 local RoundaboutMarkingStyles: { RoundaboutMarkingStyle } = {
 	"Continuous" :: RoundaboutMarkingStyle,
 	"SolidLanes" :: RoundaboutMarkingStyle,
+	"Turbo" :: RoundaboutMarkingStyle,
 }
 export type RegionStyle = {
 	Id: string,

@@ -264,7 +264,7 @@ def rect(center, right, forward, half_w, half_l):
             (center[0]-a[0]+b[0], center[1]-a[1]+b[1])]
 
 
-def emit_road(curve, components, y_base=0.0, solid_lane_lines=False):
+def emit_road(curve, components, y_base=0.0, solid_lane_lines=False, lane_lines=True):
     """Port of the deck-strip + marking emission for a flat (unbanked) road."""
     parts = []
     total_m = sum(c[1] for c in components)
@@ -304,12 +304,14 @@ def emit_road(curve, components, y_base=0.0, solid_lane_lines=False):
     lines = [(left_m+inset, True), (right_m-inset, True)]
     for c in range(len(components)-1):
         if components[c][0] != "Sidewalk" and components[c+1][0] != "Sidewalk":
-            # `solid_lane_lines` is the preview's minimal stand-in for
-            # RoadProfile's RightBoundary = "Solid", which is what the plugin
-            # sets on a TURBO ring's circulating lanes. It is not a port of
-            # Markings.lua - see ROUNDABOUT.md 5.3 - just enough for the
-            # Turbo/Continuous choice to be visible here at all.
-            lines.append((offs[c][1], solid_lane_lines))
+            # `solid_lane_lines` stands in for RoadProfile's
+            # RightBoundary = "Solid" (the SolidLanes ring); `lane_lines=False`
+            # for its "None" (the Turbo ring, which suppresses the straight
+            # boundary and spirals its own). Neither is a port of Markings.lua
+            # - see ROUNDABOUT.md 5.3 - just enough for the three-way choice to
+            # be visible here at all.
+            if lane_lines:
+                lines.append((offs[c][1], solid_lane_lines))
 
     for off_m, solid in lines:
         off = off_m*SCALE
@@ -432,7 +434,122 @@ def min_radius_studs(legs, lane_count, lane_w, dol):
     return merge + outer_off + SW_M * SCALE - ring_half
 
 
-def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=True, island=True, turbo=False):
+# Angular step of one spiral span - see RoundaboutBuilder.TURBO_ARC_STEP_RAD.
+TURBO_ARC_STEP_RAD = math.radians(2)
+
+
+def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, sectors):
+    """Port of RoundaboutBuilder.buildTurboMarkings.
+
+    Across each arc between two mouths, boundary k migrates outward from
+    island_r + k*w to island_r + (k+1)*w, so the lane a driver is in is carried
+    to an exit instead of needing a lane change on the ring.
+    """
+    lanes = max(1, int(lanes))
+    if lanes < 2 or len(sectors) < 2:
+        return []
+    lane_studs = lane_m * SCALE
+    travel = 1 if drive_on_left else -1
+    mw = MARKING_W_M * SCALE
+    ordered = sorted(sectors, key=lambda m: m[0])          # (angle, ahead, behind)
+
+    def leave(m):
+        return m[0] + (m[1] if travel > 0 else -m[2])
+
+    def arrive(m):
+        return m[0] + (-m[2] if travel > 0 else m[1])
+
+    def at(a, r):
+        return (center[0] + math.cos(a) * r, center[1] + math.sin(a) * r)
+
+    out, spans = [], []
+    for i, mouth in enumerate(ordered):
+        nxt = ordered[(i + 1) % len(ordered)] if travel > 0 else ordered[i - 1]
+        frm = leave(mouth)
+        sweep = ((arrive(nxt) - frm) * travel) % (2 * math.pi)
+        if sweep <= 1e-6:
+            continue
+        steps = max(2, math.ceil(sweep / TURBO_ARC_STEP_RAD))
+        for k in range(1, lanes):
+            for j in range(steps):
+                t0, t1 = j / steps, (j + 1) / steps
+                p0 = at(frm + travel * sweep * t0, island_r + (k + t0) * lane_studs)
+                p1 = at(frm + travel * sweep * t1, island_r + (k + t1) * lane_studs)
+                span = math.dist(p0, p1)
+                if span < 1e-4:
+                    continue
+                fwd = unit((p1[0] - p0[0], p1[1] - p0[1]))
+                mid = ((p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2)
+                out.append(Part("Marking", rect(mid, right_of(fwd), fwd, mw / 2,
+                                                (span + 0.02) / 2),
+                                MARK_C, mid, 0.03))
+                spans.append((frm + travel * sweep * t0, island_r + (k + t0) * lane_studs,
+                              frm + travel * sweep * t1, island_r + (k + t1) * lane_studs))
+    return out, spans
+
+
+def check_turbo(scene, tol=0.05):
+    """Invariants the spiral must satisfy, checked against the built parts.
+
+    Deliberately NOT a re-derivation of the same formula - that would pass by
+    construction. These test the bookkeeping that is actually easy to get
+    wrong: which end of a mouth the arc leaves from, which way round travel
+    goes, and whether the result stays on the carriageway.
+    """
+    faults = []
+    if scene.get("markings") != "Turbo":
+        return faults
+    lanes, spiral = scene["ring_lanes"], scene["spiral"]
+    inner, outer = scene["island_r"], scene["ring_kerb"]
+    if lanes < 2 or len(scene["sectors"]) < 2:
+        if spiral:
+            faults.append(f"spiral emitted with {lanes} lane(s) / "
+                          f"{len(scene['sectors'])} mouth(s); should fall back")
+        return faults
+    if not spiral:
+        faults.append("Turbo selected but no spiral emitted")
+        return faults
+    radii = [math.hypot(p.center[0] - scene["center"][0],
+                        p.center[1] - scene["center"][1]) for p in spiral]
+    if min(radii) < inner - tol:
+        faults.append(f"spiral crosses the island: min r {min(radii):.2f} < {inner:.2f}")
+    if max(radii) > outer + tol:
+        faults.append(f"spiral crosses the kerb: max r {max(radii):.2f} > {outer:.2f}")
+    # No spiral inside a mouth: that ground is the entry, not circulating lanes.
+    for p, r in zip(spiral, radii):
+        ang = math.atan2(p.center[1] - scene["center"][1], p.center[0] - scene["center"][0])
+        for sa, ah, bh in scene["sectors"]:
+            if angle_delta(ang, sa) <= ah and -angle_delta(ang, sa) <= bh:
+                faults.append(f"spiral inside a mouth sector at {math.degrees(ang):.0f}deg")
+                return faults
+    # Every boundary must both start one lane width off the island and finish
+    # one lane width further out, or it is not delivering anything to an exit.
+    lane_studs = LANE_M * SCALE
+    want_lo, want_hi = inner + lane_studs, inner + lanes * lane_studs
+    if abs(min(radii) - want_lo) > lane_studs * 0.25:
+        faults.append(f"innermost boundary starts at {min(radii):.2f}, want ~{want_lo:.2f}")
+    if abs(max(radii) - want_hi) > lane_studs * 0.25:
+        faults.append(f"outermost boundary ends at {max(radii):.2f}, want ~{want_hi:.2f}")
+    # THE defining property, and the one the radius bounds above cannot see: in
+    # the DIRECTION OF TRAVEL the boundary must move outward. A spiral wound
+    # the wrong way round is geometrically indistinguishable on a symmetric
+    # ring - right radii, right sectors, every other check green - and means
+    # the exact opposite thing, flinging the outer lane inward. Reversing
+    # `travel` in turbo_spiral is caught here and nowhere else.
+    travel = 1 if scene["drive_on_left"] else -1
+    for a0, r0, a1, r1 in scene["spiral_spans"]:
+        step = ((a1 - a0) * travel) % (2 * math.pi)
+        if not (0 < step < math.pi):
+            faults.append("spiral runs against the direction of travel")
+            break
+        if r1 < r0 - 1e-9:
+            faults.append("spiral moves inward along travel; turbo delivers lanes outward")
+            break
+    return faults
+
+
+def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=True,
+          island=True, markings="Continuous"):
     """legs is a list of (degrees, approach component list).
 
     `grow` mirrors the plugin, and the plugin no longer grows: the requested
@@ -441,6 +558,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     `SuggestedRadiusStuds` is derived from, so it is occasionally useful to
     inspect the recommended ring alongside the requested one.
     """
+    assert markings in ("Continuous", "SolidLanes", "Turbo"), markings
     if grow:
         ring_r = max(ring_r, min_radius_studs(legs, ring_lanes, LANE_M, drive_on_left))
     flow = 1 if drive_on_left else -1
@@ -456,7 +574,10 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
 
     leg_info = []
     ring_curve = circle_segments(center, ring_r, drive_on_left)
-    ring_parts = emit_road(ring_curve, rc, solid_lane_lines=turbo)
+    # Turbo suppresses the straight lane lines entirely (RightBoundary="None"
+    # in ringComponents) and lays spiralling ones below instead.
+    ring_parts = emit_road(ring_curve, rc, solid_lane_lines=(markings == "SolidLanes"),
+                           lane_lines=(markings != "Turbo"))
     parts_ring_pavement = [p for p in ring_parts if p.name in ("Sidewalk", "Marking")]
 
     sectors, arm_parts, gore_tris, apron_tris = [], [], [], []
@@ -647,7 +768,13 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                     continue
         kept.append(p)
     parts = kept + arm_parts
+    spiral, spiral_spans = (
+        turbo_spiral(center, ring_r, island_r, ring_lanes, LANE_M, drive_on_left, cl)
+        if markings == "Turbo" else ([], []))
+    parts += spiral
     return dict(tag=tag, parts=parts, gore=gore_tris, apron=apron_tris,
+                spiral=spiral, spiral_spans=spiral_spans, markings=markings,
+                ring_r=ring_r, ring_lanes=ring_lanes, drive_on_left=drive_on_left,
                 island_r=island_r, island=island, legs=leg_info,
                 sectors=cl,
                 outerR=outerR, ring_kerb=ring_kerb, cutR=cutR, center=center,
@@ -965,6 +1092,9 @@ def report(scene, holes, pitch, hairline):
                       f"{m['width']:.2f} studs")
     else:
         print("    MOUTH: no bare ground inside the mouth envelope")
+    for fault in check_turbo(scene):
+        ok = False
+        print(f"    TURBO: {fault}")
     steps = seam_steps(scene)
     if steps:
         worst = max(max(a, b) for a, b in steps)
@@ -1010,9 +1140,9 @@ def one_way(lanes, into_ring, dol, lane=LANE_M, pav=SW_M):
     return [("Sidewalk", pav)] + [("Drive", lane, d)] * lanes + [("Sidewalk", pav)]
 
 
-def case(ring_r, ring_lanes, drive_on_left, legs):
+def case(ring_r, ring_lanes, drive_on_left, legs, markings="Continuous"):
     return dict(ring_r=ring_r, ring_lanes=ring_lanes, drive_on_left=drive_on_left,
-                legs=legs)
+                legs=legs, markings=markings)
 
 
 def CASE_TABLE(dol_default=True):
@@ -1044,6 +1174,13 @@ def CASE_TABLE(dol_default=True):
             (180, two_way(2, 2, False)),
             (270, two_way(1, 3, False)),
         ]),
+        # Turbo: the spiral has to line up with the exits, stay on the
+        # carriageway, and wind WITH the traffic. Both hands, because
+        # Ahead/Behind are absolute angles and travel is not.
+        "turbo4": case(70, 2, True, [(a, two_way(2, 2, True)) for a in (0, 90, 180, 270)],
+                       markings="Turbo"),
+        "turbo3x": case(80, 3, False, [(a, two_way(2, 2, False)) for a in (270, 30, 150)],
+                        markings="Turbo"),
     }
 
 

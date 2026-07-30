@@ -16,7 +16,7 @@ export type ComponentKind = "Drive" | "Sidewalk" | "Median" | "Shoulder" | "Bike
 
 -- Marking rule for the boundary on the RIGHT side of a lane (only applies
 -- between same-direction traffic lanes). "Auto" defers to the region style.
-export type BoundaryRule = "Auto" | "Solid" | "DoubleSolid" | "SolidDash" | "DashSolid"
+export type BoundaryRule = "Auto" | "None" | "Solid" | "DoubleSolid" | "SolidDash" | "DashSolid"
 
 export type ProfileComponent = {
 	Kind: ComponentKind,
@@ -58,6 +58,11 @@ local ComponentKinds: { ComponentKind } = {
 
 local BoundaryRules: { BoundaryRule } = {
 	"Auto" :: BoundaryRule,
+	-- Draw no line at this boundary at all. Markings.addLine already returns
+	-- early on the "None" LineType, so nothing downstream needs to know about
+	-- it. Used by the turbo ring, which suppresses the automatic lane lines and
+	-- lays its own spiralling ones instead.
+	"None" :: BoundaryRule,
 	"Solid" :: BoundaryRule,
 	"DoubleSolid" :: BoundaryRule,
 	"SolidDash" :: BoundaryRule,
