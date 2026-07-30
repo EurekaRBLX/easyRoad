@@ -243,10 +243,21 @@ concentric-looking and hand off cleanly, because our exits are two lanes wide
 and the ring only has two. A concentric divider plus a peel does both, and it is
 what the reference photographs actually show.
 
-Still not built, and it is the other half of "turbo on the arms": **lane arrows
-and destination legends on the approaches**, which is how a real turbo tells a
-driver which lane to pick. That is a `Markings.lua` job on ordinary one-way
-roads, not ring geometry.
+**The peel's terminus is still wrong**, and it is the fifth failure on this one
+mark. It ends on the ring's outer EDGE LINE (r=79.2 on a 4-leg 2+2 at R=70)
+where it should end on the exit road's LANE marking. That line is not on the
+ring: it is out in the arm at r=81.9 rising to 96.1 as the arm departs, so no
+fixed ring radius can reach it. `buildTurboMarkings` only has centre, radius,
+lane count and mouth sectors — the fix is to thread the exit arm's `PolyCurve`
+and `ArmProfile` out of `buildMouth` into the marking pass first. `TODO.md`
+carries the measurements. **Do not attempt a sixth version without the arm curve
+in hand**; every attempt so far has been an inference from a photograph and
+every one has been wrong.
+
+Also not built, the other half of "turbo on the arms": **lane arrows and
+destination legends on the approaches**, which is how a real turbo tells a
+driver which lane to pick. A `Markings.lua` job on ordinary one-way roads, not
+ring geometry.
 
 It runs after `openRingPavement`, deliberately: that pass deletes ring pavement
 and edge lines inside the mouth sectors, and these parts must survive there.
