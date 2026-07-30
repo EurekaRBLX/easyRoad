@@ -251,31 +251,6 @@ Left open:
   know which circulating lane each approach lane feeds. It splits by `Direction`
   only. Lane-connection work, not markings — and the markings are right without
   it.
-- **The peel must terminate on the EXIT ROAD's lane marking, not the ring's
-  outer edge line.** Reported as "the spiral should fling outward to the
-  centreline / lane marking", and the current build does not do it. Measured on
-  a 4-leg 2+2 at R=70, at the west exit edge (145 deg):
-
-      r=53.9   ring inner edge line
-      r=66.2   ring lane divider          <- the peel LEAVES here
-      r=79.2   ring outer edge line       <- the peel currently ENDS here
-      r=81.9 -> 96.1 (150..160 deg)       <- the exit arm's own lines, climbing
-                                             outward as the arm departs
-
-  The line it has to join is not on the ring at all. It is out in the arm and
-  moving, so it cannot be hit with a fixed ring radius - which is all
-  `buildTurboMarkings` has (centre, radius, lane count, mouth sectors).
-
-  The fix is plumbing before it is geometry: thread the exit arm's PolyCurve and
-  ArmProfile out of `buildMouth` into the marking pass, then run the peel from
-  the ring's divider onto the arm's own lane boundary a short way down the arm,
-  so the two are one continuous line. `buildMouth` already has both; nothing
-  currently returns them.
-
-  Five attempts went into doing this on the ring alone and all five were wrong -
-  see ROUNDABOUT.md 3.8 for the four full-ring spirals and this for the fifth.
-  Do not attempt a sixth without the arm curve in hand.
-
 - **No arrows or lane-destination legends** on the approaches. This is now the
   ONLY unbuilt half of turbo: the ring side is settled (concentric divider plus
   a peel-off at each exit, ROUNDABOUT.md 3.8) and the arm side is how a real

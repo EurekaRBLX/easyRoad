@@ -243,16 +243,27 @@ concentric-looking and hand off cleanly, because our exits are two lanes wide
 and the ring only has two. A concentric divider plus a peel does both, and it is
 what the reference photographs actually show.
 
-**The peel's terminus is still wrong**, and it is the fifth failure on this one
-mark. It ends on the ring's outer EDGE LINE (r=79.2 on a 4-leg 2+2 at R=70)
-where it should end on the exit road's LANE marking. That line is not on the
-ring: it is out in the arm at r=81.9 rising to 96.1 as the arm departs, so no
-fixed ring radius can reach it. `buildTurboMarkings` only has centre, radius,
-lane count and mouth sectors — the fix is to thread the exit arm's `PolyCurve`
-and `ArmProfile` out of `buildMouth` into the marking pass first. `TODO.md`
-carries the measurements. **Do not attempt a sixth version without the arm curve
-in hand**; every attempt so far has been an inference from a photograph and
-every one has been wrong.
+**The peel ends on the exit arm's own lane line**, not on the ring. That took
+threading the exit arm's `PolyCurve` and `ArmProfile` out of `buildMouth`
+(`ExitTrace`) into the marking pass; five earlier versions tried to land on that
+line using ring coordinates alone and every one ended on the ring's outer EDGE
+line instead, because the line they were aiming at is out in the arm and moving.
+
+Two things about how it is built, both learned by getting them wrong:
+
+- **The peel is a BLEND, not a cubic.** A cubic pinned to the ring tangent at
+  one end and the arm tangent at the other sags between them — measured r=57.8
+  against a divider at 66.4, a marking bulging eight studs toward the island.
+  Capping the handles did not help: the span is 61° of arc once the arm's own
+  swing is counted, and no handle length makes a straight-ish chord follow a
+  circle that far. It now interpolates between two curves that are each correct
+  on their own — the ring's divider and the arm's lane line — sampled at
+  matching progress, so it starts exactly on one and ends exactly on the other.
+- **Which offset sign points outward is MEASURED, not assumed.** That was got
+  wrong twice: once by omitting the flow factor (invisible on left-hand drive,
+  mirrored on right) and once by adding it (target 22 studs the wrong way, peel
+  diving to r=47 inside a ring whose divider is at 66). Comparing the two
+  candidate radii at the merge cannot be wrong on either hand.
 
 Also not built, the other half of "turbo on the arms": **lane arrows and
 destination legends on the approaches**, which is how a real turbo tells a

@@ -445,156 +445,141 @@ TURBO_FLING_FRACTION = 0.35
 # puts ~5 dashes on a whole quadrant and reads as an unmarked ring. See
 # RoundaboutBuilder.
 TURBO_DASH_M, TURBO_GAP_M = 1.0, 1.5
+# How far down the exit arm the peel lands, and its share of the gap back to
+# the previous exit - see RoundaboutBuilder.
+TURBO_PEEL_INTO_M = 9.0
+TURBO_PEEL_MAX_SHARE = 0.5
 
 
-def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, sectors):
+def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, exits):
     """Port of RoundaboutBuilder.buildTurboMarkings.
 
-    ONE PEEL-OFF PER EXIT, laid on top of the ring's own concentric divider -
-    not a spiral round the whole ring. Four rounds were spent on the latter and
-    every one of them was wrong in a different way; see ROUNDABOUT.md 3.8.
+    One peel per exit, running from the ring's own lane divider onto the EXIT
+    ARM's lane boundary a short way down the arm, so the two are one line. Five
+    earlier versions tried this with ring geometry alone and every one ended on
+    the ring's outer EDGE line instead - see ROUNDABOUT.md 3.8.
     """
     lanes = max(1, int(lanes))
-    if lanes < 2 or len(sectors) < 2:
+    if lanes < 2 or not exits:
         return [], []
     lane_studs = lane_m * SCALE
     travel = 1 if drive_on_left else -1
     mw = MARKING_W_M * SCALE
     dash, gap = TURBO_DASH_M * SCALE, TURBO_GAP_M * SCALE
-    ordered = sorted(sectors, key=lambda m: m[0])          # (angle, ahead, behind)
-
-    def exit_angle(m):
-        return m[0] + (-m[2] if travel > 0 else m[1])
-
-    def at(a, r):
-        return (center[0] + math.cos(a) * r, center[1] + math.sin(a) * r)
+    angles = [math.atan2(c.pos(0.0)[1] - center[1], c.pos(0.0)[0] - center[0])
+              for c, _ in exits]
 
     out, spans = [], []
-    for i, mouth in enumerate(ordered):
-        nxt = ordered[(i + 1) % len(ordered)] if travel > 0 else ordered[i - 1]
-        to = exit_angle(nxt)
-        gap_ang = ((to - exit_angle(mouth)) * travel) % (2 * math.pi)
-        if gap_ang <= 1e-6:
+    for i, (curve, arm) in enumerate(exits):
+        room = 2 * math.pi
+        for j, other in enumerate(angles):
+            if j != i:
+                room = min(room, ((angles[i] - other) * travel) % (2 * math.pi))
+        sweep = room * TURBO_PEEL_MAX_SHARE * TURBO_FLING_FRACTION * 2
+        if sweep <= 1e-6:
             continue
-        sweep = gap_ang * TURBO_FLING_FRACTION
-        frm = to - travel * sweep
-        steps = max(6, math.ceil(sweep / TURBO_ARC_STEP_RAD))
+        into = min(TURBO_PEEL_INTO_M * SCALE, curve.length * 0.9)
+        # Which sign points outward is MEASURED, not assumed - see
+        # RoundaboutBuilder; this has been got wrong twice by reasoning.
+        b, br, _ = curve.frame(0.0)
+        plus = math.hypot(b[0] + br[0]*arm["outer"] - center[0], b[1] + br[1]*arm["outer"] - center[1])
+        minus = math.hypot(b[0] - br[0]*arm["outer"] - center[0], b[1] - br[1]*arm["outer"] - center[1])
+        outer_sign = 1 if plus >= minus else -1
         for k in range(1, lanes):
-            pts, cum, polar = [], [0.0], []
-            for j in range(steps + 1):
-                t = j / steps
-                eased = t * t * (3 - 2 * t)
-                r = island_r + (k + eased) * lane_studs
-                a = frm + travel * sweep * t
-                pts.append(at(a, r))
-                polar.append((a, r))
+            a0 = angles[i] - travel * sweep
+            r0 = island_r + k * lane_studs
+            off = outer_sign * (arm["outer"] - (lanes - k) * lane_studs)
+            # BLENDED between the ring's divider and the arm's lane line - a
+            # free cubic between them sags 8 studs toward the island. See
+            # RoundaboutBuilder.
+            samples = max(8, math.ceil(sweep / TURBO_ARC_STEP_RAD))
+            pts, cum = [], [0.0]
+            for j in range(samples + 1):
+                t = j / samples
+                blend = t * t * (3 - 2 * t)
+                ang = a0 + travel * sweep * t
+                on_ring = (center[0] + math.cos(ang) * r0, center[1] + math.sin(ang) * r0)
+                ap, ar, _ = curve.frame(into * t)
+                on_arm = (ap[0] + ar[0] * off, ap[1] + ar[1] * off)
+                pts.append((on_ring[0] + (on_arm[0] - on_ring[0]) * blend,
+                            on_ring[1] + (on_arm[1] - on_ring[1]) * blend))
                 if j:
                     cum.append(cum[-1] + math.dist(pts[j - 1], pts[j]))
             total = cum[-1]
 
-            def sample(d):
-                d = max(0.0, min(total, d))
-                for j in range(len(cum) - 1):
-                    if d <= cum[j + 1]:
-                        sp = cum[j + 1] - cum[j]
-                        f = (d - cum[j]) / sp if sp > 1e-9 else 0.0
-                        return ((pts[j][0] + (pts[j + 1][0] - pts[j][0]) * f,
-                                 pts[j][1] + (pts[j + 1][1] - pts[j][1]) * f),
-                                (polar[j][0] + (polar[j + 1][0] - polar[j][0]) * f,
-                                 polar[j][1] + (polar[j + 1][1] - polar[j][1]) * f))
-                return pts[-1], polar[-1]
+            def at_len(dd):
+                dd = max(0.0, min(total, dd))
+                for m in range(len(cum) - 1):
+                    if dd <= cum[m + 1]:
+                        sp = cum[m + 1] - cum[m]
+                        f = (dd - cum[m]) / sp if sp > 1e-9 else 0.0
+                        return (pts[m][0] + (pts[m + 1][0] - pts[m][0]) * f,
+                                pts[m][1] + (pts[m + 1][1] - pts[m][1]) * f)
+                return pts[-1]
 
             d = total - dash
             while d >= 0:
-                (p0, q0), (p1, q1) = sample(d), sample(d + dash)
-                length = math.dist(p0, p1)
+                q0, q1 = at_len(d), at_len(d + dash)
+                length = math.dist(q0, q1)
                 if length > 1e-4:
-                    fwd = unit((p1[0] - p0[0], p1[1] - p0[1]))
-                    mid = ((p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2)
+                    fwd = unit((q1[0] - q0[0], q1[1] - q0[1]))
+                    mid = ((q0[0] + q1[0]) / 2, (q0[1] + q1[1]) / 2)
                     out.append(Part("Marking", rect(mid, right_of(fwd), fwd, mw / 2, length / 2),
                                     MARK_C, mid, 0.03))
-                    spans.append((q0[0], q0[1], q1[0], q1[1]))
+                    spans.append((math.atan2(q0[1] - center[1], q0[0] - center[0]),
+                                  math.hypot(q0[0] - center[0], q0[1] - center[1]),
+                                  math.atan2(q1[1] - center[1], q1[0] - center[0]),
+                                  math.hypot(q1[0] - center[0], q1[1] - center[1])))
                 d -= dash + gap
     return out, spans
 
 
-def check_turbo(scene, tol=0.05):
-    """Invariants the spiral must satisfy, checked against the built parts.
+def check_turbo(scene):
+    """Invariants for the per-exit peel.
 
-    Deliberately NOT a re-derivation of the same formula - that would pass by
-    construction. These test the bookkeeping that is actually easy to get
-    wrong: which end of a mouth the arc leaves from, which way round travel
-    goes, and whether the result stays on the carriageway.
+    Rewritten from the ones guarding the old full-ring spiral, which asserted
+    "reaches the ring's outer edge at each exit" - the very property that turned
+    out to BE the defect. A check inherited across a design change is worse than
+    no check: it certifies the thing you just stopped wanting.
+
+    What matters now is that the peel LEAVES the ring's own lane divider and
+    ARRIVES on the exit arm's line. The second is tested against the arm's
+    actual marking Parts rather than by recomputing where they ought to be, so
+    it cannot agree with the emitter by construction.
     """
     faults = []
     if scene.get("markings") != "Turbo":
         return faults
     lanes, spiral = scene["ring_lanes"], scene["spiral"]
-    inner, outer = scene["island_r"], scene["ring_kerb"]
-    if lanes < 2 or len(scene["sectors"]) < 2:
+    inner = scene["island_r"]
+    lane_studs = LANE_M * SCALE
+    if lanes < 2:
         if spiral:
-            faults.append(f"spiral emitted with {lanes} lane(s) / "
-                          f"{len(scene['sectors'])} mouth(s); should fall back")
+            faults.append(f"peel emitted on a {lanes}-lane ring; should fall back")
         return faults
     if not spiral:
-        faults.append("Turbo selected but no spiral emitted")
+        faults.append("Turbo selected but no peel emitted")
         return faults
-    radii = [math.hypot(p.center[0] - scene["center"][0],
-                        p.center[1] - scene["center"][1]) for p in spiral]
-    if min(radii) < inner - tol:
-        faults.append(f"spiral crosses the island: min r {min(radii):.2f} < {inner:.2f}")
-    if max(radii) > outer + tol:
-        faults.append(f"spiral crosses the kerb: max r {max(radii):.2f} > {outer:.2f}")
-    # DELIVERED TO THE EXIT. Each boundary must reach the ring's outer edge
-    # exactly at a mouth centre, because that is the whole point - the lane it
-    # was holding leaves there. This replaces an earlier "no spiral inside a
-    # mouth sector" rule, which was written when the arcs ran between sector
-    # EDGES and became wrong when they were changed to run centre to centre.
-    # Stopping at the edges completed the migration a few degrees early, left
-    # the line hanging in mid-carriageway and blanked every mouth of markings;
-    # crossing the mouth is now correct, so the old rule had to be replaced
-    # rather than merely relaxed, or nothing would check the mouths at all.
-    lane_studs_ = LANE_M * SCALE
-    outer_want = inner + lanes * lane_studs_
-    travel_ = 1 if scene["drive_on_left"] else -1
-    # The window has to be wider than the dash pitch or it lands in a gap and
-    # reports "no spiral" on a perfectly good ring. 12 degrees is inside the
-    # fling on any arc a real ring has, so the radius there is already most of
-    # the way out and the tolerance below still separates flung from held.
-    for sa, ah, bh in scene["sectors"]:
-        # The EXIT edge, not the mouth centre - that is where the hand-off is.
-        exit_a = sa + (-bh if travel_ > 0 else ah)
-        near = [r for p, r in zip(spiral, radii)
-                if abs(angle_delta(math.atan2(p.center[1] - scene["center"][1],
-                                              p.center[0] - scene["center"][0]), exit_a)) < math.radians(12)]
-        if not near:
-            faults.append(f"no spiral at the exit at {math.degrees(exit_a):.0f}deg")
-        elif abs(max(near) - outer_want) > lane_studs_ * 0.35:
-            faults.append(f"boundary reaches r={max(near):.1f} at the exit at "
-                          f"{math.degrees(exit_a):.0f}deg, want ~{outer_want:.1f} - "
-                          f"the lane is not delivered to the exit")
-    # Every boundary must both start one lane width off the island and finish
-    # one lane width further out, or it is not delivering anything to an exit.
-    lane_studs = LANE_M * SCALE
-    want_lo, want_hi = inner + lane_studs, inner + lanes * lane_studs
-    if abs(min(radii) - want_lo) > lane_studs * 0.25:
-        faults.append(f"innermost boundary starts at {min(radii):.2f}, want ~{want_lo:.2f}")
-    if abs(max(radii) - want_hi) > lane_studs * 0.25:
-        faults.append(f"outermost boundary ends at {max(radii):.2f}, want ~{want_hi:.2f}")
-    # THE defining property, and the one the radius bounds above cannot see: in
-    # the DIRECTION OF TRAVEL the boundary must move outward. A spiral wound
-    # the wrong way round is geometrically indistinguishable on a symmetric
-    # ring - right radii, right sectors, every other check green - and means
-    # the exact opposite thing, flinging the outer lane inward. Reversing
-    # `travel` in turbo_spiral is caught here and nowhere else.
-    travel = 1 if scene["drive_on_left"] else -1
-    for a0, r0, a1, r1 in scene["spiral_spans"]:
-        step = ((a1 - a0) * travel) % (2 * math.pi)
-        if not (0 < step < math.pi):
-            faults.append("spiral runs against the direction of travel")
-            break
-        if r1 < r0 - 1e-9:
-            faults.append("spiral moves inward along travel; turbo delivers lanes outward")
+    cx, cy = scene["center"]
+    radii = [math.hypot(p.center[0] - cx, p.center[1] - cy) for p in spiral]
+
+    want_lo = inner + lane_studs
+    if abs(min(radii) - want_lo) > lane_studs * 0.75:
+        faults.append(f"peel starts at r={min(radii):.1f}, want ~{want_lo:.1f} "
+                      f"(the ring's own lane divider)")
+
+    mine = {id(p) for p in spiral}
+    far = max(spiral, key=lambda p: math.hypot(p.center[0] - cx, p.center[1] - cy))
+    near = min((math.dist(far.center, q.center) for q in scene["parts"]
+                if q.name == "Marking" and id(q) not in mine), default=1e9)
+    reach = (TURBO_DASH_M + TURBO_GAP_M) * SCALE
+    if near > reach:
+        faults.append(f"peel ends {near:.1f} studs from the nearest other marking "
+                      f"(allow {reach:.1f}) - it is not joining anything")
+
+    for _, r0, _, r1 in scene["spiral_spans"]:
+        if r1 < r0 - 0.5:
+            faults.append("peel moves inward along its own length")
             break
     return faults
 
@@ -631,6 +616,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     parts_ring_pavement = [p for p in ring_parts if p.name in ("Sidewalk", "Marking")]
 
     sectors, arm_parts, gore_tris, apron_tris = [], [], [], []
+    exit_traces = []          # (curve, arm) per exit, for the turbo peel
     angles = [d for d, _ in legs]
     for deg, spoke_profile in legs:
         a = math.radians(deg)
@@ -682,6 +668,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
             p1 = (cut[0]+r[0]*exit_arm["lat"], cut[1]+r[1]*exit_arm["lat"])
             exit_ = arm_curve(p0, rt(xa), p1, (-inward[0], -inward[1]))
             arm_parts += emit_road(exit_, exit_arm["comps"], -ARM_SINK)
+            exit_traces.append((exit_, exit_arm))
 
         if entry and exit_:
             def gore_edge(curve, sst, arm):
@@ -854,7 +841,8 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
         kept.append(p)
     parts = kept + arm_parts
     spiral, spiral_spans = (
-        turbo_spiral(center, ring_r, island_r, ring_lanes, LANE_M, drive_on_left, cl)
+        turbo_spiral(center, ring_r, island_r, ring_lanes, LANE_M, drive_on_left,
+                     exit_traces)
         if markings == "Turbo" else ([], []))
     parts += spiral
     return dict(tag=tag, parts=parts, gore=gore_tris, apron=apron_tris,

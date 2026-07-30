@@ -710,6 +710,13 @@ local TURBO_FLING_FRACTION = 0.35
 -- Dash geometry for the circulating divider, deliberately not the region's
 -- open-road LaneLine - see where they are used.
 local TURBO_DASH_M, TURBO_GAP_M = 1.0, 1.5
+-- How far down the exit arm the peel lands. It has to reach far enough that it
+-- is unambiguously ON the arm's own lane line rather than grazing the ring's
+-- edge, and not so far that it draws a lane boundary halfway to the approach.
+local TURBO_PEEL_INTO_M = 9.0
+-- The peel may not eat more than this share of the gap back to the previous
+-- exit, however wide the legs are spaced.
+local TURBO_PEEL_MAX_SHARE = 0.5
 
 -- TURBO markings: lane boundaries that spiral outward, so the lane a driver is
 -- in is carried to an exit rather than needing a lane change on the ring. The
@@ -735,119 +742,6 @@ local TURBO_DASH_M, TURBO_GAP_M = 1.0, 1.5
 -- has been trimmed and planned, which happens after the ring model exists.
 -- Hence its own emitter, sharing RoadBuilder's lift and thickness so the two
 -- sets of markings sit at the same height.
-local function buildTurboMarkings(
-	ring: Model,
-	center: Vector3,
-	radiusStuds: number,
-	profile: RoadProfile.RoadProfile,
-	laneCount: number,
-	laneWidthM: number,
-	style: RegionStyles.RegionStyle,
-	settings: Settings.EasyRoadSettings,
-	sectors: { MouthSector }
-)
-	local lanes = math.max(1, math.floor(laneCount))
-	-- One lane has no boundary to spiral, and one mouth leaves no arc between
-	-- mouths to spiral along. Both fall back to a plain ring.
-	if lanes < 2 or #sectors < 2 then
-		return
-	end
-	local scale = settings.MetersToStuds
-	-- Profile offsets grow toward the ring's INNER edge under left-hand drive
-	-- and toward its outer edge under right-hand drive, because ringComponents
-	-- puts the pavement on the outward side either way. Working in radius
-	-- rather than in profile offset sidesteps that entirely.
-	local innerRadiusStuds = radiusStuds - ringInnerHalfWidthM(profile, style) * scale
-	local laneStuds = laneWidthM * scale
-	-- Travel runs toward increasing angle under left-hand drive; this is the
-	-- same quantity as circleSegments' `sign`.
-	local travel = if style.DriveOnLeft then 1 else -1
-	local markingWidth = style.MarkingWidthM * scale
-	local y = center.Y + RoadBuilder.MarkingLiftStuds
-	local dashStuds = math.max(0.5, TURBO_DASH_M * scale)
-	local gapStuds = math.max(0.5, TURBO_GAP_M * scale)
-
-	local sorted = table.clone(sectors)
-	table.sort(sorted, function(a, b)
-		return a.Angle < b.Angle
-	end)
-	-- Which side of a mouth the exit is on depends on which way round you go;
-	-- Ahead/Behind are absolute (+/- angle), not relative to travel.
-	local function exitAngle(m: MouthSector): number
-		return m.Angle + (if travel > 0 then -m.Behind else m.Ahead)
-	end
-
-	local function place(p0: Vector3, p1: Vector3)
-		local span = (p1 - p0).Magnitude
-		if span < 1e-4 then
-			return
-		end
-		local part = Instance.new("Part")
-		part.Name = "Marking"
-		part.Anchored = true
-		part.CanCollide = false
-		part.CanTouch = false
-		part.CanQuery = false
-		part.CastShadow = false
-		part.TopSurface = Enum.SurfaceType.Smooth
-		part.BottomSurface = Enum.SurfaceType.Smooth
-		part.Material = Enum.Material.SmoothPlastic
-		part.Color = style.LaneLine.Color
-		part.Size = Vector3.new(markingWidth, RoadBuilder.MarkingThicknessStuds, span)
-		part.CFrame = CFrame.lookAt((p0 + p1) / 2, p1, Vector3.yAxis)
-		part.Parent = ring
-	end
-
-	for i, mouth in sorted do
-		local nextMouth = sorted[if travel > 0 then (i % #sorted) + 1 else (if i > 1 then i - 1 else #sorted)]
-		local to = exitAngle(nextMouth)
-		local gap = ((to - exitAngle(mouth)) * travel) % (2 * math.pi)
-		if gap <= 1e-6 then
-			continue
-		end
-		-- The peel runs back from the exit over a share of the gap to the
-		-- previous one, so it scales with leg count rather than being a fixed
-		-- angle that swamps a 6-leg ring and vanishes on a 3-leg one.
-		local sweep = gap * TURBO_FLING_FRACTION
-		local from = to - travel * sweep
-		local steps = math.max(6, math.ceil(sweep / TURBO_ARC_STEP_RAD))
-		for k = 1, lanes - 1 do
-			local pts: { Vector3 } = {}
-			local cum: { number } = { 0 }
-			for j = 0, steps do
-				local t = j / steps
-				local eased = t * t * (3 - 2 * t)
-				local r = innerRadiusStuds + (k + eased) * laneStuds
-				local a = from + travel * sweep * t
-				local p = center + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
-				table.insert(pts, Vector3.new(p.X, y, p.Z))
-				if j > 0 then
-					table.insert(cum, cum[j] + (pts[j + 1] - pts[j]).Magnitude)
-				end
-			end
-			local total = cum[#cum]
-			local function pointAtLength(d: number): Vector3
-				d = math.clamp(d, 0, total)
-				for m = 1, #cum - 1 do
-					if d <= cum[m + 1] then
-						local span = cum[m + 1] - cum[m]
-						local f = if span > 1e-9 then (d - cum[m]) / span else 0
-						return pts[m]:Lerp(pts[m + 1], f)
-					end
-				end
-				return pts[#pts]
-			end
-			-- Backwards from the exit so a dash lands flush on it: the terminus
-			-- is the whole point of the mark.
-			local d = total - dashStuds
-			while d >= 0 do
-				place(pointAtLength(d), pointAtLength(d + dashStuds))
-				d -= dashStuds + gapStuds
-			end
-		end
-	end
-end
-
 local function flatUnit(v: Vector3): Vector3
 	local flat = Vector3.new(v.X, 0, v.Z)
 	if flat.Magnitude < 1e-6 then
@@ -964,6 +858,166 @@ type ArmProfile = {
 	-- to land on the lanes the arm is replacing.
 	RoadwayCentreM: number,
 }
+
+-- What the turbo peel needs from a mouth: the exit arm's own curve, which
+-- starts AT the ring, and the profile that says where its lane boundaries sit.
+-- Nothing else in the ring pass has this, which is why five attempts at the
+-- peel missed the line it is supposed to join (ROUNDABOUT.md 3.8).
+export type ExitTrace = { Curve: PolyCurve.PolyCurve, Arm: ArmProfile }
+
+local function buildTurboMarkings(
+	ring: Model,
+	center: Vector3,
+	radiusStuds: number,
+	profile: RoadProfile.RoadProfile,
+	laneCount: number,
+	laneWidthM: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings,
+	exits: { ExitTrace }
+)
+	local lanes = math.max(1, math.floor(laneCount))
+	-- One circulating lane has no boundary to peel off in the first place.
+	if lanes < 2 or #exits == 0 then
+		return
+	end
+	local scale = settings.MetersToStuds
+	local innerRadiusStuds = radiusStuds - ringInnerHalfWidthM(profile, style) * scale
+	local laneStuds = laneWidthM * scale
+	local travel = if style.DriveOnLeft then 1 else -1
+	local markingWidth = style.MarkingWidthM * scale
+	local y = center.Y + RoadBuilder.MarkingLiftStuds
+	local dashStuds = math.max(0.5, TURBO_DASH_M * scale)
+	local gapStuds = math.max(0.5, TURBO_GAP_M * scale)
+
+	local function place(p0: Vector3, p1: Vector3)
+		local span = (p1 - p0).Magnitude
+		if span < 1e-4 then
+			return
+		end
+		local part = Instance.new("Part")
+		part.Name = "Marking"
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanTouch = false
+		part.CanQuery = false
+		part.CastShadow = false
+		part.TopSurface = Enum.SurfaceType.Smooth
+		part.BottomSurface = Enum.SurfaceType.Smooth
+		part.Material = Enum.Material.SmoothPlastic
+		part.Color = style.LaneLine.Color
+		part.Size = Vector3.new(markingWidth, RoadBuilder.MarkingThicknessStuds, span)
+		part.CFrame = CFrame.lookAt((p0 + p1) / 2, p1, Vector3.yAxis)
+		part.Parent = ring
+	end
+
+	-- Each exit arm's curve starts ON the ring, so its own merge angle comes
+	-- straight off it rather than out of a sector.
+	local angles: { number } = {}
+	for i, trace in exits do
+		local p = trace.Curve:PosAt(0)
+		angles[i] = math.atan2(p.Z - center.Z, p.X - center.X)
+	end
+
+	for i, trace in exits do
+		-- Room back to the previous exit in travel order, so a crowded ring
+		-- gets a shorter peel rather than one that runs into its neighbour.
+		local room = 2 * math.pi
+		for j, other in angles do
+			if j ~= i then
+				room = math.min(room, ((angles[i] - other) * travel) % (2 * math.pi))
+			end
+		end
+		local sweep = room * TURBO_PEEL_MAX_SHARE * TURBO_FLING_FRACTION * 2
+		if sweep <= 1e-6 then
+			continue
+		end
+		local curve = trace.Curve
+		local arm = trace.Arm
+		local into = math.min(TURBO_PEEL_INTO_M * scale, curve.Length * 0.9)
+		if flatUnit(curve:TangentAt(into)).Magnitude < 1e-6 then
+			continue
+		end
+		-- The arm's outer roadway edge lands on the ring's kerb, so ring
+		-- boundary k - measured k lanes out from the island - is (lanes - k)
+		-- lanes IN from that edge.
+		--
+		-- Which SIGN of the offset points outward is measured, not assumed. The
+		-- profile's Outer/Inner are in the arm's own frame and the relationship
+		-- between that frame, the hand of the road and the radial direction has
+		-- been got wrong here twice: once by omitting the flow factor (invisible
+		-- on left-hand drive, mirrored on right) and once by adding it (target
+		-- 22 studs the wrong way, so the peel dived to r=47 inside a ring whose
+		-- divider is at 66). Asking the geometry which way is out cannot be
+		-- wrong on either hand or under any future convention change.
+		local base = curve:PosAt(0)
+		local baseRight = rightOf(flatUnit(curve:TangentAt(0)))
+		local outerSign = if distanceXZ(base + baseRight * arm.OuterOffsetStuds, center)
+				>= distanceXZ(base - baseRight * arm.OuterOffsetStuds, center)
+			then 1
+			else -1
+		for k = 1, lanes - 1 do
+			local startAngle = angles[i] - travel * sweep
+			local ringRadius = innerRadiusStuds + k * laneStuds
+			-- `* travel` for the same reason goreEdge multiplies by flow: profile
+			-- offsets are in the arm's own frame and the arm's right-of-travel
+			-- flips with the hand of the road. Omitting it is invisible on
+			-- left-hand drive, where the factor is +1, and mirrors the peel onto
+			-- the wrong side of the arm on right-hand drive.
+			local offset = outerSign * (arm.OuterOffsetStuds - (lanes - k) * laneStuds)
+			-- BLENDED, not a free cubic. A cubic pinned to the ring tangent at
+			-- one end and the arm tangent at the other sags between them: the
+			-- control polygon cuts the chord, and measured on a 4-leg 2+2 the
+			-- peel dropped to r=57.8 against a divider at 66.4 - a marking
+			-- bulging eight studs toward the island on its way out. Capping the
+			-- handles did not fix it, because the span is 61 degrees of arc once
+			-- the arm's own swing is counted, and no handle length makes a
+			-- straight-ish chord follow a circle that far.
+			--
+			-- So interpolate between two curves that are each right on their own
+			-- - the ring's divider and the arm's lane line - rather than
+			-- inventing a third. Both endpoints are sampled at matching
+			-- progress, so the result starts exactly on the divider, ends
+			-- exactly on the arm's line, and cannot dip below either.
+			local samples = math.max(8, math.ceil(sweep / TURBO_ARC_STEP_RAD))
+			local pts: { Vector3 } = {}
+			local cum: { number } = { 0 }
+			for j = 0, samples do
+				local t = j / samples
+				local blend = t * t * (3 - 2 * t)
+				local onRing = ringPointAt(center, startAngle + travel * sweep * t, ringRadius, y)
+				local armS = into * t
+				local aPos = curve:PosAt(armS)
+				local aTan = flatUnit(curve:TangentAt(armS))
+				local onArm = aPos + rightOf(aTan) * offset
+				local q = onRing:Lerp(Vector3.new(onArm.X, y, onArm.Z), blend)
+				table.insert(pts, q)
+				if j > 0 then
+					table.insert(cum, cum[j] + (pts[j + 1] - pts[j]).Magnitude)
+				end
+			end
+			local total = cum[#cum]
+			local function pointAtLength(d: number): Vector3
+				d = math.clamp(d, 0, total)
+				for m = 1, #cum - 1 do
+					if d <= cum[m + 1] then
+						local seg = cum[m + 1] - cum[m]
+						local f = if seg > 1e-9 then (d - cum[m]) / seg else 0
+						return pts[m]:Lerp(pts[m + 1], f)
+					end
+				end
+				return pts[#pts]
+			end
+			-- Backwards from the arm end, so a dash lands flush where the peel
+			-- meets the line it is handing over to.
+			local d = total - dashStuds
+			while d >= 0 do
+				place(pointAtLength(d), pointAtLength(d + dashStuds))
+				d -= dashStuds + gapStuds
+			end
+		end
+	end
+end
 
 -- The lanes of an approach travelling one way, and the span they occupy in the
 -- approach profile's own frame.
@@ -1577,7 +1631,7 @@ local function buildMouth(
 	splitBudgetRad: number,
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings
-): MouthSector
+): (MouthSector, ExitTrace?)
 	-- Which way traffic circulates, matching circleSegments' own sign.
 	local flow = if style.DriveOnLeft then 1 else -1
 	local dir = plan.Direction
@@ -1659,7 +1713,10 @@ local function buildMouth(
 		)
 		local sweep = angleDelta(mergeAngle, edgeAngle)
 		local half = math.max(0, math.abs(sweep) / 2 - SECTOR_INSET_RAD)
-		return { Angle = edgeAngle + sweep / 2, Ahead = half, Behind = half }
+		local soloTrace: ExitTrace? = if exit and exitCurve
+			then { Curve = exitCurve :: PolyCurve.PolyCurve, Arm = exit.Profile }
+			else nil
+		return { Angle = edgeAngle + sweep / 2, Ahead = half, Behind = half }, soloTrace
 	end
 	-- Open exactly as far as each arm actually reaches, inset so the opening can
 	-- never outrun them.
@@ -1669,7 +1726,7 @@ local function buildMouth(
 		Angle = plan.Angle,
 		Ahead = if flow > 0 then entryHalf else exitHalf,
 		Behind = if flow > 0 then exitHalf else entryHalf,
-	}
+	}, { Curve = exitCurve :: PolyCurve.PolyCurve, Arm = (exit :: MouthArm).Profile }
 end
 
 -- COMFORTABLE ring radius: one that gives every leg room for its two arms, a
@@ -1954,8 +2011,13 @@ function RoundaboutBuilder.CreateAtJunction(
 	end
 
 	local mouthSectors: { MouthSector } = {}
+	local exitTraces: { ExitTrace } = {}
 	for i, plan in plans do
-		table.insert(mouthSectors, buildMouth(ring, plan, center, splitBudgetFor(plans, i), style, settings))
+		local sector, trace = buildMouth(ring, plan, center, splitBudgetFor(plans, i), style, settings)
+		table.insert(mouthSectors, sector)
+		if trace then
+			table.insert(exitTraces, trace)
+		end
 	end
 
 	-- Open the ring's outer pavement over every entry so traffic actually flows
@@ -1975,17 +2037,7 @@ function RoundaboutBuilder.CreateAtJunction(
 	-- and running it first would hand these parts to `ringPavement`, which was
 	-- captured before any of them existed.
 	if ringStyle.RoundaboutMarkings == "Turbo" then
-		buildTurboMarkings(
-			ring,
-			center,
-			radiusStuds,
-			profile,
-			laneCount,
-			laneWidthM,
-			ringStyle,
-			settings,
-			clampSectors(mouthSectors)
-		)
+		buildTurboMarkings(ring, center, radiusStuds, profile, laneCount, laneWidthM, ringStyle, settings, exitTraces)
 	end
 
 	ring.Parent = getRoundaboutsFolder()
