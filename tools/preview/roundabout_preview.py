@@ -50,6 +50,8 @@ APRON_SAMPLES = 24
 # island instead of flat asphalt.
 MEDIAN_AT_CUT_M = 0.5
 ISLAND_MIN_WIDTH_M = 2.0
+# Tapering nose the island grows back from there - see RoundaboutBuilder.
+ISLAND_NOSE_TAPER_M = 6.0
 NOSE_ARC_STEP_RAD = math.radians(2)
 ARM_SINK = 0.05
 ARM_RUN_FACTOR, ARM_RUN_MIN, ARM_RUN_MAX = 0.85, 28, 90
@@ -436,6 +438,10 @@ def min_radius_studs(legs, lane_count, lane_w, dol):
 
 # Angular step of one spiral span - see RoundaboutBuilder.TURBO_ARC_STEP_RAD.
 TURBO_ARC_STEP_RAD = math.radians(2)
+# Fraction of each arc over which the boundary makes its outward move. It holds
+# a constant radius for the rest - see RoundaboutBuilder.
+TURBO_FLING_FRACTION = 0.35
+TURBO_DASH_M, TURBO_GAP_M = 1.0, 5.0     # style.LaneLine dash geometry
 
 
 def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, sectors):
@@ -447,44 +453,70 @@ def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, sectors
     """
     lanes = max(1, int(lanes))
     if lanes < 2 or len(sectors) < 2:
-        return []
+        return [], []
     lane_studs = lane_m * SCALE
     travel = 1 if drive_on_left else -1
     mw = MARKING_W_M * SCALE
     ordered = sorted(sectors, key=lambda m: m[0])          # (angle, ahead, behind)
 
-    def leave(m):
-        return m[0] + (m[1] if travel > 0 else -m[2])
-
-    def arrive(m):
-        return m[0] + (-m[2] if travel > 0 else m[1])
-
     def at(a, r):
         return (center[0] + math.cos(a) * r, center[1] + math.sin(a) * r)
 
+    def flung(t):
+        hold = 1 - TURBO_FLING_FRACTION
+        if t <= hold:
+            return 0.0
+        u = max(0.0, min(1.0, (t - hold) / TURBO_FLING_FRACTION))
+        return u * u * (3 - 2 * u)
+
+    dash, gap = TURBO_DASH_M * SCALE, TURBO_GAP_M * SCALE
     out, spans = [], []
     for i, mouth in enumerate(ordered):
         nxt = ordered[(i + 1) % len(ordered)] if travel > 0 else ordered[i - 1]
-        frm = leave(mouth)
-        sweep = ((arrive(nxt) - frm) * travel) % (2 * math.pi)
+        # Mouth CENTRE to mouth CENTRE - see RoundaboutBuilder. The boundary
+        # must reach the outer edge exactly where the exit is.
+        frm = mouth[0]
+        sweep = ((nxt[0] - frm) * travel) % (2 * math.pi)
         if sweep <= 1e-6:
             continue
-        steps = max(2, math.ceil(sweep / TURBO_ARC_STEP_RAD))
+        steps = max(8, math.ceil(sweep / TURBO_ARC_STEP_RAD))
         for k in range(1, lanes):
-            for j in range(steps):
-                t0, t1 = j / steps, (j + 1) / steps
-                p0 = at(frm + travel * sweep * t0, island_r + (k + t0) * lane_studs)
-                p1 = at(frm + travel * sweep * t1, island_r + (k + t1) * lane_studs)
-                span = math.dist(p0, p1)
-                if span < 1e-4:
-                    continue
-                fwd = unit((p1[0] - p0[0], p1[1] - p0[1]))
-                mid = ((p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2)
-                out.append(Part("Marking", rect(mid, right_of(fwd), fwd, mw / 2,
-                                                (span + 0.02) / 2),
-                                MARK_C, mid, 0.03))
-                spans.append((frm + travel * sweep * t0, island_r + (k + t0) * lane_studs,
-                              frm + travel * sweep * t1, island_r + (k + t1) * lane_studs))
+            pts, cum, polar = [], [0.0], []
+            for j in range(steps + 1):
+                t = j / steps
+                r = island_r + (k + flung(t)) * lane_studs
+                a = frm + travel * sweep * t
+                pts.append(at(a, r))
+                polar.append((a, r))
+                if j:
+                    cum.append(cum[-1] + math.dist(pts[j - 1], pts[j]))
+            total = cum[-1]
+
+            def sample(d):
+                d = max(0.0, min(total, d))
+                for j in range(len(cum) - 1):
+                    if d <= cum[j + 1]:
+                        span_ = cum[j + 1] - cum[j]
+                        f = (d - cum[j]) / span_ if span_ > 1e-9 else 0.0
+                        return ((pts[j][0] + (pts[j + 1][0] - pts[j][0]) * f,
+                                 pts[j][1] + (pts[j + 1][1] - pts[j][1]) * f),
+                                (polar[j][0] + (polar[j + 1][0] - polar[j][0]) * f,
+                                 polar[j][1] + (polar[j + 1][1] - polar[j][1]) * f))
+                return pts[-1], polar[-1]
+
+            # Backwards from the exit so a dash lands flush on it - see
+            # RoundaboutBuilder.
+            d = total - dash
+            while d >= 0:
+                (p0, q0), (p1, q1) = sample(d), sample(d + dash)
+                length = math.dist(p0, p1)
+                if length > 1e-4:
+                    fwd = unit((p1[0] - p0[0], p1[1] - p0[1]))
+                    mid = ((p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2)
+                    out.append(Part("Marking", rect(mid, right_of(fwd), fwd, mw / 2, length / 2),
+                                    MARK_C, mid, 0.03))
+                    spans.append((q0[0], q0[1], q1[0], q1[1]))
+                d -= dash + gap
     return out, spans
 
 
@@ -515,13 +547,31 @@ def check_turbo(scene, tol=0.05):
         faults.append(f"spiral crosses the island: min r {min(radii):.2f} < {inner:.2f}")
     if max(radii) > outer + tol:
         faults.append(f"spiral crosses the kerb: max r {max(radii):.2f} > {outer:.2f}")
-    # No spiral inside a mouth: that ground is the entry, not circulating lanes.
-    for p, r in zip(spiral, radii):
-        ang = math.atan2(p.center[1] - scene["center"][1], p.center[0] - scene["center"][0])
-        for sa, ah, bh in scene["sectors"]:
-            if angle_delta(ang, sa) <= ah and -angle_delta(ang, sa) <= bh:
-                faults.append(f"spiral inside a mouth sector at {math.degrees(ang):.0f}deg")
-                return faults
+    # DELIVERED TO THE EXIT. Each boundary must reach the ring's outer edge
+    # exactly at a mouth centre, because that is the whole point - the lane it
+    # was holding leaves there. This replaces an earlier "no spiral inside a
+    # mouth sector" rule, which was written when the arcs ran between sector
+    # EDGES and became wrong when they were changed to run centre to centre.
+    # Stopping at the edges completed the migration a few degrees early, left
+    # the line hanging in mid-carriageway and blanked every mouth of markings;
+    # crossing the mouth is now correct, so the old rule had to be replaced
+    # rather than merely relaxed, or nothing would check the mouths at all.
+    lane_studs_ = LANE_M * SCALE
+    outer_want = inner + lanes * lane_studs_
+    # The window has to be wider than the dash pitch or it lands in a gap and
+    # reports "no spiral" on a perfectly good ring. 12 degrees is inside the
+    # fling on any arc a real ring has, so the radius there is already most of
+    # the way out and the tolerance below still separates flung from held.
+    for sa, _, _ in scene["sectors"]:
+        near = [r for p, r in zip(spiral, radii)
+                if abs(angle_delta(math.atan2(p.center[1] - scene["center"][1],
+                                              p.center[0] - scene["center"][0]), sa)) < math.radians(12)]
+        if not near:
+            faults.append(f"no spiral at the mouth at {math.degrees(sa):.0f}deg")
+        elif abs(max(near) - outer_want) > lane_studs_ * 0.35:
+            faults.append(f"boundary reaches r={max(near):.1f} at the mouth at "
+                          f"{math.degrees(sa):.0f}deg, want ~{outer_want:.1f} - "
+                          f"the lane is not delivered to the exit")
     # Every boundary must both start one lane width off the island and finish
     # one lane width further out, or it is not delivering anything to an exit.
     lane_studs = LANE_M * SCALE
@@ -706,6 +756,24 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                         apron_tris.append([prev[0], prev[1], pb])
                         apron_tris.append([prev[0], pb, pa])
                     prev = (pa, pb)
+            if 0 < start_along < kerb_out:
+                taper_start = max(0.0, start_along - ISLAND_NOSE_TAPER_M*SCALE)
+                span = start_along - taper_start
+                if span > 1e-3:
+                    steps = max(2, APRON_SAMPLES//2)
+                    prev = None
+                    for i in range(steps+1):
+                        t = i/steps
+                        along = taper_start + t*span
+                        pa = gore_edge(entry, along, entry_arm)
+                        pb = gore_edge(exit_, exit_.length-along, exit_arm)
+                        mid = ((pa[0]+pb[0])/2, (pa[1]+pb[1])/2)
+                        pa = (mid[0]+(pa[0]-mid[0])*t, mid[1]+(pa[1]-mid[1])*t)
+                        pb = (mid[0]+(pb[0]-mid[0])*t, mid[1]+(pb[1]-mid[1])*t)
+                        if prev:
+                            gore_tris.append([prev[0], prev[1], pb])
+                            gore_tris.append([prev[0], pb, pa])
+                        prev = (pa, pb)
             L, R, last_along = [], [], start_along
             if start_along < reach and start_along < kerb_out:
                 for i in range(GORE_SAMPLES+1):

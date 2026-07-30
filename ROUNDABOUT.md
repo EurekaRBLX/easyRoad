@@ -157,6 +157,17 @@ R=40. So the kerb crossing is computed too, and if the island cannot start
 before it there simply is no raised splitter at that mouth — the apron is the
 whole of it, which is what a mini-roundabout looks like anyway.
 
+**The island tapers to a nose.** Stopping it dead at the width crossing leaves a
+blunt flat chop across the middle of the carriageway with both arms' edge lines
+carrying on past it — which is what the mouth still read as once the bare ground
+was gone, and was reported as the indentation a second time. From the width
+crossing the island now grows a nose back down the approach over
+`ISLAND_NOSE_TAPER_M` (6 m), each rung the gore scaled about its own midline so
+it closes to a point. It sits ON the apron rather than replacing it: the apron
+is flat asphalt at deck level and the nose is raised, so the wedge either side
+of the nose stays carriageway. Bounded, so this is a nose and not the knife-edge
+sliver that filling from the cut produced.
+
 The apron and the island want opposite roundings of that one crossing: the apron
 stops one probe PAST it (stopping at it left a 0.25-stud hairline of bare ground
 just outside the kerb, because the rung is a chord and the kerb is an arc, and
@@ -176,7 +187,19 @@ one lane width:
 
     boundary k runs from  inner + k*w  to  inner + (k+1)*w
 
-which conserves the carriageway without conserving the lane count. On an L-lane
+which conserves the carriageway without conserving the lane count.
+
+**The move is concentrated at the exit, not spread over the arc**
+(`TURBO_FLING_FRACTION = 0.35`), and the line is **dashed**. Both corrected from
+a reference aerial the user supplied: the divider holds a constant radius for
+most of the way round, reading as an ordinary concentric lane line, and is flung
+outward into the exit over a short run at the end. A steady climb from island to
+kerb across the whole quadrant reads as a slow drift and loses the thing that
+makes a turbo legible — that the lane you are in is committed to the next exit.
+Dashes are walked BACKWARDS from the exit so one lands flush on it; starting
+from the other end leaves the pattern wherever it runs out, which on a 65° arc
+was 22° of unmarked fling at the mouth — the one part of the boundary that has
+to be marked. On an L-lane
 ring the outermost boundary reaches the outer edge — its lane has been delivered
 to the exit — and the innermost lane arrives at the mouth 2*w wide, which the
 next arc's new innermost boundary splits back in two. A mouth is entered with
@@ -195,9 +218,18 @@ Two things this does NOT go through, both for the same reason:
   using `RoadBuilder.MarkingLiftStuds` / `MarkingThicknessStuds` so the two sets
   of markings cannot drift apart in height.
 
-It runs after `openRingPavement`, deliberately: the spiral only covers arcs
-between mouths so that pass has nothing to remove, and going first would hand
-these parts to a `ringPavement` list captured before they existed.
+Arcs run **mouth centre to mouth centre**, not between the sector edges. The
+point of the spiral is that a boundary reaches the outer edge exactly where the
+exit is, so the lane it was holding is delivered into that exit; ending it at
+the sector edge completed the migration a few degrees early, left the line
+hanging in mid-carriageway, and blanked the whole mouth of circulating markings
+— a bare band of asphalt at every leg. Centre to centre also makes the spiral
+continuous the whole way round, which is what the reference shows.
+
+It runs after `openRingPavement`, deliberately: that pass deletes ring pavement
+and edge lines inside the mouth sectors, and these parts must survive there.
+Running first would hand them to a `ringPavement` list captured before they
+existed.
 
 Falls back to a plain ring on one lane (no boundary to spiral) or one mouth (no
 arc to spiral along).

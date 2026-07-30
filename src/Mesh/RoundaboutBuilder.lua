@@ -703,6 +703,14 @@ end
 -- chord sags r*(1-cos 1deg) off the true arc - 0.015 studs on a 100-stud ring,
 -- an order of magnitude under the marking's own width.
 local TURBO_ARC_STEP_RAD = math.rad(2)
+-- Fraction of each arc over which a boundary makes its outward move. Corrected
+-- from a reference aerial: the divider does NOT climb steadily from the island
+-- to the kerb across the whole arc. It holds a constant radius for most of the
+-- way round, exactly like an ordinary concentric lane line, and is flung
+-- outward into the exit over a short run at the end. Spreading the migration
+-- evenly instead reads as a slow drift and loses the thing that makes a turbo
+-- legible - that the lane you are in is committed to the next exit.
+local TURBO_FLING_FRACTION = 0.35
 
 -- TURBO markings: lane boundaries that spiral outward, so the lane a driver is
 -- in is carried to an exit rather than needing a lane change on the ring. The
@@ -757,25 +765,38 @@ local function buildTurboMarkings(
 	local travel = if style.DriveOnLeft then 1 else -1
 	local markingWidth = style.MarkingWidthM * scale
 	local y = center.Y + RoadBuilder.MarkingLiftStuds
+	-- Dashed, like the ordinary circulating lane line it is for most of its
+	-- length, and like the reference. Solid would read as no-lane-change all the
+	-- way round, which is not what a turbo marks.
+	local dashStuds = math.max(0.5, style.LaneLine.DashLengthM * scale)
+	local gapStuds = math.max(0.5, style.LaneLine.DashGapM * scale)
+
+	-- Held at k lanes out for the first (1 - FLING) of the arc, then smoothly
+	-- flung one lane outward so it arrives at the exit on the outer edge.
+	local function flung(t: number): number
+		local hold = 1 - TURBO_FLING_FRACTION
+		if t <= hold then
+			return 0
+		end
+		local u = math.clamp((t - hold) / TURBO_FLING_FRACTION, 0, 1)
+		return u * u * (3 - 2 * u)
+	end
 
 	local sorted = table.clone(sectors)
 	table.sort(sorted, function(a, b)
 		return a.Angle < b.Angle
 	end)
-	-- Ahead/Behind are absolute (+/- angle), not relative to travel, so which
-	-- one closes a mouth behind you and which opens the next depends on which
-	-- way you are going round.
-	local function leaveAngle(m: MouthSector): number
-		return m.Angle + (if travel > 0 then m.Ahead else -m.Behind)
-	end
-	local function arriveAngle(m: MouthSector): number
-		return m.Angle + (if travel > 0 then -m.Behind else m.Ahead)
-	end
+	-- Arcs run mouth CENTRE to mouth CENTRE, not between the sector edges.
+	--
+	-- The point of the spiral is that a boundary reaches the outer edge exactly
+	-- where the exit is, so the lane it was holding is delivered into that exit.
+	-- Ending it at the sector edge instead completed the migration a few degrees
+	-- early, left the line hanging in mid-carriageway, and blanked the whole
+	-- mouth of circulating markings - a bare band of asphalt at every leg.
+	-- Running centre to centre also makes the spiral continuous the whole way
+	-- round, which is what the reference shows.
 
-	local function place(a0: number, r0: number, a1: number, r1: number)
-		local p0 = center + Vector3.new(math.cos(a0) * r0, 0, math.sin(a0) * r0)
-		local p1 = center + Vector3.new(math.cos(a1) * r1, 0, math.sin(a1) * r1)
-		p0, p1 = Vector3.new(p0.X, y, p0.Z), Vector3.new(p1.X, y, p1.Z)
+	local function place(p0: Vector3, p1: Vector3)
 		local span = (p1 - p0).Magnitude
 		if span < 1e-4 then
 			return
@@ -791,31 +812,56 @@ local function buildTurboMarkings(
 		part.BottomSurface = Enum.SurfaceType.Smooth
 		part.Material = Enum.Material.SmoothPlastic
 		part.Color = style.LaneLine.Color
-		-- Overlap adjacent spans slightly, as the deck's own solid lines do:
-		-- consecutive chords of a spiral meet at a shallow angle, and butting
-		-- them exactly leaves a hairline at every joint.
-		part.Size = Vector3.new(markingWidth, RoadBuilder.MarkingThicknessStuds, span + 0.02)
+		part.Size = Vector3.new(markingWidth, RoadBuilder.MarkingThicknessStuds, span)
 		part.CFrame = CFrame.lookAt((p0 + p1) / 2, p1, Vector3.yAxis)
 		part.Parent = ring
 	end
 
 	for i, mouth in sorted do
 		local nextMouth = sorted[if travel > 0 then (i % #sorted) + 1 else (if i > 1 then i - 1 else #sorted)]
-		local from = leaveAngle(mouth)
-		local sweep = ((arriveAngle(nextMouth) - from) * travel) % (2 * math.pi)
+		local from = mouth.Angle
+		local sweep = ((nextMouth.Angle - from) * travel) % (2 * math.pi)
 		if sweep <= 1e-6 then
 			continue
 		end
-		local steps = math.max(2, math.ceil(sweep / TURBO_ARC_STEP_RAD))
+		local steps = math.max(8, math.ceil(sweep / TURBO_ARC_STEP_RAD))
 		for k = 1, lanes - 1 do
-			for stepIndex = 0, steps - 1 do
-				local t0, t1 = stepIndex / steps, (stepIndex + 1) / steps
-				place(
-					from + travel * sweep * t0,
-					innerRadiusStuds + (k + t0) * laneStuds,
-					from + travel * sweep * t1,
-					innerRadiusStuds + (k + t1) * laneStuds
-				)
+			-- Sample the boundary, then walk DASHES along its own arc length -
+			-- stepping by angle would stretch every dash as the radius grows.
+			local pts: { Vector3 } = {}
+			local cum: { number } = { 0 }
+			for i = 0, steps do
+				local t = i / steps
+				local r = innerRadiusStuds + (k + flung(t)) * laneStuds
+				local a = from + travel * sweep * t
+				local p = center + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
+				table.insert(pts, Vector3.new(p.X, y, p.Z))
+				if i > 0 then
+					table.insert(cum, cum[i] + (pts[i + 1] - pts[i]).Magnitude)
+				end
+			end
+			local total = cum[#cum]
+			local function pointAtLength(d: number): Vector3
+				d = math.clamp(d, 0, total)
+				for i = 1, #cum - 1 do
+					if d <= cum[i + 1] then
+						local span = cum[i + 1] - cum[i]
+						local f = if span > 1e-9 then (d - cum[i]) / span else 0
+						return pts[i]:Lerp(pts[i + 1], f)
+					end
+				end
+				return pts[#pts]
+			end
+			-- Walk BACKWARDS from the exit so a dash lands flush on it. Starting
+			-- from the other end leaves the pattern wherever it happens to run
+			-- out, and on a short arc that is a long blank right at the mouth -
+			-- measured at 22 degrees of unmarked fling on a 65-degree arc. The
+			-- terminus is the one part of a turbo boundary that has to be
+			-- marked: it is where the lane is handed to the exit.
+			local d = total - dashStuds
+			while d >= 0 do
+				place(pointAtLength(d), pointAtLength(d + dashStuds))
+				d -= dashStuds + gapStuds
 			end
 		end
 	end
@@ -892,6 +938,13 @@ local MEDIAN_AT_CUT_M = 0.5
 -- the usual minimum width for a pedestrian refuge and is wide enough to read as
 -- a deliberate island.
 local ISLAND_MIN_WIDTH_M = 2.0
+-- Length of the tapering nose the island grows back down the approach from
+-- there. Without one the island stops dead at the width crossing, in a blunt
+-- flat chop across the middle of the carriageway with the two arms' edge lines
+-- carrying on past it - which is what the mouth "indentation" looks like once
+-- the bare ground is gone. A real splitter tapers to a point. Bounded, so this
+-- is a nose and not the knife-edge sliver that filling from the cut produced.
+local ISLAND_NOSE_TAPER_M = 6.0
 -- Arms are dropped a hair below the ring deck. Near the merge an arm's inner
 -- half necessarily lies over the ring's own carriageway (that overlap IS the
 -- merge), and two coplanar asphalt decks z-fight. Same colour and material, so
@@ -1316,6 +1369,33 @@ local function buildSplitterIsland(
 			prevA, prevB = a, b
 		end
 	end
+	-- The nose: rungs from `taperStart` up to `startAlong`, each one the gore
+	-- scaled about its own midline so the island closes to a point. It sits ON
+	-- the apron rather than replacing it - the apron is flat asphalt at deck
+	-- level and this is raised, so the wedge either side of the nose stays
+	-- carriageway, which is what it should be.
+	if startAlong > 0 and startAlong < kerbAlongOut then
+		local taperStart = math.max(0, startAlong - ISLAND_NOSE_TAPER_M * scale)
+		local span = startAlong - taperStart
+		if span > 1e-3 then
+			local steps = math.max(2, math.ceil(APRON_SAMPLES / 2))
+			local prevA, prevB
+			for i = 0, steps do
+				local t = i / steps
+				local along = taperStart + t * span
+				local a = goreEdge(entryCurve, along, entryArm)
+				local b = goreEdge(exitCurve, exitCurve.Length - along, exitArm)
+				local mid = a:Lerp(b, 0.5)
+				a, b = mid:Lerp(a, t), mid:Lerp(b, t)
+				if prevA and prevB then
+					FillTriangle(prevA, prevB, b, depth, DOWN, makeSidewalkPart, ring)
+					FillTriangle(prevA, b, a, depth, DOWN, makeSidewalkPart, ring)
+				end
+				prevA, prevB = a, b
+			end
+		end
+	end
+
 	if startAlong >= reach or startAlong >= kerbAlongOut then
 		-- Either the gore never opens to island width, or it only does so past
 		-- the kerb. Both mean there is no room for a raised splitter here and
