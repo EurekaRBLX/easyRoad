@@ -4,6 +4,48 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: turbo is a peel-off at each exit, not a spiral round the ring
+
+Settled by asking rather than guessing again. Four rounds went into spiralling
+the whole ring and every one was wrong in a different way; the user chose
+"concentric ring, turbo on the arms" from a set of options, which is what the
+reference photos show and what this now builds.
+
+The ring's circulating divider is an ordinary concentric line under every
+marking mode. Turbo no longer suppresses it (the RightBoundary = "None" trick is
+gone from ringComponents) and instead draws a PEEL-OFF at each exit on top: a
+short dashed line leaving the divider a share of the way back from the exit -
+TURBO_FLING_FRACTION of the gap to the previous exit, so it scales with leg
+count - and swinging out one lane width to arrive at the ring's outer edge
+exactly on the exit. Dashes still walk backwards from that terminus so one lands
+flush on it.
+
+The four dead ends, recorded in ROUNDABOUT.md 3.8 so nobody repeats them:
+
+  - migrate evenly across each arc: reads as a slow drift, loses the commitment
+    a turbo is meant to signal
+  - aim at the mouth CENTRE: the exit is not the centre. Kerb reached at 88.7
+    degrees against an exit at 55.0, a half-mouth late
+  - entry edge to exit edge: delivered exactly (53.9 vs 55.0) but drew nothing
+    across the mouths, leaving the divider on ~30% of the ring
+  - exit to exit: full coverage and correct delivery, but a 13-stud jump at
+    every exit reads as two unrelated lines, and driving the divider to the kerb
+    pinches the outer lane to zero exactly where a two-lane exit needs it widest
+
+The last one is what settled it: a full-ring spiral cannot both stay
+concentric-looking and hand off cleanly, because our exits are two lanes wide
+and the ring only has two.
+
+Still not built, and it is the other half of "turbo on the arms": lane arrows
+and destination legends on the approaches, which is how a real turbo tells a
+driver which lane to pick. Markings.lua work on ordinary one-way roads, not ring
+geometry.
+
+Six turbo cases clean; both break-tests still fail as they should. Bare-ground
+scans unchanged.
+
+Not confirmed in Studio.
+
 ## Roundabout: turbo divider round the whole ring, and dashed tighter
 
 Reported as "why only 4 markings in the circle", with a close-up photo showing

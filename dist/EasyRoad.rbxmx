@@ -5583,21 +5583,17 @@ local function ringComponents(
 	-- region's own dashed lane line. SOLIDLANES marks it solid, to discourage
 	-- weaving on the ring.
 	--
-	-- TURBO suppresses it entirely with "None" and `buildTurboMarkings` lays
-	-- spiralling boundaries instead: a turbo is a spiral, not a line style, so
-	-- there is nothing here for a per-component rule to express. The straight
-	-- boundary has to go, or the spiral is drawn on top of it.
+	-- TURBO leaves it alone too. The ring's circulating divider is an ordinary
+	-- concentric line under every mode; what makes a turbo a turbo is the
+	-- peel-off at each exit, which `buildTurboMarkings` adds ON TOP. An earlier
+	-- version suppressed this line and spiralled the whole ring instead, and
+	-- that is wrong - see ROUNDABOUT.md 3.8.
 	--
 	-- Set on every lane but the last: `RightBoundary` describes the gap to the
 	-- component on its right, and the last lane's right-hand neighbour is the
 	-- pavement, whose edge line is the region's business rather than ours.
 	local lanes = math.max(1, math.floor(laneCount))
-	local between: RoadProfile.BoundaryRule? = nil
-	if style.RoundaboutMarkings == "SolidLanes" then
-		between = "Solid"
-	elseif style.RoundaboutMarkings == "Turbo" then
-		between = "None"
-	end
+	local between: RoadProfile.BoundaryRule? = if style.RoundaboutMarkings == "SolidLanes" then "Solid" else nil
 	for i = 1, lanes do
 		table.insert(components, {
 			Kind = "Drive",
@@ -6261,53 +6257,15 @@ local function buildTurboMarkings(
 	local travel = if style.DriveOnLeft then 1 else -1
 	local markingWidth = style.MarkingWidthM * scale
 	local y = center.Y + RoadBuilder.MarkingLiftStuds
-	-- Dashed, like the ordinary circulating lane line it is for most of its
-	-- length, and like the reference. Solid would read as no-lane-change all the
-	-- way round, which is not what a turbo marks.
-	-- Marked tighter than the region's open-road lane line, which at the default
-	-- 1 m mark / 5 m gap puts about five dashes on a whole quadrant and reads as
-	-- an unmarked ring. A circulating divider is short-dashed on purpose - it is
-	-- telling you not to drift between lanes, not merely separating them - and
-	-- the reference photo is nearer 1:1.5 than 1:5.
 	local dashStuds = math.max(0.5, TURBO_DASH_M * scale)
 	local gapStuds = math.max(0.5, TURBO_GAP_M * scale)
-
-	-- Held at k lanes out for the first (1 - FLING) of the arc, then smoothly
-	-- flung one lane outward so it arrives at the exit on the outer edge.
-	local function flung(t: number): number
-		local hold = 1 - TURBO_FLING_FRACTION
-		if t &lt;= hold then
-			return 0
-		end
-		local u = math.clamp((t - hold) / TURBO_FLING_FRACTION, 0, 1)
-		return u * u * (3 - 2 * u)
-	end
 
 	local sorted = table.clone(sectors)
 	table.sort(sorted, function(a, b)
 		return a.Angle &lt; b.Angle
 	end)
-	-- Arcs run EXIT to EXIT, so the boundary is drawn round the whole circle.
-	--
-	-- Two earlier attempts each got one half of this right. Mouth centre to
-	-- mouth centre was continuous but delivered late - on a 4-leg ring the
-	-- 90-degree mouth's exit sits at 55 degrees and the boundary was only
-	-- reaching the kerb at 88.7, still drifting a half-mouth after the traffic
-	-- it is meant to hand over had left. Entry edge to exit edge delivered
-	-- exactly (53.9 against 55.0) but drew nothing across the mouths, and since
-	-- a mouth spans Ahead + Behind ~= 62 degrees at default splits that left the
-	-- divider on barely 30% of the ring: eight dashes for a whole roundabout.
-	--
-	-- Exit to exit gives both. Each arc holds its radius, flings out to the kerb
-	-- at the exit that ends it, and the next arc restarts inside - so there is a
-	-- deliberate STEP at every exit, which is the hand-off itself, and unbroken
-	-- marking everywhere else. A reference photo settles the question the second
-	-- attempt got wrong: the circulating divider does run continuously past a
-	-- mouth. Reasoning that the outer lane has left and so there is nothing to
-	-- divide was over-thinking it.
-	--
-	-- Ahead/Behind are absolute (+/- angle), not relative to travel, so which
-	-- one is the exit depends on which way round you are going.
+	-- Which side of a mouth the exit is on depends on which way round you go;
+	-- Ahead/Behind are absolute (+/- angle), not relative to travel.
 	local function exitAngle(m: MouthSector): number
 		return m.Angle + (if travel &gt; 0 then -m.Behind else m.Ahead)
 	end
@@ -6335,45 +6293,45 @@ local function buildTurboMarkings(
 
 	for i, mouth in sorted do
 		local nextMouth = sorted[if travel &gt; 0 then (i % #sorted) + 1 else (if i &gt; 1 then i - 1 else #sorted)]
-		local from = exitAngle(mouth)
-		local sweep = ((exitAngle(nextMouth) - from) * travel) % (2 * math.pi)
-		if sweep &lt;= 1e-6 then
+		local to = exitAngle(nextMouth)
+		local gap = ((to - exitAngle(mouth)) * travel) % (2 * math.pi)
+		if gap &lt;= 1e-6 then
 			continue
 		end
-		local steps = math.max(8, math.ceil(sweep / TURBO_ARC_STEP_RAD))
+		-- The peel runs back from the exit over a share of the gap to the
+		-- previous one, so it scales with leg count rather than being a fixed
+		-- angle that swamps a 6-leg ring and vanishes on a 3-leg one.
+		local sweep = gap * TURBO_FLING_FRACTION
+		local from = to - travel * sweep
+		local steps = math.max(6, math.ceil(sweep / TURBO_ARC_STEP_RAD))
 		for k = 1, lanes - 1 do
-			-- Sample the boundary, then walk DASHES along its own arc length -
-			-- stepping by angle would stretch every dash as the radius grows.
 			local pts: { Vector3 } = {}
 			local cum: { number } = { 0 }
-			for i = 0, steps do
-				local t = i / steps
-				local r = innerRadiusStuds + (k + flung(t)) * laneStuds
+			for j = 0, steps do
+				local t = j / steps
+				local eased = t * t * (3 - 2 * t)
+				local r = innerRadiusStuds + (k + eased) * laneStuds
 				local a = from + travel * sweep * t
 				local p = center + Vector3.new(math.cos(a) * r, 0, math.sin(a) * r)
 				table.insert(pts, Vector3.new(p.X, y, p.Z))
-				if i &gt; 0 then
-					table.insert(cum, cum[i] + (pts[i + 1] - pts[i]).Magnitude)
+				if j &gt; 0 then
+					table.insert(cum, cum[j] + (pts[j + 1] - pts[j]).Magnitude)
 				end
 			end
 			local total = cum[#cum]
 			local function pointAtLength(d: number): Vector3
 				d = math.clamp(d, 0, total)
-				for i = 1, #cum - 1 do
-					if d &lt;= cum[i + 1] then
-						local span = cum[i + 1] - cum[i]
-						local f = if span &gt; 1e-9 then (d - cum[i]) / span else 0
-						return pts[i]:Lerp(pts[i + 1], f)
+				for m = 1, #cum - 1 do
+					if d &lt;= cum[m + 1] then
+						local span = cum[m + 1] - cum[m]
+						local f = if span &gt; 1e-9 then (d - cum[m]) / span else 0
+						return pts[m]:Lerp(pts[m + 1], f)
 					end
 				end
 				return pts[#pts]
 			end
-			-- Walk BACKWARDS from the exit so a dash lands flush on it. Starting
-			-- from the other end leaves the pattern wherever it happens to run
-			-- out, and on a short arc that is a long blank right at the mouth -
-			-- measured at 22 degrees of unmarked fling on a 65-degree arc. The
-			-- terminus is the one part of a turbo boundary that has to be
-			-- marked: it is where the lane is handed to the exit.
+			-- Backwards from the exit so a dash lands flush on it: the terminus
+			-- is the whole point of the mark.
 			local d = total - dashStuds
 			while d &gt;= 0 do
 				place(pointAtLength(d), pointAtLength(d + dashStuds))

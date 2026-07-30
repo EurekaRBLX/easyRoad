@@ -251,9 +251,11 @@ Left open:
   know which circulating lane each approach lane feeds. It splits by `Direction`
   only. Lane-connection work, not markings — and the markings are right without
   it.
-- **No arrows or lane-destination legends** on the approaches, which is how a
-  real turbo tells a driver which lane to pick. Same Markings.lua job as the
-  give-way lines already logged above.
+- **No arrows or lane-destination legends** on the approaches. This is now the
+  ONLY unbuilt half of turbo: the ring side is settled (concentric divider plus
+  a peel-off at each exit, ROUNDABOUT.md 3.8) and the arm side is how a real
+  turbo tells a driver which lane to pick. Same Markings.lua job as the give-way
+  lines already logged above.
 - **`RoadProfile.BoundaryRule` gained `"None"`** to let the ring suppress its
   straight lane lines. It is a real user-facing option now (the Road Editor
   boundary dropdown lists it) but has never been exercised on an ordinary road.

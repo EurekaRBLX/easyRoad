@@ -220,35 +220,33 @@ Two things this does NOT go through, both for the same reason:
   using `RoadBuilder.MarkingLiftStuds` / `MarkingThicknessStuds` so the two sets
   of markings cannot drift apart in height.
 
-Arcs run **exit to exit**, so the boundary is drawn round the whole circle.
+**The ring's divider stays concentric under every mode.** What makes a turbo a
+turbo here is a **peel-off at each exit**, drawn on top of it: a short dashed
+line that leaves the divider a share of the way back from the exit
+(`TURBO_FLING_FRACTION` of the gap to the previous exit, so it scales with leg
+count) and swings out one lane width, arriving at the ring's outer edge exactly
+on the exit. Dashes are walked backwards from that terminus so one lands flush
+on it — the end of the mark is the whole point of it.
 
-Two earlier attempts each got one half of this right, and both are worth
-recording because the third one only makes sense against them:
+Four rounds were spent instead trying to spiral the WHOLE ring, and every one
+was wrong in a different way. Recorded so nobody tries again:
 
-- **Mouth centre to mouth centre** — continuous, but delivered late. The exit is
-  not at the centre: on a 4-leg ring the 90° mouth's exit sits at 55° and the
-  boundary was only reaching the kerb at 88.7°, still drifting a half-mouth
-  after the traffic it is meant to hand over had left.
-- **Entry edge to exit edge** — delivered exactly (53.9° against 55.0°) but drew
-  nothing across the mouths. Since a mouth spans `Ahead + Behind` ≈ 62° at
-  default splits, that left the divider on barely 30% of the ring: eight dashes
-  for a whole roundabout.
+| attempt | what broke |
+|---|---|
+| migrate evenly across each arc | reads as a slow drift; loses the commitment a turbo is meant to signal |
+| aim at the mouth **centre** | the exit is not the centre — kerb reached at 88.7° against an exit at 55.0°, a half-mouth late |
+| entry edge → exit edge | delivered exactly (53.9° vs 55.0°) but drew nothing across the mouths, leaving the divider on ~30% of the ring |
+| exit → exit | full coverage and correct delivery, but a 13-stud jump at every exit reads as two unrelated lines, and driving the divider to the kerb pinches the outer lane to zero exactly where a 2-lane exit needs it widest |
 
-Exit to exit gives both. Each arc holds its radius, flings out to the kerb at
-the exit that ends it, and the next arc restarts inside — so there is a
-deliberate **step at every exit**, which is the hand-off itself, and unbroken
-marking everywhere else. 48 dashes on a 4-leg 2-lane ring, all four exits
-reached at r=79.3 against a kerb of 79.5.
+The last of those is what settled it: a full-ring spiral cannot both stay
+concentric-looking and hand off cleanly, because our exits are two lanes wide
+and the ring only has two. A concentric divider plus a peel does both, and it is
+what the reference photographs actually show.
 
-A reference photo settles the question the second attempt got wrong: the
-circulating divider does run continuously past a mouth. Reasoning that the outer
-lane has left and so there is nothing to divide was over-thinking it.
-
-Dash geometry is `TURBO_DASH_M / TURBO_GAP_M` (1 m / 1.5 m), deliberately NOT
-the region's open-road `LaneLine`. At the region default of 1 m / 5 m a whole
-quadrant carries about five dashes and the ring reads as unmarked. A circulating
-divider is short-dashed on purpose — it is telling you not to drift between
-lanes, not merely separating them — and the reference is nearer 1:1.5 than 1:5.
+Still not built, and it is the other half of "turbo on the arms": **lane arrows
+and destination legends on the approaches**, which is how a real turbo tells a
+driver which lane to pick. That is a `Markings.lua` job on ordinary one-way
+roads, not ring geometry.
 
 It runs after `openRingPavement`, deliberately: that pass deletes ring pavement
 and edge lines inside the mouth sectors, and these parts must survive there.

@@ -450,9 +450,9 @@ TURBO_DASH_M, TURBO_GAP_M = 1.0, 1.5
 def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, sectors):
     """Port of RoundaboutBuilder.buildTurboMarkings.
 
-    Across each arc between two mouths, boundary k migrates outward from
-    island_r + k*w to island_r + (k+1)*w, so the lane a driver is in is carried
-    to an exit instead of needing a lane change on the ring.
+    ONE PEEL-OFF PER EXIT, laid on top of the ring's own concentric divider -
+    not a spiral round the whole ring. Four rounds were spent on the latter and
+    every one of them was wrong in a different way; see ROUNDABOUT.md 3.8.
     """
     lanes = max(1, int(lanes))
     if lanes < 2 or len(sectors) < 2:
@@ -460,35 +460,31 @@ def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, sectors
     lane_studs = lane_m * SCALE
     travel = 1 if drive_on_left else -1
     mw = MARKING_W_M * SCALE
+    dash, gap = TURBO_DASH_M * SCALE, TURBO_GAP_M * SCALE
     ordered = sorted(sectors, key=lambda m: m[0])          # (angle, ahead, behind)
+
+    def exit_angle(m):
+        return m[0] + (-m[2] if travel > 0 else m[1])
 
     def at(a, r):
         return (center[0] + math.cos(a) * r, center[1] + math.sin(a) * r)
 
-    def flung(t):
-        hold = 1 - TURBO_FLING_FRACTION
-        if t <= hold:
-            return 0.0
-        u = max(0.0, min(1.0, (t - hold) / TURBO_FLING_FRACTION))
-        return u * u * (3 - 2 * u)
-
-    dash, gap = TURBO_DASH_M * SCALE, TURBO_GAP_M * SCALE
     out, spans = [], []
     for i, mouth in enumerate(ordered):
         nxt = ordered[(i + 1) % len(ordered)] if travel > 0 else ordered[i - 1]
-        # EXIT to EXIT - see RoundaboutBuilder. Covers the whole circle, and
-        # each arc still ends its fling on the exit that terminates it.
-        frm = mouth[0] + (-mouth[2] if travel > 0 else mouth[1])
-        arrive = nxt[0] + (-nxt[2] if travel > 0 else nxt[1])
-        sweep = ((arrive - frm) * travel) % (2 * math.pi)
-        if sweep <= 1e-6:
+        to = exit_angle(nxt)
+        gap_ang = ((to - exit_angle(mouth)) * travel) % (2 * math.pi)
+        if gap_ang <= 1e-6:
             continue
-        steps = max(8, math.ceil(sweep / TURBO_ARC_STEP_RAD))
+        sweep = gap_ang * TURBO_FLING_FRACTION
+        frm = to - travel * sweep
+        steps = max(6, math.ceil(sweep / TURBO_ARC_STEP_RAD))
         for k in range(1, lanes):
             pts, cum, polar = [], [0.0], []
             for j in range(steps + 1):
                 t = j / steps
-                r = island_r + (k + flung(t)) * lane_studs
+                eased = t * t * (3 - 2 * t)
+                r = island_r + (k + eased) * lane_studs
                 a = frm + travel * sweep * t
                 pts.append(at(a, r))
                 polar.append((a, r))
@@ -500,16 +496,14 @@ def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, sectors
                 d = max(0.0, min(total, d))
                 for j in range(len(cum) - 1):
                     if d <= cum[j + 1]:
-                        span_ = cum[j + 1] - cum[j]
-                        f = (d - cum[j]) / span_ if span_ > 1e-9 else 0.0
+                        sp = cum[j + 1] - cum[j]
+                        f = (d - cum[j]) / sp if sp > 1e-9 else 0.0
                         return ((pts[j][0] + (pts[j + 1][0] - pts[j][0]) * f,
                                  pts[j][1] + (pts[j + 1][1] - pts[j][1]) * f),
                                 (polar[j][0] + (polar[j + 1][0] - polar[j][0]) * f,
                                  polar[j][1] + (polar[j + 1][1] - polar[j][1]) * f))
                 return pts[-1], polar[-1]
 
-            # Backwards from the exit so a dash lands flush on it - see
-            # RoundaboutBuilder.
             d = total - dash
             while d >= 0:
                 (p0, q0), (p1, q1) = sample(d), sample(d + dash)
@@ -631,10 +625,9 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
 
     leg_info = []
     ring_curve = circle_segments(center, ring_r, drive_on_left)
-    # Turbo suppresses the straight lane lines entirely (RightBoundary="None"
-    # in ringComponents) and lays spiralling ones below instead.
-    ring_parts = emit_road(ring_curve, rc, solid_lane_lines=(markings == "SolidLanes"),
-                           lane_lines=(markings != "Turbo"))
+    # Every mode keeps the ring's own concentric divider. Turbo ADDS a peel-off
+    # at each exit on top of it - see RoundaboutBuilder.
+    ring_parts = emit_road(ring_curve, rc, solid_lane_lines=(markings == "SolidLanes"))
     parts_ring_pavement = [p for p in ring_parts if p.name in ("Sidewalk", "Marking")]
 
     sectors, arm_parts, gore_tris, apron_tris = [], [], [], []
