@@ -199,7 +199,9 @@ makes a turbo legible — that the lane you are in is committed to the next exit
 Dashes are walked BACKWARDS from the exit so one lands flush on it; starting
 from the other end leaves the pattern wherever it runs out, which on a 65° arc
 was 22° of unmarked fling at the mouth — the one part of the boundary that has
-to be marked. On an L-lane
+to be marked.
+
+On an L-lane
 ring the outermost boundary reaches the outer edge — its lane has been delivered
 to the exit — and the innermost lane arrives at the mouth 2*w wide, which the
 next arc's new innermost boundary splits back in two. A mouth is entered with

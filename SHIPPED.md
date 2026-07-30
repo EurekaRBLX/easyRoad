@@ -4,6 +4,58 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: island nose taper, and turbo markings corrected against a reference
+
+Both found by looking at the renders. Every automated check was green through
+all of it.
+
+THE MOUTH INDENTATION, AGAIN. With the bare ground gone the mouth still read
+wrong, and the zoomed render says why: the splitter island stopped dead at the
+2 m width crossing in a blunt flat chop across the middle of the carriageway,
+with both arms' edge lines carrying on past it. A real splitter tapers to a
+point. It now grows a nose back down the approach over ISLAND_NOSE_TAPER_M
+(6 m), each rung the gore scaled about its own midline so it closes to a point.
+The nose sits ON the apron rather than replacing it - the apron is flat asphalt
+at deck level and the nose is raised, so the wedge either side stays
+carriageway. Bounded, so this is a nose and not the knife-edge sliver that
+filling from the cut produced.
+
+TURBO MARKINGS, two corrections.
+
+First: the arcs ran between the mouth SECTOR EDGES. That completed the outward
+migration a few degrees early, left the boundary hanging in mid-carriageway and
+blanked every mouth of circulating markings - a bare band of asphalt at each
+leg. Arcs now run mouth CENTRE to mouth centre, so the boundary reaches the
+outer edge exactly where the exit is and the spiral is continuous all the way
+round.
+
+Second, from an aerial the user supplied, and the bigger one: the migration was
+spread evenly across each arc, so the divider climbed steadily from island to
+kerb over a whole quadrant. The reference does something different - the divider
+holds a CONSTANT radius for most of the way round, exactly like an ordinary
+concentric lane line, and is flung outward into the exit over a short run at the
+end. It is also dashed, not solid. Both fixed: TURBO_FLING_FRACTION = 0.35 of
+each arc, smoothstepped, dashed on the region's own LaneLine geometry.
+
+Dashes walk BACKWARDS from the exit so one lands flush on it. Starting from the
+other end leaves the pattern wherever it happens to run out, and on a 65-degree
+arc that was 22 degrees of unmarked fling right at the mouth - the one part of a
+turbo boundary that has to be marked, because it is where the lane is handed to
+the exit.
+
+check_turbo's "no spiral inside a mouth sector" rule was REPLACED, not relaxed.
+Crossing the mouth is correct now so the rule was wrong, but deleting it would
+have left nothing checking the mouths at all. It is now "the boundary must reach
+the outer edge at each mouth centre" - the delivery property itself. All three
+deliberate break-tests still fail as they should, including winding the spiral
+the wrong way round.
+
+Six turbo cases clean: both hands, 1/2/3 lanes, a 65-degree skew, a tight
+3-leg. Bare-ground sweeps clean across 16 radii and 8 profile variations after
+the taper.
+
+Not confirmed in Studio.
+
 ## Roundabout: stop the splitter island paving the circulating lanes, and re-derive the minimum radius
 
 Started as "re-derive MinimumRadiusStuds", which needed a definition of failure
