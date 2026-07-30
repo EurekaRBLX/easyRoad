@@ -677,12 +677,29 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                     if gore_width(along) >= ISLAND_MIN_WIDTH_M*SCALE:
                         start_along = along
                         break
-            # The apron: flat asphalt from the cut to the island, on the arms'
-            # own inner edges so it abuts both and overlaps neither.
-            if start_along > 0:
+            # Where the gore stops being beside the circulating carriageway
+            # and starts being ON it. Nothing raised may begin past here - see
+            # RoundaboutBuilder for the wedge that appeared when it could.
+            # Two values: the apron stops at the first probe at/inside the
+            # kerb (stopping short left a bare ring just outside it), the
+            # island must start before the last probe still outside.
+            kerb_in = kerb_out = reach
+            for i in range(65):
+                along = (i/64)*reach
+                if (math.hypot(*gore_edge(entry, along, entry_arm)) <= ring_kerb
+                        or math.hypot(*gore_edge(exit_, exit_.length-along, exit_arm)) <= ring_kerb):
+                    # One probe PAST the crossing - see RoundaboutBuilder.
+                    kerb_in = min(reach, (i+1)/64*reach)
+                    kerb_out = max(0, i-1)/64*reach
+                    break
+            # The apron: flat asphalt from the cut to the island, or to the
+            # kerb if the island never gets to start. On the arms' own inner
+            # edges so it abuts both and overlaps neither.
+            apron_end = min(start_along, kerb_in)
+            if apron_end > 0:
                 prev = None
                 for i in range(APRON_SAMPLES+1):
-                    along = (i/APRON_SAMPLES)*start_along
+                    along = (i/APRON_SAMPLES)*apron_end
                     pa = gore_edge(entry, along, entry_arm)
                     pb = gore_edge(exit_, exit_.length-along, exit_arm)
                     if prev:
@@ -690,7 +707,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                         apron_tris.append([prev[0], pb, pa])
                     prev = (pa, pb)
             L, R, last_along = [], [], start_along
-            if start_along < reach:
+            if start_along < reach and start_along < kerb_out:
                 for i in range(GORE_SAMPLES+1):
                     along = start_along + (i/GORE_SAMPLES)*(reach-start_along)
                     pa = gore_edge(entry, along, entry_arm)
@@ -1057,6 +1074,72 @@ def scan_mouths(scene, span=70.0, samples=420, steps=40, min_gap=0.2, max_skip=6
                                              kind="gore" if run_start <= 0.0 <= d else "hole"))
                     run_start = None
     return findings
+
+
+def circulating_width(scene, steps=360):
+    """Narrowest drivable width of the circulating carriageway, in studs.
+
+    THE question a roundabout has to answer is whether you can drive round it.
+    Bare ground cannot answer it - the way a too-small ring fails is the exact
+    opposite of a hole. The splitter islands grow inward until they meet across
+    the carriageway, and every square stud is covered, just covered in kerb. At
+    R=10 a 4-leg 2+2 comes out as a four-pointed raised star with a hexagon of
+    island in the middle and no ring at all, and scan_gaps calls it clean
+    because nothing is missing.
+
+    The overhang check cannot answer it either, and for a reason worth writing
+    down: it deliberately excludes the splitter islands by identity, because a
+    splitter IS raised material inside the mouth's lateral span and flagging it
+    was pure noise (ROUNDABOUT.md 5.4). Correct for that question, blind to
+    this one - here the splitter islands are exactly what is wrong.
+
+    So: sweep each angle radially from the island to the kerb and total the
+    DECK-only run. The minimum over all angles is how wide the ring gets at its
+    tightest, and a ring narrower than a lane is not a roundabout.
+    """
+    center, island_r, outer = scene["center"], scene["island_r"], scene["ring_kerb"]
+    deck, raised = [], []
+    for q in scene["parts"]:
+        xs = [v[0] for v in q.poly]
+        ys = [v[1] for v in q.poly]
+        box = (min(xs), max(xs), min(ys), max(ys), q.poly)
+        if q.name == "Sidewalk":
+            raised.append(box)
+        elif q.name != "Marking":
+            deck.append(box)
+    for t in scene["gore"]:
+        xs = [v[0] for v in t]
+        ys = [v[1] for v in t]
+        raised.append((min(xs), max(xs), min(ys), max(ys), t))
+
+    def covers(boxes, pt):
+        x, y = pt
+        for x0, x1, y0, y1, poly in boxes:
+            if x0 <= x <= x1 and y0 <= y <= y1 and point_in(poly, pt):
+                return True
+        return False
+
+    # A negative island radius means the ring's inner edge has passed the
+    # centre: the "annulus" is a self-overlapping disc and there is no ring at
+    # all. Report it as zero drivable width rather than sweeping a band that
+    # starts behind the origin, which is what made this metric pass R=8.
+    if island_r <= 0:
+        return 0.0, 0.0
+    band = max(1.0, outer - island_r)
+    rings = max(12, min(48, int(band * 3)))
+    pitch = band / rings
+    worst, worst_ang = band, 0.0
+    for si in range(steps):
+        ang = 2 * math.pi * si / steps
+        run = 0.0
+        for ri in range(rings):
+            r = island_r + band * (ri + 0.5) / rings
+            pt = (center[0] + math.cos(ang) * r, center[1] + math.sin(ang) * r)
+            if covers(deck, pt) and not covers(raised, pt):
+                run += pitch
+        if run < worst:
+            worst, worst_ang = run, math.degrees(ang)
+    return worst, worst_ang
 
 
 def report(scene, holes, pitch, hairline):

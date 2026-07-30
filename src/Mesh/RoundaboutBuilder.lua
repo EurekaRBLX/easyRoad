@@ -1250,20 +1250,65 @@ local function buildSplitterIsland(
 		end
 	end
 
-	-- The apron: flat asphalt from the cut to wherever the island takes over.
-	-- Its rungs are the two arms' own inner edges, so it abuts each arm exactly
-	-- and overlaps neither - at the cut the two edges coincide and it tapers to
-	-- nothing, which is what an approach with no median should look like. An
-	-- approach that DOES have one took the `startAlong = 0` branch above, so no
-	-- apron is laid at all and its median continues straight into the raised
-	-- island.
-	if startAlong > 0 then
+	-- Where the gore stops being beside the circulating carriageway and starts
+	-- being ON it. Nothing raised may begin past here.
+	--
+	-- Dropping the outer-edge override above removed the guarantee that used to
+	-- make this impossible, and on a crowded ring the width test can now first
+	-- reach 2 m at a station already inside the kerb. The rung loop below then
+	-- keeps its first rung (its break only fires from i > 0), the nose fan runs
+	-- from that deep apex out to the kerb arc, and the result is a raised wedge
+	-- laid straight across the circulating lanes. Measured on a 4-leg 2+2 at
+	-- R=45: gore material from r=36.1 out to the kerb at r=54.5, leaving 7.6
+	-- studs of a 26.1-stud carriageway drivable - 0.58 of one lane. Same shape
+	-- at R=50 and, on a 1+1 ring, from R=22 to R=40.
+	--
+	-- Two values, because the apron and the island want opposite roundings of
+	-- the same crossing. `kerbAlongIn` is the first probe at or inside the kerb
+	-- and is where the APRON stops: stopping one probe short instead left a
+	-- ~0.9-stud ring of bare ground just outside the kerb at every mouth, in
+	-- exactly the band `openRingPavement` had deleted. Running slightly past is
+	-- free - the overlap is flat asphalt over the ring's own flat asphalt.
+	-- `kerbAlongOut` is the last probe still outside, and is the latest the
+	-- ISLAND may start.
+	local kerbAlongIn, kerbAlongOut = reach, reach
+	local kerbProbes = 64
+	for i = 0, kerbProbes do
+		local along = (i / kerbProbes) * reach
+		if
+			distanceXZ(goreEdge(entryCurve, along, entryArm), center) <= ringKerbRadiusStuds
+			or distanceXZ(goreEdge(exitCurve, exitCurve.Length - along, exitArm), center) <= ringKerbRadiusStuds
+		then
+			-- One probe PAST the crossing, not at it. Landing exactly on the
+			-- first inside sample still left a 0.25-stud hairline of bare
+			-- ground at r=33.0 against a kerb at 32.95, because the rung is a
+			-- chord and the kerb is an arc. Overlapping the ring deck by half
+			-- a probe costs nothing.
+			kerbAlongIn = math.min(reach, ((i + 1) / kerbProbes) * reach)
+			kerbAlongOut = math.max(0, (i - 1) / kerbProbes) * reach
+			break
+		end
+	end
+
+	-- The apron: flat asphalt from the cut to wherever the island takes over,
+	-- or to the kerb if the island never gets to start. Its rungs are the two
+	-- arms' own inner edges, so it abuts each arm exactly and overlaps neither -
+	-- at the cut the two edges coincide and it tapers to nothing, which is what
+	-- an approach with no median should look like. An approach that DOES have
+	-- one took the `startAlong = 0` branch above, so no apron is laid at all and
+	-- its median continues straight into the raised island.
+	local apronEnd = math.min(startAlong, kerbAlongIn)
+	if apronEnd > 0 then
 		local apronDepth = settings.RoadThicknessStuds
 		local prevA, prevB
 		for i = 0, APRON_SAMPLES do
-			local along = (i / APRON_SAMPLES) * startAlong
-			local a = goreEdgeAt(entryCurve, along, entryArm, 0)
-			local b = goreEdgeAt(exitCurve, exitCurve.Length - along, exitArm, 0)
+			local along = (i / APRON_SAMPLES) * apronEnd
+			-- Sunk with the arms. The arms' Parts are dropped ARM_SINK_STUDS
+			-- after building but their CURVES are not, so an apron laid on the
+			-- curve sits a hair proud of the carriageway it is continuous with -
+			-- and, where it runs past the kerb, coplanar with the ring deck.
+			local a = goreEdgeAt(entryCurve, along, entryArm, -ARM_SINK_STUDS)
+			local b = goreEdgeAt(exitCurve, exitCurve.Length - along, exitArm, -ARM_SINK_STUDS)
 			if prevA and prevB then
 				FillTriangle(prevA, prevB, b, apronDepth, DOWN, makeApronPart, ring)
 				FillTriangle(prevA, b, a, apronDepth, DOWN, makeApronPart, ring)
@@ -1271,8 +1316,11 @@ local function buildSplitterIsland(
 			prevA, prevB = a, b
 		end
 	end
-	if startAlong >= reach then
-		return -- gore too narrow for a splitter anywhere: apron only
+	if startAlong >= reach or startAlong >= kerbAlongOut then
+		-- Either the gore never opens to island width, or it only does so past
+		-- the kerb. Both mean there is no room for a raised splitter here and
+		-- the apron above is the whole mouth.
+		return
 	end
 	local entrySide: { Vector3 } = {}
 	local exitSide: { Vector3 } = {}
@@ -1563,20 +1611,22 @@ local function buildMouth(
 	}
 end
 
--- Smallest ring that can actually carry the approaches meeting here.
---
--- A roundabout is not free to be any size. Every leg needs its two arms plus a
--- deflection split between them, and a strip of kerb before the next leg
--- starts. Add those up and they must fit in 360 degrees:
+-- COMFORTABLE ring radius: one that gives every leg room for its two arms, a
+-- deflection split between them, and a strip of kerb before the next leg. Add
+-- those up and they must fit in 360 degrees:
 --
 --   sum(armWidth_i) / R  +  legs * (2*MIN_SPLIT + MIN_KERB_GAP)  <=  2*pi
 --
--- Below that radius the mouths overrun each other and the result is not a
--- roundabout at all - it is a blob with slivers of island where the splitters
--- collapsed. Measured on the live report: four 2-lane legs on a radius-30 ring
--- demanded 479 degrees of a 360 degree ring, and looked exactly as bad as that
--- sounds. The tool used to build it anyway.
-function RoundaboutBuilder.MinimumRadiusStuds(
+-- This was called MinimumRadiusStuds and used as a hard floor, and it is not
+-- one. Sweeping radius against the narrowest DRIVABLE width of the circulating
+-- carriageway (`circulating_width` in the preview - bare ground cannot answer
+-- this question, because a too-small ring fails by being covered in kerb, not
+-- by being empty) the geometry holds all the way down to R=18 on every
+-- configuration tested: 4-leg 2+2, 4-leg 1+1, 3-leg 1+1, 5-leg 1+1. Against
+-- packing numbers of 70.5, 42.8, 27.5 and 64.2. It is 2-4x too conservative as
+-- a floor, which is why it now feeds the SUGGESTION and the real floor is
+-- measured separately below.
+local function packingRadiusStuds(
 	junctionId: string,
 	laneCount: number,
 	laneWidthM: number,
@@ -1634,11 +1684,39 @@ function RoundaboutBuilder.MinimumRadiusStuds(
 	return mergeRadius + outerOffsetStuds + style.SidewalkWidthM * scale - ringHalfStuds
 end
 
--- What to actually put in the Radius box. The minimum is a hard geometric
--- floor - at it, every mouth is touching its neighbour's kerb with nothing to
--- spare - so offering it as the default hands the user the tightest legal
--- roundabout and no room to breathe. Rounded up to a 5-stud step with a margin
--- so the suggestion looks like a decision rather than a solver output.
+-- The HARD floor, and the only number here that deserves the word minimum.
+--
+-- Below it there is no roundabout, in the literal sense: the ring's own inner
+-- edge has passed the centre, so the "annulus" is a self-overlapping disc with
+-- no centre island and no circulating lane. A 4-leg 2+2 at R=10 comes out as a
+-- four-pointed raised star with a hexagon in the middle. The centre island
+-- radius is `radius - ringInnerHalfWidth`, so the floor is that half-width plus
+-- enough for an island worth drawing (`buildIsland` itself bails below 1 stud).
+--
+-- Everything above this held in the sweep, so the failure is a cliff rather
+-- than a slope: the packing number above is comfort, this is possibility.
+local ISLAND_MIN_RADIUS_STUDS = 2
+
+function RoundaboutBuilder.MinimumRadiusStuds(
+	junctionId: string,
+	laneCount: number,
+	laneWidthM: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): number
+	local profile: RoadProfile.RoadProfile = {
+		Id = "roundabout_ring",
+		Name = "Roundabout",
+		Category = "Custom",
+		BuiltIn = false,
+		Components = ringComponents(laneCount, laneWidthM, style),
+	}
+	return ringInnerHalfWidthM(profile, style) * settings.MetersToStuds + ISLAND_MIN_RADIUS_STUDS
+end
+
+-- What to actually put in the Radius box. Rounded up to a 5-stud step with a
+-- margin so the suggestion looks like a decision rather than a solver output,
+-- and never below the hard floor.
 local SUGGESTED_RADIUS_HEADROOM = 1.15
 local SUGGESTED_RADIUS_STEP_STUDS = 5
 
@@ -1649,11 +1727,13 @@ function RoundaboutBuilder.SuggestedRadiusStuds(
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings
 ): number
-	local minimum = RoundaboutBuilder.MinimumRadiusStuds(junctionId, laneCount, laneWidthM, style, settings)
-	if minimum <= 0 then
+	local packing = packingRadiusStuds(junctionId, laneCount, laneWidthM, style, settings)
+	local floor = RoundaboutBuilder.MinimumRadiusStuds(junctionId, laneCount, laneWidthM, style, settings)
+	local target = math.max(packing, floor)
+	if target <= 0 then
 		return 0
 	end
-	return math.ceil(minimum * SUGGESTED_RADIUS_HEADROOM / SUGGESTED_RADIUS_STEP_STUDS) * SUGGESTED_RADIUS_STEP_STUDS
+	return math.ceil(target * SUGGESTED_RADIUS_HEADROOM / SUGGESTED_RADIUS_STEP_STUDS) * SUGGESTED_RADIUS_STEP_STUDS
 end
 
 function RoundaboutBuilder.CreateAtJunction(

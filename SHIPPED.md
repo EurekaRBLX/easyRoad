@@ -4,6 +4,78 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: stop the splitter island paving the circulating lanes, and re-derive the minimum radius
+
+Started as "re-derive MinimumRadiusStuds", which needed a definition of failure
+that is not bare ground. Bare ground cannot answer the question at all: a
+too-small ring fails by being COVERED, not by being empty. At R=10 a 4-leg 2+2
+comes out as a four-pointed raised star with a hexagon in the middle and no
+circulating lane anywhere, and scan_gaps calls it clean because nothing is
+missing.
+
+So a new check, `circulating_width`: sweep every angle radially from the island
+to the kerb and total the deck-only run. The minimum over all angles is how wide
+the ring gets at its tightest, and a ring narrower than a lane is not a
+roundabout. The overhang check cannot stand in for it, and for an instructive
+reason - it deliberately excludes the splitter islands by identity, because a
+splitter IS raised material inside the mouth's lateral span and flagging it was
+pure noise. Right for that question, blind to this one, where the splitter
+islands are exactly what is wrong.
+
+### The defect it found
+
+Not a small-radius problem: a BAND. 4-leg 2+2 held a full 2 lanes from R=25 to
+R=40, then dropped to 0.58 lanes at R=45, 0.96 at R=50 and 1.75 at R=60 before
+recovering by R=70. After the fix those three read 2.00, 2.00 and 2.00. Same
+shape on a 1+1 ring from R=22 to R=40. The render shows it plainly - blocks of
+raised pavement sitting on the circulating carriageway at each mouth.
+
+Cause, and it was mine: the flat-apron change earlier the same day retired the
+outer-edge override, and with it the guarantee that the island starts outside
+the ring kerb. On a crowded ring the 2 m width test can first be met at a
+station already past the kerb. The rung loop then keeps its first rung - its
+break only fires from i > 0 - the nose fan runs from that deep apex out to the
+kerb arc, and the mouth gets a raised wedge laid across the circulating lanes.
+Measured at R=45: gore material from r=36.1 out to a kerb at r=54.5.
+
+Fixed by computing the kerb crossing as well, and refusing to start a raised
+splitter past it - that mouth gets apron only, which is what a mini-roundabout
+looks like anyway. The apron and the island want opposite roundings of that one
+crossing: the apron stops one probe PAST it, the island must start one probe
+BEFORE it. Stopping the apron exactly at the crossing left a 0.25-stud hairline
+of bare ground just outside the kerb, because the rung is a chord and the kerb
+is an arc. Apron rungs are also sunk by ARM_SINK_STUDS now - the arms' Parts are
+dropped after building but their curves are not, so an apron laid on the curve
+sat a hair proud of the carriageway it is continuous with.
+
+Whether this is the "clipping" reported live is NOT settled. It is the same
+class - a wedge of raised pavement across the carriageway - but it sits at the
+mouth by the ring, and the report described the arm's seam with its approach.
+Recorded as a lead, not a closure.
+
+### The minimum radius itself
+
+Two different numbers were being asked of one function.
+
+  - MinimumRadiusStuds is now the hard floor: the centre island's radius is
+    radius - ringInnerHalfWidth, so below that half-width the ring's inner edge
+    has passed the centre and the annulus is a self-overlapping disc. Closed
+    form, exact, small.
+  - SuggestedRadiusStuds carries the angular packing estimate that used to be
+    called the minimum.
+
+With the wedge fixed, the geometry holds down to R=18 on 4-leg 2+2, 4-leg 1+1,
+3-leg 1+1 and 5-leg 1+1 - against packing numbers of 70.5, 42.8, 27.5 and 64.2.
+Two to four times too conservative as a floor, and the real failure is a cliff
+rather than a slope, which is why a conservative estimate never located it. The
+radius is advisory now, so this matters: a minimum four times the truth teaches
+people to ignore it.
+
+Bare-ground sweeps re-run clean afterwards across the radius sweep and the
+profile/leg-count variations.
+
+Not confirmed in Studio.
+
 ## Roundabout: turbo markings
 
 A third circulating-marking mode beside Continuous and SolidLanes, chosen per

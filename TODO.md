@@ -213,6 +213,30 @@ earlier note in this file claimed: no new ring generator, and
 (`OffsetStartM`/`OffsetEndM`), which is the primitive a spiral needs. See
 ROUNDABOUT.md 5.3c for what still has to be worked out.
 
+## Roundabout minimum radius — RE-DERIVED, not yet confirmed live
+
+`MinimumRadiusStuds` now means the hard geometric floor (below it the ring's
+inner edge has passed the centre and there is no annulus at all);
+`SuggestedRadiusStuds` carries the angular packing estimate that used to be
+called the minimum. See ROUNDABOUT.md 3.9 for the measurements — the packing
+number was 2-4x too conservative as a floor.
+
+Doing this turned up, and fixed, a bug that mattered more: the splitter island's
+nose fan laying a raised wedge across the circulating lanes at ordinary radii
+(ROUNDABOUT.md 3.7, 4.5). That was a regression from the apron change earlier
+the same day.
+
+Left open:
+
+- **The panel does not show the hard floor and the suggestion differently.**
+  They are two different kinds of number now - "this cannot be built" versus
+  "this will be tight" - and the warning should say which.
+- **`circulating_width` is not in the standard preview run.** It is the only
+  check that can see a ring paved over rather than left bare, and it costs a
+  few seconds per case, so it should be in `report()` behind a flag at least.
+- **The hard floor uses a 2-stud island minimum**, picked because `buildIsland`
+  bails below 1. Not measured against anything.
+
 ## Turbo roundabout markings — SHIPPED, not yet confirmed live
 
 Third `RoundaboutMarkings` mode beside Continuous and SolidLanes, selectable per

@@ -144,6 +144,27 @@ mouth sector (§4.1); the apron covers that band now, and covers it with the
 right material — a mouth is precisely where the circulatory pavement ring is
 interrupted by carriageway.
 
+**Nothing raised may begin inside the ring kerb**, and that has to be stated
+separately because retiring the outer-edge rule removed the guarantee that used
+to make it impossible. On a crowded ring the width test can first reach 2 m at a
+station already past the kerb; the rung loop then keeps its first rung (its
+break only fires from `i > 0`), the nose fan runs from that deep apex out to the
+kerb arc, and the mouth gets a raised wedge laid straight across the circulating
+lanes. Measured on a 4-leg 2+2 at R=45: gore material from r=36.1 out to a kerb
+at r=54.5, leaving 7.6 studs of a 26.1-stud carriageway drivable — 0.58 of one
+lane, on an ordinary radius. Same shape at R=50, and on a 1+1 ring from R=22 to
+R=40. So the kerb crossing is computed too, and if the island cannot start
+before it there simply is no raised splitter at that mouth — the apron is the
+whole of it, which is what a mini-roundabout looks like anyway.
+
+The apron and the island want opposite roundings of that one crossing: the apron
+stops one probe PAST it (stopping at it left a 0.25-stud hairline of bare ground
+just outside the kerb, because the rung is a chord and the kerb is an arc, and
+overlapping the ring deck with flat asphalt costs nothing), the island must
+start one probe BEFORE it. Apron rungs are also sunk by `ARM_SINK_STUDS`: the
+arms' Parts are dropped after building but their curves are not, so an apron
+laid on the curve would sit proud of the carriageway it is continuous with.
+
 ### 3.8 Turbo is a marking spiral, not a second ring generator
 An earlier note here claimed a turbo roundabout needs its own generator because
 "lane count and lane centres vary with angle". An aerial of a real spiral-marked
@@ -180,6 +201,31 @@ these parts to a `ringPavement` list captured before they existed.
 
 Falls back to a plain ring on one lane (no boundary to spiral) or one mouth (no
 arc to spiral along).
+
+### 3.9 "Minimum" radius means the cliff, not the comfort
+Two different numbers were being asked of one function, and the answer was the
+wrong one.
+
+- **`MinimumRadiusStuds`** is now the hard floor: below it there is no
+  roundabout in the literal sense. The centre island's radius is
+  `radius − ringInnerHalfWidth`, so once the requested radius drops below that
+  half-width the ring's inner edge has passed the centre and the "annulus" is a
+  self-overlapping disc. A 4-leg 2+2 at R=10 comes out as a four-pointed raised
+  star with a hexagon in the middle. Closed form, exact, and small.
+- **`SuggestedRadiusStuds`** carries the angular packing estimate that used to
+  be called the minimum — every leg's two arms, its deflection split, and a
+  strip of kerb before the next leg, summed against 360°.
+
+The packing number is a fine suggestion and was a bad floor. Sweeping radius
+against `circulating_width`, the geometry holds all the way down to **R=18** on
+4-leg 2+2, 4-leg 1+1, 3-leg 1+1 and 5-leg 1+1 — against packing numbers of 70.5,
+42.8, 27.5 and 64.2. Two to four times too conservative, and the failure below
+the real floor is a cliff rather than a slope, which is why a conservative
+estimate never located it.
+
+This matters beyond tidiness: the radius is advisory now, so the user sees the
+number and decides. A "minimum" that is four times the truth teaches them to
+ignore it.
 
 ---
 
@@ -365,7 +411,7 @@ The long thin V-notch down the middle of every approach. Three rounds of
 raised-or-nothing; the answer was a second fill. Design and thresholds in §3.7,
 measurements in §4.4.
 
-### 5.4 Clipping at arm ends — no longer reproduces, and the old evidence was bad
+### 5.4 Clipping at arm ends — still open, but the old evidence was worthless
 A wedge of raised pavement jutting across the asphalt where an arm meets its
 approach. This was recorded as "detector built, does not reproduce" across 1+1,
 2+2, medians and a 3/1 approach. **That detector was scanning the wrong ground**
@@ -379,12 +425,21 @@ the island by identity (tagging the gore triangles, not inferring from position)
 leaves **zero** overhang across 24 cases: 16 radii from 10 to 70, plus 5-leg,
 3/1, medians, no-pavement, no-island and a 65° skew.
 
-So there is no measured reproduction of this defect at all, and the earlier
-"does not reproduce" was worth nothing either way. It stays open only because
-the user has seen it in Studio. Next step is unchanged: compare the arm's
-first/last emitted Part against the approach's **in the Lua** — CFrame and Size,
-not lateral extent (`seam_steps` reads 0.00 flush there because extent is not
-what differs).
+So the overhang detector has never reproduced this, and the earlier "does not
+reproduce" was worth nothing either way.
+
+**A defect of exactly this class was then found by a different check**, and is
+fixed: the splitter island's nose fan laying a raised wedge across the
+circulating lanes (§3.7, §4.5). Whether it is the one reported is not settled —
+that wedge sits at the mouth by the ring, and the report described the arm's
+seam with its approach. Treat it as a lead, not a closure. What it does settle
+is why the overhang check could not find it: the check excludes the splitter
+island by identity, and the splitter island was the thing at fault.
+
+Next step is unchanged: compare the arm's first/last emitted Part against the
+approach's **in the Lua** — CFrame and Size, not lateral extent (`seam_steps`
+reads 0.00 flush there because extent is not what differs). And now also worth
+a Studio look first, since something in this class has changed.
 
 ### 5.5 Smaller, known limits
 - **Crowded rings.** 5+ legs, or wide approaches on a small radius, squeeze the
@@ -405,10 +460,18 @@ actually emits** — rigid boxes per station interval, not idealised polygons.
 |---|---|---|
 | `scan_gaps` | bare ground, `island_r` → `outerR` | everything outside the ring annulus |
 | `scan_mouths` | bare ground **and** overhang, cut → ring | a wrong marking (it counts a marking Part as coverage); anything narrower than two sample pitches; whether raised material *should* be raised, only that the splitter island is |
+| `circulating_width` | narrowest DRIVABLE width of the ring, all the way round | anything outside the ring band; it answers "can you drive round it", nothing else |
 | `seam_steps` | lateral extent at the cut | the *shape* of an end cap |
 | `check_parity.py` | constants shared with the Lua | the algorithm, and any missing rule set |
 
 Four lessons that cost real time:
+
+0. **Every check here answers one question, and says nothing about the rest.**
+   `scan_gaps` and `scan_mouths` both look for MISSING material, so neither can
+   see a ring paved over in kerb — which is exactly how a too-small roundabout
+   fails. `circulating_width` exists because of that, and it in turn knows
+   nothing about bare ground. Three green checks are three answers, not a
+   verdict.
 
 0. **A check can point at the wrong ground and still print "clean".**
    `scan_mouths` was added *because* `scan_gaps` never looked at the mouths, and
