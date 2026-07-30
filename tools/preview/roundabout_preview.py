@@ -758,11 +758,20 @@ def scan_mouths(scene, span=70.0, samples=420, steps=40, min_gap=0.2):
     Interior gaps are split by cause, because only one kind is a defect:
 
       * GORE - spans the mouth's own centreline, i.e. the space between a
-        diverging entry and exit. Since the splitter island starts only where
-        the gore reaches MIN_GORE_WIDTH_M, open ground here is BY DESIGN;
-        reported for information, not failed.
+        diverging entry and exit.
       * HOLE - does not touch the centre: a tear inside one arm's own width, or
-        between an arm and the pavement that should meet it. A real defect.
+        between an arm and the pavement that should meet it.
+
+    BOTH are defects. Open gore used to be excused as by-design, on the
+    reasoning that the splitter island only starts where the gore reaches
+    MIN_GORE_WIDTH_M so the stretch before that is meant to be empty. That
+    reasoning assumed the only two options were raised island or nothing.
+    They are not: near the cut the wedge is the approach's own carriageway
+    fanning into the mouth, and it should be flat asphalt (ROUNDABOUT.md
+    5.3d). Under that design no part of the mouth is ever legitimately bare,
+    so the excuse is gone and gore gaps fail like any other. The label is
+    kept because it still says WHICH defect - a gore gap is the indentation,
+    a hole is a tear.
 
     Also reports OVERHANG: raised kerb material lying over the carriageway.
     That is the opposite failure and the gap search structurally cannot see it -
@@ -809,7 +818,15 @@ def scan_mouths(scene, span=70.0, samples=420, steps=40, min_gap=0.2):
             continue
         for si in range(steps + 1):
             at = reach * si / steps           # 0 = the cut, reach = the ring
-            origin = (cut[0] - inward[0] * at, cut[1] - inward[1] * at)
+            # `inward` points from the cut toward the centre, so stepping into
+            # the mouth is PLUS inward. Subtracting it walked the other way,
+            # down the plain approach road: every "no bare ground inside the
+            # mouth envelope" this printed was measured over the one stretch
+            # of road that was never in question. That is precisely the blind
+            # spot the docstring above claims to have closed, reintroduced by
+            # a sign - so it also explains why the OVERHANG check below has
+            # never once reproduced the clipping defect (ROUNDABOUT.md 5.4).
+            origin = (cut[0] + inward[0] * at, cut[1] + inward[1] * at)
             swept, classed = [], []
             for i in range(samples + 1):
                 d = -span + 2 * span * i / samples
@@ -865,22 +882,27 @@ def report(scene, holes, pitch, hairline):
           f"({scene['n_ring']} ring, {scene['n_arms']} arms/stems), "
           f"{len(scene['gore'])} gore tris, {scene['removed']} ring pavement parts "
           f"removed in mouths")
+    ok = True
     mouth = scan_mouths(scene)
-    mouth_holes = [m for m in mouth if m["kind"] == "hole"]
-    mouth_gore = [m for m in mouth if m["kind"] == "gore"]
     mouth_over = [m for m in mouth if m["kind"] == "overhang"]
     if mouth_over:
+        ok = False
         print(f"    MOUTH: {len(mouth_over)} OVERHANG samples - pavement over the "
               f"carriageway, worst {max(m['width'] for m in mouth_over):.2f} studs")
-    if mouth_holes:
-        worst = max(m["width"] for m in mouth_holes)
-        print(f"    MOUTH: {len(mouth_holes)} bare-ground samples inside the mouth, "
-              f"worst {worst:.2f} studs wide")
-        for m in sorted(mouth_holes, key=lambda m: -m["width"])[:4]:
-            print(f"        leg {m['leg']} at {m['at']:.1f} studs from the cut: {m['width']:.2f} studs")
+    bare = [(k, [m for m in mouth if m["kind"] == k]) for k in ("gore", "hole")]
+    if any(g for _, g in bare):
+        ok = False
+        for kind, group in bare:
+            if not group:
+                continue
+            what = "the indentation" if kind == "gore" else "a tear inside an arm"
+            print(f"    MOUTH: {len(group)} bare-ground {kind.upper()} samples "
+                  f"({what}), worst {max(m['width'] for m in group):.2f} studs wide")
+            for m in sorted(group, key=lambda m: -m["width"])[:3]:
+                print(f"        leg {m['leg']} at {m['at']:.1f} studs from the cut: "
+                      f"{m['width']:.2f} studs")
     else:
-        print("    MOUTH: no bare ground inside the mouth envelope "
-              f"({'gore open by design at ' + str(len(mouth_gore)) + ' samples' if mouth_gore else 'gore closed'})")
+        print("    MOUTH: no bare ground inside the mouth envelope")
     steps = seam_steps(scene)
     if steps:
         worst = max(max(a, b) for a, b in steps)
@@ -888,7 +910,7 @@ def report(scene, holes, pitch, hairline):
               f"({'flush' if worst <= 0.5 else 'STEPPED'})")
     if not holes:
         print("    no bare ground inside the ring footprint")
-        return True
+        return ok
     by_ang = {}
     for dr, ang in holes:
         by_ang.setdefault(round(ang / 2) * 2, []).append(dr)
@@ -904,7 +926,7 @@ def report(scene, holes, pitch, hairline):
               f"(sample pitch {pitch:.3f}) - below visible, not failed")
     if not real:
         print("    no visible bare ground inside the ring footprint")
-        return True
+        return ok
     print(f"    BARE GROUND: {len(real)} clusters")
     for k in sorted(real):
         v, depth = real[k]
