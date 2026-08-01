@@ -64,9 +64,11 @@ linked mode. `tools/preview/multinode_junction_preview.py --check` validates the
 identity/radius contract, triangulated pad, and full component-width mouth
 seams. Its `uk6x4` bird's-eye QA case uses the same `preview_core` Parts emitter,
 UK component dimensions/directions, and `*_parts.png` / `*_gaps.png` convention
-as the roundabout preview; it is no longer a US-styled schematic. This is the
-foundation for per-approach stop/crossing/signal controls; those markings are
-still open.
+as the roundabout preview; it is no longer a US-styled schematic. The additional
+`*_controls.png` render traces and labels the actual curb returns, and repeatable
+`--radius "CORNER=METRES"` arguments demonstrate independent overrides. This is
+the foundation for per-approach stop/crossing/signal controls; those markings
+are still open.
 
 ### Junctions — fixed, unconfirmed live
 The self-intersecting spiked pad and the faceted seam are both fixed.
@@ -147,6 +149,7 @@ cd tools/preview
 python3 roundabout_preview.py                 # uk4 uk3 us4, WITH renders
 python3 roundabout_preview.py --no-render     # numbers only
 python3 multinode_junction_preview.py uk6x4 --out out  # UK 3+3 x 2+2 junction
+python3 multinode_junction_preview.py uk6x4 --radius "A1>A2=18" --out out
 python3 multinode_junction_preview.py --check # component seams/topology only
 python3 junction_pad_preview.py               # junction regression, 66 cases
 python3 junction_pad_preview.py --legacy      # show the pre-fix behaviour

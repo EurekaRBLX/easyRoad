@@ -28,8 +28,11 @@ uses EasyRoad Drive/Median/Sidewalk component tuples, UK left-hand direction
 ordering, UK dimensions, the shared material colours, and white road markings.
 The `uk6x4` case joins a custom 3+3 boulevard to the exact built-in UK 2+2
 avenue profile. Matching `*_parts.png` and magenta `*_gaps.png` views check the
-component-width mouths, triangulated pad, stable corner ids, and independent
-corner radii. The preview is part of the standard validator.
+component-width mouths and triangulated pad. A third `*_controls.png` view
+highlights the selected curb return and labels all four stable corner ids and
+independent radii. Repeatable `--radius "CORNER=METRES"` arguments rebuild the
+same scene with overrides, so radius adjustability is visible rather than only
+asserted. The preview is part of the standard validator.
 
 ## Procedural gap controls, parallel carriageways, and one-way highways
 

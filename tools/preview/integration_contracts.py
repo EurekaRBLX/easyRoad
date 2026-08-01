@@ -66,6 +66,8 @@ def main():
     require(multinode_preview, "from preview_core import (", "multinode preview no longer shares the roundabout component pipeline", problems)
     require(multinode_preview, "SIX_LANE_BOULEVARD = uk_two_way(3)", "multinode preview lost the UK six-lane boulevard case", problems)
     require(multinode_preview, 'suffix = "gaps" if flat else "parts"', "multinode preview no longer emits matching parts/gaps QA views", problems)
+    require(multinode_preview, 'controls_name = f\'junction_{scene["tag"]}_controls.png\'', "multinode preview no longer emits the corner-radius showcase", problems)
+    require(multinode_preview, 'metavar="CORNER=METRES"', "multinode preview corner radii are not adjustable from its CLI", problems)
     require(multinode_preview, "[1, 1, 1, -1, -1, -1]", "multinode preview no longer asserts UK left-hand direction ordering", problems)
 
     require(session, "GetStructure: () -> RoadInstance.StructureData", "placement session has no structure API", problems)

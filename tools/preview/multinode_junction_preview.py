@@ -7,7 +7,8 @@ pipeline as ``roundabout_preview.py``:
 * EasyRoad component tuples (kind, width metres, traffic direction)
 * ``emit_road`` rigid Part strips and marking Parts
 * UK dimensions, left-hand traffic, colours, and scale
-* material-colour ``*_parts.png`` plus magenta ``*_gaps.png`` output
+* material-colour ``*_parts.png``, magenta ``*_gaps.png``, and labelled
+  ``*_controls.png`` output
 
 On top of that shared road emitter it ports the ordinary junction's own walk:
 stable approach ids, angular-neighbour corner ids, per-corner fillets, asphalt
@@ -15,6 +16,7 @@ pad triangulation, sidewalk corner bands, and median noses.
 
     python3 tools/preview/multinode_junction_preview.py --check
     python3 tools/preview/multinode_junction_preview.py uk6x4 --out out
+    python3 tools/preview/multinode_junction_preview.py uk6x4 --radius "A1>A2=18"
 """
 import argparse
 import math
@@ -59,6 +61,28 @@ DEFAULT_RADIUS_M = 6.0
 PAD_MARGIN_STUDS = 6.0
 APPROACH_RUN_STUDS = 150.0
 SELECTED_CORNER = "A1>A2"
+CONTROL_C = (40, 196, 222)
+SELECTED_C = (255, 143, 54)
+CONTROL_BG = (25, 30, 36)
+CONTROL_FG = (248, 248, 244)
+
+FONT = {
+    "0": ("111", "101", "101", "101", "111"),
+    "1": ("010", "110", "010", "010", "111"),
+    "2": ("111", "001", "111", "100", "111"),
+    "3": ("111", "001", "111", "001", "111"),
+    "4": ("101", "101", "111", "001", "001"),
+    "5": ("111", "100", "111", "001", "111"),
+    "6": ("111", "100", "111", "101", "111"),
+    "7": ("111", "001", "010", "010", "010"),
+    "8": ("111", "101", "111", "101", "111"),
+    "9": ("111", "101", "111", "001", "111"),
+    "A": ("010", "101", "111", "101", "101"),
+    "M": ("10001", "11011", "10101", "10101", "10101"),
+    ">": ("100", "010", "001", "010", "100"),
+    ".": ("0", "0", "0", "0", "1"),
+    " ": ("0", "0", "0", "0", "0"),
+}
 
 
 def uk_two_way(lanes_each_way, median=True):
@@ -96,6 +120,33 @@ CASES = {
         [(f"A{i + 1}", angle, FOUR_LANE_AVENUE) for i, angle in enumerate((0, 90, 180, 270))]
     ),
 }
+
+
+def text_size(value, scale=3):
+    widths = [max(len(row) for row in FONT.get(char, FONT[" "])) for char in value.upper()]
+    return sum((width + 1) * scale for width in widths) - scale, 5 * scale
+
+
+def draw_text(canvas, xy, value, colour, scale=3):
+    cursor, top = xy
+    for char in value.upper():
+        glyph = FONT.get(char, FONT[" "])
+        width = max(len(row) for row in glyph)
+        for row_index, row in enumerate(glyph):
+            for column, on in enumerate(row):
+                if on == "1":
+                    left = cursor + column * scale
+                    upper = top + row_index * scale
+                    canvas.fill_poly(
+                        [
+                            (left, upper),
+                            (left + scale - 1, upper),
+                            (left + scale - 1, upper + scale - 1),
+                            (left, upper + scale - 1),
+                        ],
+                        colour,
+                    )
+        cursor += (width + 1) * scale
 
 
 def straight_curve(start, finish):
@@ -399,11 +450,90 @@ def checks():
         component[:2] == ("Median", MEDIAN_M) for component in boulevard
     ) is False:
         problems.append("uk6x4: boulevard is not built from current UK sidewalk/median dimensions")
+
+    adjusted = apply_radius_overrides(CASES["uk6x4"], ["A1>A2=18.5", "A3>A4=4"])
+    adjusted_scene = build_scene("uk6x4_adjusted", adjusted)
+    adjusted_radii = {corner["Id"]: corner["RadiusM"] for corner in adjusted_scene["corners"]}
+    if adjusted_radii.get("A1>A2") != 18.5 or adjusted_radii.get("A3>A4") != 4:
+        problems.append("uk6x4: CLI-style independent radius overrides did not reach geometry")
     return problems
 
 
-def render(scene, outdir):
-    """Same two outputs as roundabout_preview: material parts and gap map."""
+def apply_radius_overrides(definition, overrides):
+    adjusted = {"approaches": definition["approaches"], "radii": dict(definition["radii"])}
+    ordered = sorted(definition["approaches"], key=lambda approach: approach[1])
+    valid = {
+        f'{ordered[index][0]}>{ordered[(index + 1) % len(ordered)][0]}'
+        for index in range(len(ordered))
+    }
+    for override in overrides:
+        if "=" not in override:
+            raise ValueError(f'radius override {override!r} must be CORNER=METRES')
+        corner_id, raw_radius = override.rsplit("=", 1)
+        corner_id = corner_id.strip()
+        if corner_id not in valid:
+            raise ValueError(f'unknown corner {corner_id!r}; known: {" ".join(sorted(valid))}')
+        try:
+            radius = float(raw_radius)
+        except ValueError as error:
+            raise ValueError(f'invalid radius {raw_radius!r} for {corner_id}') from error
+        if not math.isfinite(radius) or not 0.5 <= radius <= 40:
+            raise ValueError(f'{corner_id} radius must be from 0.5m to 40m')
+        adjusted["radii"][corner_id] = radius
+    return adjusted
+
+
+def paint_parts(canvas, scene, transform, flat=False):
+    for part in sorted(scene["parts"], key=lambda item: item.y):
+        canvas.fill_poly([transform(vertex) for vertex in part.poly], FLAT if flat else part.color)
+
+
+def draw_corner_controls(canvas, scene, transform, selected_corner):
+    """Overlay the real kerb returns with the same cyan/selected UI language."""
+    for corner in scene["corners"]:
+        selected = corner["Id"] == selected_corner
+        colour = SELECTED_C if selected else CONTROL_C
+        path = [transform(point) for point in corner["Kerb"]]
+        canvas.polyline(path, CONTROL_BG, 8 if selected else 6)
+        canvas.polyline(path, colour, 5 if selected else 3)
+
+        world_mid = corner["Kerb"][len(corner["Kerb"]) // 2]
+        screen_mid = transform(world_mid)
+        distance = max(mag(world_mid), 1e-6)
+        direction = world_mid[0] / distance, world_mid[1] / distance
+        anchor = screen_mid[0] + direction[0] * 34, screen_mid[1] + direction[1] * 34
+        canvas.line(screen_mid, anchor, CONTROL_BG, 7)
+        canvas.line(screen_mid, anchor, colour, 4)
+        canvas.disc(screen_mid[0], screen_mid[1], 8 if selected else 6, CONTROL_BG)
+        canvas.disc(screen_mid[0], screen_mid[1], 5 if selected else 4, colour)
+
+        radius = f'{corner["RadiusM"]:g}'
+        label = f'{corner["Id"]} {radius}M'
+        text_width, text_height = text_size(label)
+        box_width, box_height = text_width + 18, text_height + 12
+        if direction[0] >= 0:
+            left = anchor[0] + 8
+        else:
+            left = anchor[0] - box_width - 8
+        top = anchor[1] - box_height / 2
+        left = min(max(4, left), canvas.w - box_width - 4)
+        top = min(max(4, top), canvas.h - box_height - 4)
+        background = colour if selected else CONTROL_BG
+        foreground = CONTROL_BG if selected else CONTROL_FG
+        canvas.fill_poly(
+            [(left, top), (left + box_width, top), (left + box_width, top + box_height), (left, top + box_height)],
+            background,
+        )
+        if not selected:
+            canvas.fill_poly(
+                [(left, top), (left + 5, top), (left + 5, top + box_height), (left, top + box_height)],
+                colour,
+            )
+        draw_text(canvas, (left + 10, top + 6), label, foreground)
+
+
+def render(scene, outdir, selected_corner=SELECTED_CORNER):
+    """Roundabout-style material/gap views plus the radius-control showcase."""
     points = [vertex for part in scene["parts"] for vertex in part.poly]
     margin = 12.0
     low = min(point[0] for point in points) - margin, min(point[1] for point in points) - margin
@@ -415,12 +545,18 @@ def render(scene, outdir):
     written = []
     for flat in (False, True):
         canvas = Canvas(width, height, GROUND if flat else (250, 250, 250))
-        for part in sorted(scene["parts"], key=lambda item: item.y):
-            canvas.fill_poly([transform(vertex) for vertex in part.poly], FLAT if flat else part.color)
+        paint_parts(canvas, scene, transform, flat)
         suffix = "gaps" if flat else "parts"
         name = f'junction_{scene["tag"]}_{suffix}.png'
         canvas.save(os.path.join(outdir, name))
         written.append(name)
+
+    controls = Canvas(width, height, (250, 250, 250))
+    paint_parts(controls, scene, transform)
+    draw_corner_controls(controls, scene, transform, selected_corner)
+    controls_name = f'junction_{scene["tag"]}_controls.png'
+    controls.save(os.path.join(outdir, controls_name))
+    written.append(controls_name)
     return written
 
 
@@ -429,6 +565,18 @@ def main():
     parser.add_argument("cases", nargs="*", help=f'known: {" ".join(CASES)}')
     parser.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "out"))
     parser.add_argument("--check", action="store_true", help="run every case without rendering")
+    parser.add_argument(
+        "--radius",
+        action="append",
+        default=[],
+        metavar="CORNER=METRES",
+        help='override one corner for the render; repeatable, e.g. --radius "A1>A2=18"',
+    )
+    parser.add_argument(
+        "--selected-corner",
+        default=SELECTED_CORNER,
+        help="corner id highlighted as selected in the controls render",
+    )
     args = parser.parse_args()
     names = list(CASES) if args.check or not args.cases else args.cases
     problems = checks() if args.check else []
@@ -437,9 +585,18 @@ def main():
         for name in names:
             if name not in CASES:
                 raise SystemExit(f'unknown case {name!r}; known: {" ".join(CASES)}')
-            scene = build_scene(name, CASES[name])
-            problems.extend(scene_problems(scene, CASES[name]))
-            for output in render(scene, args.out):
+            try:
+                definition = apply_radius_overrides(CASES[name], args.radius)
+            except ValueError as error:
+                raise SystemExit(str(error)) from error
+            scene = build_scene(name, definition)
+            problems.extend(scene_problems(scene, definition))
+            corner_ids = {corner["Id"] for corner in scene["corners"]}
+            if args.selected_corner not in corner_ids:
+                raise SystemExit(
+                    f'unknown selected corner {args.selected_corner!r}; known: {" ".join(sorted(corner_ids))}'
+                )
+            for output in render(scene, args.out, args.selected_corner):
                 print(f"wrote {os.path.join(args.out, output)}")
     if problems:
         for problem in problems:
