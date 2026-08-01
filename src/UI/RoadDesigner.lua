@@ -923,6 +923,9 @@ local function Panel(
 		-- type) - see the "Marking Stretches" section below.
 		MarkingStretches: { Markings.MarkingStretch }?,
 		OnRemoveMarkingStretch: ((index: number) -> ())?,
+		-- Placed-road-only controls (structures today; future instance data can
+		-- use the same slot) inserted before the Apply/Revert action row.
+		ExtraProperties: any?,
 	}
 )
 	local profile = props.Profile
@@ -1120,6 +1123,18 @@ local function Panel(
 			})
 			afterOptions += 1
 		end
+	end
+	if props.ExtraProperties then
+		propertiesChildren.ExtraProperties = e("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = afterOptions,
+		}, {
+			Layout = e("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }),
+			Content = props.ExtraProperties,
+		})
+		afterOptions += 1
 	end
 	local actionButtons: { [string]: any } = {}
 	for index, action in props.Actions do

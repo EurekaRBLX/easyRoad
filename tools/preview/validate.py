@@ -28,15 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 # (suite, case, check) -> why it is expected to fail today.
-KNOWN_OPEN = {
-    ("roundabout", "hw4", "seam"):
-        "Highway approaches have no footway, but the arm gets one anyway - it "
-        "covers the band openRingPavement opens in the ring's own pavement. "
-        "The 7.2-stud edge step at the cut needs a tapered arm pavement, not "
-        "removal; removing it opens 6 studs of bare ground. See TODO.md.",
-    ("roundabout", "hw4us", "seam"): "Same as hw4, right-hand drive.",
-    ("roundabout", "hwmix", "seam"): "Same as hw4, on the two highway legs.",
-}
+KNOWN_OPEN = {}
 
 QUICK_ROUNDABOUT = ["uk4", "uk3", "us4", "turbo4", "hw4"]
 FULL_ROUNDABOUT = ["uk4", "uk3", "us4", "uk5mini", "liveX2", "liveX4", "liveT2",
@@ -72,6 +64,7 @@ def roundabout_suite(cases):
         real, _thin = rp.cluster_gaps(holes, pitch, 0.15)
         checks["gaps"] = not real
         checks["arm_kinds"] = not rp.check_arm_kinds(scene)
+        checks["shoulder"] = not rp.check_shoulder_tapers(scene)
         checks["turbo"] = not rp.check_turbo(scene)
         steps = rp.seam_steps(scene)
         checks["seam"] = not steps or max(max(a, b) for a, b in steps) <= 0.5
@@ -120,7 +113,7 @@ def main():
         print("roundabout:", " ".join(cases))
         import road_preview as rd
         print("road:      ", " ".join(rd.CASES))
-        print("scripts:    turbo_check.py road_break_tests.py check_parity.py")
+        print("scripts:    turbo_check.py road_break_tests.py structure_preview.py --check structure_break_tests.py check_parity.py")
         return 0
 
     problems, stale = [], []
@@ -133,8 +126,13 @@ def main():
     grade("road", road_suite(), problems, stale)
 
     print("\nbreak-tests and parity")
-    for script in ("turbo_check.py", "road_break_tests.py", "check_parity.py"):
-        ok, out, secs = run_script(script)
+    for script, script_args in (
+            ("turbo_check.py", ()),
+            ("road_break_tests.py", ()),
+            ("structure_preview.py", ("--check",)),
+            ("structure_break_tests.py", ()),
+            ("check_parity.py", ())):
+        ok, out, secs = run_script(script, script_args)
         # check_parity reports drift on stdout but exits 0; treat any "DRIFT" as
         # a failure here so the runner is the single answer.
         if "DRIFT" in out:
@@ -157,10 +155,13 @@ LIMITS - what a green run here does NOT mean:
   * nothing is executed in Roblox. This re-implements the geometry in Python;
     it cannot catch a nil identifier, a Luau error, or the Lua diverging from
     this port. check_parity.py compares CONSTANTS, not behaviour.
-  * heights and render order are not modelled. Z-fighting between coplanar
-    decks, dash phase and marking lift are Studio-only.
+  * road/roundabout heights and render order are not modelled. The structure
+    preview models elevation, but z-fighting and actual Roblox raycasts remain
+    Studio-only.
   * lane-width transitions and bus bays are not ported at all, so no case here
-    says anything about them.""")
+    says anything about them.
+  * imported Roblox Models are represented by their start/end socket chord;
+    mesh contents, collisions and attachment orientation still need Studio.""")
     return 1 if (problems or stale) else 0
 
 

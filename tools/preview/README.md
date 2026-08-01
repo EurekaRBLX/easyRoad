@@ -26,8 +26,9 @@ trap as an invariant nobody re-reads.
 | `preview_core.py` | The shared emission port: curve + cross-section to the rigid boxes RoadBuilder emits, one per (component, station interval). Geometry, `build_stations`, `emit_road`, `Part`, `point_in`, colours, region constants. Scenario-agnostic. |
 | `roundabout_preview.py` | Ring, arms, mouths, splitter islands, turbo markings, and the scans that only mean anything on a roundabout. |
 | `road_preview.py` | An ordinary road on its own - straights, arcs down to R=30, an S-curve, avenues, motorways. Bare ground inside the road, edge sawtooth, broken edge lines. |
+| `structure_preview.py` | Rigid imported-module socket stepping plus viaduct pier projection onto a synthetic Terrain profile; check-only or one combined PNG. |
 | `junction_pad_preview.py`, `corner_preview.py` | Junction pad and curb-return shapes. Not yet wired into `validate.py`. |
-| `turbo_check.py`, `road_break_tests.py` | Break-tests: reintroduce a defect that actually shipped and confirm the scan catches it. |
+| `turbo_check.py`, `road_break_tests.py`, `structure_break_tests.py` | Break-tests: reintroduce a defect and confirm the relevant scan catches it. |
 | `check_parity.py` | Constants shared with the Lua. Constants only. |
 | `dump_compare.py` | Diffs a live plugin dump against this port. |
 | `raster.py` | Stdlib-only PNG writer. |
@@ -79,6 +80,9 @@ python3 roundabout_preview.py --no-render # scan only
 python3 road_preview.py --render          # every road case, with PNGs
 python3 turbo_check.py                    # turbo peel + its break-tests
 python3 road_break_tests.py               # road scans + their break-tests
+python3 structure_preview.py --check      # module coverage + pier contact
+python3 structure_break_tests.py          # prove gaps/hovering piers fail
+python3 structure_preview.py --out out/structures.png
 ```
 
 Exits non-zero if any case has visible bare ground, so it works as a check.

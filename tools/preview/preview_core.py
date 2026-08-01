@@ -239,21 +239,44 @@ def emit_road(curve, components, y_base=0.0, solid_lane_lines=False, lane_lines=
                 y_base + (0.125*SCALE if raised else 0.0),
             ))
 
-    # markings: solid edge lines at the roadway edges, dashed between lanes
+    # Markings: solid edge lines at the roadway edges, dashed between Drive
+    # lanes, and a SOLID separator wherever Drive meets Shoulder/Bike/Parking.
+    # Treating every internal roadway boundary as dashed is what made a hard
+    # shoulder read as an extra running lane in the validation render even when
+    # the Lua profile still called it Shoulder.
     mw = MARKING_W_M*SCALE
     inset = MARKING_W_M*1.5
     left_m, right_m = roadway_edges_m(components)
-    lines = [(left_m+inset, True), (right_m-inset, True)]
+    roadway_indices = [i for i, component in enumerate(components) if is_roadway(component)]
+    lines = []
+    if roadway_indices:
+        first, last = roadway_indices[0], roadway_indices[-1]
+        left_covered = (components[first][0] == "Shoulder"
+                        and components[first][1] <= 1e-6
+                        and first + 1 < len(components)
+                        and components[first + 1][0] == "Drive")
+        right_covered = (components[last][0] == "Shoulder"
+                         and components[last][1] <= 1e-6
+                         and last > 0
+                         and components[last - 1][0] == "Drive")
+        if not left_covered:
+            lines.append((left_m + inset, True))
+        if not right_covered:
+            lines.append((right_m - inset, True))
     for c in range(len(components)-1):
-        if components[c][0] != "Sidewalk" and components[c+1][0] != "Sidewalk":
+        a, b = components[c], components[c + 1]
+        if is_roadway(a) and is_roadway(b):
             # `solid_lane_lines` stands in for RoadProfile's
             # RightBoundary = "Solid" (the SolidLanes ring); `lane_lines=False`
             # for its "None" (the Turbo ring, which suppresses the straight
             # boundary and spirals its own). Neither is a port of Markings.lua
             # - see ROUNDABOUT.md 5.3 - just enough for the three-way choice to
             # be visible here at all.
-            if lane_lines:
-                lines.append((offs[c][1], solid_lane_lines))
+            if a[0] == "Drive" and b[0] == "Drive":
+                if lane_lines:
+                    lines.append((offs[c][1], solid_lane_lines))
+            elif (a[0] == "Drive") != (b[0] == "Drive"):
+                lines.append((offs[c][1], True))
 
     for off_m, solid in lines:
         off = off_m*SCALE

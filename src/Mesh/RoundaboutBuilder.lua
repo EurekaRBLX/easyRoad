@@ -24,6 +24,7 @@ local RoadSplit = require("../RoadSplit")
 local JunctionInstance = require("../JunctionInstance")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
+local StructureBuilder = require("../StructureBuilder")
 
 local RoundaboutBuilder = {}
 
@@ -556,6 +557,9 @@ local function trimSpoke(
 	else
 		transplantRoad(road, rebuilt, farJunctionId, nil)
 	end
+	local outerCurve = PolyCurve.new({ outerSegment })
+	RoadInstance.StampStructure(road, data.Structure)
+	StructureBuilder.Render(road, outerCurve, data.Structure or StructureBuilder.DefaultData(), settings)
 	local newData = RoadInstance.Read(road)
 	if not newData then
 		return nil
@@ -855,6 +859,11 @@ end
 
 type ArmProfile = {
 	Profile: RoadProfile.RoadProfile,
+	-- Width of the source approach's OUTBOARD shoulder. The profile keeps a
+	-- zero-width Shoulder component at that boundary so Markings emits the solid
+	-- Drive/Shoulder separator, while buildArm lays the actual paved shoulder as
+	-- a wedge that reaches zero width at the ring.
+	CutShoulderM: number,
 	-- Centreline to roadway edge, on the side facing away from / toward the gore.
 	OuterOffsetStuds: number,
 	InnerOffsetStuds: number,
@@ -1079,7 +1088,8 @@ local function armProfileFor(
 	solo: boolean,
 	style: RegionStyles.RegionStyle,
 	scale: number,
-	mirrored: boolean
+	mirrored: boolean,
+	pavementM: number
 ): ArmProfile
 	local components: { RoadProfile.ProfileComponent } = {}
 	-- `group.Lanes` is in the APPROACH's left-to-right order. An arm whose own
@@ -1096,29 +1106,51 @@ local function armProfileFor(
 	if mirrored then
 		first, last, step = #group.Lanes, 1, -1
 	end
+	local ordered: { LaneSpec } = {}
 	for i = first, last, step do
-		local lane = group.Lanes[i]
+		table.insert(ordered, group.Lanes[i])
+	end
+	-- A hard shoulder is paved road reserve, not another running lane. Keep a
+	-- zero-width component at the OUTBOARD boundary so Markings.lua still emits
+	-- its mandatory solid separator, and hand the real width to buildArm for a
+	-- surface taper. Only contiguous outboard shoulders are consumed; an unusual
+	-- internal Shoulder remains a real profile component rather than silently
+	-- moving to the road edge.
+	local outboardShoulder: { [number]: boolean } = {}
+	local cutShoulderM = 0
+	if style.DriveOnLeft then
+		for i = 1, #ordered do
+			if ordered[i].Kind ~= "Shoulder" then
+				break
+			end
+			outboardShoulder[i] = true
+			cutShoulderM += ordered[i].WidthM
+		end
+	else
+		for i = #ordered, 1, -1 do
+			if ordered[i].Kind ~= "Shoulder" then
+				break
+			end
+			outboardShoulder[i] = true
+			cutShoulderM += ordered[i].WidthM
+		end
+	end
+	for i, lane in ordered do
 		table.insert(components, {
 			Kind = lane.Kind,
-			WidthM = lane.WidthM,
+			WidthM = if outboardShoulder[i] then 0 else lane.WidthM,
 			Direction = if lane.Directional then 1 else 0,
 		})
 	end
 	local function pavement(): RoadProfile.ProfileComponent
-		return { Kind = "Sidewalk", WidthM = group.PavementM, Direction = 0 }
+		return { Kind = "Sidewalk", WidthM = pavementM, Direction = 0 }
 	end
-	-- The arm gets a pavement even when its approach has none, and that is
-	-- LOAD-BEARING rather than cosmetic: `openRingPavement` deletes the ring's
-	-- own footway across each mouth sector, and it is the arm's pavement that
-	-- covers the band from the ring's kerb out to its outer edge there.
-	--
-	-- Tried removing it for approaches with no footway (a motorway has
-	-- shoulders and no pavement, and the default 2 m steps the roadway edge 7.1
-	-- studs sideways at the cut - `seam_steps` measures it the moment a highway
-	-- case exists). That trades the step for something worse: 6 studs of BARE
-	-- GROUND in the mouth, on the highway legs only. The real fix is to TAPER
-	-- the arm's pavement from the ring's width at the merge to the approach's
-	-- at the cut, which is a per-station width ramp - see TODO.md.
+	-- This is the RING-side pavement width. `buildArm` keeps the running lanes
+	-- fixed to this profile and replaces the physical shoulder/Sidewalk surface
+	-- outside their solid line with coordinated edge-anchored ramps. That matters:
+	-- a profile transition recentres the whole cross-section as total width
+	-- changes, which would slide the lanes and shoulder sideways along the arm.
+	-- The pavement taper must move only its own OUTER edge.
 	if solo then
 		-- A one-way approach has no sibling arm and so no splitter island: its gore
 		-- side is open ground, and the road it replaces carries a footway there.
@@ -1143,6 +1175,7 @@ local function armProfileFor(
 	local leftM, rightM = roadwayEdgeOffsetsM(profile)
 	return {
 		Profile = profile,
+		CutShoulderM = cutShoulderM,
 		OuterOffsetStuds = (if style.DriveOnLeft then -leftM else rightM) * scale,
 		InnerOffsetStuds = (if style.DriveOnLeft then rightM else -leftM) * scale,
 		RoadwayCentreM = (leftM + rightM) / 2,
@@ -1165,7 +1198,10 @@ local function splitApproachLanes(
 ): (LaneGroup?, LaneGroup?)
 	local offsets = RoadProfile.ComponentOffsetsM(profile)
 	local function newGroup(): LaneGroup
-		return { Lanes = {}, LeftM = math.huge, RightM = -math.huge, PavementM = style.SidewalkWidthM }
+		-- Zero means the approach genuinely has no pavement (a motorway). The
+		-- arm still receives the ring-side width in `armProfileFor`; `buildArm`
+		-- tapers between the two instead of pretending the approach had one.
+		return { Lanes = {}, LeftM = math.huge, RightM = -math.huge, PavementM = 0 }
 	end
 	local inbound, outbound = newGroup(), newGroup()
 	-- Indices, not widths, and sorted into cross-section order at the end. The
@@ -1270,16 +1306,113 @@ end
 local function buildArm(
 	curve: PolyCurve.PolyCurve,
 	arm: ArmProfile,
+	cutPavementM: number,
+	cutAtStart: boolean,
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings
 ): Model
-	local model = RoadBuilder.Build({
+	local sidewalkIndices: { number } = {}
+	local needsSurfaceTaper = arm.CutShoulderM > 1e-6
+	for i, component in arm.Profile.Components do
+		if component.Kind == "Sidewalk" then
+			table.insert(sidewalkIndices, i)
+			if math.abs(component.WidthM - cutPavementM) > 1e-6 then
+				needsSurfaceTaper = true
+			end
+		end
+	end
+
+	local options = {
 		Curve = curve,
 		ProfileStart = arm.Profile,
 		Style = style,
 		Settings = flatSettings(settings),
 		Preview = false,
-	})
+		-- Widths/offsets still include the ring-side pavement and the zero-width
+		-- Shoulder marker, so both travel lanes and their solid outer line stay
+		-- exactly where planMouth placed them. Only the physical surface outside
+		-- that line is replaced below.
+		ExcludeComponentIndices = if needsSurfaceTaper then sidewalkIndices else nil,
+	}
+	local model = RoadBuilder.Build(options)
+
+	if needsSurfaceTaper then
+		local scale = settings.MetersToStuds
+		local curbHeight = style.CurbHeightM * scale
+		local roadDepth = settings.RoadThicknessStuds
+		local pavementDepth = roadDepth + curbHeight
+		local offsets = RoadProfile.ComponentOffsetsM(arm.Profile)
+		local stations = RoadBuilder.StationsFor(options)
+		local length = curve.Length
+
+		local function makeSurfacePart(name: string, material: Enum.Material, color: Color3): Part
+			local part = Instance.new("Part")
+			part.Name = name
+			part.Anchored = true
+			part.CanCollide = false
+			part.CanTouch = false
+			part.CastShadow = false
+			part.TopSurface = Enum.SurfaceType.Smooth
+			part.BottomSurface = Enum.SurfaceType.Smooth
+			part.Material = material
+			part.Color = color
+			return part
+		end
+		local function makeShoulderPart(): Part
+			return makeSurfacePart("Shoulder", Enum.Material.Asphalt, style.ShoulderColor)
+		end
+		local function makePavementPart(): Part
+			return makeSurfacePart("Sidewalk", Enum.Material.Concrete, style.SidewalkColor)
+		end
+
+		local function ringAlphaAt(station: number): number
+			local t = if cutAtStart then station / length else 1 - station / length
+			t = math.clamp(t, 0, 1)
+			return t * t * (3 - 2 * t)
+		end
+
+		for _, componentIndex in sidewalkIndices do
+			local component = arm.Profile.Components[componentIndex]
+			local edge = offsets[componentIndex]
+			local leftSide = (edge.Left + edge.Right) / 2 < 0
+			local outward = if leftSide then -1 else 1
+			local innerOffsetM = if leftSide then edge.Right else edge.Left
+			local ringPavementM = component.WidthM
+			local armOutward = if style.DriveOnLeft then -1 else 1
+			local cutShoulderM = if outward == armOutward then arm.CutShoulderM else 0
+
+			local function surfacePoints(station: number): (Vector3, Vector3, Vector3, Vector3, number, number)
+				local alpha = ringAlphaAt(station)
+				local shoulderWidthM = cutShoulderM * (1 - alpha)
+				local pavementWidthM = cutPavementM + (ringPavementM - cutPavementM) * alpha
+				local frame = curve:FrameAt(station)
+				local shoulderOuterM = innerOffsetM + outward * shoulderWidthM
+				local pavementOuterM = shoulderOuterM + outward * pavementWidthM
+				local shoulderInner = (frame * CFrame.new(innerOffsetM * scale, 0, 0)).Position
+				local shoulderOuter = (frame * CFrame.new(shoulderOuterM * scale, 0, 0)).Position
+				local pavementInner = (frame * CFrame.new(shoulderOuterM * scale, curbHeight, 0)).Position
+				local pavementOuter = (frame * CFrame.new(pavementOuterM * scale, curbHeight, 0)).Position
+				return shoulderInner, shoulderOuter, pavementInner, pavementOuter, shoulderWidthM, pavementWidthM
+			end
+
+			for i = 1, #stations - 1 do
+				local s0, s1 = stations[i], stations[i + 1]
+				local shoulderInner0, shoulderOuter0, pavementInner0, pavementOuter0, shoulderWidth0, pavementWidth0 =
+					surfacePoints(s0)
+				local shoulderInner1, shoulderOuter1, pavementInner1, pavementOuter1, shoulderWidth1, pavementWidth1 =
+					surfacePoints(s1)
+				local down = -curve:FrameAt((s0 + s1) / 2).UpVector
+				if math.max(shoulderWidth0, shoulderWidth1) * scale >= 0.02 then
+					FillTriangle(shoulderInner0, shoulderOuter0, shoulderOuter1, roadDepth, down, makeShoulderPart, model)
+					FillTriangle(shoulderInner0, shoulderOuter1, shoulderInner1, roadDepth, down, makeShoulderPart, model)
+				end
+				if math.max(pavementWidth0, pavementWidth1) * scale >= 0.02 then
+					FillTriangle(pavementInner0, pavementOuter0, pavementOuter1, pavementDepth, down, makePavementPart, model)
+					FillTriangle(pavementInner0, pavementOuter1, pavementInner1, pavementDepth, down, makePavementPart, model)
+				end
+			end
+		end
+	end
 	-- Not a free-standing editable road - owned by the roundabout mesh.
 	model:SetAttribute("RW_Road", nil)
 	model.Name = "RoundaboutArm"
@@ -1590,6 +1723,9 @@ end
 -- on where its neighbours actually landed.
 type MouthArm = {
 	Profile: ArmProfile,
+	-- Pavement width on the source approach at the cut. May be zero; the arm's
+	-- profile above carries the ring-side width and `buildArm` joins the two.
+	CutPavementM: number,
 	MergeRadius: number,
 	-- Centreline offset at the cut, measured from the approach's centreline along
 	-- the RIGHT OF THE INWARD direction, so both arms use one frame.
@@ -1649,20 +1785,37 @@ local function planMouth(
 		-- outward, and which of those matches the curve depends on which END of
 		-- the road the junction sits at - so it is neither "always the exit" nor
 		-- a property of the arm alone.
-		local profile = armProfileFor(group, solo, style, scale, travelsInward == atStart)
+		local profile = armProfileFor(
+			group,
+			solo,
+			style,
+			scale,
+			travelsInward == atStart,
+			ringSidewalkWidthM(style)
+		)
 		local mergeRadius = ringKerbRadiusStuds - profile.OuterOffsetStuds
 		if mergeRadius <= 1 then
 			return nil
 		end
-		-- Land the arm's ROADWAY on the very lanes it replaces, so asphalt, kerb
-		-- and pavement all run straight through the cut. An arm running outward
+		-- Land the arm's RUNNING LANES on the very lanes they replace. The shoulder
+		-- is outside that alignment and tapers independently; including its width in
+		-- the centre calculation is what made a 2-lane highway look like 3 lanes.
+		-- An arm running outward
 		-- has its own right-of-travel reversed against the inward frame, so its
 		-- roadway offset flips with it.
 		local spanCentreInward = (group.LeftM + group.RightM) / 2 * toInward
+		local armOuterSign = if style.DriveOnLeft then -1 else 1
+		local coreShiftLocalM = -armOuterSign * profile.CutShoulderM / 2
+		local coreCentreInward = spanCentreInward + coreShiftLocalM * (if travelsInward then 1 else -1)
 		local lateralM = if travelsInward
-			then spanCentreInward - profile.RoadwayCentreM
-			else spanCentreInward + profile.RoadwayCentreM
-		return { Profile = profile, MergeRadius = mergeRadius, LateralStuds = lateralM * scale }
+			then coreCentreInward - profile.RoadwayCentreM
+			else coreCentreInward + profile.RoadwayCentreM
+		return {
+			Profile = profile,
+			CutPavementM = group.PavementM,
+			MergeRadius = mergeRadius,
+			LateralStuds = lateralM * scale,
+		}
 	end
 
 	local entry = makeArm(inbound, true)
@@ -1756,7 +1909,7 @@ local function buildMouth(
 				ARM_HANDLE
 			),
 		})
-		buildArm(entryCurve :: PolyCurve.PolyCurve, entry.Profile, style, settings).Parent = ring
+		buildArm(entryCurve :: PolyCurve.PolyCurve, entry.Profile, entry.CutPavementM, true, style, settings).Parent = ring
 		ringKerbRadius = entry.MergeRadius + entry.Profile.OuterOffsetStuds
 	end
 
@@ -1771,7 +1924,7 @@ local function buildMouth(
 				ARM_HANDLE
 			),
 		})
-		buildArm(exitCurve :: PolyCurve.PolyCurve, exit.Profile, style, settings).Parent = ring
+		buildArm(exitCurve :: PolyCurve.PolyCurve, exit.Profile, exit.CutPavementM, false, style, settings).Parent = ring
 		ringKerbRadius = exit.MergeRadius + exit.Profile.OuterOffsetStuds
 	end
 

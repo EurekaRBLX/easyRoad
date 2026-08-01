@@ -78,6 +78,15 @@ analysis and the two-fill design in `ROUNDABOUT.md` §5.3d.
 Every result in these docs is headless. The user's screenshots are the
 authority, and they have repeatedly shown defects the tooling passed.
 
+### Structures - first vertical slice built, unconfirmed live
+`STRUCTURES.md` is the contract. The Road Inspector can import a selected
+Workspace Model into `ServerStorage/EasyRoadAssets`, tile it as a viaduct or
+tunnel module, and auto-place viaduct piers by downward raycast. Structure data
+survives all known road rebuild paths. Tunnel Terrain excavation, special
+portal/abutment modules, custom pier assets, and asset-library management are
+still open. The Python parity render/check is
+`tools/preview/structure_preview.py`.
+
 ---
 
 ## How to actually make progress here
@@ -151,17 +160,17 @@ is a stronger guarantee than the `chordExcursion` guard now used instead.
 
 ## Immediate next steps, in order
 
-1. **Reinstall `dist/EasyRoad.rbxmx` and look.** Nothing this session is
-   confirmed live. The indentation and the junction pad are the two to check.
-2. **The mouth indentation** (`ROUNDABOUT.md` §5.3d) — the two-fill design.
-   Note `scan_mouths` currently classifies that wedge as GORE, so the preview
-   will pass a mouth that is visibly wrong until that classification is
-   revisited.
-3. **Re-derive `MinimumRadiusStuds`.** It is now advisory, and it is 2–7× too
-   conservative — a 4-leg 2+2 ring is clean at R=10 against a "minimum" of 70.5.
-   A recommendation that wrong teaches people to ignore it. Needs a definition
-   of failure that is not bare ground, since nothing in that sweep fails.
-4. **Turbo markings** (`ROUNDABOUT.md` §5.3c) — smaller than first scoped;
-   `Markings.MarkingLine` already ramps a lateral offset along a curve.
-5. Highway shoulder treated as a lane; highway↔normal sidewalk transition;
-   cul-de-sacs. All unstarted.
+1. **Reinstall `dist/EasyRoad.rbxmx` and look.** Confirm the highway shoulder
+   and pavement taper, its solid separator, mouth apron, junction pad, and turbo markings in Studio; all are
+   headlessly clean but the renderer cannot catch height or z-fighting issues.
+2. **Intersection controls and crossings.** Add stop/give-way markings,
+   pedestrian/cycle crossings, and a Commonwealth zig-zag toggle. Define the
+   basic EasyRoad signal socket/controller plus optional EasyLight extension
+   contract before coupling any traffic-light UI to geometry.
+3. **Live-check the new structure workflow.** Ctrl-select a road and source
+   Model, import both explicit-socket and automatic-socket cases, then exercise
+   curves, elevated Terrain raycasts, Apply/Revert, split, and junction trims.
+4. **Static identifier checking.** Still the highest-value safety tool before a
+   large new system; no Luau runtime currently checks undefined identifiers.
+5. **Ordinary RoadBuilder highway transitions.** The roundabout arm is fixed,
+   but highway-to-parkway/avenue/street width transitions remain untraced.

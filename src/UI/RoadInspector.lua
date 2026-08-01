@@ -19,6 +19,8 @@ local RoadProfile = require("../RoadProfile")
 local RegionStyles = require("../RegionStyles")
 local RoadEditSession = require("../RoadEditSession")
 local Settings = require("../Settings")
+local StructureAssets = require("../StructureAssets")
+local StructureControls = require("./StructureControls")
 
 local function RoadInspector(props: {
 	PluginObj: Plugin,
@@ -87,6 +89,10 @@ local function RoadInspector(props: {
 	table.insert(actions, { Text = "Close", OnClick = session.Deselect })
 
 	local isTransition = session.IsTransition()
+	local structure = session.GetStructure()
+	local structureKind: StructureAssets.AssetKind? = if structure and structure.Mode == "Viaduct"
+		then "Viaduct"
+		else if structure and structure.Mode == "Tunnel" then "Tunnel" else nil
 	return e(RoadDesigner.Panel, {
 		PluginObj = props.PluginObj,
 		Profile = profile,
@@ -109,6 +115,13 @@ local function RoadInspector(props: {
 		Actions = actions,
 		MarkingStretches = session.GetMarkingStretches(),
 		OnRemoveMarkingStretch = session.RemoveMarkingStretch,
+		ExtraProperties = structure and e(StructureControls, {
+			Structure = structure,
+			Assets = session.GetStructureAssets(structureKind),
+			Status = session.GetStructureStatus(),
+			OnChange = session.SetStructure,
+			OnImport = session.ImportStructureAsset,
+		}),
 	})
 end
 

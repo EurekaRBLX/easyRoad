@@ -26,6 +26,8 @@ local BusStops = require("./BusStops")
 local Markings = require("./Mesh/Markings")
 local PolyCurve = require("./Geometry/PolyCurve")
 local Superelevation = require("./Geometry/Superelevation")
+local StructureAssets = require("./StructureAssets")
+local StructureBuilder = require("./StructureBuilder")
 
 -- Pie-menu state machine for a selected road:
 --   Menu         - top-level pills (Edit on Road Builder / Place More / ...)
@@ -100,9 +102,14 @@ export type RoadEditSession = {
 	GetSelectedRoad: () -> Model?,
 	GetProfile: () -> RoadProfile.RoadProfile?,
 	GetEndProfile: () -> RoadProfile.RoadProfile?,
+	GetStructure: () -> RoadInstance.StructureData?,
+	GetStructureAssets: (kind: StructureAssets.AssetKind?) -> { StructureAssets.AssetInfo },
+	GetStructureStatus: () -> string?,
 	IsTransition: () -> boolean,
 	IsDirty: () -> boolean,
 	SetProfile: (profile: RoadProfile.RoadProfile) -> (),
+	SetStructure: (structure: RoadInstance.StructureData) -> (),
+	ImportStructureAsset: (kind: StructureAssets.AssetKind) -> (),
 	Apply: () -> (),
 	Revert: () -> (),
 	Deselect: () -> (),
@@ -185,6 +192,8 @@ local function createRoadEditSession(
 	local selectedRoad: Model? = nil
 	local originalData: RoadInstance.RoadData? = nil
 	local editingProfile: RoadProfile.RoadProfile? = nil -- Local staged clone of ProfileStart
+	local editingStructure: RoadInstance.StructureData? = nil
+	local structureStatus: string? = nil
 	local mode: Mode = "Menu"
 	local mouse = plugin:GetMouse()
 	local bayConnections: { RBXScriptConnection } = {}
@@ -791,6 +800,8 @@ local function createRoadEditSession(
 		RoadInstance.StampBay(road, data.Bay)
 		RoadInstance.StampMarkingStretches(road, markingStretches)
 		RoadInstance.StampKerbStretches(road, kerbStretches)
+		RoadInstance.StampStructure(road, data.Structure)
+		StructureBuilder.Render(road, data.Curve, data.Structure or StructureBuilder.DefaultData(), settings)
 		BusStops.Render(road)
 		data.MarkingStretches = markingStretches
 		data.KerbStretches = kerbStretches
@@ -966,6 +977,10 @@ local function createRoadEditSession(
 		selectedRoad = road
 		originalData = if road then RoadInstance.Read(road) else nil
 		editingProfile = if originalData then RoadProfile.Clone(originalData.ProfileStart) else nil
+		editingStructure = if originalData and originalData.Structure
+			then StructureBuilder.CloneData(originalData.Structure)
+			else if originalData then StructureBuilder.DefaultData() else nil
+		structureStatus = nil
 		bayStation = nil
 		bayDraft = nil
 		stretchDraft = nil
@@ -1035,6 +1050,18 @@ local function createRoadEditSession(
 		return if originalData then originalData.ProfileEnd else nil
 	end
 
+	function session.GetStructure(): RoadInstance.StructureData?
+		return editingStructure
+	end
+
+	function session.GetStructureAssets(kind: StructureAssets.AssetKind?): { StructureAssets.AssetInfo }
+		return StructureAssets.List(kind)
+	end
+
+	function session.GetStructureStatus(): string?
+		return structureStatus
+	end
+
 	function session.IsTransition(): boolean
 		local endProfile = if originalData then originalData.ProfileEnd else nil
 		return originalData ~= nil and endProfile ~= nil and endProfile.Id ~= originalData.ProfileStart.Id
@@ -1046,7 +1073,14 @@ local function createRoadEditSession(
 		end
 		local a = HttpService:JSONEncode(RoadProfile.Serialize(editingProfile))
 		local b = HttpService:JSONEncode(RoadProfile.Serialize(originalData.ProfileStart))
-		return a ~= b
+		if a ~= b then
+			return true
+		end
+		local currentStructure = if editingStructure and editingStructure.Mode ~= "None"
+			then editingStructure
+			else StructureBuilder.DefaultData()
+		local storedStructure = originalData.Structure or StructureBuilder.DefaultData()
+		return HttpService:JSONEncode(currentStructure) ~= HttpService:JSONEncode(storedStructure)
 	end
 
 	function session.SetProfile(newProfile: RoadProfile.RoadProfile)
@@ -1054,8 +1088,44 @@ local function createRoadEditSession(
 		changeSignal:Fire()
 	end
 
+	function session.SetStructure(structure: RoadInstance.StructureData)
+		editingStructure = StructureBuilder.CloneData(structure)
+		structureStatus = nil
+		changeSignal:Fire()
+	end
+
+	function session.ImportStructureAsset(kind: StructureAssets.AssetKind)
+		if not selectedRoad or not editingStructure then
+			return
+		end
+		local candidate = StructureAssets.FindImportCandidate(Selection:Get(), selectedRoad)
+		if not candidate then
+			structureStatus = "Ctrl-select this road and a source Model in Workspace, then import again."
+			changeSignal:Fire()
+			return
+		end
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadAssetImport", "Import road structure asset")
+		local info, message = StructureAssets.Import(candidate, kind)
+		if info then
+			local copy = StructureBuilder.CloneData(editingStructure)
+			copy.Mode = kind
+			copy.AssetId = info.Id
+			editingStructure = copy
+			structureStatus = info.Name .. ": " .. message
+			if recording then
+				ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+			end
+		else
+			structureStatus = message
+			if recording then
+				ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Cancel)
+			end
+		end
+		changeSignal:Fire()
+	end
+
 	function session.Apply()
-		if not selectedRoad or not editingProfile or not originalData then
+		if not selectedRoad or not editingProfile or not editingStructure or not originalData then
 			return
 		end
 		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Edit road")
@@ -1101,6 +1171,12 @@ local function createRoadEditSession(
 		RoadInstance.StampBay(selectedRoad, originalData.Bay)
 		RoadInstance.StampMarkingStretches(selectedRoad, originalData.MarkingStretches)
 		RoadInstance.StampKerbStretches(selectedRoad, originalData.KerbStretches)
+		local appliedStructure = if editingStructure.Mode == "None"
+			then nil
+			else StructureBuilder.CloneData(editingStructure)
+		RoadInstance.StampStructure(selectedRoad, appliedStructure)
+		local _, renderMessage = StructureBuilder.Render(selectedRoad, originalData.Curve, editingStructure, settings)
+		structureStatus = renderMessage
 		BusStops.Render(selectedRoad)
 		originalData = {
 			Curve = originalData.Curve,
@@ -1109,6 +1185,7 @@ local function createRoadEditSession(
 			Bay = originalData.Bay,
 			MarkingStretches = originalData.MarkingStretches,
 			KerbStretches = originalData.KerbStretches,
+			Structure = appliedStructure,
 			StartJunctionId = originalData.StartJunctionId,
 			EndJunctionId = originalData.EndJunctionId,
 		}
@@ -1120,6 +1197,10 @@ local function createRoadEditSession(
 
 	function session.Revert()
 		editingProfile = if originalData then RoadProfile.Clone(originalData.ProfileStart) else nil
+		editingStructure = if originalData and originalData.Structure
+			then StructureBuilder.CloneData(originalData.Structure)
+			else if originalData then StructureBuilder.DefaultData() else nil
+		structureStatus = nil
 		changeSignal:Fire()
 	end
 
@@ -1249,6 +1330,13 @@ local function createRoadEditSession(
 		RoadInstance.StampBay(selectedRoad, bay)
 		RoadInstance.StampMarkingStretches(selectedRoad, originalData.MarkingStretches)
 		RoadInstance.StampKerbStretches(selectedRoad, originalData.KerbStretches)
+		RoadInstance.StampStructure(selectedRoad, originalData.Structure)
+		StructureBuilder.Render(
+			selectedRoad,
+			originalData.Curve,
+			originalData.Structure or StructureBuilder.DefaultData(),
+			settings
+		)
 		BusStops.Render(selectedRoad)
 		originalData.Bay = bay
 		bayStation = nil

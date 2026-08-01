@@ -66,8 +66,11 @@ def split_approach_lanes(components, inbound_sign, style_pav=SW_M):
     the middle of the mouth as soon as they did not.
     """
     offs = offsets_m(components)
-    groups = {1: dict(lanes=[], idx=[], left=math.inf, right=-math.inf, pav=style_pav),
-              -1: dict(lanes=[], idx=[], left=math.inf, right=-math.inf, pav=style_pav)}
+    # Zero is meaningful: a motorway really has no pavement. The arm profile
+    # still carries the ring-side width; emit_arm tapers only that outer strip
+    # down to this source width without recentering the roadway.
+    groups = {1: dict(lanes=[], idx=[], left=math.inf, right=-math.inf, pav=0.0),
+              -1: dict(lanes=[], idx=[], left=math.inf, right=-math.inf, pav=0.0)}
 
     def add(g, i):
         g["idx"].append(i)
@@ -102,29 +105,111 @@ def split_approach_lanes(components, inbound_sign, style_pav=SW_M):
             groups[-1] if groups[-1]["lanes"] else None)
 
 
-def arm_from_group(group, drive_on_left, solo=False, mirrored=False):
+def arm_from_group(group, drive_on_left, solo=False, mirrored=False, ring_pav=SW_M):
     """`group["lanes"]` is in the APPROACH's left-to-right order.
 
     An arm whose own travel runs against the approach curve sees that
     cross-section mirrored, so its components list back to front - see
     RoundaboutBuilder.armProfileFor.
     """
-    lanes = list(reversed(group["lanes"])) if mirrored else group["lanes"]
-    comps = [(kind, w, 1 if directional else 0) for kind, w, directional in lanes]
-    # The arm keeps a pavement even where its approach has none: it is what
-    # covers the band openRingPavement opens in the ring's own footway. See
-    # armProfileFor - removing it trades a 7.1-stud seam step for bare ground.
+    lanes = list(reversed(group["lanes"])) if mirrored else list(group["lanes"])
+    # The hard shoulder remains in the profile at zero width so the marking
+    # port sees Drive/Shoulder and emits a solid separator. Its real paved width
+    # is returned separately and emit_arm tapers that surface to zero.
+    outboard_shoulder = set()
+    cut_shoulder = 0.0
+    indices = range(len(lanes)) if drive_on_left else range(len(lanes) - 1, -1, -1)
+    for i in indices:
+        if lanes[i][0] != "Shoulder":
+            break
+        outboard_shoulder.add(i)
+        cut_shoulder += lanes[i][1]
+    comps = [(kind, 0.0 if i in outboard_shoulder else w, 1 if directional else 0)
+             for i, (kind, w, directional) in enumerate(lanes)]
+    # This is the RING-side width. emit_arm replaces the physical Sidewalk
+    # part while coordinating it with the shoulder taper outside the lanes.
     if solo:
-        comps.insert(0, ("Sidewalk", group["pav"]))
-        comps.append(("Sidewalk", group["pav"]))
+        comps.insert(0, ("Sidewalk", ring_pav))
+        comps.append(("Sidewalk", ring_pav))
     elif drive_on_left:
-        comps.insert(0, ("Sidewalk", group["pav"]))
+        comps.insert(0, ("Sidewalk", ring_pav))
     else:
-        comps.append(("Sidewalk", group["pav"]))
+        comps.append(("Sidewalk", ring_pav))
     lm, rm = roadway_edges_m(comps)
     outer = (-lm if drive_on_left else rm) * SCALE
     inner = (rm if drive_on_left else -lm) * SCALE
-    return comps, outer, inner, (lm + rm) / 2
+    return comps, outer, inner, (lm + rm) / 2, cut_shoulder
+
+
+def emit_arm(curve, components, cut_pavement_m, cut_shoulder_m, cut_at_start,
+             drive_on_left):
+    """Emit fixed travel lanes with shoulder and pavement outside them.
+
+    The Shoulder component is deliberately zero-width in `components`: it keeps
+    the Drive/Shoulder boundary semantic (solid marking) without becoming a
+    third running lane. The physical shoulder is an edge-anchored wedge from its
+    full source width to zero; pavement begins at its outer edge and grows to
+    the ring-side width.
+    """
+    sidewalk_indices = [i for i, c in enumerate(components) if c[0] == "Sidewalk"]
+    needs_taper = cut_shoulder_m > 1e-6 or any(
+        abs(components[i][1] - cut_pavement_m) > 1e-6 for i in sidewalk_indices)
+    emitted = emit_road(curve, components, -ARM_SINK)
+    if not needs_taper:
+        return emitted, []
+
+    parts = [p for p in emitted if p.name != "Sidewalk"]
+    shoulder_parts = []
+    offs = offsets_m(components)
+    max_offset = sum(c[1] for c in components) / 2 * SCALE
+    stations = build_stations(curve, MAX_SEGMENT_LENGTH, CHORD_TOLERANCE, max_offset)
+
+    def ring_alpha(station):
+        t = station / curve.length if cut_at_start else 1.0 - station / curve.length
+        t = max(0.0, min(1.0, t))
+        return t * t * (3.0 - 2.0 * t)
+
+    for index in sidewalk_indices:
+        edge = offs[index]
+        left_side = (edge[0] + edge[1]) / 2 < 0
+        outward = -1.0 if left_side else 1.0
+        inner_m = edge[1] if left_side else edge[0]
+        ring_pavement_m = components[index][1]
+        arm_outward = -1.0 if drive_on_left else 1.0
+        side_shoulder_m = cut_shoulder_m if outward == arm_outward else 0.0
+
+        def surface_points(station):
+            alpha = ring_alpha(station)
+            shoulder_m = side_shoulder_m * (1.0 - alpha)
+            pavement_m = cut_pavement_m + (ring_pavement_m - cut_pavement_m) * alpha
+            pos, right, _ = curve.frame(station)
+            shoulder_outer_m = inner_m + outward * shoulder_m
+            pavement_outer_m = shoulder_outer_m + outward * pavement_m
+            shoulder_inner = (pos[0] + right[0] * inner_m * SCALE,
+                              pos[1] + right[1] * inner_m * SCALE)
+            shoulder_outer = (pos[0] + right[0] * shoulder_outer_m * SCALE,
+                              pos[1] + right[1] * shoulder_outer_m * SCALE)
+            pavement_inner = shoulder_outer
+            pavement_outer = (pos[0] + right[0] * pavement_outer_m * SCALE,
+                              pos[1] + right[1] * pavement_outer_m * SCALE)
+            return (shoulder_inner, shoulder_outer, pavement_inner, pavement_outer,
+                    shoulder_m, pavement_m)
+
+        for s0, s1 in zip(stations, stations[1:]):
+            sh_in0, sh_out0, pav_in0, pav_out0, sh_w0, pav_w0 = surface_points(s0)
+            sh_in1, sh_out1, pav_in1, pav_out1, sh_w1, pav_w1 = surface_points(s1)
+            if max(sh_w0, sh_w1) * SCALE >= 0.02:
+                poly = [sh_in0, sh_out0, sh_out1, sh_in1]
+                center = (sum(p[0] for p in poly) / 4, sum(p[1] for p in poly) / 4)
+                part = Part("Shoulder", poly, KIND_C["Shoulder"], center, -ARM_SINK)
+                parts.append(part)
+                shoulder_parts.append(part)
+            if max(pav_w0, pav_w1) * SCALE >= 0.02:
+                poly = [pav_in0, pav_out0, pav_out1, pav_in1]
+                center = (sum(p[0] for p in poly) / 4, sum(p[1] for p in poly) / 4)
+                parts.append(Part("Sidewalk", poly, SIDEWALK_C, center,
+                                  -ARM_SINK + 0.125 * SCALE))
+    return parts, shoulder_parts
 
 
 # --- roundabout --------------------------------------------------------------
@@ -237,7 +322,8 @@ def suggested_radius_studs(legs, lane_count, lane_w, dol):
         for group, travels_inward in ((inbound, True), (outbound, False)):
             if not group:
                 continue
-            comps, outer, _inner, _centre = arm_from_group(group, dol, solo, not travels_inward)
+            comps, outer, _inner, _centre, _shoulder = arm_from_group(
+                group, dol, solo, not travels_inward)
             width = sum(c[1] for c in comps) * SCALE
             total += width
             widest = max(widest, width)
@@ -437,39 +523,81 @@ def check_turbo(scene):
 
 
 def check_arm_kinds(scene):
-    """Every roadway strip an approach had must reach its arm as ITSELF.
+    """Running lanes stay lanes; a shoulder becomes a zero-width boundary.
 
-    Two failures, both of which shipped. A shoulder is `Direction = 0` roadway,
-    so the undirected pass folds it into whichever side it abuts, and the arm
-    builder used to re-emit every strip as `{ Kind = "Drive" }` - a 2+2 highway
-    built 3+3 arms. And because that pass runs second, the strip was appended
-    after the directional lanes whatever its real position, which put the hard
-    shoulder on the GORE side of the mouth, against the splitter island.
-
-    Checked as a multiset per arm (kinds and widths must match the source
-    group) plus an explicit outboard test, because the two defects mask each
-    other: get the kinds right and the order wrong and every count still
-    agrees.
+    Earlier validation required every source roadway strip to keep full width
+    at the ring, accidentally certifying a hard shoulder as a third lane. The
+    correct invariant is that non-shoulder roadway components keep their kinds
+    and widths, while the outboard shoulder survives only as a zero-width
+    component at the merge so its Drive/Shoulder boundary remains solid.
     """
     faults = []
     for n, arm in enumerate(scene["arm_kinds"]):
-        want = sorted((k, round(w, 4)) for k, w, _ in arm["source"])
-        got = sorted((c[0], round(c[1], 4)) for c in arm["comps"] if c[0] != "Sidewalk")
+        want = sorted((k, round(w, 4)) for k, w, _ in arm["source"] if k != "Shoulder")
+        got = sorted((c[0], round(c[1], 4)) for c in arm["comps"]
+                     if c[0] != "Sidewalk" and (c[0] != "Shoulder" or c[1] > 1e-6))
         if want != got:
-            faults.append(f"arm {n} ({arm['role']}): approach had {want}, arm built {got}")
+            faults.append(f"arm {n} ({arm['role']}): running surface was {want}, arm built {got}")
+            continue
+        source_shoulder = sum(w for k, w, _ in arm["source"] if k == "Shoulder")
+        if abs(source_shoulder - arm["cut_shoulder"]) > 1e-6:
+            faults.append(f"arm {n} ({arm['role']}): source shoulder is {source_shoulder:.2f} m, "
+                          f"taper received {arm['cut_shoulder']:.2f} m")
+        roadway = [c for c in arm["comps"] if c[0] != "Sidewalk"]
+        shoulders = [i for i, c in enumerate(roadway) if c[0] == "Shoulder"]
+        if source_shoulder <= 1e-6:
+            continue
+        if not shoulders or any(roadway[i][1] > 1e-6 for i in shoulders):
+            faults.append(f"arm {n} ({arm['role']}): shoulder is not zero-width at the ring")
             continue
         # Outboard = the side the pavement/kerb is on, which armProfileFor puts
         # at index 0 for left-hand drive and last for right-hand.
-        roadway = [c for c in arm["comps"] if c[0] != "Sidewalk"]
-        shoulders = [i for i, c in enumerate(roadway) if c[0] == "Shoulder"]
-        if not shoulders:
-            continue
         outboard_end = 0 if scene["drive_on_left"] else len(roadway) - 1
         if outboard_end not in shoulders:
             faults.append(f"arm {n} ({arm['role']}): shoulder sits at index {shoulders} of "
                           f"{len(roadway)} roadway strips, not at the outboard end "
                           f"({outboard_end}) - it is on the gore side, against the splitter")
     return faults
+
+
+def check_shoulder_tapers(scene):
+    """Measure the emitted shoulder polygons at both ends of every highway arm."""
+    faults = []
+    for n, taper in enumerate(scene["shoulder_tapers"]):
+        pieces = taper["parts"]
+        expected = taper["cut_shoulder"] * SCALE
+        if expected <= 1e-6:
+            if pieces:
+                faults.append(f"arm {n}: emitted shoulder geometry with no source shoulder")
+            continue
+        if not pieces:
+            faults.append(f"arm {n}: {expected:.2f}-stud source shoulder emitted no taper")
+            continue
+        first, last = pieces[0], pieces[-1]
+        if taper["cut_at_start"]:
+            cut_width = math.dist(first.poly[0], first.poly[1])
+            ring_width = math.dist(last.poly[2], last.poly[3])
+        else:
+            ring_width = math.dist(first.poly[0], first.poly[1])
+            cut_width = math.dist(last.poly[2], last.poly[3])
+        if abs(cut_width - expected) > 0.05:
+            faults.append(f"arm {n}: shoulder is {cut_width:.2f} studs at cut, expected {expected:.2f}")
+        if ring_width > 0.05:
+            faults.append(f"arm {n}: shoulder still {ring_width:.2f} studs wide at ring merge")
+    return faults
+
+
+def shoulder_taper_widths(taper):
+    """Return emitted (cut, ring) widths in studs, or None without geometry."""
+    pieces = taper["parts"]
+    if not pieces:
+        return None
+    first, last = pieces[0], pieces[-1]
+    if taper["cut_at_start"]:
+        return (math.dist(first.poly[0], first.poly[1]),
+                math.dist(last.poly[2], last.poly[3]))
+    return (math.dist(last.poly[2], last.poly[3]),
+            math.dist(first.poly[0], first.poly[1]))
 
 
 def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=True,
@@ -507,6 +635,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     exit_traces = []          # (curve, arm) per exit, for the turbo peel
     exit_markings = []        # per exit arm, that arm's OWN lane lines
     arm_kinds = []            # source group vs built arm, for check_arm_kinds
+    shoulder_tapers = []      # emitted polygons, measured at cut and ring
     angles = [d for d, _ in legs]
     for deg, spoke_profile in legs:
         a = math.radians(deg)
@@ -541,17 +670,23 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 return None
             # Junction at the far end (inbound sign +1 above), so the outward
             # arm is the mirrored one - see armProfileFor.
-            comps, outer, inner, road_centre = arm_from_group(group, drive_on_left, solo,
-                                                              not travels_inward)
+            comps, outer, inner, road_centre, cut_shoulder = arm_from_group(
+                group, drive_on_left, solo, not travels_inward,
+                SW_M if sidewalk else 0.0)
             merge = ring_kerb - outer
             span_centre = (group["left"] + group["right"]) / 2
-            lat_m = (span_centre - road_centre) if travels_inward else (span_centre + road_centre)
+            arm_outer_sign = -1.0 if drive_on_left else 1.0
+            core_shift_local = -arm_outer_sign * cut_shoulder / 2
+            core_centre = span_centre + core_shift_local * (1 if travels_inward else -1)
+            lat_m = (core_centre - road_centre) if travels_inward else (core_centre + road_centre)
             # Source group kept alongside the built arm so check_arm_kinds can
             # compare the two rather than re-deriving what the arm ought to be.
             arm_kinds.append(dict(role="entry" if travels_inward else "exit",
-                                  source=list(group["lanes"]), comps=comps))
+                                  source=list(group["lanes"]), comps=comps,
+                                  cut_shoulder=cut_shoulder))
             return dict(comps=comps, outer=outer, inner=inner, merge=merge,
-                        lat=lat_m*SCALE)
+                        lat=lat_m*SCALE, cut_pav=group["pav"],
+                        cut_shoulder=cut_shoulder)
 
         entry_arm, exit_arm = make(inbound, True), make(outbound, False)
         entry = exit_ = None
@@ -559,13 +694,24 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
             p0 = (cut[0]+r[0]*entry_arm["lat"], cut[1]+r[1]*entry_arm["lat"])
             p1 = (math.cos(ea)*entry_arm["merge"], math.sin(ea)*entry_arm["merge"])
             entry = arm_curve(p0, inward, p1, rt(ea))
-            arm_parts += emit_road(entry, entry_arm["comps"], -ARM_SINK)
+            emitted, shoulder_parts = emit_arm(
+                entry, entry_arm["comps"], entry_arm["cut_pav"],
+                entry_arm["cut_shoulder"], True, drive_on_left)
+            arm_parts += emitted
+            shoulder_tapers.append(dict(parts=shoulder_parts,
+                                         cut_shoulder=entry_arm["cut_shoulder"],
+                                         cut_at_start=True))
         if exit_arm:
             p0 = (math.cos(xa)*exit_arm["merge"], math.sin(xa)*exit_arm["merge"])
             p1 = (cut[0]+r[0]*exit_arm["lat"], cut[1]+r[1]*exit_arm["lat"])
             exit_ = arm_curve(p0, rt(xa), p1, (-inward[0], -inward[1]))
-            emitted = emit_road(exit_, exit_arm["comps"], -ARM_SINK)
+            emitted, shoulder_parts = emit_arm(
+                exit_, exit_arm["comps"], exit_arm["cut_pav"],
+                exit_arm["cut_shoulder"], False, drive_on_left)
             arm_parts += emitted
+            shoulder_tapers.append(dict(parts=shoulder_parts,
+                                         cut_shoulder=exit_arm["cut_shoulder"],
+                                         cut_at_start=False))
             exit_traces.append((exit_, exit_arm))
             # Kept by IDENTITY rather than found later by name or position.
             # check_turbo has to ask whether the peel lands on THE EXIT ARM's
@@ -701,7 +847,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
             only = entry_arm or exit_arm
             only_curve = entry or exit_
             merge_angle = ea if entry else xa
-            outer_radius = ring_kerb + SW_M*SCALE
+            outer_radius = ring_kerb + (SW_M*SCALE if sidewalk else 0.0)
 
             def outer_edge(st):
                 pp, rr, _ = only_curve.frame(max(0.0, min(only_curve.length, st)))
@@ -755,6 +901,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     return dict(tag=tag, parts=parts, gore=gore_tris, apron=apron_tris,
                 spiral=spiral, spiral_spans=spiral_spans, markings=markings,
                 exit_markings=exit_markings, arm_kinds=arm_kinds,
+                shoulder_tapers=shoulder_tapers,
                 ring_r=ring_r, ring_lanes=ring_lanes, drive_on_left=drive_on_left,
                 island_r=island_r, island=island, legs=leg_info,
                 sectors=cl,
@@ -1155,6 +1302,17 @@ def report(scene, holes, pitch, hairline):
     for fault in check_arm_kinds(scene):
         ok = False
         print(f"    ARM: {fault}")
+    for fault in check_shoulder_tapers(scene):
+        ok = False
+        print(f"    SHOULDER: {fault}")
+    shoulder_widths = [shoulder_taper_widths(t) for t in scene["shoulder_tapers"]
+                       if t["cut_shoulder"] > 1e-6]
+    shoulder_widths = [w for w in shoulder_widths if w is not None]
+    if shoulder_widths:
+        print(f"    shoulder taper: {len(shoulder_widths)} arms, "
+              f"cut {min(w[0] for w in shoulder_widths):.2f}.."
+              f"{max(w[0] for w in shoulder_widths):.2f} studs -> ring "
+              f"{max(w[1] for w in shoulder_widths):.2f} studs")
     for fault in check_turbo(scene):
         ok = False
         print(f"    TURBO: {fault}")

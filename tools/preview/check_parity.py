@@ -69,8 +69,10 @@ def scalars(text, rad):
 
 
 def main():
-    lua = scalars(open(LUA).read(), r"math\.rad")
-    py = scalars(open(PY).read(), r"math\.radians")
+    with open(LUA, encoding="utf-8") as source:
+        lua = scalars(source.read(), r"math\.rad")
+    with open(PY, encoding="utf-8") as source:
+        py = scalars(source.read(), r"math\.radians")
     for lua_name, py_name in ALIASES.items():
         if py_name in py:
             py[lua_name] = py.pop(py_name)
