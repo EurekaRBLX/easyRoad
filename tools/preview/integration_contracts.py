@@ -30,11 +30,15 @@ def reject(text, needle, message, problems):
 def main():
     problems = []
     junction = source("src/Mesh/JunctionBuilder.lua")
+    junction_instance = source("src/JunctionInstance.lua")
+    junction_session = source("src/JunctionEditSession.lua")
+    junction_panel = source("src/UI/JunctionPanel.lua")
     session = source("src/createRoadSession.lua")
     build_bar = source("src/UI/BuildBar.lua")
     structure = source("src/StructureBuilder.lua")
     settings = source("src/Settings.lua")
     road_instance = source("src/RoadInstance.lua")
+    road_split = source("src/RoadSplit.lua")
     profiles = source("src/RoadProfile.lua")
     curve = source("src/Geometry/CurveSegment.lua")
     parallel_controls = source("src/UI/ParallelControls.lua")
@@ -47,6 +51,17 @@ def main():
     require(junction, 'part.Name = "JunctionSurface"', "junction surface factory missing", problems)
     surface_factory = junction[junction.find('part.Name = "JunctionSurface"'):]
     require(surface_factory[:900], "part.CanQuery = true", "visible junction pad is not selectable", problems)
+    require(road_instance, 'model:SetAttribute("RW_RoadId"', "roads have no stable id for junction approach ports", problems)
+    require(road_instance, 'model:SetAttribute("RW_StartPortId"', "road starts have no stable approach-port identity", problems)
+    require(road_instance, 'model:SetAttribute("RW_EndPortId"', "road ends have no stable approach-port identity", problems)
+    require(road_split, "RoadInstance.PreserveOuterPortIds", "road splitting discards existing junction approach identities", problems)
+    require(junction_instance, 'model:SetAttribute("RW_MultiNodeVersion", 2)', "junctions are not stamped as multinode v2", problems)
+    require(junction_instance, "CornerRadiiM: { [string]: number }", "junctions do not persist per-corner radii", problems)
+    require(junction, "FromApproachId: string", "junction layout does not expose approach-linked corner nodes", problems)
+    require(junction, "radiusForCorner(junctionData, id)", "junction geometry ignores per-corner radius overrides", problems)
+    require(junction_session, 'c:SetAttribute("RW_CornerId", corner.Id)', "corner handles do not retain stable corner identities", problems)
+    require(junction_session, "SetSelectedCornerRadiusM", "selected corner radius cannot be edited", problems)
+    require(junction_panel, 'Label = "Link all corner radii"', "junction editor cannot switch to per-corner radii", problems)
 
     require(session, "GetStructure: () -> RoadInstance.StructureData", "placement session has no structure API", problems)
     require(session, "RoadInstance.StampStructure(model, appliedStructure)", "placed roads do not persist structure mode", problems)
@@ -102,7 +117,7 @@ def main():
         for problem in problems:
             print("FAILED:", problem)
         return 1
-    print("integration contracts passed: junction selection, assets, procedural structures, parallel roadways, highway presets, Software dock")
+    print("integration contracts passed: multinode junctions, assets, procedural structures, parallel roadways, highway presets, Software dock")
     return 0
 
 

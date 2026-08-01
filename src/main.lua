@@ -876,10 +876,16 @@ return function(
 			end
 			bottomContent = React.createElement(JunctionPanel, {
 				ConnectedRoadCount = junctionEditSession.GetConnectedRoadCount(),
+				CornerCount = junctionEditSession.GetCornerCount(),
 				FilletRadiusM = junctionEditSession.GetFilletRadiusM(),
 				PadMarginStuds = junctionEditSession.GetPadMarginStuds(),
+				LinkedCornerRadii = junctionEditSession.GetLinkedCornerRadii(),
+				SelectedCornerLabel = junctionEditSession.GetSelectedCornerLabel(),
+				SelectedCornerRadiusM = junctionEditSession.GetSelectedCornerRadiusM(),
 				OnFilletRadiusChanged = junctionEditSession.SetFilletRadiusM,
 				OnPadMarginChanged = junctionEditSession.SetPadMarginStuds,
+				OnLinkedCornerRadiiChanged = junctionEditSession.SetLinkedCornerRadii,
+				OnSelectedCornerRadiusChanged = junctionEditSession.SetSelectedCornerRadiusM,
 				OnRebuild = junctionEditSession.RebuildSelected,
 				OnDelete = junctionEditSession.DeleteJunction,
 				GetRoundaboutRadii = getRoundaboutRadii,

@@ -31,6 +31,11 @@ export type JunctionData = {
 	RoundaboutSidewalk: boolean?,
 	RoundaboutIsland: boolean?,
 	PadMarginStuds: number?,
+	-- Multinode v2 controller. Approaches are derived from connected roads;
+	-- only editing intent lives here, avoiding a second topology list that can
+	-- desynchronise. Legacy junctions read as linked with no overrides.
+	LinkedCornerRadii: boolean,
+	CornerRadiiM: { [string]: number },
 }
 
 local JunctionInstance = {}
@@ -104,6 +109,8 @@ function JunctionInstance.Create(position: Vector3): Model
 	model:SetAttribute("RW_Junction", true)
 	model:SetAttribute("RW_JunctionId", HttpService:GenerateGUID(false))
 	model:SetAttribute("RW_Position", position)
+	model:SetAttribute("RW_MultiNodeVersion", 2)
+	model:SetAttribute("RW_LinkedCornerRadii", true)
 	model.Parent = getJunctionsFolder(true)
 	return model
 end
@@ -123,6 +130,19 @@ function JunctionInstance.Read(model: Model): JunctionData?
 	local markings = model:GetAttribute("RW_RoundaboutMarkings")
 	local ringWalk = model:GetAttribute("RW_RoundaboutSidewalk")
 	local ringIsland = model:GetAttribute("RW_RoundaboutIsland")
+	local linked = model:GetAttribute("RW_LinkedCornerRadii")
+	local cornerRadii: { [string]: number } = {}
+	local rawCornerRadii = model:GetAttribute("RW_CornerRadiiJson")
+	if typeof(rawCornerRadii) == "string" then
+		local ok, decoded = pcall(HttpService.JSONDecode, HttpService, rawCornerRadii)
+		if ok and typeof(decoded) == "table" then
+			for cornerId, radius in decoded do
+				if typeof(cornerId) == "string" and typeof(radius) == "number" then
+					cornerRadii[cornerId] = math.clamp(radius, 0.5, 40)
+				end
+			end
+		end
+	end
 	return {
 		Id = id,
 		Position = position,
@@ -133,6 +153,8 @@ function JunctionInstance.Read(model: Model): JunctionData?
 			else nil,
 		RoundaboutSidewalk = if typeof(ringWalk) == "boolean" then ringWalk else nil,
 		RoundaboutIsland = if typeof(ringIsland) == "boolean" then ringIsland else nil,
+		LinkedCornerRadii = if typeof(linked) == "boolean" then linked else true,
+		CornerRadiiM = cornerRadii,
 	}
 end
 
@@ -158,6 +180,23 @@ end
 
 function JunctionInstance.SetPadMarginStuds(model: Model, marginStuds: number?)
 	model:SetAttribute("RW_PadMarginStuds", marginStuds)
+end
+
+function JunctionInstance.SetLinkedCornerRadii(model: Model, linked: boolean)
+	model:SetAttribute("RW_MultiNodeVersion", 2)
+	model:SetAttribute("RW_LinkedCornerRadii", linked)
+end
+
+function JunctionInstance.SetCornerRadiusM(model: Model, cornerId: string, radiusM: number?)
+	local data = JunctionInstance.Read(model)
+	local radii = if data then table.clone(data.CornerRadiiM) else {}
+	if radiusM == nil then
+		radii[cornerId] = nil
+	else
+		radii[cornerId] = math.clamp(radiusM, 0.5, 40)
+	end
+	model:SetAttribute("RW_MultiNodeVersion", 2)
+	model:SetAttribute("RW_CornerRadiiJson", if next(radii) then HttpService:JSONEncode(radii) else nil)
 end
 
 function JunctionInstance.Delete(model: Model)

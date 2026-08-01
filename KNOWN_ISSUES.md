@@ -4,7 +4,7 @@ Confirmed bugs that are logged but not yet fixed. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `SHIPPED.md` for what's already been fixed/built.
 
-- **The `stress_us` five-leg roundabout preview has one deterministic mouth
+- **The `stress_us` four-approach roundabout preview has one deterministic mouth
   tear sample.** The full validator measures a 3.00-stud hole on leg 2,
   73.6 studs from the approach cut. The roundabout port and builder were
   untouched by the current structure/parallel work, so the case is carried

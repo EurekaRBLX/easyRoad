@@ -14,6 +14,11 @@ The geometry can create and trim ordinary intersections, but it does not yet
 communicate who stops or where vulnerable road users cross. Build these as
 junction-owned controls, not decorations guessed independently by every road:
 
+The multinode foundation is now shipped: one logical junction owns stable
+road-end approach ids and angular-neighbour corner ids, with linked or
+per-corner curb radii in the editor. Reuse those approach ids for the controls
+below rather than inventing a second indexing scheme.
+
 1. **Approach control markings.** Per approach: None, Stop, Give Way/Yield.
    Generate the transverse line at the trimmed mouth and expose its setback,
    width, colour, and regional defaults. Stop text/triangles can follow after

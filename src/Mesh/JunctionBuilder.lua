@@ -188,6 +188,7 @@ end
 
 type EdgePoint = {
 	Road: Model,
+	ApproachId: string,
 	Kerb: Vector3,
 	Outer: Vector3,
 }
@@ -203,10 +204,13 @@ local function edgePointsForRoad(road: Model, junctionId: string, settings: Sett
 		return nil
 	end
 	local station: number
+	local approachId: string
 	if data.StartJunctionId == junctionId then
 		station = 0
+		approachId = data.StartPortId
 	elseif data.EndJunctionId == junctionId then
 		station = data.Curve.Length
+		approachId = data.EndPortId
 	else
 		return nil
 	end
@@ -230,8 +234,8 @@ local function edgePointsForRoad(road: Model, junctionId: string, settings: Sett
 		return (frame * CFrame.new(offsetM * scale, 0, 0)).Position
 	end
 	return {
-		{ Road = road, Kerb = worldPoint(kerbLeftM), Outer = worldPoint(outerLeftM) },
-		{ Road = road, Kerb = worldPoint(kerbRightM), Outer = worldPoint(outerRightM) },
+		{ Road = road, ApproachId = approachId, Kerb = worldPoint(kerbLeftM), Outer = worldPoint(outerLeftM) },
+		{ Road = road, ApproachId = approachId, Kerb = worldPoint(kerbRightM), Outer = worldPoint(outerRightM) },
 	}
 end
 
@@ -458,9 +462,31 @@ export type JunctionLayout = {
 	Center: Vector3,
 	FilletRadiusM: number,
 	PadMarginStuds: number,
-	Mouths: { { Road: Model, Left: Vector3, Right: Vector3, Mid: Vector3 } },
-	Corners: { { Index: number, Mid: Vector3, SpanRad: number } },
+	Mouths: { { Id: string, Road: Model, Left: Vector3, Right: Vector3, Mid: Vector3, Angle: number } },
+	Corners: {
+		{
+			Id: string,
+			Index: number,
+			FromApproachId: string,
+			ToApproachId: string,
+			Mid: Vector3,
+			SpanRad: number,
+			RadiusM: number,
+		}
+	},
 }
+
+local function cornerId(fromApproachId: string, toApproachId: string): string
+	return fromApproachId .. ">" .. toApproachId
+end
+
+local function radiusForCorner(junctionData: JunctionInstance.JunctionData, id: string): number
+	local defaultRadius = math.clamp(junctionData.FilletRadiusM or FILLET_RADIUS_M, 0.5, 40)
+	if junctionData.LinkedCornerRadii then
+		return defaultRadius
+	end
+	return junctionData.CornerRadiiM[id] or defaultRadius
+end
 
 function JunctionBuilder.GetLayout(junctionId: string, settings: Settings.EasyRoadSettings): JunctionLayout?
 	local junctionModel = JunctionInstance.FindById(junctionId)
@@ -474,9 +500,19 @@ function JunctionBuilder.GetLayout(junctionId: string, settings: Settings.EasyRo
 	local center = junctionData.Position
 	local filletM = junctionData.FilletRadiusM or FILLET_RADIUS_M
 	local margin = junctionData.PadMarginStuds or PAD_MARGIN_STUDS
-	local mouths: { { Road: Model, Left: Vector3, Right: Vector3, Mid: Vector3 } } = {}
-	local corners: { { Index: number, Mid: Vector3, SpanRad: number } } = {}
-	local approaches: { { Angle: number, Cw: EdgePoint, Ccw: EdgePoint } } = {}
+	local mouths: { { Id: string, Road: Model, Left: Vector3, Right: Vector3, Mid: Vector3, Angle: number } } = {}
+	local corners: {
+		{
+			Id: string,
+			Index: number,
+			FromApproachId: string,
+			ToApproachId: string,
+			Mid: Vector3,
+			SpanRad: number,
+			RadiusM: number,
+		}
+	} = {}
+	local approaches: { { Id: string, Angle: number, Cw: EdgePoint, Ccw: EdgePoint } } = {}
 	local function angleDelta(a: number, b: number): number
 		return (a - b + math.pi) % (2 * math.pi) - math.pi
 	end
@@ -484,20 +520,22 @@ function JunctionBuilder.GetLayout(junctionId: string, settings: Settings.EasyRo
 		local points = edgePointsForRoad(road, junctionId, settings)
 		if points and #points == 2 then
 			local mid = (points[1].Kerb + points[2].Kerb) / 2
-			table.insert(mouths, {
-				Road = road,
-				Left = points[1].Kerb,
-				Right = points[2].Kerb,
-				Mid = mid,
-			})
 			local mx, mz = mid.X - center.X, mid.Z - center.Z
 			if mx * mx + mz * mz > 1e-6 then
 				local angle = math.atan2(mz, mx)
+				table.insert(mouths, {
+					Id = points[1].ApproachId,
+					Road = road,
+					Left = points[1].Kerb,
+					Right = points[2].Kerb,
+					Mid = mid,
+					Angle = angle,
+				})
 				local d1 = angleDelta(math.atan2(points[1].Kerb.Z - center.Z, points[1].Kerb.X - center.X), angle)
 				local d2 = angleDelta(math.atan2(points[2].Kerb.Z - center.Z, points[2].Kerb.X - center.X), angle)
 				local cw = if d1 <= d2 then points[1] else points[2]
 				local ccw = if d1 <= d2 then points[2] else points[1]
-				table.insert(approaches, { Angle = angle, Cw = cw, Ccw = ccw })
+				table.insert(approaches, { Id = points[1].ApproachId, Angle = angle, Cw = cw, Ccw = ccw })
 			end
 		end
 	end
@@ -515,7 +553,16 @@ function JunctionBuilder.GetLayout(junctionId: string, settings: Settings.EasyRo
 			local a = approaches[i].Ccw
 			local b = approaches[nextI].Cw
 			local mid = (a.Kerb + b.Kerb) * 0.5
-			table.insert(corners, { Index = i, Mid = mid, SpanRad = turnAngle })
+			local id = cornerId(approaches[i].Id, approaches[nextI].Id)
+			table.insert(corners, {
+				Id = id,
+				Index = i,
+				FromApproachId = approaches[i].Id,
+				ToApproachId = approaches[nextI].Id,
+				Mid = mid,
+				SpanRad = turnAngle,
+				RadiusM = radiusForCorner(junctionData, id),
+			})
 		end
 	end
 	return {
@@ -1119,6 +1166,7 @@ function JunctionBuilder.Rebuild(
 	-- road between two wide ones) still gets its own corners instead of
 	-- being paved over by its neighbours' corner spanning across it.
 	type Approach = {
+		Id: string,
 		Road: Model,
 		Angle: number,
 		Cw: EdgePoint,
@@ -1164,6 +1212,7 @@ function JunctionBuilder.Rebuild(
 						end
 					end
 					table.insert(approaches, {
+						Id = points[1].ApproachId,
 						Road = road,
 						Angle = angle,
 						Cw = cw,
@@ -1180,13 +1229,6 @@ function JunctionBuilder.Rebuild(
 	end)
 
 	if #approaches >= 2 then
-		-- User-tunable fillet (node controller); default FILLET_RADIUS_M.
-		local filletRadiusM = FILLET_RADIUS_M
-		if junctionData.FilletRadiusM then
-			filletRadiusM = math.clamp(junctionData.FilletRadiusM, 0.5, 40)
-		end
-		local filletRadiusStuds = filletRadiusM * settings.MetersToStuds
-
 		-- Continuous pad boundary: walk approaches in angle order, append
 		-- each corner's kerb polyline (or a straight mouth-to-mouth chord
 		-- for wide through-gaps). Fan-fill that closed polygon — not the
@@ -1242,7 +1284,9 @@ function JunctionBuilder.Rebuild(
 				end
 			end
 			if isRealCorner and not crossesMouth then
-				local kerbBoundary, outerBoundary = cornerBoundaries(a, b, junctionId, filletRadiusStuds, center)
+				local id = cornerId(approaches[i].Id, approaches[nextI].Id)
+				local radiusStuds = radiusForCorner(junctionData, id) * settings.MetersToStuds
+				local kerbBoundary, outerBoundary = cornerBoundaries(a, b, junctionId, radiusStuds, center)
 				table.insert(builtCorners, { Kerb = kerbBoundary, Outer = outerBoundary, Sidewalk = true })
 				for _, p in kerbBoundary do
 					appendUnique(p)

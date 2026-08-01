@@ -4,6 +4,29 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Multinode junction controller and per-corner turn radii
+
+Ordinary intersections still have one logical owner `JunctionNode`, but their
+editable topology is now decomposed into stable approach ports and stable
+corner nodes. Every road receives a persistent `RW_RoadId` plus independent
+`RW_StartPortId` / `RW_EndPortId` identities; each corner id is the ordered pair
+of its angular-neighbour endpoint ports. Re-enumerating connected roads
+therefore no longer renumbers a corner control. Road splitting preserves the
+original outer port ids, so editing a remote mid-span does not discard existing
+corner overrides at either end.
+
+The junction editor exposes a **Link all corner radii** toggle. Linked mode is
+backward-compatible with the old single radius; unlinked mode lets a cyan
+viewport corner handle be selected and assigned its own radius. Overrides are
+serialized on the junction and `JunctionBuilder` resolves the matching radius
+while constructing each curb-return boundary. Old junctions read as linked and
+migrate without losing their existing radius.
+
+`multinode_junction_preview.py` checks stable ids, linked/default resolution,
+independent overrides, and a non-self-intersecting four-arm pad. Its bird's-eye
+render shows the owner node, approach ports, corner nodes, and four different
+radii. The preview is part of the standard validator.
+
 ## Procedural gap controls, parallel carriageways, and one-way highways
 
 Procedural viaduct slabs now overlap the road underside by a configurable

@@ -20,10 +20,16 @@ local DEFAULT_LANE_WIDTH_M = 3.65
 local function JunctionPanel(
 	props: {
 		ConnectedRoadCount: number,
+		CornerCount: number,
 		FilletRadiusM: number,
 		PadMarginStuds: number,
+		LinkedCornerRadii: boolean,
+		SelectedCornerLabel: string?,
+		SelectedCornerRadiusM: number?,
 		OnFilletRadiusChanged: (value: number) -> (),
 		OnPadMarginChanged: (value: number) -> (),
+		OnLinkedCornerRadiiChanged: (linked: boolean) -> (),
+		OnSelectedCornerRadiusChanged: (value: number) -> (),
 		OnRebuild: () -> (),
 		OnDelete: () -> (),
 		OnMakeRoundabout: (
@@ -73,22 +79,34 @@ local function JunctionPanel(
 	children.Header = e(Components.Section, { Text = "Junction", First = true, LayoutOrder = 1 })
 	children.Info = e(Components.Label, {
 		Text = string.format(
-			"%d road%s connected",
+			"%d approach port%s / %d corner node%s",
 			props.ConnectedRoadCount,
-			if props.ConnectedRoadCount == 1 then "" else "s"
+			if props.ConnectedRoadCount == 1 then "" else "s",
+			props.CornerCount,
+			if props.CornerCount == 1 then "" else "s"
 		),
 		Dim = true,
 		LayoutOrder = 2,
 	})
 	children.HandleHint = e(Components.Label, {
-		Text = "Yellow ball = move node. Red bars = approach mouths. Cyan balls = curb corners.",
+		Text = "Yellow = owner node. Red = approach ports. Click a cyan corner to edit its radius.",
 		Dim = true,
 		LayoutOrder = 3,
 	})
 
 	children.NodeSection = e(Components.Section, { Text = "Node controller", LayoutOrder = 4 })
-	children.FilletRow = e(Components.Row, { LayoutOrder = 5 }, {
-		Label = e(Components.Label, { Text = "Corner radius", LayoutOrder = 1, Width = 90 }),
+	children.LinkRadii = e(Components.Checkbox, {
+		Label = "Link all corner radii",
+		Checked = props.LinkedCornerRadii,
+		OnToggled = props.OnLinkedCornerRadiiChanged,
+		LayoutOrder = 5,
+	})
+	children.FilletRow = e(Components.Row, { LayoutOrder = 6 }, {
+		Label = e(Components.Label, {
+			Text = if props.LinkedCornerRadii then "All radii" else "Default radius",
+			LayoutOrder = 1,
+			Width = 104,
+		}),
 		Field = e(Components.NumberField, {
 			Value = props.FilletRadiusM,
 			Min = 0.5,
@@ -98,7 +116,28 @@ local function JunctionPanel(
 		}),
 		Unit = e(Components.Label, { Text = "m", Dim = true, LayoutOrder = 3 }),
 	})
-	children.SetbackRow = e(Components.Row, { LayoutOrder = 6 }, {
+	if not props.LinkedCornerRadii then
+		if props.SelectedCornerRadiusM and props.SelectedCornerLabel then
+			children.SelectedCorner = e(Components.Row, { LayoutOrder = 7 }, {
+				Label = e(Components.Label, { Text = props.SelectedCornerLabel, LayoutOrder = 1, Width = 104 }),
+				Field = e(Components.NumberField, {
+					Value = props.SelectedCornerRadiusM,
+					Min = 0.5,
+					Max = 40,
+					OnChanged = props.OnSelectedCornerRadiusChanged,
+					LayoutOrder = 2,
+				}),
+				Unit = e(Components.Label, { Text = "m", Dim = true, LayoutOrder = 3 }),
+			})
+		else
+			children.SelectedCornerHint = e(Components.Label, {
+				Text = "Click a cyan corner handle to choose its override.",
+				Dim = true,
+				LayoutOrder = 7,
+			})
+		end
+	end
+	children.SetbackRow = e(Components.Row, { LayoutOrder = 8 }, {
 		Label = e(Components.Label, { Text = "Setback", LayoutOrder = 1, Width = 90 }),
 		Field = e(Components.NumberField, {
 			Value = props.PadMarginStuds,
@@ -112,7 +151,7 @@ local function JunctionPanel(
 	children.Rebuild = e(Components.Button, {
 		Text = "Rebuild junction",
 		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-		LayoutOrder = 7,
+		LayoutOrder = 9,
 		OnClick = props.OnRebuild,
 	})
 
@@ -120,18 +159,18 @@ local function JunctionPanel(
 		Text = "Delete Junction",
 		Danger = true,
 		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-		LayoutOrder = 8,
+		LayoutOrder = 10,
 		OnClick = props.OnDelete,
 	})
 	children.Hint = e(Components.Label, {
 		Text = "Unlinks the roads meeting here — doesn't delete them.",
 		Dim = true,
-		LayoutOrder = 9,
+		LayoutOrder = 11,
 	})
 
 	if props.ConnectedRoadCount >= 3 then
-		children.RoundaboutSection = e(Components.Section, { Text = "Roundabout", LayoutOrder = 10 })
-		children.RoundaboutRadius = e(Components.Row, { LayoutOrder = 11 }, {
+		children.RoundaboutSection = e(Components.Section, { Text = "Roundabout", LayoutOrder = 20 })
+		children.RoundaboutRadius = e(Components.Row, { LayoutOrder = 21 }, {
 			Label = e(Components.Label, { Text = "Radius", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.NumberField, {
 				Value = radiusStuds,
@@ -144,7 +183,7 @@ local function JunctionPanel(
 			}),
 			Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 3 }),
 		})
-		children.RoundaboutLaneCount = e(Components.Row, { LayoutOrder = 12 }, {
+		children.RoundaboutLaneCount = e(Components.Row, { LayoutOrder = 22 }, {
 			Label = e(Components.Label, { Text = "Lanes", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.NumberField, {
 				Value = laneCount,
@@ -156,7 +195,7 @@ local function JunctionPanel(
 				LayoutOrder = 2,
 			}),
 		})
-		children.RoundaboutLaneWidth = e(Components.Row, { LayoutOrder = 13 }, {
+		children.RoundaboutLaneWidth = e(Components.Row, { LayoutOrder = 23 }, {
 			Label = e(Components.Label, { Text = "Lane width", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.NumberField, {
 				Value = laneWidthM,
@@ -166,7 +205,7 @@ local function JunctionPanel(
 			}),
 			Unit = e(Components.Label, { Text = "meters", Dim = true, LayoutOrder = 3 }),
 		})
-		children.RoundaboutMarkings = e(Components.Row, { LayoutOrder = 14 }, {
+		children.RoundaboutMarkings = e(Components.Row, { LayoutOrder = 24 }, {
 			Label = e(Components.Label, { Text = "Markings", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.Dropdown, {
 				Options = {
@@ -183,7 +222,7 @@ local function JunctionPanel(
 				Grow = true,
 			}),
 		})
-		children.RoundaboutSidewalk = e(Components.Row, { LayoutOrder = 15 }, {
+		children.RoundaboutSidewalk = e(Components.Row, { LayoutOrder = 25 }, {
 			Label = e(Components.Label, { Text = "Pavement", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.Dropdown, {
 				Options = {
@@ -199,7 +238,7 @@ local function JunctionPanel(
 				Grow = true,
 			}),
 		})
-		children.RoundaboutIsland = e(Components.Row, { LayoutOrder = 16 }, {
+		children.RoundaboutIsland = e(Components.Row, { LayoutOrder = 26 }, {
 			Label = e(Components.Label, { Text = "Island", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.Dropdown, {
 				Options = {
@@ -218,7 +257,7 @@ local function JunctionPanel(
 		children.MakeRoundabout = e(Components.Button, {
 			Text = "Make Roundabout",
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 17,
+			LayoutOrder = 27,
 			OnClick = function()
 				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM, markings, ringWalk, ringIsland)
 			end,
@@ -249,7 +288,7 @@ local function JunctionPanel(
 		children.RoundaboutDump = e(Components.Button, {
 			Text = "Print geometry to Output",
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 14.5,
+			LayoutOrder = 28,
 			OnClick = function()
 				props.OnDumpRoundabout(radiusStuds, laneCount, laneWidthM)
 			end,
@@ -257,7 +296,7 @@ local function JunctionPanel(
 		children.RoundaboutHint = e(Components.Label, {
 			Text = hint,
 			Dim = true,
-			LayoutOrder = 15,
+			LayoutOrder = 29,
 		})
 	end
 

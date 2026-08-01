@@ -30,7 +30,7 @@ sys.path.insert(0, HERE)
 # (suite, case, check) -> why it is expected to fail today.
 KNOWN_OPEN = {
     # Deterministic on the unchanged baseline roundabout port: one sample in
-    # the five-leg US stress case lands in an arm tear 73.6 studs from its cut.
+    # the four-approach US stress case lands in an arm tear 73.6 studs from its cut.
     # None of the structure/parallel/profile paths in this change feed this
     # Python geometry, so carry it explicitly instead of misreporting the
     # unrelated existing boundary case as a regression from this round.
@@ -121,7 +121,7 @@ def main():
         print("roundabout:", " ".join(cases))
         import road_preview as rd
         print("road:      ", " ".join(rd.CASES))
-        print("scripts:    turbo_check.py road_break_tests.py structure_preview.py --check parallel_preview.py --check structure_break_tests.py hardware_reference_check.py integration_contracts.py check_parity.py")
+        print("scripts:    turbo_check.py road_break_tests.py structure_preview.py --check parallel_preview.py --check multinode_junction_preview.py --check structure_break_tests.py hardware_reference_check.py integration_contracts.py check_parity.py")
         return 0
 
     problems, stale = [], []
@@ -139,6 +139,7 @@ def main():
             ("road_break_tests.py", ()),
             ("structure_preview.py", ("--check",)),
             ("parallel_preview.py", ("--check",)),
+            ("multinode_junction_preview.py", ("--check",)),
             ("structure_break_tests.py", ()),
             ("hardware_reference_check.py", ()),
             ("integration_contracts.py", ()),

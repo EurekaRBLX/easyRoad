@@ -1358,8 +1358,14 @@ export type JunctionEditSession = {
 	GetSelectedJunctionPosition: () -&gt; Vector3?,
 	GetFilletRadiusM: () -&gt; number,
 	GetPadMarginStuds: () -&gt; number,
+	GetCornerCount: () -&gt; number,
+	GetLinkedCornerRadii: () -&gt; boolean,
+	GetSelectedCornerLabel: () -&gt; string?,
+	GetSelectedCornerRadiusM: () -&gt; number?,
 	SetFilletRadiusM: (value: number) -&gt; (),
 	SetPadMarginStuds: (value: number) -&gt; (),
+	SetLinkedCornerRadii: (linked: boolean) -&gt; (),
+	SetSelectedCornerRadiusM: (value: number) -&gt; (),
 	RebuildSelected: () -&gt; (),
 	DeleteJunction: () -&gt; (),
 	Destroy: () -&gt; (),
@@ -1376,6 +1382,7 @@ local function createJunctionEditSession(
 	local changeSignal = Signal.new()
 	local selectedJunction: Model? = nil
 	local handlesFolder: Folder? = nil
+	local selectedCornerId: string? = nil
 	local draggingCenter = false
 	local dragPlaneY = 0
 	local connections: { RBXScriptConnection } = {}
@@ -1421,6 +1428,18 @@ local function createJunctionEditSession(
 		if not layout then
 			return
 		end
+		if selectedCornerId then
+			local stillExists = false
+			for _, corner in layout.Corners do
+				if corner.Id == selectedCornerId then
+					stillExists = true
+					break
+				end
+			end
+			if not stillExists then
+				selectedCornerId = nil
+			end
+		end
 
 		local folder = Instance.new("Folder")
 		folder.Name = HANDLES_FOLDER_NAME
@@ -1452,7 +1471,11 @@ local function createJunctionEditSession(
 
 		-- Corner mid markers (cyan) — show which spans get curb returns.
 		for i, corner in layout.Corners do
-			local c = makeHandlePart("Corner_" .. i, Vector3.new(1.1, 1.1, 1.1), Color3.fromRGB(80, 200, 255), Enum.PartType.Ball)
+			local selected = corner.Id == selectedCornerId
+			local size = if selected then 1.55 else 1.1
+			local color = if selected then Color3.fromRGB(255, 165, 55) else Color3.fromRGB(80, 200, 255)
+			local c = makeHandlePart("Corner_" .. i, Vector3.new(size, size, size), color, Enum.PartType.Ball)
+			c:SetAttribute("RW_CornerId", corner.Id)
 			c.CFrame = CFrame.new(corner.Mid + Vector3.new(0, 0.9, 0))
 			c.Parent = folder
 		end
@@ -1497,14 +1520,15 @@ local function createJunctionEditSession(
 			return
 		end
 		selectedJunction = junction
+		selectedCornerId = nil
 		refreshHandles()
 		changeSignal:Fire()
 	end
 
-	local function hitOnCenterHandle(): boolean
+	local function hitHandle(): BasePart?
 		local camera = workspace.CurrentCamera
 		if not camera or not handlesFolder then
-			return false
+			return nil
 		end
 		local mouse = UserInputService:GetMouseLocation()
 		local ray = camera:ViewportPointToRay(mouse.X, mouse.Y)
@@ -1512,7 +1536,7 @@ local function createJunctionEditSession(
 		params.FilterType = Enum.RaycastFilterType.Include
 		params.FilterDescendantsInstances = { handlesFolder }
 		local result = workspace:Raycast(ray.Origin, ray.Direction * 2000, params)
-		return result ~= nil and result.Instance.Name == CENTER_HANDLE_NAME
+		return if result and result.Instance:IsA("BasePart") then result.Instance else nil
 	end
 
 	local function groundPointFromMouse(): Vector3?
@@ -1542,11 +1566,19 @@ local function createJunctionEditSession(
 				return
 			end
 			if input.UserInputType == Enum.UserInputType.MouseButton1 then
-				if hitOnCenterHandle() then
+				local handle = hitHandle()
+				if handle and handle.Name == CENTER_HANDLE_NAME then
 					local data = JunctionInstance.Read(selectedJunction)
 					if data then
 						draggingCenter = true
 						dragPlaneY = data.Position.Y
+					end
+				elseif handle then
+					local cornerId = handle:GetAttribute("RW_CornerId")
+					if typeof(cornerId) == "string" then
+						selectedCornerId = cornerId
+						refreshHandles()
+						changeSignal:Fire()
 					end
 				end
 			end
@@ -1628,6 +1660,53 @@ local function createJunctionEditSession(
 		return if data and data.PadMarginStuds then data.PadMarginStuds else 6
 	end
 
+	local function selectedLayout(): JunctionBuilder.JunctionLayout?
+		if not selectedJunction then
+			return nil
+		end
+		local data = JunctionInstance.Read(selectedJunction)
+		return if data then JunctionBuilder.GetLayout(data.Id, settings) else nil
+	end
+
+	function session.GetCornerCount(): number
+		local layout = selectedLayout()
+		return if layout then #layout.Corners else 0
+	end
+
+	function session.GetLinkedCornerRadii(): boolean
+		if not selectedJunction then
+			return true
+		end
+		local data = JunctionInstance.Read(selectedJunction)
+		return if data then data.LinkedCornerRadii else true
+	end
+
+	function session.GetSelectedCornerLabel(): string?
+		local layout = selectedLayout()
+		if not layout or not selectedCornerId then
+			return nil
+		end
+		for index, corner in layout.Corners do
+			if corner.Id == selectedCornerId then
+				return string.format("Corner %d of %d", index, #layout.Corners)
+			end
+		end
+		return nil
+	end
+
+	function session.GetSelectedCornerRadiusM(): number?
+		local layout = selectedLayout()
+		if not layout or not selectedCornerId then
+			return nil
+		end
+		for _, corner in layout.Corners do
+			if corner.Id == selectedCornerId then
+				return corner.RadiusM
+			end
+		end
+		return nil
+	end
+
 	function session.SetFilletRadiusM(value: number)
 		if not selectedJunction then
 			return
@@ -1646,6 +1725,36 @@ local function createJunctionEditSession(
 		end
 		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Junction setback")
 		JunctionInstance.SetPadMarginStuds(selectedJunction, math.clamp(value, 1, 40))
+		rebuildSelected()
+		if recording then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		end
+	end
+
+	function session.SetLinkedCornerRadii(linked: boolean)
+		if not selectedJunction then
+			return
+		end
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Link junction corner radii")
+		JunctionInstance.SetLinkedCornerRadii(selectedJunction, linked)
+		if not linked and not selectedCornerId then
+			local layout = selectedLayout()
+			if layout and layout.Corners[1] then
+				selectedCornerId = layout.Corners[1].Id
+			end
+		end
+		rebuildSelected()
+		if recording then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		end
+	end
+
+	function session.SetSelectedCornerRadiusM(value: number)
+		if not selectedJunction or not selectedCornerId then
+			return
+		end
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Junction corner radius")
+		JunctionInstance.SetCornerRadiusM(selectedJunction, selectedCornerId, value)
 		rebuildSelected()
 		if recording then
 			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
@@ -1734,6 +1843,11 @@ export type JunctionData = {
 	RoundaboutSidewalk: boolean?,
 	RoundaboutIsland: boolean?,
 	PadMarginStuds: number?,
+	-- Multinode v2 controller. Approaches are derived from connected roads;
+	-- only editing intent lives here, avoiding a second topology list that can
+	-- desynchronise. Legacy junctions read as linked with no overrides.
+	LinkedCornerRadii: boolean,
+	CornerRadiiM: { [string]: number },
 }
 
 local JunctionInstance = {}
@@ -1807,6 +1921,8 @@ function JunctionInstance.Create(position: Vector3): Model
 	model:SetAttribute("RW_Junction", true)
 	model:SetAttribute("RW_JunctionId", HttpService:GenerateGUID(false))
 	model:SetAttribute("RW_Position", position)
+	model:SetAttribute("RW_MultiNodeVersion", 2)
+	model:SetAttribute("RW_LinkedCornerRadii", true)
 	model.Parent = getJunctionsFolder(true)
 	return model
 end
@@ -1826,6 +1942,19 @@ function JunctionInstance.Read(model: Model): JunctionData?
 	local markings = model:GetAttribute("RW_RoundaboutMarkings")
 	local ringWalk = model:GetAttribute("RW_RoundaboutSidewalk")
 	local ringIsland = model:GetAttribute("RW_RoundaboutIsland")
+	local linked = model:GetAttribute("RW_LinkedCornerRadii")
+	local cornerRadii: { [string]: number } = {}
+	local rawCornerRadii = model:GetAttribute("RW_CornerRadiiJson")
+	if typeof(rawCornerRadii) == "string" then
+		local ok, decoded = pcall(HttpService.JSONDecode, HttpService, rawCornerRadii)
+		if ok and typeof(decoded) == "table" then
+			for cornerId, radius in decoded do
+				if typeof(cornerId) == "string" and typeof(radius) == "number" then
+					cornerRadii[cornerId] = math.clamp(radius, 0.5, 40)
+				end
+			end
+		end
+	end
 	return {
 		Id = id,
 		Position = position,
@@ -1836,6 +1965,8 @@ function JunctionInstance.Read(model: Model): JunctionData?
 			else nil,
 		RoundaboutSidewalk = if typeof(ringWalk) == "boolean" then ringWalk else nil,
 		RoundaboutIsland = if typeof(ringIsland) == "boolean" then ringIsland else nil,
+		LinkedCornerRadii = if typeof(linked) == "boolean" then linked else true,
+		CornerRadiiM = cornerRadii,
 	}
 end
 
@@ -1861,6 +1992,23 @@ end
 
 function JunctionInstance.SetPadMarginStuds(model: Model, marginStuds: number?)
 	model:SetAttribute("RW_PadMarginStuds", marginStuds)
+end
+
+function JunctionInstance.SetLinkedCornerRadii(model: Model, linked: boolean)
+	model:SetAttribute("RW_MultiNodeVersion", 2)
+	model:SetAttribute("RW_LinkedCornerRadii", linked)
+end
+
+function JunctionInstance.SetCornerRadiusM(model: Model, cornerId: string, radiusM: number?)
+	local data = JunctionInstance.Read(model)
+	local radii = if data then table.clone(data.CornerRadiiM) else {}
+	if radiusM == nil then
+		radii[cornerId] = nil
+	else
+		radii[cornerId] = math.clamp(radiusM, 0.5, 40)
+	end
+	model:SetAttribute("RW_MultiNodeVersion", 2)
+	model:SetAttribute("RW_CornerRadiiJson", if next(radii) then HttpService:JSONEncode(radii) else nil)
 end
 
 function JunctionInstance.Delete(model: Model)
@@ -2563,6 +2711,7 @@ end
 
 type EdgePoint = {
 	Road: Model,
+	ApproachId: string,
 	Kerb: Vector3,
 	Outer: Vector3,
 }
@@ -2578,10 +2727,13 @@ local function edgePointsForRoad(road: Model, junctionId: string, settings: Sett
 		return nil
 	end
 	local station: number
+	local approachId: string
 	if data.StartJunctionId == junctionId then
 		station = 0
+		approachId = data.StartPortId
 	elseif data.EndJunctionId == junctionId then
 		station = data.Curve.Length
+		approachId = data.EndPortId
 	else
 		return nil
 	end
@@ -2605,8 +2757,8 @@ local function edgePointsForRoad(road: Model, junctionId: string, settings: Sett
 		return (frame * CFrame.new(offsetM * scale, 0, 0)).Position
 	end
 	return {
-		{ Road = road, Kerb = worldPoint(kerbLeftM), Outer = worldPoint(outerLeftM) },
-		{ Road = road, Kerb = worldPoint(kerbRightM), Outer = worldPoint(outerRightM) },
+		{ Road = road, ApproachId = approachId, Kerb = worldPoint(kerbLeftM), Outer = worldPoint(outerLeftM) },
+		{ Road = road, ApproachId = approachId, Kerb = worldPoint(kerbRightM), Outer = worldPoint(outerRightM) },
 	}
 end
 
@@ -2833,9 +2985,31 @@ export type JunctionLayout = {
 	Center: Vector3,
 	FilletRadiusM: number,
 	PadMarginStuds: number,
-	Mouths: { { Road: Model, Left: Vector3, Right: Vector3, Mid: Vector3 } },
-	Corners: { { Index: number, Mid: Vector3, SpanRad: number } },
+	Mouths: { { Id: string, Road: Model, Left: Vector3, Right: Vector3, Mid: Vector3, Angle: number } },
+	Corners: {
+		{
+			Id: string,
+			Index: number,
+			FromApproachId: string,
+			ToApproachId: string,
+			Mid: Vector3,
+			SpanRad: number,
+			RadiusM: number,
+		}
+	},
 }
+
+local function cornerId(fromApproachId: string, toApproachId: string): string
+	return fromApproachId .. "&gt;" .. toApproachId
+end
+
+local function radiusForCorner(junctionData: JunctionInstance.JunctionData, id: string): number
+	local defaultRadius = math.clamp(junctionData.FilletRadiusM or FILLET_RADIUS_M, 0.5, 40)
+	if junctionData.LinkedCornerRadii then
+		return defaultRadius
+	end
+	return junctionData.CornerRadiiM[id] or defaultRadius
+end
 
 function JunctionBuilder.GetLayout(junctionId: string, settings: Settings.EasyRoadSettings): JunctionLayout?
 	local junctionModel = JunctionInstance.FindById(junctionId)
@@ -2849,9 +3023,19 @@ function JunctionBuilder.GetLayout(junctionId: string, settings: Settings.EasyRo
 	local center = junctionData.Position
 	local filletM = junctionData.FilletRadiusM or FILLET_RADIUS_M
 	local margin = junctionData.PadMarginStuds or PAD_MARGIN_STUDS
-	local mouths: { { Road: Model, Left: Vector3, Right: Vector3, Mid: Vector3 } } = {}
-	local corners: { { Index: number, Mid: Vector3, SpanRad: number } } = {}
-	local approaches: { { Angle: number, Cw: EdgePoint, Ccw: EdgePoint } } = {}
+	local mouths: { { Id: string, Road: Model, Left: Vector3, Right: Vector3, Mid: Vector3, Angle: number } } = {}
+	local corners: {
+		{
+			Id: string,
+			Index: number,
+			FromApproachId: string,
+			ToApproachId: string,
+			Mid: Vector3,
+			SpanRad: number,
+			RadiusM: number,
+		}
+	} = {}
+	local approaches: { { Id: string, Angle: number, Cw: EdgePoint, Ccw: EdgePoint } } = {}
 	local function angleDelta(a: number, b: number): number
 		return (a - b + math.pi) % (2 * math.pi) - math.pi
 	end
@@ -2859,20 +3043,22 @@ function JunctionBuilder.GetLayout(junctionId: string, settings: Settings.EasyRo
 		local points = edgePointsForRoad(road, junctionId, settings)
 		if points and #points == 2 then
 			local mid = (points[1].Kerb + points[2].Kerb) / 2
-			table.insert(mouths, {
-				Road = road,
-				Left = points[1].Kerb,
-				Right = points[2].Kerb,
-				Mid = mid,
-			})
 			local mx, mz = mid.X - center.X, mid.Z - center.Z
 			if mx * mx + mz * mz &gt; 1e-6 then
 				local angle = math.atan2(mz, mx)
+				table.insert(mouths, {
+					Id = points[1].ApproachId,
+					Road = road,
+					Left = points[1].Kerb,
+					Right = points[2].Kerb,
+					Mid = mid,
+					Angle = angle,
+				})
 				local d1 = angleDelta(math.atan2(points[1].Kerb.Z - center.Z, points[1].Kerb.X - center.X), angle)
 				local d2 = angleDelta(math.atan2(points[2].Kerb.Z - center.Z, points[2].Kerb.X - center.X), angle)
 				local cw = if d1 &lt;= d2 then points[1] else points[2]
 				local ccw = if d1 &lt;= d2 then points[2] else points[1]
-				table.insert(approaches, { Angle = angle, Cw = cw, Ccw = ccw })
+				table.insert(approaches, { Id = points[1].ApproachId, Angle = angle, Cw = cw, Ccw = ccw })
 			end
 		end
 	end
@@ -2890,7 +3076,16 @@ function JunctionBuilder.GetLayout(junctionId: string, settings: Settings.EasyRo
 			local a = approaches[i].Ccw
 			local b = approaches[nextI].Cw
 			local mid = (a.Kerb + b.Kerb) * 0.5
-			table.insert(corners, { Index = i, Mid = mid, SpanRad = turnAngle })
+			local id = cornerId(approaches[i].Id, approaches[nextI].Id)
+			table.insert(corners, {
+				Id = id,
+				Index = i,
+				FromApproachId = approaches[i].Id,
+				ToApproachId = approaches[nextI].Id,
+				Mid = mid,
+				SpanRad = turnAngle,
+				RadiusM = radiusForCorner(junctionData, id),
+			})
 		end
 	end
 	return {
@@ -3494,6 +3689,7 @@ function JunctionBuilder.Rebuild(
 	-- road between two wide ones) still gets its own corners instead of
 	-- being paved over by its neighbours' corner spanning across it.
 	type Approach = {
+		Id: string,
 		Road: Model,
 		Angle: number,
 		Cw: EdgePoint,
@@ -3539,6 +3735,7 @@ function JunctionBuilder.Rebuild(
 						end
 					end
 					table.insert(approaches, {
+						Id = points[1].ApproachId,
 						Road = road,
 						Angle = angle,
 						Cw = cw,
@@ -3555,13 +3752,6 @@ function JunctionBuilder.Rebuild(
 	end)
 
 	if #approaches &gt;= 2 then
-		-- User-tunable fillet (node controller); default FILLET_RADIUS_M.
-		local filletRadiusM = FILLET_RADIUS_M
-		if junctionData.FilletRadiusM then
-			filletRadiusM = math.clamp(junctionData.FilletRadiusM, 0.5, 40)
-		end
-		local filletRadiusStuds = filletRadiusM * settings.MetersToStuds
-
 		-- Continuous pad boundary: walk approaches in angle order, append
 		-- each corner's kerb polyline (or a straight mouth-to-mouth chord
 		-- for wide through-gaps). Fan-fill that closed polygon — not the
@@ -3617,7 +3807,9 @@ function JunctionBuilder.Rebuild(
 				end
 			end
 			if isRealCorner and not crossesMouth then
-				local kerbBoundary, outerBoundary = cornerBoundaries(a, b, junctionId, filletRadiusStuds, center)
+				local id = cornerId(approaches[i].Id, approaches[nextI].Id)
+				local radiusStuds = radiusForCorner(junctionData, id) * settings.MetersToStuds
+				local kerbBoundary, outerBoundary = cornerBoundaries(a, b, junctionId, radiusStuds, center)
 				table.insert(builtCorners, { Kerb = kerbBoundary, Outer = outerBoundary, Sidewalk = true })
 				for _, p in kerbBoundary do
 					appendUnique(p)
@@ -10618,6 +10810,11 @@ export type StructureData = {
 }
 
 export type RoadData = {
+	-- Stable identity used by junction approach ports. Older placed roads are
+	-- assigned one lazily the first time a multinode junction reads them.
+	Id: string,
+	StartPortId: string,
+	EndPortId: string,
 	Curve: PolyCurve.PolyCurve,
 	ProfileStart: RoadProfile.RoadProfile,
 	ProfileEnd: RoadProfile.RoadProfile?,
@@ -10658,6 +10855,15 @@ function RoadInstance.StampModel(
 	profileEnd: RoadProfile.RoadProfile?
 )
 	model:SetAttribute("RW_Road", true)
+	if typeof(model:GetAttribute("RW_RoadId")) ~= "string" then
+		model:SetAttribute("RW_RoadId", HttpService:GenerateGUID(false))
+	end
+	if typeof(model:GetAttribute("RW_StartPortId")) ~= "string" then
+		model:SetAttribute("RW_StartPortId", HttpService:GenerateGUID(false))
+	end
+	if typeof(model:GetAttribute("RW_EndPortId")) ~= "string" then
+		model:SetAttribute("RW_EndPortId", HttpService:GenerateGUID(false))
+	end
 	local serializedSegments = {}
 	for _, segment in curve.Segments do
 		local function point(value: Vector3?): { number }?
@@ -10692,6 +10898,45 @@ function RoadInstance.StampModel(
 	model:SetAttribute("RW_EndPos", curve:PosAt(curve.Length))
 	model:SetAttribute("RW_StartTan", curve:TangentAt(0))
 	model:SetAttribute("RW_EndTan", curve:TangentAt(curve.Length))
+end
+
+-- Returns a persistent road id, migrating roads stamped before RW_RoadId was
+-- introduced. Junction approach/corner ids are derived from this value, so a
+-- rebuild never renumbers the controls merely because angular order changed.
+function RoadInstance.EnsureId(model: Model): string
+	local existing = model:GetAttribute("RW_RoadId")
+	if typeof(existing) == "string" then
+		return existing
+	end
+	local id = HttpService:GenerateGUID(false)
+	model:SetAttribute("RW_RoadId", id)
+	return id
+end
+
+function RoadInstance.EnsurePortIds(model: Model): (string, string)
+	local startId = model:GetAttribute("RW_StartPortId")
+	local endId = model:GetAttribute("RW_EndPortId")
+	if typeof(startId) ~= "string" then
+		startId = HttpService:GenerateGUID(false)
+		model:SetAttribute("RW_StartPortId", startId)
+	end
+	if typeof(endId) ~= "string" then
+		endId = HttpService:GenerateGUID(false)
+		model:SetAttribute("RW_EndPortId", endId)
+	end
+	return startId, endId
+end
+
+-- Used by RoadSplit: the first and last replacement pieces retain the
+-- original outer endpoint identities, while fresh internal cut ends keep the
+-- ids generated by RoadBuilder. Corner overrides at remote junctions survive.
+function RoadInstance.PreserveOuterPortIds(model: Model, startPortId: string?, endPortId: string?)
+	if startPortId then
+		model:SetAttribute("RW_StartPortId", startPortId)
+	end
+	if endPortId then
+		model:SetAttribute("RW_EndPortId", endPortId)
+	end
 end
 
 -- Junction connectivity is stamped separately (rather than folded into
@@ -10979,7 +11224,11 @@ function RoadInstance.Read(model: Model): RoadData?
 	end
 	local startJunctionId = model:GetAttribute("RW_StartJunctionId")
 	local endJunctionId = model:GetAttribute("RW_EndJunctionId")
+	local startPortId, endPortId = RoadInstance.EnsurePortIds(model)
 	return {
+		Id = RoadInstance.EnsureId(model),
+		StartPortId = startPortId,
+		EndPortId = endPortId,
 		Curve = curve,
 		ProfileStart = profileStart,
 		ProfileEnd = profileEnd,
@@ -11723,6 +11972,11 @@ function RoadSplit.SplitMany(
 		local startJunctionId = if index == 1 then data.StartJunctionId else sorted[index - 1].JunctionId
 		local endJunctionId = if index &gt; #sorted then data.EndJunctionId else sorted[index].JunctionId
 		RoadInstance.StampJunctions(piece, startJunctionId, endJunctionId)
+		RoadInstance.PreserveOuterPortIds(
+			piece,
+			if index == 1 then data.StartPortId else nil,
+			if index &gt; #sorted then data.EndPortId else nil
+		)
 		RoadInstance.StampStructure(piece, data.Structure)
 		StructureBuilder.Render(piece, pieceCurve, data.Structure or StructureBuilder.DefaultData(settings), settings)
 		table.insert(pieces, piece)
@@ -14346,10 +14600,16 @@ local DEFAULT_LANE_WIDTH_M = 3.65
 local function JunctionPanel(
 	props: {
 		ConnectedRoadCount: number,
+		CornerCount: number,
 		FilletRadiusM: number,
 		PadMarginStuds: number,
+		LinkedCornerRadii: boolean,
+		SelectedCornerLabel: string?,
+		SelectedCornerRadiusM: number?,
 		OnFilletRadiusChanged: (value: number) -&gt; (),
 		OnPadMarginChanged: (value: number) -&gt; (),
+		OnLinkedCornerRadiiChanged: (linked: boolean) -&gt; (),
+		OnSelectedCornerRadiusChanged: (value: number) -&gt; (),
 		OnRebuild: () -&gt; (),
 		OnDelete: () -&gt; (),
 		OnMakeRoundabout: (
@@ -14399,22 +14659,34 @@ local function JunctionPanel(
 	children.Header = e(Components.Section, { Text = "Junction", First = true, LayoutOrder = 1 })
 	children.Info = e(Components.Label, {
 		Text = string.format(
-			"%d road%s connected",
+			"%d approach port%s / %d corner node%s",
 			props.ConnectedRoadCount,
-			if props.ConnectedRoadCount == 1 then "" else "s"
+			if props.ConnectedRoadCount == 1 then "" else "s",
+			props.CornerCount,
+			if props.CornerCount == 1 then "" else "s"
 		),
 		Dim = true,
 		LayoutOrder = 2,
 	})
 	children.HandleHint = e(Components.Label, {
-		Text = "Yellow ball = move node. Red bars = approach mouths. Cyan balls = curb corners.",
+		Text = "Yellow = owner node. Red = approach ports. Click a cyan corner to edit its radius.",
 		Dim = true,
 		LayoutOrder = 3,
 	})
 
 	children.NodeSection = e(Components.Section, { Text = "Node controller", LayoutOrder = 4 })
-	children.FilletRow = e(Components.Row, { LayoutOrder = 5 }, {
-		Label = e(Components.Label, { Text = "Corner radius", LayoutOrder = 1, Width = 90 }),
+	children.LinkRadii = e(Components.Checkbox, {
+		Label = "Link all corner radii",
+		Checked = props.LinkedCornerRadii,
+		OnToggled = props.OnLinkedCornerRadiiChanged,
+		LayoutOrder = 5,
+	})
+	children.FilletRow = e(Components.Row, { LayoutOrder = 6 }, {
+		Label = e(Components.Label, {
+			Text = if props.LinkedCornerRadii then "All radii" else "Default radius",
+			LayoutOrder = 1,
+			Width = 104,
+		}),
 		Field = e(Components.NumberField, {
 			Value = props.FilletRadiusM,
 			Min = 0.5,
@@ -14424,7 +14696,28 @@ local function JunctionPanel(
 		}),
 		Unit = e(Components.Label, { Text = "m", Dim = true, LayoutOrder = 3 }),
 	})
-	children.SetbackRow = e(Components.Row, { LayoutOrder = 6 }, {
+	if not props.LinkedCornerRadii then
+		if props.SelectedCornerRadiusM and props.SelectedCornerLabel then
+			children.SelectedCorner = e(Components.Row, { LayoutOrder = 7 }, {
+				Label = e(Components.Label, { Text = props.SelectedCornerLabel, LayoutOrder = 1, Width = 104 }),
+				Field = e(Components.NumberField, {
+					Value = props.SelectedCornerRadiusM,
+					Min = 0.5,
+					Max = 40,
+					OnChanged = props.OnSelectedCornerRadiusChanged,
+					LayoutOrder = 2,
+				}),
+				Unit = e(Components.Label, { Text = "m", Dim = true, LayoutOrder = 3 }),
+			})
+		else
+			children.SelectedCornerHint = e(Components.Label, {
+				Text = "Click a cyan corner handle to choose its override.",
+				Dim = true,
+				LayoutOrder = 7,
+			})
+		end
+	end
+	children.SetbackRow = e(Components.Row, { LayoutOrder = 8 }, {
 		Label = e(Components.Label, { Text = "Setback", LayoutOrder = 1, Width = 90 }),
 		Field = e(Components.NumberField, {
 			Value = props.PadMarginStuds,
@@ -14438,7 +14731,7 @@ local function JunctionPanel(
 	children.Rebuild = e(Components.Button, {
 		Text = "Rebuild junction",
 		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-		LayoutOrder = 7,
+		LayoutOrder = 9,
 		OnClick = props.OnRebuild,
 	})
 
@@ -14446,18 +14739,18 @@ local function JunctionPanel(
 		Text = "Delete Junction",
 		Danger = true,
 		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-		LayoutOrder = 8,
+		LayoutOrder = 10,
 		OnClick = props.OnDelete,
 	})
 	children.Hint = e(Components.Label, {
 		Text = "Unlinks the roads meeting here — doesn't delete them.",
 		Dim = true,
-		LayoutOrder = 9,
+		LayoutOrder = 11,
 	})
 
 	if props.ConnectedRoadCount &gt;= 3 then
-		children.RoundaboutSection = e(Components.Section, { Text = "Roundabout", LayoutOrder = 10 })
-		children.RoundaboutRadius = e(Components.Row, { LayoutOrder = 11 }, {
+		children.RoundaboutSection = e(Components.Section, { Text = "Roundabout", LayoutOrder = 20 })
+		children.RoundaboutRadius = e(Components.Row, { LayoutOrder = 21 }, {
 			Label = e(Components.Label, { Text = "Radius", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.NumberField, {
 				Value = radiusStuds,
@@ -14470,7 +14763,7 @@ local function JunctionPanel(
 			}),
 			Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 3 }),
 		})
-		children.RoundaboutLaneCount = e(Components.Row, { LayoutOrder = 12 }, {
+		children.RoundaboutLaneCount = e(Components.Row, { LayoutOrder = 22 }, {
 			Label = e(Components.Label, { Text = "Lanes", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.NumberField, {
 				Value = laneCount,
@@ -14482,7 +14775,7 @@ local function JunctionPanel(
 				LayoutOrder = 2,
 			}),
 		})
-		children.RoundaboutLaneWidth = e(Components.Row, { LayoutOrder = 13 }, {
+		children.RoundaboutLaneWidth = e(Components.Row, { LayoutOrder = 23 }, {
 			Label = e(Components.Label, { Text = "Lane width", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.NumberField, {
 				Value = laneWidthM,
@@ -14492,7 +14785,7 @@ local function JunctionPanel(
 			}),
 			Unit = e(Components.Label, { Text = "meters", Dim = true, LayoutOrder = 3 }),
 		})
-		children.RoundaboutMarkings = e(Components.Row, { LayoutOrder = 14 }, {
+		children.RoundaboutMarkings = e(Components.Row, { LayoutOrder = 24 }, {
 			Label = e(Components.Label, { Text = "Markings", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.Dropdown, {
 				Options = {
@@ -14509,7 +14802,7 @@ local function JunctionPanel(
 				Grow = true,
 			}),
 		})
-		children.RoundaboutSidewalk = e(Components.Row, { LayoutOrder = 15 }, {
+		children.RoundaboutSidewalk = e(Components.Row, { LayoutOrder = 25 }, {
 			Label = e(Components.Label, { Text = "Pavement", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.Dropdown, {
 				Options = {
@@ -14525,7 +14818,7 @@ local function JunctionPanel(
 				Grow = true,
 			}),
 		})
-		children.RoundaboutIsland = e(Components.Row, { LayoutOrder = 16 }, {
+		children.RoundaboutIsland = e(Components.Row, { LayoutOrder = 26 }, {
 			Label = e(Components.Label, { Text = "Island", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.Dropdown, {
 				Options = {
@@ -14544,7 +14837,7 @@ local function JunctionPanel(
 		children.MakeRoundabout = e(Components.Button, {
 			Text = "Make Roundabout",
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 17,
+			LayoutOrder = 27,
 			OnClick = function()
 				props.OnMakeRoundabout(radiusStuds, laneCount, laneWidthM, markings, ringWalk, ringIsland)
 			end,
@@ -14575,7 +14868,7 @@ local function JunctionPanel(
 		children.RoundaboutDump = e(Components.Button, {
 			Text = "Print geometry to Output",
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 14.5,
+			LayoutOrder = 28,
 			OnClick = function()
 				props.OnDumpRoundabout(radiusStuds, laneCount, laneWidthM)
 			end,
@@ -14583,7 +14876,7 @@ local function JunctionPanel(
 		children.RoundaboutHint = e(Components.Label, {
 			Text = hint,
 			Dim = true,
-			LayoutOrder = 15,
+			LayoutOrder = 29,
 		})
 	end
 
@@ -21671,10 +21964,16 @@ return function(
 			end
 			bottomContent = React.createElement(JunctionPanel, {
 				ConnectedRoadCount = junctionEditSession.GetConnectedRoadCount(),
+				CornerCount = junctionEditSession.GetCornerCount(),
 				FilletRadiusM = junctionEditSession.GetFilletRadiusM(),
 				PadMarginStuds = junctionEditSession.GetPadMarginStuds(),
+				LinkedCornerRadii = junctionEditSession.GetLinkedCornerRadii(),
+				SelectedCornerLabel = junctionEditSession.GetSelectedCornerLabel(),
+				SelectedCornerRadiusM = junctionEditSession.GetSelectedCornerRadiusM(),
 				OnFilletRadiusChanged = junctionEditSession.SetFilletRadiusM,
 				OnPadMarginChanged = junctionEditSession.SetPadMarginStuds,
+				OnLinkedCornerRadiiChanged = junctionEditSession.SetLinkedCornerRadii,
+				OnSelectedCornerRadiusChanged = junctionEditSession.SetSelectedCornerRadiusM,
 				OnRebuild = junctionEditSession.RebuildSelected,
 				OnDelete = junctionEditSession.DeleteJunction,
 				GetRoundaboutRadii = getRoundaboutRadii,

@@ -65,6 +65,10 @@ To rebuild `dist/` yourself without Rojo: `python3 tools/build_rbxmx.py`.
    made opposing automatically; larger groups expose an independent reverse
    switch for each roadway. Curves are laterally refitted instead of copied by
    one fixed world offset.
+8. **Edit an intersection**: select its asphalt pad. The junction panel shows
+   one stable approach port per connected road and one cyan handle per curb
+   corner. Keep **Link all corner radii** enabled for one shared value, or turn
+   it off, click a cyan handle, and set that corner's turn radius independently.
 
 The Highways category includes one-way 1, 2, 3, 4, and 5-lane presets with an
 inner and outer shoulder, intended for the parallel-carriageway workflow.
@@ -116,7 +120,7 @@ src/
   RoadLibrary.lua          Built-in (style-derived) + user-saved road profiles
   createRoadSession.lua    Interactive placement: clicks, snapping, preview, undo
   RoadSplit.lua            Splits one road at one or more shared junction nodes
-  JunctionInstance.lua     First-class junction node data and road connectivity
+  JunctionInstance.lua     Junction owner plus serialized multinode controls
   StructureAssets.lua      Imports game-owned custom bridge/tunnel Models
   StructureBuilder.lua     Tiles modules; builds viaducts, tunnels, and piers
   Geometry/
@@ -129,7 +133,7 @@ src/
   Mesh/
     Markings.lua           Cross-section boundaries -> marking line layout
     RoadBuilder.lua        Curve + profile + style -> Model of parts
-    JunctionBuilder.lua    Approach trims, pad, and rounded curb-return geometry
+    JunctionBuilder.lua    Stable approach/corner nodes, trims, pad, and curb returns
   UI/
     Theme.lua              Colors and metrics
     Components.lua         Button / dropdown / number field / checkbox / rows

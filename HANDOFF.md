@@ -53,6 +53,18 @@ a real parameter of a different function in the same file.
 
 ## Current state
 
+### Multinode junction editing - built, unconfirmed live
+
+One logical junction now derives stable approach ids from persistent road-end
+port ids and stable corner ids from adjacent approach pairs. Road splits retain
+the original outer port ids. The viewport's cyan corner
+handles are selectable; the React-Lua junction panel can link every radius or
+store an independent override for the selected corner. Old junctions default to
+linked mode. `tools/preview/multinode_junction_preview.py --check` validates the
+identity/radius contract and `--out` produces the bird's-eye QA render. This is
+the foundation for per-approach stop/crossing/signal controls; those markings
+are still open.
+
 ### Junctions — fixed, unconfirmed live
 The self-intersecting spiked pad and the faceted seam are both fixed.
 `cornerBoundaries` was aiming its edge directions along `+outward` on any span

@@ -24,8 +24,14 @@ export type JunctionEditSession = {
 	GetSelectedJunctionPosition: () -> Vector3?,
 	GetFilletRadiusM: () -> number,
 	GetPadMarginStuds: () -> number,
+	GetCornerCount: () -> number,
+	GetLinkedCornerRadii: () -> boolean,
+	GetSelectedCornerLabel: () -> string?,
+	GetSelectedCornerRadiusM: () -> number?,
 	SetFilletRadiusM: (value: number) -> (),
 	SetPadMarginStuds: (value: number) -> (),
+	SetLinkedCornerRadii: (linked: boolean) -> (),
+	SetSelectedCornerRadiusM: (value: number) -> (),
 	RebuildSelected: () -> (),
 	DeleteJunction: () -> (),
 	Destroy: () -> (),
@@ -42,6 +48,7 @@ local function createJunctionEditSession(
 	local changeSignal = Signal.new()
 	local selectedJunction: Model? = nil
 	local handlesFolder: Folder? = nil
+	local selectedCornerId: string? = nil
 	local draggingCenter = false
 	local dragPlaneY = 0
 	local connections: { RBXScriptConnection } = {}
@@ -87,6 +94,18 @@ local function createJunctionEditSession(
 		if not layout then
 			return
 		end
+		if selectedCornerId then
+			local stillExists = false
+			for _, corner in layout.Corners do
+				if corner.Id == selectedCornerId then
+					stillExists = true
+					break
+				end
+			end
+			if not stillExists then
+				selectedCornerId = nil
+			end
+		end
 
 		local folder = Instance.new("Folder")
 		folder.Name = HANDLES_FOLDER_NAME
@@ -118,7 +137,11 @@ local function createJunctionEditSession(
 
 		-- Corner mid markers (cyan) — show which spans get curb returns.
 		for i, corner in layout.Corners do
-			local c = makeHandlePart("Corner_" .. i, Vector3.new(1.1, 1.1, 1.1), Color3.fromRGB(80, 200, 255), Enum.PartType.Ball)
+			local selected = corner.Id == selectedCornerId
+			local size = if selected then 1.55 else 1.1
+			local color = if selected then Color3.fromRGB(255, 165, 55) else Color3.fromRGB(80, 200, 255)
+			local c = makeHandlePart("Corner_" .. i, Vector3.new(size, size, size), color, Enum.PartType.Ball)
+			c:SetAttribute("RW_CornerId", corner.Id)
 			c.CFrame = CFrame.new(corner.Mid + Vector3.new(0, 0.9, 0))
 			c.Parent = folder
 		end
@@ -163,14 +186,15 @@ local function createJunctionEditSession(
 			return
 		end
 		selectedJunction = junction
+		selectedCornerId = nil
 		refreshHandles()
 		changeSignal:Fire()
 	end
 
-	local function hitOnCenterHandle(): boolean
+	local function hitHandle(): BasePart?
 		local camera = workspace.CurrentCamera
 		if not camera or not handlesFolder then
-			return false
+			return nil
 		end
 		local mouse = UserInputService:GetMouseLocation()
 		local ray = camera:ViewportPointToRay(mouse.X, mouse.Y)
@@ -178,7 +202,7 @@ local function createJunctionEditSession(
 		params.FilterType = Enum.RaycastFilterType.Include
 		params.FilterDescendantsInstances = { handlesFolder }
 		local result = workspace:Raycast(ray.Origin, ray.Direction * 2000, params)
-		return result ~= nil and result.Instance.Name == CENTER_HANDLE_NAME
+		return if result and result.Instance:IsA("BasePart") then result.Instance else nil
 	end
 
 	local function groundPointFromMouse(): Vector3?
@@ -208,11 +232,19 @@ local function createJunctionEditSession(
 				return
 			end
 			if input.UserInputType == Enum.UserInputType.MouseButton1 then
-				if hitOnCenterHandle() then
+				local handle = hitHandle()
+				if handle and handle.Name == CENTER_HANDLE_NAME then
 					local data = JunctionInstance.Read(selectedJunction)
 					if data then
 						draggingCenter = true
 						dragPlaneY = data.Position.Y
+					end
+				elseif handle then
+					local cornerId = handle:GetAttribute("RW_CornerId")
+					if typeof(cornerId) == "string" then
+						selectedCornerId = cornerId
+						refreshHandles()
+						changeSignal:Fire()
 					end
 				end
 			end
@@ -294,6 +326,53 @@ local function createJunctionEditSession(
 		return if data and data.PadMarginStuds then data.PadMarginStuds else 6
 	end
 
+	local function selectedLayout(): JunctionBuilder.JunctionLayout?
+		if not selectedJunction then
+			return nil
+		end
+		local data = JunctionInstance.Read(selectedJunction)
+		return if data then JunctionBuilder.GetLayout(data.Id, settings) else nil
+	end
+
+	function session.GetCornerCount(): number
+		local layout = selectedLayout()
+		return if layout then #layout.Corners else 0
+	end
+
+	function session.GetLinkedCornerRadii(): boolean
+		if not selectedJunction then
+			return true
+		end
+		local data = JunctionInstance.Read(selectedJunction)
+		return if data then data.LinkedCornerRadii else true
+	end
+
+	function session.GetSelectedCornerLabel(): string?
+		local layout = selectedLayout()
+		if not layout or not selectedCornerId then
+			return nil
+		end
+		for index, corner in layout.Corners do
+			if corner.Id == selectedCornerId then
+				return string.format("Corner %d of %d", index, #layout.Corners)
+			end
+		end
+		return nil
+	end
+
+	function session.GetSelectedCornerRadiusM(): number?
+		local layout = selectedLayout()
+		if not layout or not selectedCornerId then
+			return nil
+		end
+		for _, corner in layout.Corners do
+			if corner.Id == selectedCornerId then
+				return corner.RadiusM
+			end
+		end
+		return nil
+	end
+
 	function session.SetFilletRadiusM(value: number)
 		if not selectedJunction then
 			return
@@ -312,6 +391,36 @@ local function createJunctionEditSession(
 		end
 		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Junction setback")
 		JunctionInstance.SetPadMarginStuds(selectedJunction, math.clamp(value, 1, 40))
+		rebuildSelected()
+		if recording then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		end
+	end
+
+	function session.SetLinkedCornerRadii(linked: boolean)
+		if not selectedJunction then
+			return
+		end
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Link junction corner radii")
+		JunctionInstance.SetLinkedCornerRadii(selectedJunction, linked)
+		if not linked and not selectedCornerId then
+			local layout = selectedLayout()
+			if layout and layout.Corners[1] then
+				selectedCornerId = layout.Corners[1].Id
+			end
+		end
+		rebuildSelected()
+		if recording then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		end
+	end
+
+	function session.SetSelectedCornerRadiusM(value: number)
+		if not selectedJunction or not selectedCornerId then
+			return
+		end
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Junction corner radius")
+		JunctionInstance.SetCornerRadiusM(selectedJunction, selectedCornerId, value)
 		rebuildSelected()
 		if recording then
 			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
