@@ -42,6 +42,13 @@ export type StructureData = {
 	PillarWidthM: number,
 	PillarDepthM: number,
 	MaxPillarHeightM: number,
+	-- Procedural structure appearance/fit. Stored per road so changing the
+	-- global defaults never restyles an already-placed viaduct or tunnel.
+	ConcreteColorHex: string,
+	InterfaceOverlapM: number,
+	ViaductParapetGapM: number,
+	TunnelWallClearanceM: number,
+	ConcreteMedian: boolean,
 }
 
 export type RoadData = {
@@ -80,16 +87,33 @@ end
 -- Stamps a model with everything needed to fully reconstruct it later.
 function RoadInstance.StampModel(
 	model: Model,
-	segment: CurveSegment.Segment,
+	curve: PolyCurve.PolyCurve,
 	profileStart: RoadProfile.RoadProfile,
 	profileEnd: RoadProfile.RoadProfile?
 )
 	model:SetAttribute("RW_Road", true)
-	model:SetAttribute("RW_CurveKind", segment.Kind)
-	model:SetAttribute("RW_P0", segment.P0)
-	model:SetAttribute("RW_P1", segment.P1)
-	model:SetAttribute("RW_P2", segment.P2)
-	model:SetAttribute("RW_P3", segment.P3)
+	local serializedSegments = {}
+	for _, segment in curve.Segments do
+		local function point(value: Vector3?): { number }?
+			return if value then { value.X, value.Y, value.Z } else nil
+		end
+		table.insert(serializedSegments, {
+			Kind = segment.Kind,
+			P0 = point(segment.P0),
+			P1 = point(segment.P1),
+			P2 = point(segment.P2),
+			P3 = point(segment.P3),
+		})
+	end
+	model:SetAttribute("RW_CurveJson", HttpService:JSONEncode(serializedSegments))
+	-- Preserve the original single-segment attributes for compatibility with
+	-- existing places and external scripts that inspect them directly.
+	local legacy = if #curve.Segments == 1 then curve.Segments[1] else nil
+	model:SetAttribute("RW_CurveKind", if legacy then legacy.Kind else "Poly")
+	model:SetAttribute("RW_P0", if legacy then legacy.P0 else nil)
+	model:SetAttribute("RW_P1", if legacy then legacy.P1 else nil)
+	model:SetAttribute("RW_P2", if legacy then legacy.P2 else nil)
+	model:SetAttribute("RW_P3", if legacy then legacy.P3 else nil)
 	model:SetAttribute("RW_ProfileStartJson", HttpService:JSONEncode(RoadProfile.Serialize(profileStart)))
 	model:SetAttribute(
 		"RW_ProfileEndJson",
@@ -98,10 +122,10 @@ function RoadInstance.StampModel(
 	model:SetAttribute("RW_ProfileStartId", profileStart.Id)
 	model:SetAttribute("RW_ProfileEndId", if profileEnd then profileEnd.Id else profileStart.Id)
 	-- Cheap Vector3 reads for endpoint-snap lookups elsewhere (no JSON decode)
-	model:SetAttribute("RW_StartPos", segment.P0)
-	model:SetAttribute("RW_EndPos", CurveSegment.PosAtS(segment, segment.Length))
-	model:SetAttribute("RW_StartTan", CurveSegment.TangentAtS(segment, 0))
-	model:SetAttribute("RW_EndTan", CurveSegment.TangentAtS(segment, segment.Length))
+	model:SetAttribute("RW_StartPos", curve:PosAt(0))
+	model:SetAttribute("RW_EndPos", curve:PosAt(curve.Length))
+	model:SetAttribute("RW_StartTan", curve:TangentAt(0))
+	model:SetAttribute("RW_EndTan", curve:TangentAt(curve.Length))
 end
 
 -- Junction connectivity is stamped separately (rather than folded into
@@ -154,6 +178,19 @@ local function structureFromModel(model: Model): StructureData?
 		MaxPillarHeightM = if typeof(decoded.MaxPillarHeightM) == "number"
 			then math.max(decoded.MaxPillarHeightM, 0.1)
 			else 200,
+		ConcreteColorHex = if typeof(decoded.ConcreteColorHex) == "string"
+			then decoded.ConcreteColorHex
+			else "#696B70",
+		InterfaceOverlapM = if typeof(decoded.InterfaceOverlapM) == "number"
+			then math.max(decoded.InterfaceOverlapM, 0)
+			else 0.2,
+		ViaductParapetGapM = if typeof(decoded.ViaductParapetGapM) == "number"
+			then math.max(decoded.ViaductParapetGapM, 0)
+			else 0,
+		TunnelWallClearanceM = if typeof(decoded.TunnelWallClearanceM) == "number"
+			then math.max(decoded.TunnelWallClearanceM, 0)
+			else 0.75,
+		ConcreteMedian = if typeof(decoded.ConcreteMedian) == "boolean" then decoded.ConcreteMedian else true,
 	}
 end
 
@@ -291,12 +328,67 @@ local function segmentFromModel(model: Model): CurveSegment.Segment?
 	return nil
 end
 
+local function pointFromJson(raw: any): Vector3?
+	if
+		type(raw) ~= "table"
+		or typeof(raw[1]) ~= "number"
+		or typeof(raw[2]) ~= "number"
+		or typeof(raw[3]) ~= "number"
+	then
+		return nil
+	end
+	return Vector3.new(raw[1], raw[2], raw[3])
+end
+
+local function curveFromModel(model: Model): PolyCurve.PolyCurve?
+	local raw = model:GetAttribute("RW_CurveJson")
+	if typeof(raw) == "string" then
+		local ok, decoded = pcall(HttpService.JSONDecode, HttpService, raw)
+		if ok and type(decoded) == "table" then
+			local segments: { CurveSegment.Segment } = {}
+			for _, entry in decoded do
+				if type(entry) ~= "table" then
+					return nil
+				end
+				local p0 = pointFromJson(entry.P0)
+				local p1 = pointFromJson(entry.P1)
+				if not p0 or not p1 then
+					return nil
+				end
+				if entry.Kind == "Line" then
+					table.insert(segments, CurveSegment.Line(p0, p1))
+				elseif entry.Kind == "Quadratic" then
+					local p2 = pointFromJson(entry.P2)
+					if not p2 then
+						return nil
+					end
+					table.insert(segments, CurveSegment.Quadratic(p0, p1, p2))
+				elseif entry.Kind == "Cubic" then
+					local p2 = pointFromJson(entry.P2)
+					local p3 = pointFromJson(entry.P3)
+					if not p2 or not p3 then
+						return nil
+					end
+					table.insert(segments, CurveSegment.Cubic(p0, p1, p2, p3))
+				else
+					return nil
+				end
+			end
+			if #segments > 0 then
+				return PolyCurve.new(segments)
+			end
+		end
+	end
+	local legacy = segmentFromModel(model)
+	return if legacy then PolyCurve.new({ legacy }) else nil
+end
+
 -- Reconstructs the full curve + profile data from a placed model's
 -- attributes. Returns nil if the model predates this attribute set (older
 -- placed roads only carry RW_StartPos/RW_EndPos, not curve control points).
 function RoadInstance.Read(model: Model): RoadData?
-	local segment = segmentFromModel(model)
-	if not segment then
+	local curve = curveFromModel(model)
+	if not curve then
 		return nil
 	end
 	local startJson = model:GetAttribute("RW_ProfileStartJson")
@@ -322,7 +414,7 @@ function RoadInstance.Read(model: Model): RoadData?
 	local startJunctionId = model:GetAttribute("RW_StartJunctionId")
 	local endJunctionId = model:GetAttribute("RW_EndJunctionId")
 	return {
-		Curve = PolyCurve.new({ segment }),
+		Curve = curve,
 		ProfileStart = profileStart,
 		ProfileEnd = profileEnd,
 		Bay = bayFromModel(model),

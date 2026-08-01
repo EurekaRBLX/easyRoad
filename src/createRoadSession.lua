@@ -16,6 +16,7 @@
 -- chain) - also rebindable, see Keybinds.lua.
 
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
@@ -46,6 +47,14 @@ local Keybinds = require("./Keybinds")
 -- spokes via ConnectRoad after commit.
 export type ToolMode = "Straight" | "Curve" | "Freeform" | "Roundabout"
 
+export type ParallelConfig = {
+	Enabled: boolean,
+	Count: number,
+	GapM: number,
+	OppositeDirections: boolean,
+	ReverseByIndex: { boolean },
+}
+
 export type RoadSession = {
 	ChangeSignal: Signal.Signal<>,
 	SetToolMode: (mode: ToolMode) -> (),
@@ -61,6 +70,8 @@ export type RoadSession = {
 	SetStructure: (structure: RoadInstance.StructureData) -> (),
 	GetStructureAssets: (kind: StructureAssets.AssetKind?) -> { StructureAssets.AssetInfo },
 	GetStructureStatus: () -> string?,
+	GetParallel: () -> ParallelConfig,
+	SetParallel: (config: ParallelConfig) -> (),
 	GetRoundaboutRadius: () -> number,
 	SetRoundaboutRadius: (value: number) -> (),
 	GetRoundaboutLaneCount: () -> number,
@@ -134,8 +145,75 @@ local function createRoadSession(
 	-- Structure mode is part of the live placement tool, not something the
 	-- user must discover after placing and reopening a road. It persists for
 	-- the whole chain so consecutive viaduct/tunnel segments match.
-	local structure = StructureBuilder.DefaultData()
+	local structure = StructureBuilder.DefaultData(settings)
 	local structureStatus: string? = nil
+	local parallel: ParallelConfig = {
+		Enabled = false,
+		Count = 2,
+		GapM = settings.ParallelRoadwayGapM,
+		OppositeDirections = true,
+		ReverseByIndex = {},
+	}
+
+	local function cloneParallel(config: ParallelConfig): ParallelConfig
+		return {
+			Enabled = config.Enabled,
+			Count = math.clamp(math.floor(config.Count), 2, 16),
+			GapM = math.max(config.GapM, 0),
+			OppositeDirections = config.OppositeDirections,
+			ReverseByIndex = table.clone(config.ReverseByIndex),
+		}
+	end
+
+	type ParallelPlacement = {
+		Curve: PolyCurve.PolyCurve,
+		Index: number,
+		OffsetM: number,
+		Reverse: boolean,
+	}
+
+	local function parallelPlacements(segment: CurveSegment.Segment): { ParallelPlacement }
+		if not parallel.Enabled then
+			return { { Curve = PolyCurve.new({ segment }), Index = 1, OffsetM = 0, Reverse = false } }
+		end
+		local count = math.clamp(math.floor(parallel.Count), 2, 16)
+		local widthM = RoadProfile.TotalWidthM(profile)
+		if endProfile then
+			widthM = math.max(widthM, RoadProfile.TotalWidthM(endProfile :: RoadProfile.RoadProfile))
+		end
+		local spacingM = widthM + math.max(parallel.GapM, 0)
+		local style = getStyle()
+		local forwardIndex = if style.DriveOnLeft then 1 else count
+		local placements: { ParallelPlacement } = {}
+		for index = 1, count do
+			local offsetM = (index - (count + 1) / 2) * spacingM
+			local offsetSegments = CurveSegment.OffsetMany(segment, offsetM * settings.MetersToStuds)
+			local reverse = if count == 2 and parallel.OppositeDirections
+				then index ~= forwardIndex
+				else parallel.ReverseByIndex[index] == true
+			if reverse then
+				local reversed: { CurveSegment.Segment } = {}
+				for segmentIndex = #offsetSegments, 1, -1 do
+					table.insert(reversed, CurveSegment.Reverse(offsetSegments[segmentIndex]))
+				end
+				offsetSegments = reversed
+			end
+			table.insert(placements, {
+				Curve = PolyCurve.new(offsetSegments),
+				Index = index,
+				OffsetM = offsetM,
+				Reverse = reverse,
+			})
+		end
+		return placements
+	end
+
+	local function placementProfiles(placement: ParallelPlacement): (RoadProfile.RoadProfile, RoadProfile.RoadProfile?)
+		if placement.Reverse and endProfile then
+			return endProfile :: RoadProfile.RoadProfile, profile
+		end
+		return profile, endProfile
+	end
 
 	-- Config for the "Roundabout" tool mode's single-click placement -
 	-- same defaults JunctionPanel's "Make Roundabout" fields start at.
@@ -502,7 +580,7 @@ local function createRoadSession(
 	-- genuine X. Crossings at a different deck height are silently treated
 	-- as grade-separated; geometrically valid but unsupported cuts remain in
 	-- the result as red preview markers with a reason.
-	local function findCurveCrossings(segment: CurveSegment.Segment): { CrossingCandidate }
+	local function findCurveCrossings(newCurve: PolyCurve.PolyCurve): { CrossingCandidate }
 		if not settings.SnapToRoad then
 			return {}
 		end
@@ -510,11 +588,12 @@ local function createRoadSession(
 		if not folder then
 			return {}
 		end
-		local newCurve = PolyCurve.new({ segment })
 		local minimumPiece = RoadSplit.MinimumPieceLengthStuds()
 		local maximumVerticalSeparation = math.max(MIN_AT_GRADE_SEPARATION_STUDS, settings.RoadThicknessStuds * 2)
 		local newRoadBlockReason = if endProfile ~= nil
 			then "Widening/narrowing roads cannot be split at a crossing yet"
+			elseif #newCurve.Segments > 1
+			then "Curved parallel roadways cannot be split at a crossing yet"
 			else nil
 		local candidates: { CrossingCandidate } = {}
 		for _, child in folder:GetChildren() do
@@ -867,19 +946,48 @@ local function createRoadSession(
 			updateCrossingMarkers({})
 			return
 		end
-		local crossings = if #points == clicksNeeded() - 1 then findCurveCrossings(segment) else {}
+		local placements = parallelPlacements(segment)
+		local crossingPlacement = placements[1]
+		for _, placement in placements do
+			if not placement.Reverse then
+				crossingPlacement = placement
+				break
+			end
+		end
+		local crossings = if #points == clicksNeeded() - 1 then findCurveCrossings(crossingPlacement.Curve) else {}
 		updateCrossingMarkers(crossings)
 		-- Build the replacement BEFORE destroying the old ghost: no flicker
 		-- between rebuilds, and if the build errors on degenerate geometry
 		-- the previous preview stays on screen instead of vanishing.
-		local ok, model = pcall(RoadBuilder.Build, {
-			Curve = PolyCurve.new({ segment }),
-			ProfileStart = profile,
-			ProfileEnd = endProfile,
-			Style = getStyle(),
-			Settings = settings,
-			Preview = true,
-		})
+		local ok, model = pcall(function()
+			if #placements == 1 then
+				local previewStart, previewEnd = placementProfiles(placements[1])
+				return RoadBuilder.Build({
+					Curve = placements[1].Curve,
+					ProfileStart = previewStart,
+					ProfileEnd = previewEnd,
+					Style = getStyle(),
+					Settings = settings,
+					Preview = true,
+				})
+			end
+			local container = Instance.new("Model")
+			container.Name = "ParallelRoadPreview"
+			for _, placement in placements do
+				local previewStart, previewEnd = placementProfiles(placement)
+				local roadPreview = RoadBuilder.Build({
+					Curve = placement.Curve,
+					ProfileStart = previewStart,
+					ProfileEnd = previewEnd,
+					Style = getStyle(),
+					Settings = settings,
+					Preview = true,
+				})
+				roadPreview.Name = string.format("Roadway_%02d", placement.Index)
+				roadPreview.Parent = container
+			end
+			return container
+		end)
 		if not ok then
 			return
 		end
@@ -892,18 +1000,40 @@ local function createRoadSession(
 	-- Commit ---------------------------------------------------------------------------
 
 	local function commitRoad(segment: CurveSegment.Segment)
-		local crossingCandidates = findCurveCrossings(segment)
+		local corridorCurve = PolyCurve.new({ segment })
+		local placements = parallelPlacements(segment)
+		local primaryPlacement = placements[1]
+		for _, placement in placements do
+			if not placement.Reverse then
+				primaryPlacement = placement
+				break
+			end
+		end
+		local curve = primaryPlacement.Curve
+		local crossingCandidates = findCurveCrossings(curve)
 		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadPlace", "Place road")
-		local curve = PolyCurve.new({ segment })
+		local primaryProfileStart, primaryProfileEnd = placementProfiles(primaryPlacement)
 		local model = RoadBuilder.Build({
 			Curve = curve,
-			ProfileStart = profile,
-			ProfileEnd = endProfile,
+			ProfileStart = primaryProfileStart,
+			ProfileEnd = primaryProfileEnd,
 			Style = getStyle(),
 			Settings = settings,
 			Preview = false,
 		})
 		model.Parent = getRoadsFolder(true)
+		local parallelGroupId = if #placements > 1 then HttpService:GenerateGUID(false) else nil
+		local function stampParallel(target: Model, placement: ParallelPlacement)
+			if not parallelGroupId then
+				return
+			end
+			target:SetAttribute("RW_ParallelGroupId", parallelGroupId)
+			target:SetAttribute("RW_ParallelIndex", placement.Index)
+			target:SetAttribute("RW_ParallelCount", #placements)
+			target:SetAttribute("RW_ParallelOffsetM", placement.OffsetM)
+			target:SetAttribute("RW_ParallelReverse", placement.Reverse)
+		end
+		stampParallel(model, primaryPlacement)
 		local appliedStructure = if structure.Mode == "None" then nil else StructureBuilder.CloneData(structure)
 		RoadInstance.StampStructure(model, appliedStructure)
 		local _, renderMessage = StructureBuilder.Render(model, curve, structure, settings)
@@ -964,6 +1094,9 @@ local function createRoadSession(
 			end
 			table.clear(prepared)
 		end
+		for _, piece in placedPieces do
+			stampParallel(piece, primaryPlacement)
+		end
 
 		-- Links `model`'s `whichEnd` at `pos` to whatever it should connect
 		-- to there: an existing road's endpoint first (findConnectableEndpoint),
@@ -1017,6 +1150,35 @@ local function createRoadSession(
 			JunctionBuilder.Rebuild(crossing.JunctionId, getStyle(), settings)
 		end
 
+		-- Secondary carriageways intentionally do not auto-split/connect against
+		-- the primary or each other. They are full, editable Road models with
+		-- their own direction metadata and physically meet the next chained
+		-- parallel set; automatic multi-road junction synthesis is a separate,
+		-- more complex operation than parallel alignment placement.
+		for _, placement in placements do
+			if placement == primaryPlacement then
+				continue
+			end
+			local secondaryCurve = placement.Curve
+			local secondaryStart, secondaryEnd = placementProfiles(placement)
+			local secondary = RoadBuilder.Build({
+				Curve = secondaryCurve,
+				ProfileStart = secondaryStart,
+				ProfileEnd = secondaryEnd,
+				Style = getStyle(),
+				Settings = settings,
+				Preview = false,
+			})
+			secondary.Name = string.format("ParallelRoad_%02d", placement.Index)
+			secondary.Parent = getRoadsFolder(true)
+			RoadInstance.StampStructure(secondary, appliedStructure)
+			StructureBuilder.Render(secondary, secondaryCurve, structure, settings)
+			stampParallel(secondary, placement)
+		end
+		if #placements > 1 then
+			structureStatus = string.format("Placed %d parallel roadways. %s", #placements, renderMessage)
+		end
+
 		if recording then
 			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
 		end
@@ -1028,8 +1190,8 @@ local function createRoadSession(
 			profile = endProfile
 			endProfile = nil
 		end
-		points = { curve:PosAt(curve.Length) }
-		lockedTangent = curve:TangentAt(curve.Length)
+		points = { corridorCurve:PosAt(corridorCurve.Length) }
+		lockedTangent = corridorCurve:TangentAt(corridorCurve.Length)
 		hoverSnapPos = nil
 		destroyCrossingMarkers()
 		setPreviewCrossingStatus(0, 0)
@@ -1239,6 +1401,17 @@ local function createRoadSession(
 
 	function session.GetStructureStatus(): string?
 		return structureStatus
+	end
+
+	function session.GetParallel(): ParallelConfig
+		return cloneParallel(parallel)
+	end
+
+	function session.SetParallel(config: ParallelConfig)
+		parallel = cloneParallel(config)
+		settings.ParallelRoadwayGapM = parallel.GapM
+		previewDirty = true
+		changeSignal:Fire()
 	end
 
 	function session.GetRoundaboutRadius(): number

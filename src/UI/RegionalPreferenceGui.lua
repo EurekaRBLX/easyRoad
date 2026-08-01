@@ -15,6 +15,7 @@ local RegionEditor = require("./RegionEditor")
 local RegionStyles = require("../RegionStyles")
 local RegionLibraryModule = require("../RegionLibrary")
 local Settings = require("../Settings")
+local StructureBuilder = require("../StructureBuilder")
 local Units = require("../Units")
 
 type RegionLibrary = RegionLibraryModule.RegionLibrary
@@ -440,6 +441,96 @@ local function RegionalPreferenceGui(props: {
 					Max = 64,
 					OnChanged = function(value: number)
 						settings.MaxSegmentLengthStuds = value
+						props.OnSettingsChanged()
+					end,
+					LayoutOrder = 2,
+				}),
+			},
+		}),
+
+		StructureSection = e(Components.Section, {
+			Text = "Procedural structures",
+			LayoutOrder = 40,
+		}),
+		StructureColorLabel = e(Components.Label, {
+			Text = "Default concrete colour",
+			LayoutOrder = 41,
+		}),
+		StructureColor = e(Components.ColorField, {
+			Value = StructureBuilder.ColorFromHex(settings.StructureConcreteColorHex),
+			LayoutOrder = 42,
+			OnChanged = function(color: Color3)
+				settings.StructureConcreteColorHex = StructureBuilder.ColorToHex(color)
+				props.OnSettingsChanged()
+			end,
+		}),
+		StructureOverlap = e(LabeledRow, {
+			Label = "Road overlap (m)",
+			LayoutOrder = 43,
+			children = {
+				Field = e(Components.NumberField, {
+					Value = settings.StructureInterfaceOverlapM,
+					Min = 0,
+					Max = 2,
+					OnChanged = function(value: number)
+						settings.StructureInterfaceOverlapM = value
+						props.OnSettingsChanged()
+					end,
+					LayoutOrder = 2,
+				}),
+			},
+		}),
+		ParapetGap = e(LabeledRow, {
+			Label = "Viaduct parapet gap (m)",
+			LayoutOrder = 44,
+			children = {
+				Field = e(Components.NumberField, {
+					Value = settings.ViaductParapetGapM,
+					Min = 0,
+					Max = 5,
+					OnChanged = function(value: number)
+						settings.ViaductParapetGapM = value
+						props.OnSettingsChanged()
+					end,
+					LayoutOrder = 2,
+				}),
+			},
+		}),
+		TunnelClearance = e(LabeledRow, {
+			Label = "Tunnel wall clearance (m)",
+			LayoutOrder = 45,
+			children = {
+				Field = e(Components.NumberField, {
+					Value = settings.TunnelWallClearanceM,
+					Min = 0,
+					Max = 10,
+					OnChanged = function(value: number)
+						settings.TunnelWallClearanceM = value
+						props.OnSettingsChanged()
+					end,
+					LayoutOrder = 2,
+				}),
+			},
+		}),
+		ElevatedMedian = e(Components.Checkbox, {
+			Label = "Concrete median on viaducts",
+			Checked = settings.ElevatedMedianConcrete,
+			LayoutOrder = 46,
+			OnToggled = function(checked: boolean)
+				settings.ElevatedMedianConcrete = checked
+				props.OnSettingsChanged()
+			end,
+		}),
+		ParallelGap = e(LabeledRow, {
+			Label = "Parallel roadway gap (m)",
+			LayoutOrder = 47,
+			children = {
+				Field = e(Components.NumberField, {
+					Value = settings.ParallelRoadwayGapM,
+					Min = 0,
+					Max = 50,
+					OnChanged = function(value: number)
+						settings.ParallelRoadwayGapM = value
 						props.OnSettingsChanged()
 					end,
 					LayoutOrder = 2,

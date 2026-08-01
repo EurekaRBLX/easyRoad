@@ -136,6 +136,67 @@ function CurveSegment.Cubic(p0: Vector3, p1: Vector3, p2: Vector3, p3: Vector3):
 	return segment
 end
 
+local function flatRight(tangent: Vector3): Vector3
+	local forward = Vector3.new(tangent.X, 0, tangent.Z)
+	if forward.Magnitude < 1e-6 then
+		return Vector3.xAxis
+	end
+	return forward.Unit:Cross(Vector3.yAxis).Unit
+end
+
+-- Returns a curve running beside `segment` at a horizontal lateral offset.
+-- Lines remain exact lines. Curves are refit as cubics through four offset
+-- samples, which preserves a stable carriageway separation through turns far
+-- better than translating every control point by one fixed world vector.
+local function fitOffsetRange(segment: Segment, offsetStuds: number, startStation: number, endStation: number): Segment
+	local function sample(fraction: number): Vector3
+		local station = startStation + (endStation - startStation) * fraction
+		local position = CurveSegment.PosAtS(segment, station)
+		local tangent = CurveSegment.TangentAtS(segment, station)
+		return position + flatRight(tangent) * offsetStuds
+	end
+	local q0 = sample(0)
+	local q3 = sample(1)
+	if segment.Kind == "Line" then
+		return CurveSegment.Line(q0, q3)
+	end
+	local q1 = sample(1 / 3)
+	local q2 = sample(2 / 3)
+	-- Solve the cubic Bezier basis at t=1/3 and 2/3 so the fitted curve
+	-- passes through q1/q2 rather than merely treating them as handles.
+	local a = (q1 * 27 - q0 * 8 - q3) / 6
+	local c = (q2 * 27 - q0 - q3 * 8) / 6
+	local p1 = (a * 2 - c) / 3
+	local p2 = (c * 2 - a) / 3
+	return CurveSegment.Cubic(q0, p1, p2, q3)
+end
+
+-- A curved offset is not generally representable by one cubic. Six fitted
+-- cubics keep the lateral error small on strong S-curves while still giving
+-- RoadBuilder a compact PolyCurve. Lines remain a single exact segment.
+function CurveSegment.OffsetMany(segment: Segment, offsetStuds: number): { Segment }
+	if math.abs(offsetStuds) < 1e-6 then
+		return { segment }
+	end
+	local subdivisions = if segment.Kind == "Line" then 1 else 6
+	local result: { Segment } = {}
+	for index = 1, subdivisions do
+		local startStation = segment.Length * (index - 1) / subdivisions
+		local endStation = segment.Length * index / subdivisions
+		table.insert(result, fitOffsetRange(segment, offsetStuds, startStation, endStation))
+	end
+	return result
+end
+
+function CurveSegment.Reverse(segment: Segment): Segment
+	if segment.Kind == "Line" then
+		return CurveSegment.Line(segment.P1, segment.P0)
+	elseif segment.Kind == "Quadratic" then
+		return CurveSegment.Quadratic(segment.P2 :: Vector3, segment.P1, segment.P0)
+	end
+	return CurveSegment.Cubic(segment.P3 :: Vector3, segment.P2 :: Vector3, segment.P1, segment.P0)
+end
+
 -- Arc-length parameterization --------------------------------------------------
 
 -- Convert distance-along-segment s (0..Length) to parameter t (0..1)

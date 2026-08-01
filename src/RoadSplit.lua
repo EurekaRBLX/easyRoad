@@ -152,7 +152,7 @@ function RoadSplit.SplitMany(
 		local endJunctionId = if index > #sorted then data.EndJunctionId else sorted[index].JunctionId
 		RoadInstance.StampJunctions(piece, startJunctionId, endJunctionId)
 		RoadInstance.StampStructure(piece, data.Structure)
-		StructureBuilder.Render(piece, pieceCurve, data.Structure or StructureBuilder.DefaultData(), settings)
+		StructureBuilder.Render(piece, pieceCurve, data.Structure or StructureBuilder.DefaultData(settings), settings)
 		table.insert(pieces, piece)
 	end
 

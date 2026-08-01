@@ -89,6 +89,17 @@ portal/abutment modules, custom pier assets, and in-place asset replacement are
 still open. The Python render/checks are `tools/preview/structure_preview.py`
 and `tools/preview/hardware_reference_check.py`.
 
+The latest follow-up adds configurable concrete colour, interface overlap,
+parapet/tunnel clearance, outside-edge longitudinal coverage, and concrete
+viaduct medians. Detailed structure settings are collapsed in Road Tools.
+Parallel placement builds 2-16 offset PolyCurves with opposed-pair or per-road
+direction choices. It does not yet synthesize coordinated parallel junctions;
+straight primaries retain the ordinary single-road crossing path, while a
+curved six-segment offset is shown as blocked at crossings. One-way presets cover 1-5
+lanes with shoulders. The Road Editor/placed-road designer is 440 pixels tall
+so its upper property/library columns no longer overflow the lane strip.
+Validate the curved offset port with `tools/preview/parallel_preview.py`.
+
 ---
 
 ## How to actually make progress here

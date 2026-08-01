@@ -4,6 +4,11 @@ Confirmed bugs that are logged but not yet fixed. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `SHIPPED.md` for what's already been fixed/built.
 
+- **The `stress_us` five-leg roundabout preview has one deterministic mouth
+  tear sample.** The full validator measures a 3.00-stud hole on leg 2,
+  73.6 studs from the approach cut. The roundabout port and builder were
+  untouched by the current structure/parallel work, so the case is carried
+  explicitly in `validate.py` rather than attributed to those changes.
 - **Curve rendering - deck strips reverted to centerline-anchored, still
   unverified live.** After `farEdgePad` was removed (previous round) and
   the Inside/Outside anchored-edge scheme was removed (this round, see

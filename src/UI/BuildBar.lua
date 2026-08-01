@@ -26,6 +26,7 @@ local Keybinds = require("../Keybinds")
 local RoadInstance = require("../RoadInstance")
 local StructureAssets = require("../StructureAssets")
 local StructureControls = require("./StructureControls")
+local ParallelControls = require("./ParallelControls")
 
 local function keyHint(bindings: { string }): string
 	local labels = {}
@@ -118,6 +119,8 @@ local function BuildBar(props: {
 	StructureAssets: { StructureAssets.AssetInfo },
 	StructureStatus: string?,
 	SetStructure: (structure: RoadInstance.StructureData) -> (),
+	Parallel: ParallelControls.ParallelConfig,
+	SetParallel: (config: ParallelControls.ParallelConfig) -> (),
 	RoundaboutRadius: number,
 	SetRoundaboutRadius: (value: number) -> (),
 	RoundaboutLaneCount: number,
@@ -376,6 +379,11 @@ local function BuildBar(props: {
 		Status = props.StructureStatus,
 		OnChange = props.SetStructure,
 		LayoutOrder = 3,
+	})
+	children.Parallel = props.ToolMode ~= "Roundabout" and e(ParallelControls, {
+		Config = props.Parallel,
+		OnChange = props.SetParallel,
+		LayoutOrder = 4,
 	})
 	children.Hint = e("TextLabel", {
 		Text = props.Hint,

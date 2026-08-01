@@ -414,7 +414,7 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 	StructureBuilder.Render(
 		road,
 		PolyCurve.new({ outerSegment }),
-		data.Structure or StructureBuilder.DefaultData(),
+		data.Structure or StructureBuilder.DefaultData(settings),
 		settings
 	)
 end

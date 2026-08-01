@@ -27,6 +27,7 @@ trap as an invariant nobody re-reads.
 | `roundabout_preview.py` | Ring, arms, mouths, splitter islands, turbo markings, and the scans that only mean anything on a roundabout. |
 | `road_preview.py` | An ordinary road on its own - straights, arcs down to R=30, an S-curve, avenues, motorways. Bare ground inside the road, edge sawtooth, broken edge lines. |
 | `structure_preview.py` | Rigid imported-module socket stepping, procedural viaduct slab/pier elevation, and arched tunnel cross-section; check-only or one combined PNG. |
+| `parallel_preview.py` | Curved parallel-carriageway offset/refit, an opposed pair, and independent direction choices for larger groups. |
 | `hardware_reference_check.py` | Parses the five `hardware/*.rbxmx` references and verifies their deck/base, parapet/wall, and tunnel-crown cues. |
 | `junction_pad_preview.py`, `corner_preview.py` | Junction pad and curb-return shapes. Not yet wired into `validate.py`. |
 | `turbo_check.py`, `road_break_tests.py`, `structure_break_tests.py` | Break-tests: reintroduce a defect and confirm the relevant scan catches it. |
@@ -82,9 +83,11 @@ python3 road_preview.py --render          # every road case, with PNGs
 python3 turbo_check.py                    # turbo peel + its break-tests
 python3 road_break_tests.py               # road scans + their break-tests
 python3 structure_preview.py --check      # module coverage + pier contact
+python3 parallel_preview.py --check       # curved offsets + direction layouts
 python3 structure_break_tests.py          # prove gaps/hovering piers fail
 python3 hardware_reference_check.py       # inspect rbxmx structural references
 python3 structure_preview.py --out out/structures.png
+python3 parallel_preview.py --out out/parallel-roadways.png
 ```
 
 Exits non-zero if any case has visible bare ground, so it works as a check.

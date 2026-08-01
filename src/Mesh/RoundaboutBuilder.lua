@@ -559,7 +559,7 @@ local function trimSpoke(
 	end
 	local outerCurve = PolyCurve.new({ outerSegment })
 	RoadInstance.StampStructure(road, data.Structure)
-	StructureBuilder.Render(road, outerCurve, data.Structure or StructureBuilder.DefaultData(), settings)
+	StructureBuilder.Render(road, outerCurve, data.Structure or StructureBuilder.DefaultData(settings), settings)
 	local newData = RoadInstance.Read(road)
 	if not newData then
 		return nil

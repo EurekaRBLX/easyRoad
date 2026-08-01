@@ -24,6 +24,13 @@ Without a custom module, viaduct mode builds a structural slab and edge
 parapets beneath/along the generated road, then raycasts piers down to the
 world. Tunnel mode builds a base, tall sidewalls, and a segmented arched vault.
 
+Road Tools keeps the common mode/asset choices visible and collapses the
+geometry fields under **Edit advanced structure options**. Those fields control
+the concrete colour, the small overlap that seats the road into the structure,
+parapet gap or tunnel wall clearance, pier dimensions, and whether a viaduct
+changes generated grass medians to concrete. Settings exposes the same values
+as defaults for new placement sessions.
+
 ## Importing a Model
 
 1. Put the source `Model` in Workspace and orient its forward direction along
@@ -80,6 +87,12 @@ or a ground-level hit with no visible clearance.
 
 The generic concrete pier is intentionally simple. Custom pier Models and
 explicit pier sockets are later extensions.
+
+Procedural slab/parapet segments use outside-edge arc allowance in their
+longitudinal depth, so bends and grade changes overlap instead of opening a
+hairline between rigid Parts. The default interface overlap also seats the slab
+slightly into the road underside; set it to zero only for a deliberate flush
+joint. Parapet gap is measured outward from the road edge.
 
 ## Tunnels
 

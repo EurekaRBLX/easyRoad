@@ -79,6 +79,15 @@ export type EasyRoadSettings = {
 	MaxSegmentLengthStuds: number,
 	PreviewMaxSegmentLengthStuds: number,
 
+	-- Defaults copied into each new procedural viaduct/tunnel. Existing roads
+	-- keep their serialized values when these defaults change.
+	StructureConcreteColorHex: string,
+	StructureInterfaceOverlapM: number,
+	ViaductParapetGapM: number,
+	TunnelWallClearanceM: number,
+	ElevatedMedianConcrete: boolean,
+	ParallelRoadwayGapM: number,
+
 	-- Rebindable keys (see Keybinds.lua); each action may have multiple
 	-- bound inputs.
 	Keybinds: Keybinds.KeybindMap,
@@ -124,6 +133,22 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		RoadThicknessStuds = raw.RoadThicknessStuds or 1,
 		MaxSegmentLengthStuds = raw.MaxSegmentLengthStuds or 8,
 		PreviewMaxSegmentLengthStuds = raw.PreviewMaxSegmentLengthStuds or 16,
+		StructureConcreteColorHex = if typeof(raw.StructureConcreteColorHex) == "string"
+			then raw.StructureConcreteColorHex
+			else "#696B70",
+		StructureInterfaceOverlapM = if typeof(raw.StructureInterfaceOverlapM) == "number"
+			then math.max(raw.StructureInterfaceOverlapM, 0)
+			else 0.2,
+		ViaductParapetGapM = if typeof(raw.ViaductParapetGapM) == "number"
+			then math.max(raw.ViaductParapetGapM, 0)
+			else 0,
+		TunnelWallClearanceM = if typeof(raw.TunnelWallClearanceM) == "number"
+			then math.max(raw.TunnelWallClearanceM, 0)
+			else 0.75,
+		ElevatedMedianConcrete = if raw.ElevatedMedianConcrete == nil then true else raw.ElevatedMedianConcrete,
+		ParallelRoadwayGapM = if typeof(raw.ParallelRoadwayGapM) == "number"
+			then math.max(raw.ParallelRoadwayGapM, 0)
+			else 2,
 		Keybinds = Keybinds.Sanitize(raw.Keybinds),
 		UserProfiles = raw.UserProfiles or {},
 		UserRegions = raw.UserRegions or {},
@@ -154,6 +179,12 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		RoadThicknessStuds = settings.RoadThicknessStuds,
 		MaxSegmentLengthStuds = settings.MaxSegmentLengthStuds,
 		PreviewMaxSegmentLengthStuds = settings.PreviewMaxSegmentLengthStuds,
+		StructureConcreteColorHex = settings.StructureConcreteColorHex,
+		StructureInterfaceOverlapM = settings.StructureInterfaceOverlapM,
+		ViaductParapetGapM = settings.ViaductParapetGapM,
+		TunnelWallClearanceM = settings.TunnelWallClearanceM,
+		ElevatedMedianConcrete = settings.ElevatedMedianConcrete,
+		ParallelRoadwayGapM = settings.ParallelRoadwayGapM,
 		Keybinds = settings.Keybinds,
 		UserProfiles = settings.UserProfiles,
 		UserRegions = settings.UserRegions,

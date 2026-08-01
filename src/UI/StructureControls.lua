@@ -39,6 +39,7 @@ local function StructureControls(props: {
 	LayoutOrder: number?,
 })
 	local structure = props.Structure
+	local advancedOpen, setAdvancedOpen = React.useState(false)
 	local function change(transform: (copy: RoadInstance.StructureData) -> ())
 		local copy = StructureBuilder.CloneData(structure)
 		transform(copy)
@@ -108,22 +109,88 @@ local function StructureControls(props: {
 			order
 		)
 		order += 1
-		children.Offset = e(Components.Row, { LayoutOrder = order }, {
-			Label = e(Components.Label, { Text = "Y offset (m)", LayoutOrder = 1 }),
-			Field = e(Components.NumberField, {
-				Value = structure.ModuleOffsetM,
-				Width = 62,
-				LayoutOrder = 2,
-				OnChanged = function(value: number)
-					change(function(copy)
-						copy.ModuleOffsetM = value
-					end)
-				end,
-			}),
+		children.AdvancedToggle = e(Components.Button, {
+			Text = if advancedOpen then "Hide advanced structure options" else "Edit advanced structure options",
+			Selected = advancedOpen,
+			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
+			LayoutOrder = order,
+			OnClick = function()
+				setAdvancedOpen(not advancedOpen)
+			end,
 		})
 		order += 1
 
-		if kind == "Viaduct" then
+		if advancedOpen then
+			children.ColorLabel = note("Procedural concrete colour", order)
+			order += 1
+			children.Color = e(Components.ColorField, {
+				Value = StructureBuilder.ColorFromHex(structure.ConcreteColorHex),
+				LayoutOrder = order,
+				OnChanged = function(color: Color3)
+					change(function(copy)
+						copy.ConcreteColorHex = StructureBuilder.ColorToHex(color)
+					end)
+				end,
+			})
+			order += 1
+			children.Offset = e(Components.Row, { LayoutOrder = order }, {
+				Label = e(Components.Label, { Text = "Y offset (m)", LayoutOrder = 1 }),
+				Field = e(Components.NumberField, {
+					Value = structure.ModuleOffsetM,
+					Width = 62,
+					LayoutOrder = 2,
+					OnChanged = function(value: number)
+						change(function(copy)
+							copy.ModuleOffsetM = value
+						end)
+					end,
+				}),
+			})
+			order += 1
+			children.InterfaceOverlap = e(Components.Row, { LayoutOrder = order }, {
+				Label = e(Components.Label, { Text = "Road overlap (m)", LayoutOrder = 1 }),
+				Field = e(Components.NumberField, {
+					Value = structure.InterfaceOverlapM,
+					Min = 0,
+					Width = 62,
+					LayoutOrder = 2,
+					OnChanged = function(value: number)
+						change(function(copy)
+							copy.InterfaceOverlapM = value
+						end)
+					end,
+				}),
+			})
+			order += 1
+		end
+
+		if kind == "Viaduct" and advancedOpen then
+			children.ParapetGap = e(Components.Row, { LayoutOrder = order }, {
+				Label = e(Components.Label, { Text = "Parapet gap (m)", LayoutOrder = 1 }),
+				Field = e(Components.NumberField, {
+					Value = structure.ViaductParapetGapM,
+					Min = 0,
+					Width = 62,
+					LayoutOrder = 2,
+					OnChanged = function(value: number)
+						change(function(copy)
+							copy.ViaductParapetGapM = value
+						end)
+					end,
+				}),
+			})
+			order += 1
+			children.ConcreteMedian = e(Components.Checkbox, {
+				Label = "Use concrete for elevated medians",
+				Checked = structure.ConcreteMedian,
+				LayoutOrder = order,
+				OnToggled = function(checked: boolean)
+					change(function(copy)
+						copy.ConcreteMedian = checked
+					end)
+				end,
+			})
+			order += 1
 			children.Pillars = e(Components.Checkbox, {
 				Label = "Auto-place piers by downward raycast",
 				Checked = structure.AutoPillars,
@@ -160,7 +227,22 @@ local function StructureControls(props: {
 					order += 1
 				end
 			end
-		else
+		elseif kind == "Tunnel" and advancedOpen then
+			children.TunnelClearance = e(Components.Row, { LayoutOrder = order }, {
+				Label = e(Components.Label, { Text = "Wall clearance (m)", LayoutOrder = 1 }),
+				Field = e(Components.NumberField, {
+					Value = structure.TunnelWallClearanceM,
+					Min = 0,
+					Width = 62,
+					LayoutOrder = 2,
+					OnChanged = function(value: number)
+						change(function(copy)
+							copy.TunnelWallClearanceM = value
+						end)
+					end,
+				}),
+			})
+			order += 1
 			children.TunnelNote = note(
 				"Without a custom module, EasyRoad generates a structural base, sidewalls, and segmented arched vault. Terrain excavation remains explicit.",
 				order

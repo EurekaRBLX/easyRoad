@@ -62,6 +62,14 @@ Follow-ups still open:
 - an explicit undoable Terrain excavation/restoration phase for tunnels;
 - live Studio validation of selection UX, sockets, collisions, and raycasts.
 
+Completed in the current follow-up: procedural road/structure seating overlap,
+outside-edge segment coverage, per-road concrete colour, parapet/tunnel gap
+controls, a concrete elevated-median toggle, and collapsed advanced structure
+controls. Parallel placement supports 2-16 curved carriageways, opposed pairs,
+and per-roadway reversal for larger groups. Parallel groups do not yet
+synthesize coordinated junction splits/connections automatically; a straight
+primary can still use the ordinary single-road crossing path.
+
 ## Roundabout split entry/exit arms — SHIPPED (see SHIPPED.md)
 
 Superseded the asymmetric-mouth-corner build, which in turn superseded the

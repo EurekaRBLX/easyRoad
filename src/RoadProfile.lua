@@ -334,6 +334,18 @@ function RoadProfile.BuiltInProfiles(style: RegionStyles.RegionStyle): { RoadPro
 		return result
 	end
 
+	local function oneWayHighway(laneCount: number): { ProfileComponent }
+		local innerShoulder = shoulder(math.max(style.ShoulderWidthM * 0.4, 0.8))
+		local outerShoulder = shoulder(style.ShoulderWidthM)
+		local components: { ProfileComponent } = {}
+		table.insert(components, if style.DriveOnLeft then outerShoulder else innerShoulder)
+		for _ = 1, laneCount do
+			table.insert(components, drive(lane, fwd))
+		end
+		table.insert(components, if style.DriveOnLeft then innerShoulder else outerShoulder)
+		return components
+	end
+
 	return {
 		{
 			Id = "builtin_two_lane",
@@ -377,6 +389,46 @@ function RoadProfile.BuiltInProfiles(style: RegionStyles.RegionStyle): { RoadPro
 				drive(lane, back),
 				drive(lane, back),
 			}, { median(style.MedianWidthM) }, true),
+		},
+		{
+			Id = "builtin_highway_oneway_1",
+			Name = "One-Way Highway 1 Lane",
+			Category = "Highways",
+			BuiltIn = true,
+			Components = oneWayHighway(1),
+			KerbRestriction = "NoLine",
+		},
+		{
+			Id = "builtin_highway_oneway_2",
+			Name = "One-Way Highway 2 Lanes",
+			Category = "Highways",
+			BuiltIn = true,
+			Components = oneWayHighway(2),
+			KerbRestriction = "NoLine",
+		},
+		{
+			Id = "builtin_highway_oneway_3",
+			Name = "One-Way Highway 3 Lanes",
+			Category = "Highways",
+			BuiltIn = true,
+			Components = oneWayHighway(3),
+			KerbRestriction = "NoLine",
+		},
+		{
+			Id = "builtin_highway_oneway_4",
+			Name = "One-Way Highway 4 Lanes",
+			Category = "Highways",
+			BuiltIn = true,
+			Components = oneWayHighway(4),
+			KerbRestriction = "NoLine",
+		},
+		{
+			Id = "builtin_highway_oneway_5",
+			Name = "One-Way Highway 5 Lanes",
+			Category = "Highways",
+			BuiltIn = true,
+			Components = oneWayHighway(5),
+			KerbRestriction = "NoLine",
 		},
 		{
 			Id = "builtin_highway",

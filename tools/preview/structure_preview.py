@@ -174,30 +174,37 @@ def pier_errors(piers):
     return errors
 
 
-def viaduct_section(road_width, scale=3.571, road_thickness=1.0):
+def viaduct_section(road_width, scale=3.571, road_thickness=1.0,
+                    interface_overlap_m=0.2, parapet_gap_m=0.0):
     """Port of the procedural slab/parapet cross-section dimensions."""
     edge_allowance = 0.45*scale
-    deck_width = road_width + edge_allowance*2
     slab_thickness = max(0.55*scale, 1.5)
     barrier_thickness = max(0.35*scale, 0.8)
     barrier_height = max(1.2*scale, 2.5)
+    barrier_center = road_width/2 + parapet_gap_m*scale + barrier_thickness/2
+    deck_half = max(road_width/2+edge_allowance, barrier_center+barrier_thickness/2)
+    interface_overlap = min(interface_overlap_m*scale, slab_thickness*0.9)
+    slab_top = -road_thickness+interface_overlap
     return {
-        "deck_width": deck_width,
-        "slab_bottom": -road_thickness-slab_thickness,
-        "slab_top": -road_thickness,
+        "deck_width": deck_half*2,
+        "slab_bottom": slab_top-slab_thickness,
+        "slab_top": slab_top,
         "barrier_thickness": barrier_thickness,
         "barrier_height": barrier_height,
+        "barrier_inner": barrier_center-barrier_thickness/2,
     }
 
 
-def tunnel_section(road_width, scale=3.571, road_thickness=1.0):
+def tunnel_section(road_width, scale=3.571, road_thickness=1.0,
+                   interface_overlap_m=0.2, wall_clearance_m=0.75):
     """Port of the base/walls/nine-panel elliptical vault cross-section."""
-    side_clearance = 0.75*scale
+    side_clearance = wall_clearance_m*scale
     thickness = max(0.35*scale, 0.5)
     inner_half = road_width/2 + side_clearance
     wall_height = max(6*scale, inner_half*0.72)
     roof_rise = max(2.5*scale, inner_half*0.22)
-    floor_top = -road_thickness
+    interface_overlap = min(interface_overlap_m*scale, thickness*0.9)
+    floor_top = -road_thickness+interface_overlap
     panels = []
     for index in range(TUNNEL_ARCH_SEGMENTS):
         theta0 = math.pi*index/TUNNEL_ARCH_SEGMENTS
@@ -224,6 +231,10 @@ def procedural_errors():
         errors.append("viaduct slab does not extend beyond the road")
     if viaduct["barrier_height"] <= 0 or viaduct["slab_bottom"] >= viaduct["slab_top"]:
         errors.append("invalid viaduct cross-section")
+    if viaduct["slab_top"] <= -1.0:
+        errors.append("viaduct slab does not overlap the road underside")
+    if abs(viaduct["barrier_inner"]-road_width/2) > 1e-9:
+        errors.append("default viaduct parapet leaves an edge gap")
     tunnel = tunnel_section(road_width)
     panels = tunnel["panels"]
     expected_y = tunnel["floor_top"]+tunnel["wall_height"]

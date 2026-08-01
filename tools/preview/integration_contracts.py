@@ -33,6 +33,11 @@ def main():
     session = source("src/createRoadSession.lua")
     build_bar = source("src/UI/BuildBar.lua")
     structure = source("src/StructureBuilder.lua")
+    settings = source("src/Settings.lua")
+    road_instance = source("src/RoadInstance.lua")
+    profiles = source("src/RoadProfile.lua")
+    curve = source("src/Geometry/CurveSegment.lua")
+    parallel_controls = source("src/UI/ParallelControls.lua")
     loader = source("loader.server.lua")
     main_source = source("src/main.lua")
     top_bar = source("src/UI/TopBar.lua")
@@ -56,6 +61,31 @@ def main():
     require(structure, "placeProceduralViaduct(generated, road, curve, data, settings)", "no-asset viaduct fallback is missing", problems)
     require(structure, 'string.format("DeckSlab_%04d"', "procedural viaduct has no structural slab", problems)
     require(structure, 'string.format("Vault_%02d_%04d"', "procedural tunnel has no segmented vault", problems)
+    require(structure, "data.InterfaceOverlapM * scale", "procedural structures cannot close the road interface gap", problems)
+    require(structure, "data.ViaductParapetGapM * scale", "viaduct parapet gap is not configurable", problems)
+    require(structure, "data.TunnelWallClearanceM * scale", "tunnel wall clearance is not configurable", problems)
+    require(structure, "restyleElevatedMedian", "viaduct medians cannot be changed to concrete", problems)
+    require(settings, "StructureConcreteColorHex", "settings do not persist procedural concrete colour", problems)
+    require(settings, "ParallelRoadwayGapM", "settings do not persist the parallel roadway gap", problems)
+
+    require(curve, "function CurveSegment.OffsetMany", "parallel roadways have no curved offset/refit", problems)
+    require(curve, "function CurveSegment.Reverse", "parallel roadways cannot reverse direction", problems)
+    require(road_instance, 'model:SetAttribute("RW_CurveJson"', "multi-segment parallel curves are not serialized", problems)
+    require(road_instance, "local function curveFromModel", "multi-segment parallel curves cannot be reopened", problems)
+    require(session, "GetParallel: () -> ParallelConfig", "placement session has no parallel roadway API", problems)
+    require(session, 'target:SetAttribute("RW_ParallelGroupId"', "parallel roadway grouping is not serialized", problems)
+    require(build_bar, "e(ParallelControls", "Road Tools does not expose parallel roadway controls", problems)
+    require(parallel_controls, 'Label = "Opposite traffic directions"', "opposed roadway pairs are not configurable", problems)
+    require(parallel_controls, 'string.format("Roadway %d runs in reverse"', "multi-roadway direction controls are missing", problems)
+    require(main_source, "local ROAD_DESIGNER_HEIGHT = 440", "Road Editor columns are too short for their fixed content", problems)
+
+    for lane_count in range(1, 6):
+        require(
+            profiles,
+            f'builtin_highway_oneway_{lane_count}',
+            f"one-way {lane_count}-lane highway preset is missing",
+            problems,
+        )
 
     require(top_bar, 'Text = "Road Assets"', "top mode bar has no Road Assets surface", problems)
     require(main_source, 'require("./UI/RoadAssetsPanel")', "Road Assets surface is not rendered", problems)
@@ -72,7 +102,7 @@ def main():
         for problem in problems:
             print("FAILED:", problem)
         return 1
-    print("integration contracts passed: junction selection, Road Assets, placement structures, procedural viaduct/tunnel, Software dock")
+    print("integration contracts passed: junction selection, assets, procedural structures, parallel roadways, highway presets, Software dock")
     return 0
 
 

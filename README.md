@@ -60,6 +60,14 @@ To rebuild `dist/` yourself without Rojo: `python3 tools/build_rbxmx.py`.
    and a segmented arched vault. To replace either procedural structure, open
    **Road Assets**, import a Workspace Model, then choose it from Road Tools.
    See [`STRUCTURES.md`](STRUCTURES.md).
+7. **Parallel roadways**: enable the option in Road Tools, choose 2-16
+   carriageways, and set the edge-to-edge gap under Advanced. A pair can be
+   made opposing automatically; larger groups expose an independent reverse
+   switch for each roadway. Curves are laterally refitted instead of copied by
+   one fixed world offset.
+
+The Highways category includes one-way 1, 2, 3, 4, and 5-lane presets with an
+inner and outer shoulder, intended for the parallel-carriageway workflow.
 
 ### Custom roads (Edit Roads...)
 
@@ -87,6 +95,11 @@ sessions.
   step for R/F.
 * **Geometry** — road deck thickness and maximum strip length (strips adapt
   automatically: shorter where curvature is higher).
+
+Settings also holds procedural-structure defaults: concrete colour,
+road/structure overlap, viaduct parapet gap, tunnel wall clearance, elevated
+concrete median, and the parallel-roadway gap. A road copies these when its
+placement session starts and Road Tools Advanced can override them.
 
 The Settings menu also includes **Software**, showing the local easyRoad build
 and product information.

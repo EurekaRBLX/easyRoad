@@ -56,6 +56,11 @@ local MarkingSelectionModePod = require("./UI/MarkingSelectionModePod")
 local KerbStretchPanel = require("./UI/KerbStretchPanel")
 local JunctionPanel = require("./UI/JunctionPanel")
 
+-- RoadDesigner reserves 190 px for the lane strip. At 360 px total the two
+-- upper cards received only 162 px, less than the library's own 170 px list
+-- before its tabs/padding, so both columns visibly overflowed into the strip.
+local ROAD_DESIGNER_HEIGHT = 440
+
 return function(
 	plugin: Plugin,
 	regionalDock: DockWidgetPluginGui,
@@ -575,7 +580,7 @@ return function(
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
 				Position = UDim2.new(0, 12, 1, -16),
-				Size = UDim2.new(1, -24, 0, 360),
+				Size = UDim2.new(1, -24, 0, ROAD_DESIGNER_HEIGHT),
 			}
 		elseif assetManagerOpen then
 			local assets = StructureAssets.List(nil)
@@ -685,6 +690,8 @@ return function(
 						StructureAssets = currentSession.GetStructureAssets(placementStructureKind),
 						StructureStatus = currentSession.GetStructureStatus(),
 						SetStructure = currentSession.SetStructure,
+						Parallel = currentSession.GetParallel(),
+						SetParallel = currentSession.SetParallel,
 						RoundaboutRadius = currentSession.GetRoundaboutRadius(),
 						SetRoundaboutRadius = function(value: number)
 							currentSession.SetRoundaboutRadius(value)
@@ -847,7 +854,7 @@ return function(
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
 				Position = UDim2.new(0, 12, 1, -16),
-				Size = UDim2.new(1, -24, 0, 360),
+				Size = UDim2.new(1, -24, 0, ROAD_DESIGNER_HEIGHT),
 			}
 		elseif junctionEditSession.GetSelectedJunction() then
 			-- Both radius figures depend on the approaches meeting here AND on the

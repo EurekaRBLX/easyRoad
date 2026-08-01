@@ -4,6 +4,33 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Procedural gap controls, parallel carriageways, and one-way highways
+
+Procedural viaduct slabs now overlap the road underside by a configurable
+amount, parapets default to meeting the road edge exactly, and viaduct/tunnel
+Parts receive longitudinal outside-edge allowance through bends and grades.
+Road Tools Advanced and Settings expose concrete colour, interface overlap,
+parapet gap, tunnel wall clearance, and the viaduct concrete-median toggle.
+Pier controls and the other detailed structure fields are collapsed until
+requested.
+
+Road Tools can place 2-16 parallel carriageways from one clicked alignment.
+Curves are represented by six fitted lateral-offset cubics per source segment;
+two-roadway groups can automatically oppose directions based on regional drive
+side, while larger groups expose a reverse toggle per roadway. Generated Models
+carry a shared group id plus index, offset, count, and direction attributes.
+The Highways category now includes one-way 1-5 lane profiles with shoulders.
+
+The Road Editor and placed-road designer are now 440 pixels tall. Its fixed
+190-pixel lane strip previously left only 162 pixels for the property and
+library cards, less than the library list itself, which caused both columns to
+overflow behind the strip.
+
+`parallel_preview.py` renders the opposed-pair and four-roadway cases and checks
+the offset fit between control stations. `structure_preview.py` now asserts
+that the procedural slab/base overlaps the road and the default parapet has no
+lateral edge gap.
+
 ## Dedicated Road Assets UI and real procedural structure defaults
 
 The React-Lua top mode bar now separates **Road Assets** from **Road Editor**.
