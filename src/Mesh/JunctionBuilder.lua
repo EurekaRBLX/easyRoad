@@ -82,6 +82,7 @@ local RoadSplit = require("../RoadSplit")
 local JunctionInstance = require("../JunctionInstance")
 local RoadBuilder = require("./RoadBuilder")
 local FillTriangle = require("./FillTriangle")
+local StructureBuilder = require("../StructureBuilder")
 
 local JunctionBuilder = {}
 
@@ -409,6 +410,13 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 	rebuilt:Destroy()
 	writeSourceSegment(road, source)
 	RoadInstance.StampJunctions(road, data.StartJunctionId, data.EndJunctionId)
+	RoadInstance.StampStructure(road, data.Structure)
+	StructureBuilder.Render(
+		road,
+		PolyCurve.new({ outerSegment }),
+		data.Structure or StructureBuilder.DefaultData(),
+		settings
+	)
 end
 
 -- The radius (studs, from the junction centre) of this junction's pad -

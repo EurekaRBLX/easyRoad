@@ -8,6 +8,57 @@ Planned/requested work not yet built, roughly ordered by how developed the
 plan is. Not user-facing; internal planning only. See `SHIPPED.md` for
 what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Next major system - intersection controls, crossings, and signals
+
+The geometry can create and trim ordinary intersections, but it does not yet
+communicate who stops or where vulnerable road users cross. Build these as
+junction-owned controls, not decorations guessed independently by every road:
+
+1. **Approach control markings.** Per approach: None, Stop, Give Way/Yield.
+   Generate the transverse line at the trimmed mouth and expose its setback,
+   width, colour, and regional defaults. Stop text/triangles can follow after
+   the line geometry is reliable.
+2. **Pedestrian and cycle crossings.** Per approach: None, Zebra, Parallel
+   cycle, Combined, and signal-controlled. Keep pedestrian and bicycle bands
+   separately addressable even when they render as one crossing so later
+   traffic logic has meaningful conflict zones.
+3. **Commonwealth zig-zag toggle.** A per-crossing switch with a regional
+   default. It must be a marking generator leading into the crossing, not fake
+   extra lanes; left/right handedness and approach direction choose the mirrored
+   pattern.
+4. **Modular traffic lights.** EasyRoad core owns stable signal sockets,
+   approach/crossing IDs, a basic head/controller, and serialized phase data.
+   `EasyLight` is an optional second plugin that discovers those attributes and
+   replaces or augments the controller/UI. EasyRoad must never require
+   EasyLight to open or rebuild a junction, and unknown EasyLight attributes
+   must survive an EasyRoad rebuild.
+
+Before UI work, document the serialized junction-control schema and the public
+socket/attribute contract EasyLight can depend on. Then render stop/crossing
+markings in the Python junction preview and add break-tests for approach-side
+mirroring, line setback, and zig-zag clipping.
+
+## Model-backed viaducts and tunnels - FIRST VERTICAL SLICE SHIPPED
+
+The selected-Model ownership and rigid-module path now exists; see
+`STRUCTURES.md` and `SHIPPED.md`. A Workspace Model is copied into
+`ServerStorage/EasyRoadAssets`, explicit `EasyRoadStart` / `EasyRoadEnd`
+Attachments define its socket chord (or the importer creates bounding-box
+sockets), and a placed road serializes the selected asset/config. Viaduct mode
+can use the procedural road as its deck, tiles an optional custom model, and
+raycasts generic concrete piers down to Terrain/world parts. Tunnel mode tiles a
+required custom model without destructively editing Terrain. Road edits, bus
+bays, splits, junction trimming, and roundabout trimming regenerate structures.
+
+Follow-ups still open:
+
+- start/middle/end modules for portals, abutments, and expansion joints;
+- user-provided pier models and explicit pier socket Attachments;
+- turn/grade warnings for a rigid module that is too long for the curve;
+- rename, replace, and delete controls for the game-owned asset library;
+- an explicit undoable Terrain excavation/restoration phase for tunnels;
+- live Studio validation of selection UX, sockets, collisions, and raycasts.
+
 ## Roundabout split entry/exit arms — SHIPPED (see SHIPPED.md)
 
 Superseded the asymmetric-mouth-corner build, which in turn superseded the
@@ -287,10 +338,10 @@ Left open by that round, both cheap:
   already ramps a lateral offset along a curve, so this is the same machinery
   the turbo work needs.
 
-## Highway shoulders built as running lanes — FIXED (roundabout half), not confirmed live
+## Highway shoulders built as running lanes — FIXED for roundabouts, not confirmed live
 
 `LaneGroup` now carries a `LaneSpec { Kind, WidthM, Directional }` per strip
-instead of a bare width, so `armProfileFor` re-emits a shoulder as a shoulder.
+instead of a bare width, so the arm can distinguish a shoulder from a Drive.
 Fixing that exposed a second defect underneath it, invisible while every strip
 came out as an identical-width Drive: the undirected pass runs *after* the
 directional one and appended, so a shoulder landed at the inboard end of its
@@ -300,22 +351,27 @@ for. Either one alone puts the hard shoulder on the gore side of the mouth,
 against the splitter island. `splitApproachLanes` now collects indices and
 sorts them; `armProfileFor` takes a `mirrored` flag, `travelsInward == atStart`.
 
-Covered by `check_arm_kinds` plus three break-tests. Still open:
+The outboard shoulder is no longer carried full-width into the ring.
+`armProfileFor` leaves a zero-width Shoulder marker at the outboard boundary so
+`Markings.lua` paints a solid Drive/Shoulder separator, while `buildArm` emits
+the physical shoulder as an edge-anchored surface taper from its source width to
+zero. The running lanes stay fixed: a 2+2 highway therefore has two-lane arms,
+not three-lane arms with a differently coloured third strip.
+
+Covered by `check_arm_kinds`, `check_shoulder_tapers`, and three break-tests.
+
+The ring-side pavement is coordinated outside that shoulder taper, growing from
+the approach's real pavement width (zero on a motorway) while the shoulder
+shrinks. `hw4` and `hw4us` measure 0.00 studs of edge step; `hwmix` measures
+0.10. Every 3.3 m shoulder measures 11.78 studs at the cut and at most 0.02 at
+the ring (below the emitter's 0.02-stud cutoff), all with no mouth holes. The three seam entries have been removed from
+`KNOWN_OPEN`.
+
+Still open:
 
 - **`RoadBuilder`'s half is still untraced.** The live report was that both
   sides do this; only the roundabout was confirmed. Widen/narrow transitions
   between a highway and a parkway/avenue/street are the case to look at.
-- **The arm grows a pavement its approach never had, and that is load-bearing.**
-  A motorway has shoulders and no footway, but `armProfileFor` always inserts
-  one at `style.SidewalkWidthM`, which steps the roadway edge 7.2 studs sideways
-  at the cut — now measured, by the new `hw4`/`hw4us`/`hwmix` cases, and carried
-  in `validate.py`'s `KNOWN_OPEN`. **Do not just remove it:** `openRingPavement`
-  deletes the ring's own footway across each mouth sector and it is the arm's
-  pavement that covers the band from the ring's kerb out to its outer edge
-  there. Tried removing it and traded the step for 6 studs of BARE GROUND on
-  the highway legs. The fix is to TAPER the arm's pavement from the ring's width
-  at the merge to the approach's at the cut — a per-station width ramp, the same
-  machinery a lane-width transition needs.
 
 ## Junction corners: remaining work
 
@@ -891,9 +947,8 @@ in-place machinery already built, unrelated to the junction work above.
 
 - **Crossings.** Zebra crossings and HK/UK-style uncontrolled cautionary
   crossings (zigzag give-way markings).
-- **Tunnels / bridges standard.** Auto-generated barriers/parapets on
-  elevated or sunken segments, pillars for bridges. Reference: the user's
-  Commonwealth expressway assets in their Studio environment.
+- **Tunnels / bridges standard.** Promoted and expanded into the model-backed
+  roads, viaducts, and tunnels priority section at the top of this file.
 - **Deep settings: material/colour overrides.** Per-component-kind material
   and colour tweaks in the standalone settings page.
 - **Units settings.** Speed in km/h / mph / studs-per-second; distance in
@@ -944,6 +999,11 @@ in-place machinery already built, unrelated to the junction work above.
 
 ## Housekeeping
 
+- **Cross-platform parity validation - SHIPPED.** `check_parity.py` now reads
+  both source files as UTF-8 explicitly, so it works under native Windows
+  locales as well as Linux without an environment override. The native Windows
+  quick validation sweep passes; the three highway seam exceptions it carried
+  at the time have since been fixed and removed.
 - Extract exact dimensions/assets from the user's `easyRoad 2` Studio
   reference environment (roundabout exemplar, T-junction demo, expressway
   barriers, yellow box). This cloud session can't reach a local Studio

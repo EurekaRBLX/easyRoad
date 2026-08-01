@@ -287,7 +287,7 @@ existed.
 Falls back to a plain ring on one lane (no boundary to spiral) or one mouth (no
 arc to spiral along).
 
-### 3.8b An arm is built from KINDS, and the exit arm's frame is mirrored
+### 3.8b A shoulder is a tapered reserve behind a solid line, not a lane
 A `LaneGroup` carries a `LaneSpec { Kind, WidthM, Directional }` per strip, not
 a bare width. Flattening to a width was a real bug: a shoulder is
 `Direction = 0` roadway, so the "undirected roadway belongs to whichever side it
@@ -311,23 +311,30 @@ things changes nothing you can see:
   the arm alone.
 
 Either one alone puts the hard shoulder on the **gore** side of the mouth,
-against the splitter island. Both are covered by `check_arm_kinds`, which
-compares the built arm against its source group as a multiset *and* tests that
-any shoulder is at the outboard end — the two defects mask each other, since
-getting the kinds right and the order wrong leaves every count agreeing.
+against the splitter island. But preserving its kind and full width all the way
+to the ring is also wrong: it still draws three surface strips feeding a
+two-lane ring. `armProfileFor` now replaces only the contiguous OUTBOARD
+shoulder with a zero-width Shoulder marker. That marker keeps the semantic
+Drive/Shoulder boundary, so `Markings.lua` draws the required solid line, while
+the two Drive components remain the only running lanes at the merge.
 
-Reordering cannot move the mouths: `roadwayEdgeOffsetsM` depends on the total
-width and on which components are footway, and neither changes.
-
-**The arm's pavement is load-bearing.** An arm gets one at
-`style.SidewalkWidthM` even when its approach has none, which steps the roadway
-edge 7.2 studs sideways at the cut on a motorway approach — measured, and
-carried as a known-open failure. It cannot simply be removed:
+**The arm's pavement is load-bearing, and now tapers.** An arm needs one at
+`style.SidewalkWidthM` by the ring even when its approach has none. Keeping it
+full-width to the cut stepped the outer edge 7.2 studs sideways on a motorway
+approach. It cannot simply be removed:
 `openRingPavement` deletes the ring's own footway across each mouth sector, and
 it is the arm's pavement that covers the band from the ring's kerb out to its
 outer edge there. Removing it trades the step for **6 studs of bare ground** on
-exactly the highway legs. The fix is to taper it from the ring's width at the
-merge to the approach's at the cut.
+exactly the highway legs.
+
+`buildArm` now fills two coordinated edge-anchored surfaces outside the fixed
+travel lanes. The shoulder smoothsteps from full width at the cut to zero at the
+merge. Pavement starts outside the current shoulder edge and grows from the
+approach's real width (zero for a motorway) to the ring width, so the surfaces
+never overlap and never expose ground. The three highway cases measure
+0.00 / 0.00 / 0.10 studs of seam step; every 3.3 m shoulder measures
+11.78 -> <=0.02 studs (the surface-emission cutoff); none carries a
+`KNOWN_OPEN` exception.
 
 ### 3.9 "Minimum" radius means the cliff, not the comfort
 Two different numbers were being asked of one function, and the answer was the
@@ -575,10 +582,6 @@ a Studio look first, since something in this class has changed.
 - **Splitter waist.** A 4-leg ring dips ~0.7 studs partway along. Cosmetic.
 - **Island rim hairline.** ~0.1 studs where the ring's innermost strips chord
   across the island. Reported by the tooling as below visible, not failed.
-- **A pavement appears at the cut on approaches that have none.** 7.2 studs of
-  lateral edge step on a motorway approach, because the arm always gets a
-  footway and the approach has only shoulders. Known-open in `validate.py`;
-  the fix is a taper, not removal — see §3.8b.
 
 ---
 
@@ -597,7 +600,8 @@ of failures that are expected today. See `tools/preview/README.md`.
 | `circulating_width` | narrowest DRIVABLE width of the ring, all the way round | anything outside the ring band; it answers "can you drive round it", nothing else |
 | `seam_steps` | lateral extent at the cut | the *shape* of an end cap |
 | `check_turbo` (run it via `turbo_check.py`) | each peel starts on a ring divider, runs outward, and its FAR END lands on the lane lines of the exit it was built for | whether the peel is the right line to draw at all — that is a judgement from reference photographs, and it was wrong six times while every check stayed green |
-| `check_arm_kinds` | every roadway strip of an approach reaches its arm as the same KIND and width, and a shoulder is at the outboard end | anything about the arm's *position* — it compares cross-sections, not where they were put |
+| `check_arm_kinds` | non-shoulder running surfaces keep their KIND and width; the shoulder marker is outboard and zero-width at the ring | the physical shoulder wedge between cut and ring |
+| `check_shoulder_tapers` | emitted shoulder polygons have source width at the cut and zero width at the ring | markings and vertical/z-fighting defects |
 | `road_preview.py` | an ordinary road: bare ground inside its own footprint, edge sawtooth, broken edge lines | lane-width transitions and bus bays, which are **not ported at all** |
 | `check_parity.py` | constants shared with the Lua | the algorithm, and any missing rule set |
 

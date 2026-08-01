@@ -21,6 +21,7 @@ local RoadInstance = require("./RoadInstance")
 local JunctionInstance = require("./JunctionInstance")
 local RegionStyles = require("./RegionStyles")
 local Settings = require("./Settings")
+local StructureBuilder = require("./StructureBuilder")
 
 local RoadSplit = {}
 
@@ -139,8 +140,9 @@ function RoadSplit.SplitMany(
 	local pieces: { Model } = {}
 	for index = 1, #stations - 1 do
 		local pieceSegment = CurveSegment.Sub(segment, stations[index], stations[index + 1])
+		local pieceCurve = PolyCurve.new({ pieceSegment })
 		local piece = RoadBuilder.Build({
-			Curve = PolyCurve.new({ pieceSegment }),
+			Curve = pieceCurve,
 			ProfileStart = data.ProfileStart,
 			Style = style,
 			Settings = settings,
@@ -149,6 +151,8 @@ function RoadSplit.SplitMany(
 		local startJunctionId = if index == 1 then data.StartJunctionId else sorted[index - 1].JunctionId
 		local endJunctionId = if index > #sorted then data.EndJunctionId else sorted[index].JunctionId
 		RoadInstance.StampJunctions(piece, startJunctionId, endJunctionId)
+		RoadInstance.StampStructure(piece, data.Structure)
+		StructureBuilder.Render(piece, pieceCurve, data.Structure or StructureBuilder.DefaultData(), settings)
 		table.insert(pieces, piece)
 	end
 

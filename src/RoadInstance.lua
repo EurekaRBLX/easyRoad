@@ -28,6 +28,22 @@ export type BayData = {
 	Side: "Left" | "Right",
 }
 
+export type StructureMode = "None" | "Viaduct" | "Tunnel"
+
+export type StructureData = {
+	Mode: StructureMode,
+	-- References a Model in ServerStorage/EasyRoadAssets. Viaduct mode can
+	-- omit one and use the procedural road itself as the deck; tunnels need
+	-- an imported module.
+	AssetId: string?,
+	ModuleOffsetM: number,
+	AutoPillars: boolean,
+	PillarSpacingM: number,
+	PillarWidthM: number,
+	PillarDepthM: number,
+	MaxPillarHeightM: number,
+}
+
 export type RoadData = {
 	Curve: PolyCurve.PolyCurve,
 	ProfileStart: RoadProfile.RoadProfile,
@@ -35,6 +51,7 @@ export type RoadData = {
 	Bay: BayData?,
 	MarkingStretches: { Markings.MarkingStretch },
 	KerbStretches: { Markings.KerbStretch },
+	Structure: StructureData?,
 	-- Ids of the JunctionNode (see JunctionInstance.lua) this road's start/
 	-- end connects to, if any - nil means a free (unconnected) end.
 	StartJunctionId: string?,
@@ -102,6 +119,42 @@ end
 -- RoadEditSession, not by the initial placement flow.
 function RoadInstance.StampBay(model: Model, bay: BayData?)
 	model:SetAttribute("RW_BayJson", if bay then HttpService:JSONEncode(bay) else nil)
+end
+
+function RoadInstance.StampStructure(model: Model, structure: StructureData?)
+	model:SetAttribute(
+		"RW_StructureJson",
+		if structure and structure.Mode ~= "None" then HttpService:JSONEncode(structure) else nil
+	)
+end
+
+local function structureFromModel(model: Model): StructureData?
+	local raw = model:GetAttribute("RW_StructureJson")
+	if typeof(raw) ~= "string" then
+		return nil
+	end
+	local ok, decoded = pcall(HttpService.JSONDecode, HttpService, raw)
+	if not ok or typeof(decoded) ~= "table" or (decoded.Mode ~= "Viaduct" and decoded.Mode ~= "Tunnel") then
+		return nil
+	end
+	return {
+		Mode = decoded.Mode :: StructureMode,
+		AssetId = if typeof(decoded.AssetId) == "string" then decoded.AssetId else nil,
+		ModuleOffsetM = if typeof(decoded.ModuleOffsetM) == "number" then decoded.ModuleOffsetM else 0,
+		AutoPillars = if typeof(decoded.AutoPillars) == "boolean" then decoded.AutoPillars else true,
+		PillarSpacingM = if typeof(decoded.PillarSpacingM) == "number"
+			then math.max(decoded.PillarSpacingM, 0.1)
+			else 18,
+		PillarWidthM = if typeof(decoded.PillarWidthM) == "number"
+			then math.max(decoded.PillarWidthM, 0.1)
+			else 1.8,
+		PillarDepthM = if typeof(decoded.PillarDepthM) == "number"
+			then math.max(decoded.PillarDepthM, 0.1)
+			else 1.8,
+		MaxPillarHeightM = if typeof(decoded.MaxPillarHeightM) == "number"
+			then math.max(decoded.MaxPillarHeightM, 0.1)
+			else 200,
+	}
 end
 
 local function bayFromModel(model: Model): BayData?
@@ -275,6 +328,7 @@ function RoadInstance.Read(model: Model): RoadData?
 		Bay = bayFromModel(model),
 		MarkingStretches = stretchesFromModel(model),
 		KerbStretches = kerbStretchesFromModel(model),
+		Structure = structureFromModel(model),
 		StartJunctionId = if typeof(startJunctionId) == "string" then startJunctionId else nil,
 		EndJunctionId = if typeof(endJunctionId) == "string" then endJunctionId else nil,
 	}

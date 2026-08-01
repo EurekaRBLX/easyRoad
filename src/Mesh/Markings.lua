@@ -472,6 +472,19 @@ function Markings.Compute(
 		if isRoadway then
 			local leftIsKerb = previousComponent == nil or RoadProfile.IsRaised(previousComponent.Kind)
 			local rightIsKerb = nextComponent == nil or RoadProfile.IsRaised(nextComponent.Kind)
+			-- A zero-width Shoulder is a semantic marker used by roundabout arms:
+			-- its Drive/Shoulder boundary below supplies the one required solid
+			-- line, while its paved surface is emitted separately as a taper. Do
+			-- not also paint the generic roadway-edge line a few centimetres inward
+			-- or the result becomes a doubled stripe (and coplanar Parts in Studio).
+			local leftCoveredByShoulderSeparator = component.Kind == "Shoulder"
+				and component.WidthM <= 1e-6
+				and nextComponent ~= nil
+				and nextComponent.Kind == "Drive"
+			local rightCoveredByShoulderSeparator = component.Kind == "Shoulder"
+				and component.WidthM <= 1e-6
+				and previousComponent ~= nil
+				and previousComponent.Kind == "Drive"
 
 			-- Left edge of a roadway run: kerb restriction line REPLACES the
 			-- plain region edge line (they occupy the same physical spot -
@@ -484,7 +497,7 @@ function Markings.Compute(
 			-- separate concept (no *parking* restriction, not no marking at
 			-- all); a non-kerb roadway edge (e.g. a median boundary) always
 			-- keeps its plain edge line regardless of KerbRestriction.
-			if not previousIsRoadway then
+			if not previousIsRoadway and not leftCoveredByShoulderSeparator then
 				if leftIsKerb then
 					emitKerbEdgeAt(
 						i - 1,
@@ -503,7 +516,7 @@ function Markings.Compute(
 				end
 			end
 			-- Right edge of a roadway run: same rule
-			if not nextIsRoadway then
+			if not nextIsRoadway and not rightCoveredByShoulderSeparator then
 				if rightIsKerb then
 					emitKerbEdgeAt(
 						i,

@@ -4,7 +4,96 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Custom structure Models, viaducts, tunnels, and raycast piers
+
+Placed roads now have a serialized structure configuration in addition to
+their procedural cross-section. In the Road Inspector a user can choose
+Ground level, Elevated viaduct, or Tunnel modules. Ctrl-selecting that road and
+a literal Workspace `Model` imports a clone into the game-owned
+`ServerStorage/EasyRoadAssets` library as the selected viaduct/tunnel module.
+
+An imported Model may provide `EasyRoadStart` and `EasyRoadEnd` Attachments.
+When they are absent, the importer creates transparent bounding-box sockets so
+an ordinary Model remains immediately usable and tells the user that explicit
+sockets will make the joints more precise. The renderer walks the road by the
+socket-to-socket chord length, aligns anchored clones to the curve, and overlaps
+the final module when necessary rather than leaving an uncovered tail.
+
+Viaducts can use the ordinary generated road as the deck with no imported
+module. Optional concrete piers are stationed independently of road strip
+sampling and raycast vertically to Terrain or world parts, with configurable
+spacing, width, depth, vertical module offset, and maximum drop. Ground-level
+hits do not create decorative stubs. Tunnels require an imported shell module;
+Terrain excavation is deliberately not implied or performed.
+
+The configuration and generated children survive lane/marking edits, bus-bay
+rebuilds, road splits, junction approach trimming, and roundabout spoke
+trimming. `tools/preview/structure_preview.py` ports the socket stepping and
+terrain projection, asserts continuous module coverage/pier contact, and
+renders viaduct plan/elevation plus tunnel plan as a PNG. This is headless and
+still needs a live Studio check; Roblox Model contents, collisions, Attachment
+orientation, and actual raycast filtering are outside the Python model.
+
+## Highway shoulders and pavement taper into a two-lane roundabout arm
+
+A motorway approach has shoulders but no footway. Roundabout arms still need
+the ring's pavement at their merge, because `openRingPavement` removes the
+ring-owned strip across each mouth and the arm replaces it. Keeping that
+pavement full-width to the approach cut produced a measured 7.20-stud edge
+step; removing it instead opened roughly 6 studs of bare ground.
+
+`RoundaboutBuilder.armProfileFor` now keeps only a zero-width Shoulder marker at
+the ring-side boundary. That marker is intentional: `Markings.lua` sees
+Drive/Shoulder and emits the continuous solid separator, but the shoulder can no
+longer be counted or rendered as a third running lane. `buildArm` lays the real
+paved shoulder separately, smoothstepping it from its full source width to zero
+at the merge. The two Drive strips stay fixed and feed the two circulating
+lanes.
+
+The pavement is coordinated with the same taper. It begins outside the current
+shoulder edge, grows from the approach's real footway width (zero for a
+motorway) to the ring width, and takes over as the shoulder disappears. This
+keeps the whole mouth covered without recentering or sliding the travel lanes.
+
+The Python emission port builds the same surfaces and now renders
+Drive/Shoulder boundaries as solid instead of dashed. Measurements:
+
+- `hw4`: 7.20 -> 0.00 studs
+- `hw4us`: 7.20 -> 0.00 studs
+- `hwmix`: worst seam 0.10 studs (flush threshold 0.50)
+- every 3.3 m shoulder: 11.78 studs at the cut -> at most 0.02 at the ring
+
+No mouth holes or visible ring gaps were introduced. `check_arm_kinds` now
+asserts that the running surfaces keep their kinds while the ring-side shoulder
+marker has zero width; `check_shoulder_tapers` measures the emitted polygons at
+both ends. The three highway seam entries remain removed from `validate.py`'s
+`KNOWN_OPEN`. Not yet confirmed in Studio.
+
+## Cross-platform UTF-8 validation
+
+`tools/preview/check_parity.py` now opens the Lua and Python sources as
+UTF-8 explicitly instead of inheriting the host locale. Linux already defaulted
+to UTF-8, but native Windows with a CP950 locale crashed before comparing any
+constants. The checker now behaves the same on both platforms without requiring
+`PYTHONUTF8` or `PYTHONIOENCODING` environment overrides.
+
+The no-Rojo artifact builder now also forces LF output and sorts directory
+entries by their raw filename string. Its previous use of host defaults made a
+native-Windows build write CRLF and use `WindowsPath`'s case-insensitive order,
+while Linux wrote LF and sorted case-sensitively. The latter reordered most of
+the generated instance tree and produced a roughly 42,000-line artifact diff
+from identical inputs. Repeated builds are now byte-deterministic across hosts.
+
+Verified from native Windows under the normal locale: 25 shared constants agree,
+the turbo and road break-tests pass, and the complete quick `validate.py` sweep
+passes. Its three highway-seam exceptions were then closed by the newer entry
+above.
+
 ## Highway shoulders reach the mouth as shoulders, and a preview past the roundabout
+
+Historical first pass, superseded by the newer taper entry above: this fixed the
+kind/order corruption but still kept the shoulder full-width to the ring. The
+current implementation keeps its solid boundary and tapers its surface to zero.
 
 Two things: the reported bug, and the tooling that should have caught it years
 of rounds ago.

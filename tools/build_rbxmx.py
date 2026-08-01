@@ -81,7 +81,12 @@ def build_dir(path: Path, name: str) -> str:
 			break
 
 	children = []
-	for entry in sorted(path.iterdir()):
+	# Sort by the raw name string rather than by Path. WindowsPath ordering is
+	# case-insensitive while PosixPath ordering is case-sensitive, which moved
+	# lowercase modules ahead of uppercase folders on Windows and reordered most
+	# of the generated instance tree. Python strings have the same case-sensitive
+	# ordering on both hosts.
+	for entry in sorted(path.iterdir(), key=lambda item: item.name):
 		if init is not None and entry == init:
 			continue
 		if entry.is_dir():
@@ -127,7 +132,13 @@ def main() -> None:
 	root = build_project_node(ROOT, project["tree"], project.get("name", "EasyRoad"))
 	document = '<roblox version="4">%s</roblox>' % root
 	output.parent.mkdir(parents=True, exist_ok=True)
-	output.write_text(document, encoding="utf-8")
+	# Force LF on every host. Path.write_text() uses the platform text default,
+	# which turned every embedded source newline into CRLF on native Windows and
+	# produced a 40k-line artifact diff against the otherwise-identical Linux
+	# build. Roblox accepts LF, and deterministic output is what lets a rebuilt
+	# dist file prove it contains only the source changes from this round.
+	with output.open("w", encoding="utf-8", newline="\n") as stream:
+		stream.write(document)
 	print("Wrote %s (%d bytes)" % (output, output.stat().st_size))
 
 
