@@ -23,15 +23,14 @@ import argparse
 import math
 import os
 
+from preview_core import *          # noqa: F401,F403  - shared emission core
+from preview_core import (ARC_SAMPLES, ASPHALT_C, CHORD_TOLERANCE, Cubic, FLAT, GROUND,
+                          ISLAND_C, KIND_C, LANE_M, MARK_C, MARKING_W_M, MAX_SEGMENT_LENGTH,
+                          MEDIAN_M, Part, PolyCurve, SCALE, SHOULDER_M, SIDEWALK_C, SW_M,
+                          THICKNESS, build_stations, direction_of, emit_road, is_roadway,
+                          offsets_m, point_in, rect, right_of, roadway_edges_m, unit)
 from raster import Canvas
 
-# --- RoadBuilder constants ---------------------------------------------------
-CHORD_TOLERANCE = 0.05
-MIN_STEP = 0.4
-MAX_TURN_PER_STEP = 0.2
-MARKING_THICKNESS = 0.05
-MAX_SEGMENT_LENGTH = 8.0          # settings.MaxSegmentLengthStuds
-ARC_SAMPLES = 64                  # CurveSegment.ARC_SAMPLES
 
 # --- RoundaboutBuilder constants ---------------------------------------------
 SPLIT_ANGLE_RAD = math.radians(38)
@@ -56,161 +55,27 @@ NOSE_ARC_STEP_RAD = math.radians(2)
 ARM_SINK = 0.05
 ARM_RUN_FACTOR, ARM_RUN_MIN, ARM_RUN_MAX = 0.85, 28, 90
 
-# --- region / settings -------------------------------------------------------
-SCALE = 3.571
-SW_M, LANE_M = 2.0, 3.65
-MARKING_W_M = 0.1
-THICKNESS = 1.0
-
-ASPHALT_C = (60, 60, 60)
-SIDEWALK_C = (168, 168, 168)
-MARK_C = (245, 245, 245)
-ISLAND_C = (150, 150, 150)
-GROUND = (255, 0, 200)
-FLAT = (70, 70, 70)
-
-
-# --- geometry ----------------------------------------------------------------
-def unit(v):
-    m = math.hypot(v[0], v[1])
-    return (v[0]/m, v[1]/m) if m > 1e-9 else (0.0, 0.0)
-
-
-def right_of(t):
-    return (-t[1], t[0])
-
-
-class Cubic:
-    def __init__(self, p0, p1, p2, p3):
-        self.p = (p0, p1, p2, p3)
-        self.arc = [0.0]
-        prev = self.at(0.0)
-        for i in range(1, ARC_SAMPLES):
-            cur = self.at(i/(ARC_SAMPLES-1))
-            self.arc.append(self.arc[-1] + math.dist(prev, cur))
-            prev = cur
-        self.length = self.arc[-1]
-
-    def at(self, t):
-        p0, p1, p2, p3 = self.p
-        u = 1-t
-        return (u**3*p0[0] + 3*u*u*t*p1[0] + 3*u*t*t*p2[0] + t**3*p3[0],
-                u**3*p0[1] + 3*u*u*t*p1[1] + 3*u*t*t*p2[1] + t**3*p3[1])
-
-    def d1(self, t):
-        p0, p1, p2, p3 = self.p
-        u = 1-t
-        return (3*u*u*(p1[0]-p0[0]) + 6*u*t*(p2[0]-p1[0]) + 3*t*t*(p3[0]-p2[0]),
-                3*u*u*(p1[1]-p0[1]) + 6*u*t*(p2[1]-p1[1]) + 3*t*t*(p3[1]-p2[1]))
-
-    def d2(self, t):
-        p0, p1, p2, p3 = self.p
-        u = 1-t
-        return (6*u*(p2[0]-2*p1[0]+p0[0]) + 6*t*(p3[0]-2*p2[0]+p1[0]),
-                6*u*(p2[1]-2*p1[1]+p0[1]) + 6*t*(p3[1]-2*p2[1]+p1[1]))
-
-    def t_at_s(self, s):
-        s = max(0.0, min(self.length, s))
-        for i in range(1, len(self.arc)):
-            if self.arc[i] >= s:
-                span = self.arc[i]-self.arc[i-1]
-                f = 0.0 if span < 1e-9 else (s-self.arc[i-1])/span
-                return ((i-1)+f)/(ARC_SAMPLES-1)
-        return 1.0
-
-
-class PolyCurve:
-    def __init__(self, segs):
-        self.segs = segs
-        self.length = sum(s.length for s in segs)
-
-    def _local(self, s):
-        s = max(0.0, min(self.length, s))
-        for seg in self.segs:
-            if s <= seg.length or seg is self.segs[-1]:
-                return seg, s
-            s -= seg.length
-        return self.segs[-1], s
-
-    def pos(self, s):
-        seg, ls = self._local(s)
-        return seg.at(seg.t_at_s(ls))
-
-    def tan(self, s):
-        seg, ls = self._local(s)
-        return unit(seg.d1(seg.t_at_s(ls)))
-
-    def curvature(self, s):
-        seg, ls = self._local(s)
-        t = seg.t_at_s(ls)
-        d1, d2 = seg.d1(t), seg.d2(t)
-        n = abs(d1[0]*d2[1] - d1[1]*d2[0])
-        d = math.hypot(*d1)**3
-        return 0.0 if d < 1e-9 else n/d
-
-    def frame(self, s):
-        """Returns (position, right, forward) - matches CFrame local X / -Z."""
-        p = self.pos(s)
-        t = self.tan(s)
-        return p, right_of(t), t
-
-
-def build_stations(curve, max_step, tol, max_offset):
-    """Faithful port of RoadBuilder.buildStations."""
-    stations = [0.0]
-    s = 0.0
-    while s < curve.length:
-        k = curve.curvature(s)
-        step = max_step
-        if k > 1e-6:
-            k_eff = k / max(0.05, 1 - max_offset*k)
-            step = min(max_step, math.sqrt(8*tol/k_eff))
-            step = min(step, MAX_TURN_PER_STEP/k_eff)
-        step = max(step, MIN_STEP)
-        s = min(s+step, curve.length)
-        stations.append(s)
-    n = len(stations)
-    if n > 2 and (stations[-1]-stations[-2]) < MIN_STEP*0.5:
-        del stations[-2]
-    return stations
-
-
-# --- profile -----------------------------------------------------------------
-def offsets_m(components):
-    total = sum(c[1] for c in components)
-    x = -total/2
-    out = []
-    for c in components:
-        out.append((x, x+c[1]))
-        x += c[1]
-    return out
-
-
-def roadway_edges_m(components):
-    o = offsets_m(components)
-    idx = [i for i, c in enumerate(components) if c[0] != "Sidewalk"]
-    if not idx:
-        return o[0][0], o[-1][1]
-    return o[idx[0]][0], o[idx[-1]][1]
-
-
-def direction_of(component):
-    return component[2] if len(component) > 2 else 0
-
 
 def split_approach_lanes(components, inbound_sign, style_pav=SW_M):
-    """Port of RoundaboutBuilder.splitApproachLanes."""
+    """Port of RoundaboutBuilder.splitApproachLanes.
+
+    Collects INDICES and sorts them at the end. The undirected pass runs after
+    the directional one, so appending as it goes put a shoulder at the inboard
+    end of its own group however far outboard it actually sat - invisible while
+    every strip came out as an identical-width Drive, and a hard shoulder down
+    the middle of the mouth as soon as they did not.
+    """
     offs = offsets_m(components)
-    groups = {1: dict(widths=[], left=math.inf, right=-math.inf, pav=style_pav),
-              -1: dict(widths=[], left=math.inf, right=-math.inf, pav=style_pav)}
+    groups = {1: dict(lanes=[], idx=[], left=math.inf, right=-math.inf, pav=style_pav),
+              -1: dict(lanes=[], idx=[], left=math.inf, right=-math.inf, pav=style_pav)}
 
     def add(g, i):
-        g["widths"].append(components[i][1])
+        g["idx"].append(i)
         g["left"] = min(g["left"], offs[i][0])
         g["right"] = max(g["right"], offs[i][1])
 
     for i, c in enumerate(components):
-        if c[0] == "Sidewalk":
+        if not is_roadway(c):
             continue
         d = direction_of(c)
         if d == inbound_sign:
@@ -218,24 +83,37 @@ def split_approach_lanes(components, inbound_sign, style_pav=SW_M):
         elif d == -inbound_sign:
             add(groups[-1], i)
     for i, c in enumerate(components):
-        if c[0] == "Sidewalk" or direction_of(c) != 0:
+        if not is_roadway(c) or direction_of(c) != 0:
             continue
         for g in groups.values():
-            if g["widths"] and (abs(offs[i][1]-g["left"]) < 1e-6 or abs(offs[i][0]-g["right"]) < 1e-6):
+            if g["idx"] and (abs(offs[i][1]-g["left"]) < 1e-6 or abs(offs[i][0]-g["right"]) < 1e-6):
                 add(g, i)
                 break
     for g in groups.values():
+        for i in sorted(g["idx"]):
+            c = components[i]
+            g["lanes"].append((c[0], c[1], direction_of(c) != 0))
         for i, c in enumerate(components):
             if c[0] != "Sidewalk":
                 continue
             if abs(offs[i][1]-g["left"]) < 1e-6 or abs(offs[i][0]-g["right"]) < 1e-6:
                 g["pav"] = c[1]
-    return (groups[1] if groups[1]["widths"] else None,
-            groups[-1] if groups[-1]["widths"] else None)
+    return (groups[1] if groups[1]["lanes"] else None,
+            groups[-1] if groups[-1]["lanes"] else None)
 
 
-def arm_from_group(group, drive_on_left, solo=False):
-    comps = [("Drive", w) for w in group["widths"]]
+def arm_from_group(group, drive_on_left, solo=False, mirrored=False):
+    """`group["lanes"]` is in the APPROACH's left-to-right order.
+
+    An arm whose own travel runs against the approach curve sees that
+    cross-section mirrored, so its components list back to front - see
+    RoundaboutBuilder.armProfileFor.
+    """
+    lanes = list(reversed(group["lanes"])) if mirrored else group["lanes"]
+    comps = [(kind, w, 1 if directional else 0) for kind, w, directional in lanes]
+    # The arm keeps a pavement even where its approach has none: it is what
+    # covers the band openRingPavement opens in the ring's own footway. See
+    # armProfileFor - removing it trades a 7.1-stud seam step for bare ground.
     if solo:
         comps.insert(0, ("Sidewalk", group["pav"]))
         comps.append(("Sidewalk", group["pav"]))
@@ -247,99 +125,6 @@ def arm_from_group(group, drive_on_left, solo=False):
     outer = (-lm if drive_on_left else rm) * SCALE
     inner = (rm if drive_on_left else -lm) * SCALE
     return comps, outer, inner, (lm + rm) / 2
-
-
-# --- part emission -----------------------------------------------------------
-class Part:
-    __slots__ = ("name", "poly", "color", "center", "y")
-
-    def __init__(self, name, poly, color, center, y):
-        self.name, self.poly, self.color, self.center, self.y = name, poly, color, center, y
-
-
-def rect(center, right, forward, half_w, half_l):
-    a = (right[0]*half_w, right[1]*half_w)
-    b = (forward[0]*half_l, forward[1]*half_l)
-    return [(center[0]-a[0]-b[0], center[1]-a[1]-b[1]),
-            (center[0]+a[0]-b[0], center[1]+a[1]-b[1]),
-            (center[0]+a[0]+b[0], center[1]+a[1]+b[1]),
-            (center[0]-a[0]+b[0], center[1]-a[1]+b[1])]
-
-
-def emit_road(curve, components, y_base=0.0, solid_lane_lines=False, lane_lines=True):
-    """Port of the deck-strip + marking emission for a flat (unbanked) road."""
-    parts = []
-    total_m = sum(c[1] for c in components)
-    max_offset = total_m/2*SCALE
-    stations = build_stations(curve, MAX_SEGMENT_LENGTH, CHORD_TOLERANCE, max_offset)
-    offs = offsets_m(components)
-
-    for i in range(len(stations)-1):
-        s0, s1 = stations[i], stations[i+1]
-        nominal = s1-s0
-        s_mid = (s0+s1)/2
-        pos, right, fwd = curve.frame(s_mid)
-        k = curve.curvature(s_mid)
-        for c, comp in enumerate(components):
-            kind, w_m = comp[0], comp[1]
-            width = w_m*SCALE
-            if width <= 1e-4:
-                continue
-            center_off = (offs[c][0]+w_m/2)*SCALE
-            raised = kind == "Sidewalk"
-            edge_dist = max(abs(center_off-width/2), abs(center_off+width/2))
-            miter = edge_dist*k*nominal
-            padding = miter + 0.08
-            cen = (pos[0]+right[0]*center_off, pos[1]+right[1]*center_off)
-            parts.append(Part(
-                kind,
-                rect(cen, right, fwd, width/2, (nominal+padding)/2),
-                SIDEWALK_C if raised else ASPHALT_C,
-                cen,
-                y_base + (0.125*SCALE if raised else 0.0),
-            ))
-
-    # markings: solid edge lines at the roadway edges, dashed between lanes
-    mw = MARKING_W_M*SCALE
-    inset = MARKING_W_M*1.5
-    left_m, right_m = roadway_edges_m(components)
-    lines = [(left_m+inset, True), (right_m-inset, True)]
-    for c in range(len(components)-1):
-        if components[c][0] != "Sidewalk" and components[c+1][0] != "Sidewalk":
-            # `solid_lane_lines` stands in for RoadProfile's
-            # RightBoundary = "Solid" (the SolidLanes ring); `lane_lines=False`
-            # for its "None" (the Turbo ring, which suppresses the straight
-            # boundary and spirals its own). Neither is a port of Markings.lua
-            # - see ROUNDABOUT.md 5.3 - just enough for the three-way choice to
-            # be visible here at all.
-            if lane_lines:
-                lines.append((offs[c][1], solid_lane_lines))
-
-    for off_m, solid in lines:
-        off = off_m*SCALE
-        if solid:
-            spans = [(stations[i], stations[i+1]) for i in range(len(stations)-1)]
-        else:
-            dash, gap = 3.0*SCALE, 3.0*SCALE
-            spans, s = [], 0.0
-            while s < curve.length:
-                spans.append((s, min(s+dash, curve.length)))
-                s += dash+gap
-        for j, (a, b) in enumerate(spans):
-            p0c, r0, _ = curve.frame(a)
-            p1c, r1, _ = curve.frame(b)
-            p0 = (p0c[0]+r0[0]*off, p0c[1]+r0[1]*off)
-            p1 = (p1c[0]+r1[0]*off, p1c[1]+r1[1]*off)
-            seg_len = math.dist(p0, p1)
-            if seg_len < 1e-4:
-                continue
-            fwd = unit((p1[0]-p0[0], p1[1]-p0[1]))
-            mid = ((p0[0]+p1[0])/2, (p0[1]+p1[1])/2)
-            extra = 0.0 if not solid else 0.0
-            parts.append(Part("Marking", rect(mid, right_of(fwd), fwd, mw/2,
-                                              (seg_len+extra)/2),
-                              MARK_C, mid, y_base+0.02))
-    return parts
 
 
 # --- roundabout --------------------------------------------------------------
@@ -411,20 +196,48 @@ def clamp_sectors(sectors):
     return out
 
 
-def min_radius_studs(legs, lane_count, lane_w, dol):
-    """Port of RoundaboutBuilder.MinimumRadiusStuds.
+# RoundaboutBuilder.ISLAND_MIN_RADIUS_STUDS - buildIsland bails below 1.
+ISLAND_MIN_RADIUS_STUDS = 2
 
-    Lives here rather than in dump_compare.py so `build` can apply the same
-    growth the plugin applies - see the note in `build`.
+
+def min_radius_studs(ring_lanes, lane_w, dol, sidewalk=True):
+    """Port of RoundaboutBuilder.MinimumRadiusStuds - the HARD FLOOR.
+
+    Below this the ring's inner edge has passed the centre and the annulus is a
+    self-overlapping disc. Closed form: the ring's own inner half-width plus a
+    minimum island.
+
+    This name used to be attached to the function below, which computes the
+    angular PACKING estimate - a different quantity, and the one the plugin
+    renamed to SuggestedRadiusStuds when the two were separated. The preview
+    never followed, so it carried a docstring claiming to port a function it
+    did not, and check_parity.py reported the symptom as one orphan constant.
+    """
+    comps = ring_components(ring_lanes, lane_w, dol, sidewalk)
+    o = offsets_m(comps)
+    inner_half_m = o[-1][1] if dol else -o[0][0]
+    return inner_half_m*SCALE + ISLAND_MIN_RADIUS_STUDS
+
+
+def suggested_radius_studs(legs, lane_count, lane_w, dol):
+    """Port of RoundaboutBuilder.SuggestedRadiusStuds - the ANGULAR PACKING fit.
+
+    Every leg's two arms, its deflection split, and a strip of kerb before the
+    next leg, summed against 360 degrees. A fine suggestion and a bad floor: the
+    geometry holds to R=18 against packing numbers of 27 to 70 (ROUNDABOUT.md
+    3.9).
     """
     total = widest = outer_off = 0.0
     for _, spoke in legs:
         inbound, outbound = split_approach_lanes(spoke, 1)
         solo = (inbound is None) != (outbound is None)
-        for group in (inbound, outbound):
+        # inbound_sign is +1 above, i.e. the junction is at the FAR end of the
+        # approach, so the inward arm keeps the curve's frame and the outward
+        # one is mirrored.
+        for group, travels_inward in ((inbound, True), (outbound, False)):
             if not group:
                 continue
-            comps, outer, _inner, _centre = arm_from_group(group, dol, solo)
+            comps, outer, _inner, _centre = arm_from_group(group, dol, solo, not travels_inward)
             width = sum(c[1] for c in comps) * SCALE
             total += width
             widest = max(widest, width)
@@ -623,6 +436,42 @@ def check_turbo(scene):
     return faults
 
 
+def check_arm_kinds(scene):
+    """Every roadway strip an approach had must reach its arm as ITSELF.
+
+    Two failures, both of which shipped. A shoulder is `Direction = 0` roadway,
+    so the undirected pass folds it into whichever side it abuts, and the arm
+    builder used to re-emit every strip as `{ Kind = "Drive" }` - a 2+2 highway
+    built 3+3 arms. And because that pass runs second, the strip was appended
+    after the directional lanes whatever its real position, which put the hard
+    shoulder on the GORE side of the mouth, against the splitter island.
+
+    Checked as a multiset per arm (kinds and widths must match the source
+    group) plus an explicit outboard test, because the two defects mask each
+    other: get the kinds right and the order wrong and every count still
+    agrees.
+    """
+    faults = []
+    for n, arm in enumerate(scene["arm_kinds"]):
+        want = sorted((k, round(w, 4)) for k, w, _ in arm["source"])
+        got = sorted((c[0], round(c[1], 4)) for c in arm["comps"] if c[0] != "Sidewalk")
+        if want != got:
+            faults.append(f"arm {n} ({arm['role']}): approach had {want}, arm built {got}")
+            continue
+        # Outboard = the side the pavement/kerb is on, which armProfileFor puts
+        # at index 0 for left-hand drive and last for right-hand.
+        roadway = [c for c in arm["comps"] if c[0] != "Sidewalk"]
+        shoulders = [i for i, c in enumerate(roadway) if c[0] == "Shoulder"]
+        if not shoulders:
+            continue
+        outboard_end = 0 if scene["drive_on_left"] else len(roadway) - 1
+        if outboard_end not in shoulders:
+            faults.append(f"arm {n} ({arm['role']}): shoulder sits at index {shoulders} of "
+                          f"{len(roadway)} roadway strips, not at the outboard end "
+                          f"({outboard_end}) - it is on the gore side, against the splitter")
+    return faults
+
+
 def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=True,
           island=True, markings="Continuous"):
     """legs is a list of (degrees, approach component list).
@@ -635,7 +484,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     """
     assert markings in ("Continuous", "SolidLanes", "Turbo"), markings
     if grow:
-        ring_r = max(ring_r, min_radius_studs(legs, ring_lanes, LANE_M, drive_on_left))
+        ring_r = max(ring_r, suggested_radius_studs(legs, ring_lanes, LANE_M, drive_on_left))
     flow = 1 if drive_on_left else -1
     center = (0.0, 0.0)
     rc = ring_components(ring_lanes, LANE_M, drive_on_left, sidewalk)
@@ -657,6 +506,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     sectors, arm_parts, gore_tris, apron_tris = [], [], [], []
     exit_traces = []          # (curve, arm) per exit, for the turbo peel
     exit_markings = []        # per exit arm, that arm's OWN lane lines
+    arm_kinds = []            # source group vs built arm, for check_arm_kinds
     angles = [d for d, _ in legs]
     for deg, spoke_profile in legs:
         a = math.radians(deg)
@@ -689,10 +539,17 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
         def make(group, travels_inward):
             if not group:
                 return None
-            comps, outer, inner, road_centre = arm_from_group(group, drive_on_left, solo)
+            # Junction at the far end (inbound sign +1 above), so the outward
+            # arm is the mirrored one - see armProfileFor.
+            comps, outer, inner, road_centre = arm_from_group(group, drive_on_left, solo,
+                                                              not travels_inward)
             merge = ring_kerb - outer
             span_centre = (group["left"] + group["right"]) / 2
             lat_m = (span_centre - road_centre) if travels_inward else (span_centre + road_centre)
+            # Source group kept alongside the built arm so check_arm_kinds can
+            # compare the two rather than re-deriving what the arm ought to be.
+            arm_kinds.append(dict(role="entry" if travels_inward else "exit",
+                                  source=list(group["lanes"]), comps=comps))
             return dict(comps=comps, outer=outer, inner=inner, merge=merge,
                         lat=lat_m*SCALE)
 
@@ -897,7 +754,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     parts += spiral
     return dict(tag=tag, parts=parts, gore=gore_tris, apron=apron_tris,
                 spiral=spiral, spiral_spans=spiral_spans, markings=markings,
-                exit_markings=exit_markings,
+                exit_markings=exit_markings, arm_kinds=arm_kinds,
                 ring_r=ring_r, ring_lanes=ring_lanes, drive_on_left=drive_on_left,
                 island_r=island_r, island=island, legs=leg_info,
                 sectors=cl,
@@ -929,19 +786,6 @@ def render(scene, outdir):
         cv.save(os.path.join(outdir, name))
         written.append(name)
     return written
-
-
-# --- bare-ground scan --------------------------------------------------------
-def point_in(poly, p):
-    inside = False
-    n = len(poly)
-    for i in range(n):
-        a, b = poly[i], poly[(i + 1) % n]
-        if (a[1] > p[1]) != (b[1] > p[1]):
-            x = a[0] + (p[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1])
-            if x > p[0]:
-                inside = not inside
-    return inside
 
 
 def scan_gaps(scene, rings=240):
@@ -1249,6 +1093,32 @@ def circulating_width(scene, steps=360):
     return worst, worst_ang
 
 
+def cluster_gaps(holes, pitch, hairline):
+    """Group bare-ground samples by angle and split real holes from hairlines.
+
+    Shared by `report` and `validate.py` on purpose. A runner that re-derived
+    the hairline rule would be a second implementation to disagree with the
+    first, and the whole reason this rule exists is subtle: the ring's innermost
+    strips are chords of the island circle, so their inner edge stands off it by
+    (step/2)^2 / r - about 0.05 studs at default settings. An order of magnitude
+    below anything visible, and no padding removes it without overlapping the
+    island instead.
+
+    Returns ({angle: (samples, depth)} for real clusters, count of hairlines).
+    """
+    by_ang = {}
+    for dr, ang in holes:
+        by_ang.setdefault(round(ang / 2) * 2, []).append(dr)
+    real, thin = {}, 0
+    for k, v in by_ang.items():
+        depth = (max(v) - min(v)) + pitch
+        if depth <= hairline:
+            thin += 1
+        else:
+            real[k] = (v, depth)
+    return real, thin
+
+
 def report(scene, holes, pitch, hairline):
     """Clusters thinner than `hairline` studs are reported but not failed.
 
@@ -1282,6 +1152,9 @@ def report(scene, holes, pitch, hairline):
                       f"{m['width']:.2f} studs")
     else:
         print("    MOUTH: no bare ground inside the mouth envelope")
+    for fault in check_arm_kinds(scene):
+        ok = False
+        print(f"    ARM: {fault}")
     for fault in check_turbo(scene):
         ok = False
         print(f"    TURBO: {fault}")
@@ -1293,16 +1166,7 @@ def report(scene, holes, pitch, hairline):
     if not holes:
         print("    no bare ground inside the ring footprint")
         return ok
-    by_ang = {}
-    for dr, ang in holes:
-        by_ang.setdefault(round(ang / 2) * 2, []).append(dr)
-    real, thin = {}, 0
-    for k, v in by_ang.items():
-        depth = (max(v) - min(v)) + pitch
-        if depth <= hairline:
-            thin += 1
-        else:
-            real[k] = (v, depth)
+    real, thin = cluster_gaps(holes, pitch, hairline)
     if thin:
         print(f"    {thin} hairline clusters under {hairline:.2f} studs deep "
               f"(sample pitch {pitch:.3f}) - below visible, not failed")
@@ -1328,6 +1192,21 @@ def two_way(inbound, outbound, dol, lane=LANE_M, pav=SW_M):
 def one_way(lanes, into_ring, dol, lane=LANE_M, pav=SW_M):
     d = 1 if into_ring else -1
     return [("Sidewalk", pav)] + [("Drive", lane, d)] * lanes + [("Sidewalk", pav)]
+
+
+def highway(lanes_each_way, dol, lane=LANE_M, shoulder=SHOULDER_M, median=MEDIAN_M):
+    """Mirrors builtin_highway: a hard shoulder OUTBOARD of the lanes each way.
+
+    No pavement - a motorway has none, which also means the arm's shoulder is
+    the outermost thing in the cross-section and lands directly against the
+    ring's kerb. That is the case the Direction=0 flattening got wrong.
+    """
+    inl = [("Drive", lane, 1)] * lanes_each_way
+    outl = [("Drive", lane, -1)] * lanes_each_way
+    sh = ("Shoulder", shoulder, 0)
+    left = [sh] + inl if dol else [sh] + outl
+    right = (outl if dol else inl) + [sh]
+    return left + [("Median", median, 0)] + right
 
 
 def case(ring_r, ring_lanes, drive_on_left, legs, markings="Continuous"):
@@ -1371,6 +1250,19 @@ def CASE_TABLE(dol_default=True):
                        markings="Turbo"),
         "turbo3x": case(80, 3, False, [(a, two_way(2, 2, False)) for a in (270, 30, 150)],
                         markings="Turbo"),
+        # Shoulders. A hard shoulder is Direction=0 roadway and was arriving at
+        # the mouth as a running lane - see check_arm_kinds. Both hands, because
+        # which side the shoulder sits on flips with the hand of the road, and
+        # one mixed ring because a motorway meeting ordinary streets is the
+        # transition the live report was actually about.
+        "hw4": case(80, 2, True, [(a, highway(2, True)) for a in (0, 90, 180, 270)]),
+        "hw4us": case(80, 2, False, [(a, highway(2, False)) for a in (0, 90, 180, 270)]),
+        "hwmix": case(75, 2, True, [
+            (0, highway(2, True)),
+            (90, two_way(2, 2, True)),
+            (180, highway(3, True)),
+            (270, two_way(1, 1, True)),
+        ]),
     }
 
 

@@ -6544,9 +6544,24 @@ local function buildTurboMarkings(
 	end
 end
 
+-- One strip of an approach's roadway, kept as the KIND it actually is.
+--
+-- This used to be a bare width, and flattening it was a real bug: a shoulder is
+-- `Direction = 0` roadway, so it was swept into a side by the undirected pass
+-- below and then re-emitted as `{ Kind = "Drive" }`. A 2+2 highway built 3+3
+-- arms - wrong colour (AsphaltColor, not ShoulderColor) and wrong markings,
+-- since Markings.lua puts a lane boundary between two Drive components where a
+-- solid edge line belongs.
+--
+-- `Directional` records whether the strip had a travel direction in the source
+-- profile, not which one: an arm is one-way, so every directional strip becomes
+-- Direction = 1, while a shoulder or a parking bay stays undirected as it was.
+type LaneSpec = { Kind: RoadProfile.ComponentKind, WidthM: number, Directional: boolean }
+
 -- The lanes of an approach travelling one way, and the span they occupy in the
--- approach profile's own frame.
-type LaneGroup = { Widths: { number }, LeftM: number, RightM: number, PavementM: number }
+-- approach profile's own frame. `Lanes` is in the approach's own left-to-right
+-- order; `armProfileFor` reverses it when the arm's frame is mirrored.
+type LaneGroup = { Lanes: { LaneSpec }, LeftM: number, RightM: number, PavementM: number }
 
 -- One direction's worth of an approach, as a one-way road: the lanes that
 -- actually travel that way, plus a single pavement on the arm's OUTER side. A
@@ -6556,15 +6571,47 @@ local function armProfileFor(
 	group: LaneGroup,
 	solo: boolean,
 	style: RegionStyles.RegionStyle,
-	scale: number
+	scale: number,
+	mirrored: boolean
 ): ArmProfile
 	local components: { RoadProfile.ProfileComponent } = {}
-	for _, widthM in group.Widths do
-		table.insert(components, { Kind = "Drive", WidthM = widthM, Direction = 1 })
+	-- `group.Lanes` is in the APPROACH's left-to-right order. An arm whose own
+	-- travel runs opposite to the approach curve sees that cross-section
+	-- mirrored - what was at approach offset +x is at arm offset -x - so its
+	-- components have to be listed back to front.
+	--
+	-- Invisible until now, and it would have stayed invisible: every strip was
+	-- emitted as an identical-width Drive, so reversing the list changed
+	-- nothing observable. Emitting shoulders as shoulders is what gives the
+	-- order something to get wrong, and it would have put the hard shoulder
+	-- down the middle of the mouth against the splitter island.
+	local first, last, step = 1, #group.Lanes, 1
+	if mirrored then
+		first, last, step = #group.Lanes, 1, -1
+	end
+	for i = first, last, step do
+		local lane = group.Lanes[i]
+		table.insert(components, {
+			Kind = lane.Kind,
+			WidthM = lane.WidthM,
+			Direction = if lane.Directional then 1 else 0,
+		})
 	end
 	local function pavement(): RoadProfile.ProfileComponent
 		return { Kind = "Sidewalk", WidthM = group.PavementM, Direction = 0 }
 	end
+	-- The arm gets a pavement even when its approach has none, and that is
+	-- LOAD-BEARING rather than cosmetic: `openRingPavement` deletes the ring's
+	-- own footway across each mouth sector, and it is the arm's pavement that
+	-- covers the band from the ring's kerb out to its outer edge there.
+	--
+	-- Tried removing it for approaches with no footway (a motorway has
+	-- shoulders and no pavement, and the default 2 m steps the roadway edge 7.1
+	-- studs sideways at the cut - `seam_steps` measures it the moment a highway
+	-- case exists). That trades the step for something worse: 6 studs of BARE
+	-- GROUND in the mouth, on the highway legs only. The real fix is to TAPER
+	-- the arm's pavement from the ring's width at the merge to the approach's
+	-- at the cut, which is a per-station width ramp - see TODO.md.
 	if solo then
 		-- A one-way approach has no sibling arm and so no splitter island: its gore
 		-- side is open ground, and the road it replaces carries a footway there.
@@ -6611,11 +6658,16 @@ local function splitApproachLanes(
 ): (LaneGroup?, LaneGroup?)
 	local offsets = RoadProfile.ComponentOffsetsM(profile)
 	local function newGroup(): LaneGroup
-		return { Widths = {}, LeftM = math.huge, RightM = -math.huge, PavementM = style.SidewalkWidthM }
+		return { Lanes = {}, LeftM = math.huge, RightM = -math.huge, PavementM = style.SidewalkWidthM }
 	end
 	local inbound, outbound = newGroup(), newGroup()
+	-- Indices, not widths, and sorted into cross-section order at the end. The
+	-- undirected pass below runs AFTER the directional one, so appending as we
+	-- go would put a shoulder at the inboard end of its own group however far
+	-- outboard it actually sits.
+	local picked: { [LaneGroup]: { number } } = { [inbound] = {}, [outbound] = {} }
 	local function add(group: LaneGroup, index: number)
-		table.insert(group.Widths, profile.Components[index].WidthM)
+		table.insert(picked[group], index)
 		group.LeftM = math.min(group.LeftM, offsets[index].Left)
 		group.RightM = math.max(group.RightM, offsets[index].Right)
 	end
@@ -6638,7 +6690,7 @@ local function splitApproachLanes(
 		local edge = offsets[i]
 		for _, group in { inbound, outbound } do
 			if
-				#group.Widths &gt; 0
+				#picked[group] &gt; 0
 				and (math.abs(edge.Right - group.LeftM) &lt; 1e-6 or math.abs(edge.Left - group.RightM) &lt; 1e-6)
 			then
 				add(group, i)
@@ -6660,8 +6712,18 @@ local function splitApproachLanes(
 		end
 	end
 	local function finish(group: LaneGroup): LaneGroup?
-		if #group.Widths == 0 then
+		local indices = picked[group]
+		if #indices == 0 then
 			return nil
+		end
+		table.sort(indices)
+		for _, index in indices do
+			local component = profile.Components[index]
+			table.insert(group.Lanes, {
+				Kind = component.Kind,
+				WidthM = component.WidthM,
+				Directional = component.Direction ~= 0,
+			})
 		end
 		adoptPavement(group)
 		return group
@@ -6687,8 +6749,11 @@ local function splitUndirected(
 			pavement = math.max(pavement, component.WidthM)
 		end
 	end
-	return { Widths = { midM - leftM }, LeftM = leftM, RightM = midM, PavementM = pavement }, {
-		Widths = { rightM - midM },
+	local function half(widthM: number): { LaneSpec }
+		return { { Kind = "Drive" :: RoadProfile.ComponentKind, WidthM = widthM, Directional = true } }
+	end
+	return { Lanes = half(midM - leftM), LeftM = leftM, RightM = midM, PavementM = pavement }, {
+		Lanes = half(rightM - midM),
 		LeftM = midM,
 		RightM = rightM,
 		PavementM = pavement,
@@ -7072,7 +7137,12 @@ local function planMouth(
 		if not group then
 			return nil
 		end
-		local profile = armProfileFor(group, solo, style, scale)
+		-- The arm's cross-section is mirrored whenever its own travel runs
+		-- against the approach curve. The entry runs inward and the exit
+		-- outward, and which of those matches the curve depends on which END of
+		-- the road the junction sits at - so it is neither "always the exit" nor
+		-- a property of the arm alone.
+		local profile = armProfileFor(group, solo, style, scale, travelsInward == atStart)
 		local mergeRadius = ringKerbRadiusStuds - profile.OuterOffsetStuds
 		if mergeRadius &lt;= 1 then
 			return nil
@@ -7297,8 +7367,15 @@ local function packingRadiusStuds(
 			inbound, outbound = splitUndirected(profile, style.DefaultLaneWidthM, style)
 		end
 		local solo = (inbound == nil) ~= (outbound == nil)
-		for _, group in { inbound, outbound } do
-			local arm = armProfileFor(group :: LaneGroup, solo, style, scale)
+		-- Written out rather than looped, because the mirror flag differs
+		-- between the two and a `{ inbound, outbound }` loop cannot say which
+		-- one it is holding. It also silently skipped a nil group by way of
+		-- `next`; being explicit costs two lines and hides nothing.
+		local function measure(group: LaneGroup?, travelsInward: boolean)
+			if not group then
+				return
+			end
+			local arm = armProfileFor(group, solo, style, scale, travelsInward == atStart)
 			-- FULL width, pavement included. The kerb is what must not overrun
 			-- the next mouth's kerb; counting only the roadway lets two mouths
 			-- sit a pavement's width inside each other.
@@ -7307,6 +7384,8 @@ local function packingRadiusStuds(
 			widestArmStuds = math.max(widestArmStuds, width)
 			outerOffsetStuds = math.max(outerOffsetStuds, arm.OuterOffsetStuds)
 		end
+		measure(inbound, true)
+		measure(outbound, false)
 	end
 	if legs == 0 then
 		return 0

@@ -236,15 +236,12 @@ Left open:
   few seconds per case, so it should be in `report()` behind a flag at least.
 - **The hard floor uses a 2-stud island minimum**, picked because `buildIsland`
   bails below 1. Not measured against anything.
-- **The preview never followed the split.** `roundabout_preview.min_radius_studs`
-  still computes the OLD packing number and still calls itself "port of
-  `RoundaboutBuilder.MinimumRadiusStuds`" — which is now the hard floor, a
-  different quantity. So `build(grow=True)` grows rings to the suggestion, not
-  the floor, and `check_parity.py` reports the symptom as one missing constant
-  (`ISLAND_MIN_RADIUS_STUDS`). Rename it `suggested_radius_studs` and add a real
-  `min_radius_studs` beside it. Left alone this round because the radius sweeps
-  quoted in ROUNDABOUT.md 3.9 were measured through the current growth path and
-  would need re-running.
+- **~~The preview never followed the split~~ — DONE.** The packing estimate is
+  `suggested_radius_studs` and the hard floor is `min_radius_studs`, matching
+  the Lua's own split; `build(grow=True)` still grows to the suggestion, which
+  is what it documents. Parity is clean again. The floor comes out at 18.6
+  studs for a 2-lane UK ring, which is where the `circulating_width` sweeps in
+  ROUNDABOUT.md 3.9 independently found the geometry stops holding (R=18).
 
 ## Turbo roundabout markings — SHIPPED, not yet confirmed live
 
@@ -290,29 +287,35 @@ Left open by that round, both cheap:
   already ramps a lateral offset along a curve, so this is the same machinery
   the turbo work needs.
 
-## Highway shoulders are built as running lanes — BUG, not a design choice
+## Highway shoulders built as running lanes — FIXED (roundabout half), not confirmed live
 
-Reported live, and confirmed in the source. A shoulder is `Direction = 0`
-roadway, so `RoundaboutBuilder.splitApproachLanes` sends it through the
-"undirected roadway belongs to whichever side it abuts" pass and `add()`s it
-into that side's `Widths`. `armProfileFor` then walks `Widths` and emits every
-entry as `{ Kind = "Drive" }`.
+`LaneGroup` now carries a `LaneSpec { Kind, WidthM, Directional }` per strip
+instead of a bare width, so `armProfileFor` re-emits a shoulder as a shoulder.
+Fixing that exposed a second defect underneath it, invisible while every strip
+came out as an identical-width Drive: the undirected pass runs *after* the
+directional one and appended, so a shoulder landed at the inboard end of its
+group however far outboard it really sat — and the exit arm's cross-section is
+MIRRORED (its travel runs against the approach curve), which nothing accounted
+for. Either one alone puts the hard shoulder on the gore side of the mouth,
+against the splitter island. `splitApproachLanes` now collects indices and
+sorts them; `armProfileFor` takes a `mirrored` flag, `travelsInward == atStart`.
 
-So on a highway approach the shoulder arrives at the mouth as a full running
-lane: wrong kind, wrong colour (`AsphaltColor`, not `ShoulderColor`), and wrong
-markings — `Markings.lua` puts a lane-boundary line between two Drive
-components where a solid edge line belongs. A 2+2 highway with shoulders builds
-3+3 arms.
+Covered by `check_arm_kinds` plus three break-tests. Still open:
 
-The undirected pass is right for parking, which really is part of the
-carriageway edge; it is wrong for shoulders. The fix is to carry the kind
-through `LaneGroup` rather than flattening everything to a width, so
-`armProfileFor` can re-emit a shoulder as a shoulder. That is also what the
-highway↔normal transition below needs, so do them together.
-
-Check the same assumption in `RoadBuilder` on ordinary widen/narrow transitions
-between a highway and a parkway/avenue/street — the report was that both sides
-do this, and only the roundabout half has been traced.
+- **`RoadBuilder`'s half is still untraced.** The live report was that both
+  sides do this; only the roundabout was confirmed. Widen/narrow transitions
+  between a highway and a parkway/avenue/street are the case to look at.
+- **The arm grows a pavement its approach never had, and that is load-bearing.**
+  A motorway has shoulders and no footway, but `armProfileFor` always inserts
+  one at `style.SidewalkWidthM`, which steps the roadway edge 7.2 studs sideways
+  at the cut — now measured, by the new `hw4`/`hw4us`/`hwmix` cases, and carried
+  in `validate.py`'s `KNOWN_OPEN`. **Do not just remove it:** `openRingPavement`
+  deletes the ring's own footway across each mouth sector and it is the arm's
+  pavement that covers the band from the ring's kerb out to its outer edge
+  there. Tried removing it and traded the step for 6 studs of BARE GROUND on
+  the highway legs. The fix is to TAPER the arm's pavement from the ring's width
+  at the merge to the approach's at the cut — a per-station width ramp, the same
+  machinery a lane-width transition needs.
 
 ## Junction corners: remaining work
 
@@ -366,11 +369,22 @@ do this, and only the roundabout half has been traced.
   from the plugin - each arm's merge radius, merge angle, lateral offset and
   sector Ahead/Behind for a real junction - diffed against what the preview
   computes for the same input.
-- **Extend `tools/preview` past the roundabout.** It only knows how to build a
-  ring + arms right now. The emission port itself (`build_stations`,
-  `emit_road`) is generic, so junctions, bus bays and lane-width transitions -
-  all places where sliver gaps have shipped before - could be scanned the same
-  way for the cost of a scenario function each.
+- **~~Extend `tools/preview` past the roundabout~~ — PARTLY DONE.** The generic
+  emission port is now `preview_core.py`, and `road_preview.py` scans an
+  ordinary road (straights, arcs to R=30, an S-curve, avenues, motorways) for
+  bare ground, edge sawtooth and broken edge lines. `validate.py` runs
+  everything. Still not covered, and deliberately so:
+  - **Lane-width transitions (`MatchForTransition`) and bus bays
+    (`BuildWithBay`) are not ported.** These are exactly where sliver gaps have
+    shipped before, so they are the highest-value scenarios left. They need the
+    Lua ported the way `build_stations` and `emit_road` were — modelling them
+    from scratch would produce a check that agrees with the model rather than
+    with RoadBuilder.
+  - `junction_pad_preview.py` and `corner_preview.py` exist but are not wired
+    into `validate.py`, so they only run if someone remembers them.
+  - The roundabout suite is slow — minutes per case, because the scans are
+    point-in-polygon over every part. A coarse spatial index would make `--full`
+    routine rather than something you kick off and walk away from.
 - **Preview does not model heights or render order**, only part footprints in
   plan. Z-fighting between coplanar decks, dash phase and marking lift are
   still Studio-only checks.

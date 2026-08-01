@@ -4,6 +4,83 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Highway shoulders reach the mouth as shoulders, and a preview past the roundabout
+
+Two things: the reported bug, and the tooling that should have caught it years
+of rounds ago.
+
+THE BUG. A shoulder is Direction = 0 roadway, so splitApproachLanes folds it
+into whichever side it abuts and armProfileFor re-emitted every strip as
+{ Kind = "Drive" }. A 2+2 motorway built 3+3 arms - wrong colour, and
+Markings.lua puts a lane boundary between two Drive components where a solid
+edge line belongs. LaneGroup now carries a LaneSpec { Kind, WidthM, Directional }
+per strip.
+
+Fixing that exposed two ordering bugs underneath, both invisible while every
+strip came out as an identical-width Drive - reordering identical things changes
+nothing you can see:
+
+  - the undirected pass runs AFTER the directional one and appended as it went,
+    so a shoulder landed at the inboard end of its group however far outboard it
+    really sat. Indices are collected and sorted now
+  - an arm whose own travel runs against the approach curve sees the
+    cross-section MIRRORED, and nothing accounted for it. Which arm that is
+    depends on the arm AND which end of the road the junction sits at:
+    mirrored = (travelsInward == atStart)
+
+Either one alone puts the hard shoulder on the gore side of the mouth, against
+the splitter island. check_arm_kinds compares the built arm to its source group
+as a multiset AND tests the shoulder is outboard, because the two defects mask
+each other. Three break-tests, one per defect.
+
+Left open and now MEASURED rather than suspected: the arm gets a pavement even
+when its approach has none, stepping the roadway edge 7.2 studs at the cut. That
+pavement is load-bearing - openRingPavement deletes the ring's own footway
+across each mouth and the arm's is what covers the band. Removing it trades the
+step for 6 studs of bare ground on the highway legs. Wants a taper. Carried in
+validate.py's KNOWN_OPEN. The RoadBuilder half of the original report is still
+untraced.
+
+THE TOOLING. tools/preview only ever knew how to build a ring and its arms, so
+every sliver gap and sawtooth on a plain curved road was found by a user in
+Studio. The emission port was always generic, so it is now preview_core.py and
+the roundabout is one scenario among others:
+
+  - road_preview.py: straights, arcs down to R=30, an S-curve, avenues,
+    motorways. Bare ground inside the road, edge sawtooth, broken edge lines
+  - road_break_tests.py: reintroduces defects that actually shipped - no miter
+    padding, farEdgePad, a missing edge line - and confirms each scan catches it
+  - validate.py: one command for everything, with a KNOWN_OPEN table of
+    (suite, case, check) triples that fail on purpose. It fails on a NEW failure
+    and also when a known-open one starts PASSING, since a stale expected-failure
+    list is the same trap as an invariant nobody re-reads
+
+Both new road scans passed every case on the first run and both were measuring
+nothing. The sawtooth scan compared adjacent samples, but a strip boundary is a
+single jump with flat runs either side, so every jump was measured against a
+zero and no sign change was ever seen. Its threshold was then a fixed 0.1 studs,
+which the clean road's own miter breathing exceeded; it is now 1% of the road's
+width, because the legitimate jitter scales with the road - 0.121 studs on a
+40-stud road, 0.233 on an 85-stud one.
+
+Also found while adding the highway cases: the preview spelled "is this
+roadway?" as != "Sidewalk" where the Lua uses RoadProfile.IsRoadway, whose table
+excludes Median. So on every median profile the preview adopted the median into
+an arm while the plugin left it as the splitter gore. Two different roundabouts,
+both reported clean, for as long as those cases have existed.
+
+Also cleared while here: the preview's min_radius_studs still computed the OLD
+packing number while calling itself a port of MinimumRadiusStuds, which has
+meant the hard floor since the two were separated. Split into
+suggested_radius_studs and a real min_radius_studs, so check_parity is clean
+again. The floor lands at 18.6 studs for a 2-lane UK ring - the same place the
+circulating_width sweeps independently found the geometry stops holding.
+
+The core extraction is verified as a pure move: uk4 comes out at 1527 parts,
+501 ring, 156 gore tris, 134 removed, identical to before.
+
+Not confirmed in Studio.
+
 ## Roundabout: the turbo peel is two phases, and the check that missed it
 
 Two things, one cause. The peel was fitted as a single curve across the whole

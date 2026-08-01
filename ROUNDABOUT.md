@@ -287,6 +287,48 @@ existed.
 Falls back to a plain ring on one lane (no boundary to spiral) or one mouth (no
 arc to spiral along).
 
+### 3.8b An arm is built from KINDS, and the exit arm's frame is mirrored
+A `LaneGroup` carries a `LaneSpec { Kind, WidthM, Directional }` per strip, not
+a bare width. Flattening to a width was a real bug: a shoulder is
+`Direction = 0` roadway, so the "undirected roadway belongs to whichever side it
+abuts" pass folds it into a group, and `armProfileFor` then re-emitted every
+strip as `{ Kind = "Drive" }`. A 2+2 motorway built 3+3 arms — wrong colour, and
+`Markings.lua` puts a lane boundary between two Drive components where a solid
+edge line belongs.
+
+Fixing that exposed **two ordering bugs underneath it**, both invisible while
+every strip came out as an identical-width Drive, because reordering identical
+things changes nothing you can see:
+
+- the undirected pass runs *after* the directional one and appended as it went,
+  so a shoulder landed at the inboard end of its group however far outboard it
+  actually sat. `splitApproachLanes` now collects indices and sorts them.
+- **an arm whose own travel runs against the approach curve sees the
+  cross-section mirrored.** What was at approach offset +x is at arm offset −x,
+  so its components list back to front. Which arm that is depends on both the
+  arm and which END of the road the junction sits at: `mirrored =
+  (travelsInward == atStart)`. It is neither "always the exit" nor a property of
+  the arm alone.
+
+Either one alone puts the hard shoulder on the **gore** side of the mouth,
+against the splitter island. Both are covered by `check_arm_kinds`, which
+compares the built arm against its source group as a multiset *and* tests that
+any shoulder is at the outboard end — the two defects mask each other, since
+getting the kinds right and the order wrong leaves every count agreeing.
+
+Reordering cannot move the mouths: `roadwayEdgeOffsetsM` depends on the total
+width and on which components are footway, and neither changes.
+
+**The arm's pavement is load-bearing.** An arm gets one at
+`style.SidewalkWidthM` even when its approach has none, which steps the roadway
+edge 7.2 studs sideways at the cut on a motorway approach — measured, and
+carried as a known-open failure. It cannot simply be removed:
+`openRingPavement` deletes the ring's own footway across each mouth sector, and
+it is the arm's pavement that covers the band from the ring's kerb out to its
+outer edge there. Removing it trades the step for **6 studs of bare ground** on
+exactly the highway legs. The fix is to taper it from the ring's width at the
+merge to the approach's at the cut.
+
 ### 3.9 "Minimum" radius means the cliff, not the comfort
 Two different numbers were being asked of one function, and the answer was the
 wrong one.
@@ -533,13 +575,20 @@ a Studio look first, since something in this class has changed.
 - **Splitter waist.** A 4-leg ring dips ~0.7 studs partway along. Cosmetic.
 - **Island rim hairline.** ~0.1 studs where the ring's innermost strips chord
   across the island. Reported by the tooling as below visible, not failed.
+- **A pavement appears at the cut on approaches that have none.** 7.2 studs of
+  lateral edge step on a motorway approach, because the arm always gets a
+  footway and the approach has only shoulders. Known-open in `validate.py`;
+  the fix is a taper, not removal — see §3.8b.
 
 ---
 
 ## 6. The tooling, and exactly what it does not cover
 
-`tools/preview/roundabout_preview.py` simulates **the parts `RoadBuilder`
-actually emits** — rigid boxes per station interval, not idealised polygons.
+`tools/preview` simulates **the parts `RoadBuilder` actually emits** — rigid
+boxes per station interval, not idealised polygons. `preview_core.py` is the
+generic emission port; `roundabout_preview.py` and `road_preview.py` are
+scenarios on top of it, and `validate.py` runs the lot with a `KNOWN_OPEN` table
+of failures that are expected today. See `tools/preview/README.md`.
 
 | check | covers | blind to |
 |---|---|---|
@@ -548,6 +597,8 @@ actually emits** — rigid boxes per station interval, not idealised polygons.
 | `circulating_width` | narrowest DRIVABLE width of the ring, all the way round | anything outside the ring band; it answers "can you drive round it", nothing else |
 | `seam_steps` | lateral extent at the cut | the *shape* of an end cap |
 | `check_turbo` (run it via `turbo_check.py`) | each peel starts on a ring divider, runs outward, and its FAR END lands on the lane lines of the exit it was built for | whether the peel is the right line to draw at all — that is a judgement from reference photographs, and it was wrong six times while every check stayed green |
+| `check_arm_kinds` | every roadway strip of an approach reaches its arm as the same KIND and width, and a shoulder is at the outboard end | anything about the arm's *position* — it compares cross-sections, not where they were put |
+| `road_preview.py` | an ordinary road: bare ground inside its own footprint, edge sawtooth, broken edge lines | lane-width transitions and bus bays, which are **not ported at all** |
 | `check_parity.py` | constants shared with the Lua | the algorithm, and any missing rule set |
 
 Five lessons that cost real time:
@@ -587,6 +638,16 @@ Five lessons that cost real time:
 2. **The preview did not apply the plugin's radius growth.** So every
    small-radius case it certified was a ring the plugin would never build.
    Fixed; `build(..., grow=False)` inspects un-grown geometry deliberately.
+0. **The port can be wrong in ways nothing compares.** `split_approach_lanes`
+   spelled "is this roadway?" as `!= "Sidewalk"` where the Lua uses
+   `RoadProfile.IsRoadway`, whose table excludes `Median`. So on every median
+   profile the preview adopted the median into whichever arm it abutted, while
+   the plugin correctly left it to become the splitter gore — two different
+   roundabouts, both reported clean, for as long as the median cases have
+   existed. Nothing compared them, and `check_parity.py` structurally cannot:
+   it diffs constants. The habit that catches this class is spelling a shared
+   rule the same way on both sides (`is_roadway` now mirrors `ROADWAY`), not
+   re-deriving it per call site.
 3. **`check_parity.py` compares constants, not behaviour.** Both gaps above were
    behaviour divergences it structurally cannot see. `dump_compare.py` +
    the junction panel's *Print geometry to Output* button compare behaviour, and

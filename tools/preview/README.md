@@ -1,7 +1,59 @@
-# Roundabout pre-render preview
+# Headless preview and validation
 
-Simulates the **parts `RoadBuilder` actually emits** and checks the result for
-bare ground, without Studio.
+There is no Roblox Studio in this environment and no Luau runtime. This
+directory is the only automated evidence the geometry works, and it is worth
+being precise about what that evidence is: **these tools re-implement the
+geometry in Python; they do not execute the plugin.** A green run says the
+algorithm as ported produces sound geometry. It cannot say the Lua does.
+
+Run everything:
+
+```sh
+python3 tools/preview/validate.py          # quick set, ~1-2 min
+python3 tools/preview/validate.py --full   # every case, several minutes
+python3 tools/preview/validate.py --list   # what would run
+```
+
+`validate.py` carries a `KNOWN_OPEN` table of (suite, case, check) triples that
+fail on purpose, each with a reason. It fails on a **new** failure and also when
+a known-open one starts **passing** - a stale expected-failure list is the same
+trap as an invariant nobody re-reads.
+
+## The pieces
+
+| file | what it is |
+|---|---|
+| `preview_core.py` | The shared emission port: curve + cross-section to the rigid boxes RoadBuilder emits, one per (component, station interval). Geometry, `build_stations`, `emit_road`, `Part`, `point_in`, colours, region constants. Scenario-agnostic. |
+| `roundabout_preview.py` | Ring, arms, mouths, splitter islands, turbo markings, and the scans that only mean anything on a roundabout. |
+| `road_preview.py` | An ordinary road on its own - straights, arcs down to R=30, an S-curve, avenues, motorways. Bare ground inside the road, edge sawtooth, broken edge lines. |
+| `junction_pad_preview.py`, `corner_preview.py` | Junction pad and curb-return shapes. Not yet wired into `validate.py`. |
+| `turbo_check.py`, `road_break_tests.py` | Break-tests: reintroduce a defect that actually shipped and confirm the scan catches it. |
+| `check_parity.py` | Constants shared with the Lua. Constants only. |
+| `dump_compare.py` | Diffs a live plugin dump against this port. |
+| `raster.py` | Stdlib-only PNG writer. |
+
+`preview_core.py` was split out of `roundabout_preview.py`, which used to be the
+whole tool. The emission port was always generic, so a road scenario cost a file
+rather than a rewrite.
+
+## Adding a scenario
+
+Import from `preview_core`, build a parts list, write scans that ask questions
+your scenario can actually answer - then **write a break-test before believing
+any of them**. Every scan in `road_preview.py` passed every case the first time
+it ran, and two were measuring nothing:
+
+- the sawtooth scan compared adjacent samples, but a strip boundary is a single
+  jump with flat runs either side, so every jump was measured against a zero and
+  no sign change was ever seen;
+- its threshold was then a fixed 0.1 studs, which the clean road's own miter
+  breathing exceeded. It is now 1% of the road's own width, because the
+  legitimate jitter scales with the road: 0.121 studs on a 40-stud road, 0.233
+  on an 85-stud one - 0.30% and 0.27%.
+
+Three rules in `check_turbo` died the same way. See ROUNDABOUT.md section 6.
+
+## Simulating the emission
 
 Every other check in this repo works on idealised geometry - centrelines and
 offset polygons. Roblox never sees those. It sees rigid boxes, one per
@@ -17,13 +69,16 @@ render cannot show them. This tool ports the emission path directly:
 | `RoadBuilder.placeMarkingSpan` | endpoints anchored to true curve positions |
 | `RoundaboutBuilder` | ring, split arms, splitter island, mouth sector opening |
 
-## Usage
+## Running one scenario directly
 
 ```sh
 cd tools/preview
 python3 roundabout_preview.py             # uk4 uk3 us4
 python3 roundabout_preview.py uk5mini     # a named case
 python3 roundabout_preview.py --no-render # scan only
+python3 road_preview.py --render          # every road case, with PNGs
+python3 turbo_check.py                    # turbo peel + its break-tests
+python3 road_break_tests.py               # road scans + their break-tests
 ```
 
 Exits non-zero if any case has visible bare ground, so it works as a check.
@@ -96,8 +151,16 @@ leg bearing. The plugin aims along the approach's own centreline
 `mouthAngle` to differ for legs that do not point at the centre - which is
 common for roads produced by an X-split.
 
-## Caveats
+## What a green run does NOT cover
 
-It models part **footprints in plan**. It does not model heights, render order,
-dash phase, or Studio's own z-fighting behaviour - a live check is still the
-last word on those.
+- Nothing executes in Roblox. A nil identifier, a Luau error, or the Lua
+  diverging from this port are all invisible here.
+- Part **footprints in plan** only: no heights, render order, dash phase or
+  z-fighting. A live check is still the last word on those.
+- **Lane-width transitions (`MatchForTransition`) and bus bays (`BuildWithBay`)
+  are not ported at all**, so no case here says anything about them. Modelling
+  them from scratch would produce a check that agrees with the model rather than
+  with RoadBuilder.
+- `Markings.lua` is not ported - `emit_road` approximates it in ~30 lines, so a
+  wrong marking is largely invisible, and `scan_mouths` counts a marking Part as
+  coverage.
