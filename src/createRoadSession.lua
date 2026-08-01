@@ -17,6 +17,7 @@
 
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local RunService = game:GetService("RunService")
+local Selection = game:GetService("Selection")
 local UserInputService = game:GetService("UserInputService")
 
 local Packages = script.Parent.Parent.Packages
@@ -31,6 +32,8 @@ local JunctionBuilder = require("./Mesh/JunctionBuilder")
 local RoundaboutBuilder = require("./Mesh/RoundaboutBuilder")
 local RoadProfile = require("./RoadProfile")
 local RoadInstance = require("./RoadInstance")
+local StructureAssets = require("./StructureAssets")
+local StructureBuilder = require("./StructureBuilder")
 local RoadSplit = require("./RoadSplit")
 local JunctionInstance = require("./JunctionInstance")
 local RegionStyles = require("./RegionStyles")
@@ -55,6 +58,11 @@ export type RoadSession = {
 	GetElevation: () -> number,
 	AdjustElevation: (delta: number) -> (),
 	SetElevation: (value: number) -> (),
+	GetStructure: () -> RoadInstance.StructureData,
+	SetStructure: (structure: RoadInstance.StructureData) -> (),
+	GetStructureAssets: (kind: StructureAssets.AssetKind?) -> { StructureAssets.AssetInfo },
+	GetStructureStatus: () -> string?,
+	ImportStructureAsset: (kind: StructureAssets.AssetKind) -> (),
 	GetRoundaboutRadius: () -> number,
 	SetRoundaboutRadius: (value: number) -> (),
 	GetRoundaboutLaneCount: () -> number,
@@ -125,6 +133,11 @@ local function createRoadSession(
 	-- Remembers where the user left off instead of always resetting to
 	-- ground level on a fresh session.
 	local elevation = settings.LastElevationStuds
+	-- Structure mode is part of the live placement tool, not something the
+	-- user must discover after placing and reopening a road. It persists for
+	-- the whole chain so consecutive viaduct/tunnel segments match.
+	local structure = StructureBuilder.DefaultData()
+	local structureStatus: string? = nil
 
 	-- Config for the "Roundabout" tool mode's single-click placement -
 	-- same defaults JunctionPanel's "Make Roundabout" fields start at.
@@ -893,6 +906,10 @@ local function createRoadSession(
 			Preview = false,
 		})
 		model.Parent = getRoadsFolder(true)
+		local appliedStructure = if structure.Mode == "None" then nil else StructureBuilder.CloneData(structure)
+		RoadInstance.StampStructure(model, appliedStructure)
+		local _, renderMessage = StructureBuilder.Render(model, curve, structure, settings)
+		structureStatus = renderMessage
 
 		-- Build every true interior crossing around one shared node. Existing
 		-- roads are grouped so a curve crossed more than once is replaced in
@@ -1204,6 +1221,54 @@ local function createRoadSession(
 
 	session.AdjustElevation = adjustElevation
 	session.SetElevation = setElevation
+
+	function session.GetStructure(): RoadInstance.StructureData
+		return structure
+	end
+
+	function session.SetStructure(newStructure: RoadInstance.StructureData)
+		structure = StructureBuilder.CloneData(newStructure)
+		structureStatus = if structure.Mode == "None"
+			then "Ground mode selected."
+			elseif structure.Mode == "Viaduct" then "New roads will generate viaduct supports when placed."
+			else "New roads will generate a tunnel shell when placed."
+		changeSignal:Fire()
+	end
+
+	function session.GetStructureAssets(kind: StructureAssets.AssetKind?): { StructureAssets.AssetInfo }
+		return StructureAssets.List(kind)
+	end
+
+	function session.GetStructureStatus(): string?
+		return structureStatus
+	end
+
+	function session.ImportStructureAsset(kind: StructureAssets.AssetKind)
+		local candidate = StructureAssets.FindImportCandidate(Selection:Get(), nil)
+		if not candidate then
+			structureStatus = "Select a Workspace Model in Explorer, then import it again."
+			changeSignal:Fire()
+			return
+		end
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadImport", "Import road structure model")
+		local info, message = StructureAssets.Import(candidate, kind)
+		if info then
+			local copy = StructureBuilder.CloneData(structure)
+			copy.Mode = kind
+			copy.AssetId = info.Id
+			structure = copy
+			structureStatus = message
+			if recording then
+				ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+			end
+		else
+			structureStatus = message
+			if recording then
+				ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Cancel)
+			end
+		end
+		changeSignal:Fire()
+	end
 
 	function session.GetRoundaboutRadius(): number
 		return roundaboutRadiusStuds

@@ -37,6 +37,8 @@ local function StructureControls(props: {
 	Status: string?,
 	OnChange: (structure: RoadInstance.StructureData) -> (),
 	OnImport: (kind: StructureAssets.AssetKind) -> (),
+	LayoutOrder: number?,
+	PlacementMode: boolean?,
 })
 	local structure = props.Structure
 	local function change(transform: (copy: RoadInstance.StructureData) -> ())
@@ -48,7 +50,7 @@ local function StructureControls(props: {
 	local modeOptions: { Components.DropdownOption } = {
 		{ Id = "None", Text = "Ground level" },
 		{ Id = "Viaduct", Text = "Elevated viaduct" },
-		{ Id = "Tunnel", Text = "Tunnel modules" },
+		{ Id = "Tunnel", Text = "Tunnel (procedural / custom)" },
 	}
 	local children: { [string]: any } = {
 		Layout = e("UIListLayout", {
@@ -79,7 +81,7 @@ local function StructureControls(props: {
 		local assetOptions: { Components.DropdownOption } = {
 			{
 				Id = "__none__",
-				Text = if kind == "Viaduct" then "Procedural deck only" else "No tunnel module selected",
+				Text = if kind == "Viaduct" then "Procedural road deck" else "Procedural tunnel shell",
 			},
 		}
 		for _, asset in props.Assets do
@@ -113,7 +115,10 @@ local function StructureControls(props: {
 		})
 		order += 1
 		children.ImportHelp = note(
-			"Ctrl-select this road and any Workspace Model. EasyRoad copies it to ServerStorage/EasyRoadAssets; "
+			(if props.PlacementMode
+					then "Select any Workspace Model in Explorer. "
+					else "Ctrl-select this road and any Workspace Model. ")
+				.. "EasyRoad copies it to ServerStorage/EasyRoadAssets; "
 				.. "EasyRoadStart/EasyRoadEnd Attachments are preferred, otherwise bounding-box sockets are added.",
 			order
 		)
@@ -177,7 +182,7 @@ local function StructureControls(props: {
 			end
 		else
 			children.TunnelNote = note(
-				"Tunnel modules tile along the road. This first version does not destructively excavate Roblox Terrain.",
+				"Without a custom module, EasyRoad generates concrete walls and a roof along the alignment. Terrain excavation remains explicit so rebuilding a road never destroys terrain unexpectedly.",
 				order
 			)
 			order += 1
@@ -192,6 +197,7 @@ local function StructureControls(props: {
 		Size = UDim2.new(1, 0, 0, 0),
 		AutomaticSize = Enum.AutomaticSize.Y,
 		BackgroundTransparency = 1,
+		LayoutOrder = props.LayoutOrder,
 	}, children)
 end
 

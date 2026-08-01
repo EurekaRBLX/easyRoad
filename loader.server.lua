@@ -41,11 +41,12 @@ end
 
 local regionalDock = createDock("EasyRoadRegionalDock", "easyRoad - Regional Preference")
 local keybindsDock = createDock("EasyRoadKeybindsDock", "easyRoad - Keybinds")
+local softwareDock = createDock("EasyRoadSoftwareDock", "easyRoad - Software")
 
 local loaded = false
 local function doInitialLoad()
 	loaded = true
-	require(script.Parent.Src.main)(plugin, regionalDock, keybindsDock, buttonClicked, setButtonActive)
+	require(script.Parent.Src.main)(plugin, regionalDock, keybindsDock, softwareDock, buttonClicked, setButtonActive)
 end
 
 -- Lazy load the main plugin on first click
@@ -57,7 +58,7 @@ local clickedCn = buttonClicked:Connect(function()
 	end
 end)
 
-if regionalDock.Enabled or keybindsDock.Enabled then
+if regionalDock.Enabled or keybindsDock.Enabled or softwareDock.Enabled then
 	doInitialLoad()
 end
 

@@ -1080,7 +1080,12 @@ function JunctionBuilder.Rebuild(
 		part.Anchored = true
 		part.CanCollide = false
 		part.CanTouch = false
-		part.CanQuery = false
+		-- JunctionEditSession is selection-driven: Studio must be able to hit
+		-- the visible pad and walk back up to its RW_Junction model. Road
+		-- placement already excludes workspace.Junctions from its own ground
+		-- raycast, so keeping these queryable does not make new roads sit on
+		-- top of the pad.
+		part.CanQuery = true
 		part.CastShadow = false
 		part.TopSurface = Enum.SurfaceType.Smooth
 		part.BottomSurface = Enum.SurfaceType.Smooth

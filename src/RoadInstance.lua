@@ -33,8 +33,8 @@ export type StructureMode = "None" | "Viaduct" | "Tunnel"
 export type StructureData = {
 	Mode: StructureMode,
 	-- References a Model in ServerStorage/EasyRoadAssets. Viaduct mode can
-	-- omit one and use the procedural road itself as the deck; tunnels need
-	-- an imported module.
+	-- omit one and use the procedural road itself as the deck; tunnels omit
+	-- one to use EasyRoad's procedural concrete shell.
 	AssetId: string?,
 	ModuleOffsetM: number,
 	AutoPillars: boolean,

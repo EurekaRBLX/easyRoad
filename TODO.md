@@ -38,16 +38,18 @@ socket/attribute contract EasyLight can depend on. Then render stop/crossing
 markings in the Python junction preview and add break-tests for approach-side
 mirroring, line setback, and zig-zag clipping.
 
-## Model-backed viaducts and tunnels - FIRST VERTICAL SLICE SHIPPED
+## Model-backed viaducts and tunnels - PLACEMENT WORKFLOW SHIPPED
 
 The selected-Model ownership and rigid-module path now exists; see
 `STRUCTURES.md` and `SHIPPED.md`. A Workspace Model is copied into
 `ServerStorage/EasyRoadAssets`, explicit `EasyRoadStart` / `EasyRoadEnd`
 Attachments define its socket chord (or the importer creates bounding-box
-sockets), and a placed road serializes the selected asset/config. Viaduct mode
+sockets), and Road Tools exposes the selected asset/config before placement.
+Every committed road serializes it immediately. Viaduct mode
 can use the procedural road as its deck, tiles an optional custom model, and
-raycasts generic concrete piers down to Terrain/world parts. Tunnel mode tiles a
-required custom model without destructively editing Terrain. Road edits, bus
+raycasts generic concrete piers down to Terrain/world parts. Tunnel mode tiles
+an optional custom model or generates a default concrete shell without
+destructively editing Terrain. Road edits, bus
 bays, splits, junction trimming, and roundabout trimming regenerate structures.
 
 Follow-ups still open:

@@ -1,8 +1,8 @@
 # EasyRoad custom structures
 
 EasyRoad keeps its existing procedural cross-section as the road surface and
-can attach a repeated literal Roblox `Model` to a placed road. The first
-supported structure roles are viaduct modules and tunnel modules.
+can attach a repeated literal Roblox `Model` while placing or editing a road.
+The supported structure roles are viaducts and tunnels.
 
 Use the Road Builder's **Elevation** field (or its raise/lower keybinds) while
 placing control points: positive values create an elevated alignment for
@@ -11,15 +11,28 @@ Changing elevation between points creates the grade already supported by the
 3D road curve; structure mode supplies the previously missing deck modules,
 lining, and ground-projected supports.
 
+## Building from Road Tools
+
+1. Open **Road Tools** and scroll to **Structure / Custom Model**.
+2. Choose **Ground level**, **Elevated viaduct**, or **Tunnel**.
+3. Set **Elevation** above the terrain for a viaduct or below it for a tunnel.
+4. Place the road normally. The selected structure is serialized and generated
+   as soon as each segment is committed; the choice stays active along the
+   placement chain.
+
+Viaduct mode uses the generated road as its deck and raycasts piers down to the
+world even when no custom module is selected. Tunnel mode builds a procedural
+concrete wall-and-roof shell when no custom module is selected.
+
 ## Importing a Model
 
 1. Put the source `Model` in Workspace and orient its forward direction along
    local **-Z** if it does not have explicit sockets.
-2. Select the placed EasyRoad road, then Ctrl-select the source Model (or a Part
-   inside it) so both remain selected.
-3. In the Road Inspector choose **Elevated viaduct** or **Tunnel modules** and
-   press **Import selected Model**.
-4. Press **Apply to Road** to rebuild the placed road with that module.
+2. For a new road, select the source Model (or a Part inside it) in Explorer,
+   choose the matching structure mode in Road Tools, and press **Import selected
+   Model** before placing.
+3. For an existing road, Ctrl-select the road and source Model, open **Edit on
+   Road Builder**, choose the matching mode, import, then press **Apply to Road**.
 
 The importer clones the Model into `ServerStorage/EasyRoadAssets`. The source
 remains untouched in Workspace and may be deleted afterward. The stored clone,
@@ -53,8 +66,8 @@ leaving an uncovered gap.
 ## Viaducts
 
 An elevated viaduct may omit a custom module; the procedural EasyRoad surface
-then acts as the deck. Auto piers start halfway into the chosen spacing and
-raycast vertically down. Generated road, junction, and roundabout folders are
+then acts as the deck. Auto piers are distributed along the span (including one
+on short spans) and raycast vertically down. Generated road, junction, and roundabout folders are
 excluded so a pier searches for Terrain or world geometry rather than landing
 on another generated road. No pier is made for a miss, a hit beyond Max drop,
 or a ground-level hit with no visible clearance.
@@ -64,18 +77,20 @@ explicit pier sockets are later extensions.
 
 ## Tunnels
 
-Tunnel mode requires an imported tunnel module and repeats it along the road.
+Tunnel mode repeats an imported tunnel module when one is selected. With no
+custom asset it builds a concrete open-bottom box shell: two walls and a roof
+follow every road segment, sized from the road's widest cross-section.
+
 It does **not** edit Roblox Terrain. Excavating and later restoring Terrain is a
-destructive operation with different undo/data requirements, so it will be a
-separate explicit feature rather than a side effect of selecting a tunnel
-shell.
+destructive operation with different undo/data requirements, so it remains a
+separate explicit feature rather than a side effect of selecting a tunnel.
 
 ## Generated data
 
 - Asset library: `ServerStorage/EasyRoadAssets`
 - Road configuration attribute: `RW_StructureJson`
 - Generated road child: `EasyRoadStructure`
-- Generated subfolders: `Modules`, and `Piers` for viaducts
+- Generated subfolders: `Modules`, `Piers`, or `ProceduralTunnel`
 
 Generated children are disposable. EasyRoad recreates them from the serialized
 road configuration after lane, marking, bus-bay, split, junction, and

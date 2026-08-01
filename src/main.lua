@@ -27,6 +27,7 @@ local Signal = require(Packages.Signal)
 local Settings = require("./Settings")
 local RegionStyles = require("./RegionStyles")
 local RoadProfile = require("./RoadProfile")
+local StructureAssets = require("./StructureAssets")
 local createRoadLibrary = require("./RoadLibrary")
 local createRegionLibrary = require("./RegionLibrary")
 local createRoadSession = require("./createRoadSession")
@@ -42,6 +43,7 @@ local RoadLibraryPanel = require("./UI/RoadLibraryPanel")
 local TopBar = require("./UI/TopBar")
 local RegionalPreferenceGui = require("./UI/RegionalPreferenceGui")
 local KeybindsGui = require("./UI/KeybindsGui")
+local SoftwareGui = require("./UI/SoftwareGui")
 local Components = require("./UI/Components")
 local PieMenu = require("./UI/PieMenu")
 local BayDraftPanel = require("./UI/BayDraftPanel")
@@ -55,6 +57,7 @@ return function(
 	plugin: Plugin,
 	regionalDock: DockWidgetPluginGui,
 	keybindsDock: DockWidgetPluginGui,
+	softwareDock: DockWidgetPluginGui,
 	buttonClicked: Signal.Signal<>,
 	setButtonActive: (active: boolean) -> ()
 )
@@ -89,6 +92,7 @@ return function(
 
 	local regionalRoot: ReactRoblox.RootType? = nil
 	local keybindsRoot: ReactRoblox.RootType? = nil
+	local softwareRoot: ReactRoblox.RootType? = nil
 	local topRoot: ReactRoblox.RootType? = nil
 	local topScreenGui: ScreenGui? = nil
 	local bottomRoot: ReactRoblox.RootType? = nil
@@ -335,6 +339,7 @@ return function(
 				EditorActive = designProfile ~= nil,
 				RegionalOpen = regionalDock.Enabled,
 				KeybindsOpen = keybindsDock.Enabled,
+				SoftwareOpen = softwareDock.Enabled,
 				OnTools = function()
 					if session then
 						stopSession()
@@ -360,6 +365,9 @@ return function(
 				end,
 				OnOpenKeybinds = function()
 					keybindsDock.Enabled = not keybindsDock.Enabled
+				end,
+				OnOpenSoftware = function()
+					softwareDock.Enabled = not softwareDock.Enabled
 				end,
 				OnHoverChanged = function(hovered: boolean)
 					uiState.Hovered = hovered
@@ -488,6 +496,11 @@ return function(
 					updateUI()
 				end
 			end
+			local placementStructure = currentSession.GetStructure()
+			local placementStructureKind: StructureAssets.AssetKind? = if placementStructure.Mode == "Viaduct"
+				then "Viaduct"
+				elseif placementStructure.Mode == "Tunnel" then "Tunnel"
+				else nil
 			-- Two separate floating boxes, CS2-style, not one box with
 			-- everything stacked on top of itself: Tool Mode left-aligned
 			-- (Studio has much less usable width than a dedicated game
@@ -542,6 +555,11 @@ return function(
 						SetElevation = function(value: number)
 							currentSession.SetElevation(value)
 						end,
+						Structure = placementStructure,
+						StructureAssets = currentSession.GetStructureAssets(placementStructureKind),
+						StructureStatus = currentSession.GetStructureStatus(),
+						SetStructure = currentSession.SetStructure,
+						ImportStructureAsset = currentSession.ImportStructureAsset,
 						RoundaboutRadius = currentSession.GetRoundaboutRadius(),
 						SetRoundaboutRadius = function(value: number)
 							currentSession.SetRoundaboutRadius(value)
@@ -1204,6 +1222,20 @@ return function(
 			keybindsRoot:unmount()
 			keybindsRoot = nil
 		end
+
+		if softwareDock.Enabled then
+			if not softwareRoot then
+				softwareRoot = ReactRoblox.createRoot(softwareDock)
+			end
+			assert(softwareRoot):render(React.createElement(SoftwareGui, {
+				OnClose = function()
+					softwareDock.Enabled = false
+				end,
+			}))
+		elseif softwareRoot then
+			softwareRoot:unmount()
+			softwareRoot = nil
+		end
 	end
 
 	local clickedCn = buttonClicked:Connect(function()
@@ -1221,6 +1253,9 @@ return function(
 		updateUI()
 	end)
 	keybindsDock:GetPropertyChangedSignal("Enabled"):Connect(function()
+		updateUI()
+	end)
+	softwareDock:GetPropertyChangedSignal("Enabled"):Connect(function()
 		updateUI()
 	end)
 
@@ -1242,6 +1277,10 @@ return function(
 		if keybindsRoot then
 			keybindsRoot:unmount()
 			keybindsRoot = nil
+		end
+		if softwareRoot then
+			softwareRoot:unmount()
+			softwareRoot = nil
 		end
 		if topRoot then
 			topRoot:unmount()

@@ -22,10 +22,12 @@ local function TopBar(props: {
 	EditorActive: boolean,
 	RegionalOpen: boolean,
 	KeybindsOpen: boolean,
+	SoftwareOpen: boolean,
 	OnTools: () -> (),
 	OnEditor: () -> (),
 	OnOpenRegional: () -> (),
 	OnOpenKeybinds: () -> (),
+	OnOpenSoftware: () -> (),
 	OnHoverChanged: ((hovered: boolean) -> ())?,
 })
 	-- Settings has no single dock of its own any more - clicking it opens a
@@ -34,7 +36,7 @@ local function TopBar(props: {
 	-- together (which used to stack them at the same default float
 	-- position with no way to tell the second one was even there).
 	local menuOpen, setMenuOpen = React.useState(false)
-	local settingsSelected = props.RegionalOpen or props.KeybindsOpen or menuOpen
+	local settingsSelected = props.RegionalOpen or props.KeybindsOpen or props.SoftwareOpen or menuOpen
 
 	return e(React.Fragment, nil, {
 		Bar = e("Frame", {
@@ -153,6 +155,16 @@ local function TopBar(props: {
 				end,
 				Size = UDim2.new(1, 0, 0, 32),
 				LayoutOrder = 2,
+			}),
+			Software = e(Components.Button, {
+				Text = "Software",
+				Selected = props.SoftwareOpen,
+				OnClick = function()
+					setMenuOpen(false)
+					props.OnOpenSoftware()
+				end,
+				Size = UDim2.new(1, 0, 0, 32),
+				LayoutOrder = 3,
 			}),
 		}),
 	})

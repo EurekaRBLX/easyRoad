@@ -4,12 +4,36 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Studio-facing structures, selectable junctions, and Software settings
+
+The structure system is now part of **Road Tools** instead of being reachable
+only after placing a road and opening its inspector. Ground, Elevated viaduct,
+and Tunnel modes, custom Model import/library selection, pier settings, and
+status are available before placement. Every committed road is stamped and
+rendered immediately, and the choice remains active for chained segments.
+
+Viaduct mode raycasts at least one candidate support on a short span instead of
+silently producing a floating road. Tunnel mode no longer fails when no custom
+asset is selected: it generates concrete side walls and a roof sized to the
+road's cross-section. Imported socketed modules still override that default.
+Terrain carving remains explicit and unimplemented because implicit carving
+cannot restore arbitrary removed terrain safely.
+
+The existing junction editor was wired but its visible `JunctionSurface` Parts
+were `CanQuery = false`, preventing the Studio selection hit the editor depends
+on. Those surfaces are now queryable; road placement already excludes the whole
+Junctions folder from ground raycasts. A Python static integration check locks
+that selection and UI wiring in place.
+
+Settings now includes a local **Software** dock matching easyRail's product
+information panel.
+
 ## Custom structure Models, viaducts, tunnels, and raycast piers
 
 Placed roads now have a serialized structure configuration in addition to
-their procedural cross-section. In the Road Inspector a user can choose
-Ground level, Elevated viaduct, or Tunnel modules. Ctrl-selecting that road and
-a literal Workspace `Model` imports a clone into the game-owned
+their procedural cross-section. In Road Tools or the Road Inspector a user can
+choose Ground level, Elevated viaduct, or Tunnel. Selecting a literal Workspace
+`Model` imports a clone into the game-owned
 `ServerStorage/EasyRoadAssets` library as the selected viaduct/tunnel module.
 
 An imported Model may provide `EasyRoadStart` and `EasyRoadEnd` Attachments.
@@ -23,8 +47,9 @@ Viaducts can use the ordinary generated road as the deck with no imported
 module. Optional concrete piers are stationed independently of road strip
 sampling and raycast vertically to Terrain or world parts, with configurable
 spacing, width, depth, vertical module offset, and maximum drop. Ground-level
-hits do not create decorative stubs. Tunnels require an imported shell module;
-Terrain excavation is deliberately not implied or performed.
+hits do not create decorative stubs. Tunnels use an imported shell module when
+selected or a generated concrete shell otherwise; Terrain excavation is
+deliberately not implied or performed.
 
 The configuration and generated children survive lane/marking edits, bus-bay
 rebuilds, road splits, junction approach trimming, and roundabout spoke

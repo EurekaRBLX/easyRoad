@@ -23,6 +23,9 @@ local RoadLibraryModule = require("../RoadLibrary")
 local Settings = require("../Settings")
 local Units = require("../Units")
 local Keybinds = require("../Keybinds")
+local RoadInstance = require("../RoadInstance")
+local StructureAssets = require("../StructureAssets")
+local StructureControls = require("./StructureControls")
 
 local function keyHint(bindings: { string }): string
 	local labels = {}
@@ -111,6 +114,11 @@ local function BuildBar(props: {
 	Elevation: number,
 	AdjustElevation: (delta: number) -> (),
 	SetElevation: (value: number) -> (),
+	Structure: RoadInstance.StructureData,
+	StructureAssets: { StructureAssets.AssetInfo },
+	StructureStatus: string?,
+	SetStructure: (structure: RoadInstance.StructureData) -> (),
+	ImportStructureAsset: (kind: StructureAssets.AssetKind) -> (),
 	RoundaboutRadius: number,
 	SetRoundaboutRadius: (value: number) -> (),
 	RoundaboutLaneCount: number,
@@ -359,6 +367,19 @@ local function BuildBar(props: {
 		Dim = true,
 		LayoutOrder = 14,
 	})
+	-- Keep the mode visible directly below the tool picker. This is the main
+	-- placement workflow, so hiding it below every snapping/banking/elevation
+	-- option would recreate the discoverability failure of the old inspector-
+	-- only implementation. Roundabouts do not use RoadInstance structures.
+	children.Structure = props.ToolMode ~= "Roundabout" and e(StructureControls, {
+		Structure = props.Structure,
+		Assets = props.StructureAssets,
+		Status = props.StructureStatus,
+		OnChange = props.SetStructure,
+		OnImport = props.ImportStructureAsset,
+		PlacementMode = true,
+		LayoutOrder = 3,
+	})
 	children.Hint = e("TextLabel", {
 		Text = props.Hint,
 		TextColor3 = Theme.DIM,
@@ -369,13 +390,13 @@ local function BuildBar(props: {
 		TextSize = Theme.TEXT_SIZE,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = true,
-		LayoutOrder = 15,
+		LayoutOrder = 16,
 	})
 	children.Stop = e(Components.Button, {
 		Text = "Stop Building",
 		Danger = true,
 		OnClick = props.OnStop,
-		LayoutOrder = 16,
+		LayoutOrder = 17,
 	})
 
 	local scrollProps = Components.ScrollBar()

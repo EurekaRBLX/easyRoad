@@ -54,6 +54,11 @@ To rebuild `dist/` yourself without Rojo: `python3 tools/build_rbxmx.py`.
    the markings between them) interpolate along the segment, extra lanes
    taper in/out. After placing a transition, the chain continues with the
    target profile.
+6. **Viaducts and tunnels**: in Road Tools choose the structure mode before
+   placing. Viaduct mode uses the road as its deck and raycasts concrete piers
+   down to the world; Tunnel mode generates a concrete shell. Select and import
+   a Workspace Model there to replace either procedural structure with your own
+   socketed bridge/tunnel module. See [`STRUCTURES.md`](STRUCTURES.md).
 
 ### Custom roads (Edit Roads...)
 
@@ -82,6 +87,9 @@ sessions.
 * **Geometry** — road deck thickness and maximum strip length (strips adapt
   automatically: shorter where curvature is higher).
 
+The Settings menu also includes **Software**, showing the local easyRoad build
+and product information in the same style as easyRail.
+
 ## Architecture
 
 ```
@@ -95,6 +103,8 @@ src/
   createRoadSession.lua    Interactive placement: clicks, snapping, preview, undo
   RoadSplit.lua            Splits one road at one or more shared junction nodes
   JunctionInstance.lua     First-class junction node data and road connectivity
+  StructureAssets.lua      Imports game-owned custom bridge/tunnel Models
+  StructureBuilder.lua     Tiles modules, raycasts piers, builds tunnel shells
   Geometry/
     CurveSegment.lua       Line / quadratic / cubic segments, arc-length tables,
                            signed ground-plane curvature
@@ -140,7 +150,7 @@ Key mechanics:
 ## Roadmap / not yet implemented
 
 * Junction lane guidance, stop/give-way lines, crosswalks and box markings.
-* Bridge pillars / retaining walls for elevated roads.
-* Editing already-placed roads (drag control points, re-profile in place).
+* Explicit undoable Terrain excavation/restoration for tunnels.
+* Custom portal, abutment, and pier assets.
 * Arrow / text surface decals (turn arrows, crosswalks).
 * A real toolbar icon.

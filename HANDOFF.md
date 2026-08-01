@@ -78,10 +78,11 @@ analysis and the two-fill design in `ROUNDABOUT.md` §5.3d.
 Every result in these docs is headless. The user's screenshots are the
 authority, and they have repeatedly shown defects the tooling passed.
 
-### Structures - first vertical slice built, unconfirmed live
-`STRUCTURES.md` is the contract. The Road Inspector can import a selected
-Workspace Model into `ServerStorage/EasyRoadAssets`, tile it as a viaduct or
-tunnel module, and auto-place viaduct piers by downward raycast. Structure data
+### Structures - placement workflow built, unconfirmed live
+`STRUCTURES.md` is the contract. Road Tools and the Road Inspector can import a
+selected Workspace Model into `ServerStorage/EasyRoadAssets`, tile it as a
+viaduct or tunnel module, and auto-place viaduct piers by downward raycast.
+No-asset tunnel mode generates a concrete shell. Structure data
 survives all known road rebuild paths. Tunnel Terrain excavation, special
 portal/abutment modules, custom pier assets, and asset-library management are
 still open. The Python parity render/check is

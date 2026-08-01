@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Headless validation + PNG preview for rigid structure modules and piers.
 
-This ports StructureBuilder.lua's socket-chord module stepping and downward
-pillar projection. It deliberately stays stdlib-only like the other preview
-tools: `raster.py` writes the PNG without Pillow.
+This ports StructureBuilder.lua's socket-chord module stepping, evenly-spaced
+downward pillar projection, and default procedural tunnel shell. It deliberately
+stays stdlib-only like the other preview tools: `raster.py` writes the PNG
+without Pillow.
 
     python3 tools/preview/structure_preview.py --check
     python3 tools/preview/structure_preview.py --out structure_preview.png
 
 The PNG contains, from top to bottom: viaduct plan, viaduct side elevation,
-and tunnel-module plan. Alternating module colours make overlaps/gaps visible;
-yellow dots/columns are raycast pier stations and the green profile is terrain.
+and procedural tunnel cutaway plan. Alternating module colours make custom
+module overlaps/gaps visible; yellow dots/columns are raycast pier stations and
+the green profile is terrain.
 """
 import argparse
 import bisect
@@ -130,14 +132,14 @@ def terrain_y(position):
 
 def projected_piers(curve, spacing, max_drop):
     piers = []
-    station = spacing/2
-    while station < curve.length-spacing*0.15:
+    target_count = max(1, math.floor(curve.length/spacing))
+    for index in range(1, target_count+1):
+        station = curve.length*index/(target_count+1)
         top = curve.pos(station)
         ground = terrain_y(top)
         height = top[1]-ground
         if 0.5 < height <= max_drop:
             piers.append((station, top, ground))
-        station += spacing
     return piers
 
 
@@ -260,15 +262,24 @@ def render(path):
         canvas.fill_poly(quad_around(a, b, 7), module_colors[index % 2])
     canvas.polyline(road, (225, 230, 235), 2)
 
-    # Tunnel plan: same socket-chord solver, no piers. A larger dark outline
-    # reads as the shell while alternating inner modules expose overlap/gaps.
+    # Procedural tunnel cutaway plan: concrete side walls around the road.
+    # The roof is intentionally omitted in plan so the carriageway remains
+    # visible; Lua emits one roof Part alongside every pair of wall Parts.
     tunnel_points = [map_plan(curve.pos(curve.length*i/180), 520) for i in range(181)]
-    canvas.polyline(tunnel_points, (112, 118, 128), 42)
-    for index, (start, end) in enumerate(ranges):
-        a, b = map_plan(curve.pos(start), 520), map_plan(curve.pos(end), 520)
-        color = (123, 101, 171) if index % 2 else (92, 139, 164)
-        canvas.fill_poly(quad_around(a, b, 15), color)
-        canvas.line(a, b, (205, 213, 222), 2)
+    left, right = [], []
+    for index, point in enumerate(tunnel_points):
+        before = tunnel_points[max(0, index-1)]
+        after = tunnel_points[min(len(tunnel_points)-1, index+1)]
+        dx, dy = after[0]-before[0], after[1]-before[1]
+        length = math.hypot(dx, dy) or 1.0
+        nx, ny = -dy/length*24, dx/length*24
+        left.append((point[0]+nx, point[1]+ny))
+        right.append((point[0]-nx, point[1]-ny))
+    canvas.polyline(tunnel_points, (48, 53, 60), 26)
+    canvas.polyline(left, (139, 143, 148), 9)
+    canvas.polyline(right, (139, 143, 148), 9)
+    canvas.polyline(left, (205, 213, 222), 2)
+    canvas.polyline(right, (205, 213, 222), 2)
 
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     canvas.save(path)

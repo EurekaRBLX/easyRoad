@@ -6,6 +6,7 @@ local Workspace = game:GetService("Workspace")
 
 local PolyCurve = require("./Geometry/PolyCurve")
 local RoadInstance = require("./RoadInstance")
+local RoadProfile = require("./RoadProfile")
 local Settings = require("./Settings")
 local StructureAssets = require("./StructureAssets")
 
@@ -13,6 +14,7 @@ local GENERATED_NAME = "EasyRoadStructure"
 local EPSILON = 0.05
 local MAX_MODULES = 2000
 local MAX_PIERS = 1000
+local MAX_TUNNEL_SEGMENTS = 2000
 
 local StructureBuilder = {}
 
@@ -248,9 +250,14 @@ local function placePiers(
 	-- "Ground" means the terrain below water, not the water surface.
 	params.IgnoreWater = true
 
+	-- Distribute the supports evenly and always try one support on a short
+	-- elevated span. The old spacing/2 loop produced zero piers whenever a
+	-- road was shorter than roughly half the configured spacing, which made
+	-- a perfectly valid short viaduct look like a floating road.
+	local targetCount = math.min(MAX_PIERS, math.max(1, math.floor(curve.Length / spacing)))
 	local count = 0
-	local station = spacing / 2
-	while station < curve.Length - spacing * 0.15 and count < MAX_PIERS do
+	for index = 1, targetCount do
+		local station = curve.Length * index / (targetCount + 1)
 		local frame = curve:FrameAt(station)
 		local top = curve:PosAt(station) + frame.UpVector * (data.ModuleOffsetM * scale)
 		local result = Workspace:Raycast(top + Vector3.new(0, 2, 0), Vector3.new(0, -(maxDrop + 2), 0), params)
@@ -272,9 +279,107 @@ local function placePiers(
 				part.Parent = folder
 			end
 		end
-		station += spacing
 	end
 	return count
+end
+
+local function tunnelRoadWidthStuds(road: Model, settings: Settings.EasyRoadSettings): number
+	local roadData = RoadInstance.Read(road)
+	if not roadData then
+		return 10 * settings.MetersToStuds
+	end
+	local widthM = RoadProfile.TotalWidthM(roadData.ProfileStart)
+	if roadData.ProfileEnd then
+		widthM = math.max(widthM, RoadProfile.TotalWidthM(roadData.ProfileEnd))
+	end
+	return math.max(widthM * settings.MetersToStuds, 4)
+end
+
+local function makeTunnelPart(name: string, size: Vector3, frame: CFrame, parent: Folder): Part
+	local part = Instance.new("Part")
+	part.Name = name
+	part.Anchored = true
+	part.CanCollide = true
+	part.CanTouch = true
+	part.CanQuery = true
+	part.CastShadow = true
+	part.Material = Enum.Material.Concrete
+	part.Color = Color3.fromRGB(105, 107, 112)
+	part.Size = size
+	part.CFrame = frame
+	part.TopSurface = Enum.SurfaceType.Smooth
+	part.BottomSurface = Enum.SurfaceType.Smooth
+	part.Parent = parent
+	return part
+end
+
+-- A usable no-asset tunnel: an open-bottom concrete box following the road,
+-- with sufficient side and overhead clearance for ordinary Roblox traffic.
+-- Terrain carving is deliberately not implicit because rebuilding/deleting a
+-- road cannot faithfully reconstruct arbitrary terrain that was removed.
+local function placeProceduralTunnel(
+	parent: Model,
+	road: Model,
+	curve: PolyCurve.PolyCurve,
+	data: RoadInstance.StructureData,
+	settings: Settings.EasyRoadSettings
+): number
+	if curve.Length < EPSILON then
+		return 0
+	end
+	local scale = settings.MetersToStuds
+	local roadWidth = tunnelRoadWidthStuds(road, settings)
+	local sideClearance = 0.75 * scale
+	local clearanceHeight = 5 * scale
+	local thickness = math.max(0.35 * scale, 0.5)
+	local innerHalfWidth = roadWidth / 2 + sideClearance
+	local outerWidth = innerHalfWidth * 2 + thickness * 2
+	local offset = data.ModuleOffsetM * scale
+	local step = math.max(settings.MaxSegmentLengthStuds, 4)
+	local segmentCount = math.min(MAX_TUNNEL_SEGMENTS, math.max(1, math.ceil(curve.Length / step)))
+	local folder = Instance.new("Folder")
+	folder.Name = "ProceduralTunnel"
+	folder:SetAttribute("RW_ProceduralTunnel", true)
+	folder.Parent = parent
+
+	local partCount = 0
+	for index = 1, segmentCount do
+		local s0 = curve.Length * (index - 1) / segmentCount
+		local s1 = curve.Length * index / segmentCount
+		local p0 = curve:PosAt(s0)
+		local p1 = curve:PosAt(s1)
+		local chord = (p1 - p0).Magnitude
+		if chord < EPSILON then
+			continue
+		end
+		local middle = (p0 + p1) * 0.5
+		local roadFrame = curve:FrameAt((s0 + s1) * 0.5)
+		local frame = safeLookAt(middle, middle + (p1 - p0), roadFrame.UpVector)
+		frame = frame + roadFrame.UpVector * offset
+		local overlap = math.min(0.2, chord * 0.05)
+		local depth = chord + overlap
+
+		makeTunnelPart(
+			string.format("WallLeft_%04d", index),
+			Vector3.new(thickness, clearanceHeight + thickness, depth),
+			frame * CFrame.new(-innerHalfWidth - thickness / 2, clearanceHeight / 2, 0),
+			folder
+		)
+		makeTunnelPart(
+			string.format("WallRight_%04d", index),
+			Vector3.new(thickness, clearanceHeight + thickness, depth),
+			frame * CFrame.new(innerHalfWidth + thickness / 2, clearanceHeight / 2, 0),
+			folder
+		)
+		makeTunnelPart(
+			string.format("Roof_%04d", index),
+			Vector3.new(outerWidth, thickness, depth),
+			frame * CFrame.new(0, clearanceHeight + thickness / 2, 0),
+			folder
+		)
+		partCount += 3
+	end
+	return partCount
 end
 
 function StructureBuilder.Render(
@@ -290,6 +395,7 @@ function StructureBuilder.Render(
 
 	local generated = makeGeneratedModel()
 	local moduleCount = 0
+	local proceduralPartCount = 0
 	if data.AssetId then
 		local asset = StructureAssets.Get(data.AssetId)
 		if not asset then
@@ -308,20 +414,23 @@ function StructureBuilder.Render(
 		end
 		moduleCount = count
 	elseif data.Mode == "Tunnel" then
-		generated:Destroy()
-		return false, "Tunnel mode needs an imported Tunnel module."
+		proceduralPartCount = placeProceduralTunnel(generated, road, curve, data, settings)
 	end
 
 	local pierCount = if data.Mode == "Viaduct" then placePiers(generated, road, curve, data, settings) else 0
 	generated:SetAttribute("RW_StructureMode", data.Mode)
 	generated:SetAttribute("RW_ModuleCount", moduleCount)
 	generated:SetAttribute("RW_PierCount", pierCount)
+	generated:SetAttribute("RW_ProceduralPartCount", proceduralPartCount)
 	generated.Parent = road
 
 	if data.Mode == "Viaduct" then
 		return true, string.format("Built %d modules and %d raycast piers.", moduleCount, pierCount)
 	end
-	return true, string.format("Built %d tunnel modules. Terrain excavation is intentionally separate.", moduleCount)
+	if data.AssetId then
+		return true, string.format("Built %d custom tunnel modules. Terrain excavation is explicit.", moduleCount)
+	end
+	return true, string.format("Built a procedural tunnel shell with %d parts. Terrain excavation is explicit.", proceduralPartCount)
 end
 
 return StructureBuilder
