@@ -871,8 +871,36 @@ return function(
 					return 0, 0
 				end
 				local style = getStyle()
-				return RoundaboutBuilder.MinimumRadiusStuds(junctionData.Id, laneCount, laneWidthM, style, settings),
-					RoundaboutBuilder.SuggestedRadiusStuds(junctionData.Id, laneCount, laneWidthM, style, settings)
+				-- Radius advice is secondary to the junction editor itself. A bad
+				-- approach profile or a future calculator regression must not crash
+				-- React and make the entire selected-junction panel disappear.
+				local ok, radii = pcall(function(): { Minimum: number, Suggested: number }
+					return {
+						Minimum = RoundaboutBuilder.MinimumRadiusStuds(
+							junctionData.Id,
+							laneCount,
+							laneWidthM,
+							style,
+							settings
+						),
+						Suggested = RoundaboutBuilder.SuggestedRadiusStuds(
+							junctionData.Id,
+							laneCount,
+							laneWidthM,
+							style,
+							settings
+						),
+					}
+				end)
+				if not ok then
+					warn(
+						"[EasyRoad] Roundabout radius suggestion failed; junction editor remains available: "
+							.. tostring(radii)
+					)
+					return 0, 0
+				end
+				local result = radii :: { Minimum: number, Suggested: number }
+				return result.Minimum, result.Suggested
 			end
 			bottomContent = React.createElement(JunctionPanel, {
 				ConnectedRoadCount = junctionEditSession.GetConnectedRoadCount(),

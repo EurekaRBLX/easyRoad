@@ -2035,7 +2035,14 @@ local function packingRadiusStuds(
 			if not group then
 				return
 			end
-			local arm = armProfileFor(group, solo, style, scale, travelsInward == atStart)
+			local arm = armProfileFor(
+				group,
+				solo,
+				style,
+				scale,
+				travelsInward == atStart,
+				ringSidewalkWidthM(style)
+			)
 			-- FULL width, pavement included. The kerb is what must not overrun
 			-- the next mouth's kerb; counting only the roadway lets two mouths
 			-- sit a pavement's width inside each other.

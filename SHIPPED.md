@@ -4,6 +4,24 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Selected-junction panel opens instead of crashing in radius advice
+
+Studio selection was working: the junction Model selected in Explorer and the
+cyan corner handles appeared. React then crashed while mounting `JunctionPanel`,
+so the editor itself looked absent. The Output stack traced this to
+`packingRadiusStuds`: `armProfileFor` gained a required ring-pavement-width
+argument during the highway taper work, but the panel's suggested-roundabout-
+radius path still called it with five arguments. That created a Sidewalk with
+`WidthM = nil`, which failed in `RoadProfile.TotalWidthM`.
+
+The packing path now supplies `ringSidewalkWidthM(style)`, matching the real
+roundabout mouth builder. The optional radius advisor is also isolated behind
+`pcall`; any future malformed approach can disable the two advisory figures and
+warn without taking down the junction editor, its corner controls, or rebuild
+actions. `integration_contracts.py` guards both the missing argument and the
+panel-level failure boundary. Rebuilt `dist/EasyRoad.rbxmx`; live confirmation
+still requires reinstalling that file and selecting the junction again.
+
 ## Multinode junction controller and per-corner turn radii
 
 Ordinary intersections still have one logical owner `JunctionNode`, but their

@@ -649,6 +649,14 @@ polygon tracing each connected road's own pavement edges
 (`FillTriangle`-based, angular sort around the junction centre), not an
 arbitrary circle.
 
+**Live retest checkpoint:** selecting the junction Model and spawning its cyan
+handles are confirmed. The same test exposed a React mount crash before the
+panel could appear: the suggested-roundabout-radius path omitted
+`armProfileFor`'s ring-pavement-width argument. That call and a panel-safe
+fallback are now fixed; reinstall the current `dist/EasyRoad.rbxmx` and confirm
+the editor, link toggle, and selected-corner radius field appear before calling
+multinode editing live-verified.
+
 **Approach trimming (shipped) - the RoadArchitect model.** Connected roads
 now TERMINATE at the pad boundary instead of running full-profile
 (sidewalks, markings, kerb lines) through to the junction centre -

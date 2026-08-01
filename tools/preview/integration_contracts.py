@@ -48,6 +48,7 @@ def main():
     asset_panel = source("src/UI/RoadAssetsPanel.lua")
     software = source("src/UI/SoftwareGui.lua")
     multinode_preview = source("tools/preview/multinode_junction_preview.py")
+    roundabout = source("src/Mesh/RoundaboutBuilder.lua")
 
     require(junction, 'part.Name = "JunctionSurface"', "junction surface factory missing", problems)
     surface_factory = junction[junction.find('part.Name = "JunctionSurface"'):]
@@ -63,6 +64,12 @@ def main():
     require(junction_session, 'c:SetAttribute("RW_CornerId", corner.Id)', "corner handles do not retain stable corner identities", problems)
     require(junction_session, "SetSelectedCornerRadiusM", "selected corner radius cannot be edited", problems)
     require(junction_panel, 'Label = "Link all corner radii"', "junction editor cannot switch to per-corner radii", problems)
+    packing_start = roundabout.find("local function packingRadiusStuds")
+    packing_end = roundabout.find("function RoundaboutBuilder.MinimumRadiusStuds", packing_start)
+    packing = roundabout[packing_start:packing_end]
+    require(packing, "ringSidewalkWidthM(style)", "junction panel radius suggestion passes nil pavement width to armProfileFor", problems)
+    require(main_source, "local ok, radii = pcall", "roundabout advice is not isolated from the selected-junction panel", problems)
+    require(main_source, "junction editor remains available", "roundabout advice failure has no panel-safe fallback", problems)
     require(multinode_preview, "from preview_core import (", "multinode preview no longer shares the roundabout component pipeline", problems)
     require(multinode_preview, "SIX_LANE_BOULEVARD = uk_two_way(3)", "multinode preview lost the UK six-lane boulevard case", problems)
     require(multinode_preview, 'suffix = "gaps" if flat else "parts"', "multinode preview no longer emits matching parts/gaps QA views", problems)

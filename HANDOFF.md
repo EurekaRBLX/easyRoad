@@ -70,6 +70,13 @@ as the roundabout preview; it is no longer a US-styled schematic. The additional
 the foundation for per-approach stop/crossing/signal controls; those markings
 are still open.
 
+The first live selection attempt exposed a panel-mount crash rather than a
+selection failure: `packingRadiusStuds` omitted `armProfileFor`'s required
+ring-pavement-width argument, producing a nil component width inside
+`RoadProfile.TotalWidthM`. It now passes `ringSidewalkWidthM(style)`, and the
+optional roundabout-radius advisor is guarded so it cannot hide the whole
+junction editor again. Reinstall the freshly rebuilt dist before retesting.
+
 ### Junctions — fixed, unconfirmed live
 The self-intersecting spiked pad and the faceted seam are both fixed.
 `cornerBoundaries` was aiming its edge directions along `+outward` on any span
