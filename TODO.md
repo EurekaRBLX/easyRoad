@@ -236,13 +236,24 @@ Left open:
   few seconds per case, so it should be in `report()` behind a flag at least.
 - **The hard floor uses a 2-stud island minimum**, picked because `buildIsland`
   bails below 1. Not measured against anything.
+- **The preview never followed the split.** `roundabout_preview.min_radius_studs`
+  still computes the OLD packing number and still calls itself "port of
+  `RoundaboutBuilder.MinimumRadiusStuds`" — which is now the hard floor, a
+  different quantity. So `build(grow=True)` grows rings to the suggestion, not
+  the floor, and `check_parity.py` reports the symptom as one missing constant
+  (`ISLAND_MIN_RADIUS_STUDS`). Rename it `suggested_radius_studs` and add a real
+  `min_radius_studs` beside it. Left alone this round because the radius sweeps
+  quoted in ROUNDABOUT.md 3.9 were measured through the current growth path and
+  would need re-running.
 
 ## Turbo roundabout markings — SHIPPED, not yet confirmed live
 
 Third `RoundaboutMarkings` mode beside Continuous and SolidLanes, selectable per
-roundabout in the junction panel and as a regional default. Lane boundaries
-spiral outward across each arc between mouths, so the lane a driver is in is
-carried to an exit. Rule and reasoning in ROUNDABOUT.md 3.8.
+roundabout in the junction panel and as a regional default. The ring keeps its
+ordinary concentric divider; a dashed peel-off at each exit leaves it and hands
+over to the exit arm's own lane line. Built in two phases — ring divider, then
+arm line — because the arm merges tangentially and the two already join. Rule
+and reasoning in ROUNDABOUT.md 3.8.
 
 Left open:
 

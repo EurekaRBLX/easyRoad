@@ -4,6 +4,53 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout: the turbo peel is two phases, and the check that missed it
+
+Two things, one cause. The peel was fitted as a single curve across the whole
+span and it kinked; the check that should have caught the kink was measuring
+something else.
+
+GEOMETRY. The peel is now the ring's own divider as far as the exit, then the
+exit arm's own lane line, with nothing interpolated between them. Those two
+already join: the arm merges tangentially to the ring and its outer edge lands
+on the ring's kerb, so at the merge the arm's boundary k lanes in from that edge
+IS the ring's boundary k lanes out from the island. Position and heading are
+both continuous already, and the radius is monotonic by construction - phase one
+holds it constant, phase two only runs outward.
+
+The blend it replaces cured the earlier cubic's eight-stud sag but paired
+mismatched parameters: at low progress it mixes a ring point with an arm point
+40 degrees away, and the chord between them cuts inward. 1.4 studs on a 3-lane
+ring - small, but a kink in the one line a driver is being asked to follow out
+of the roundabout, and the two 3-lane cases were failing on it.
+
+CHECKS. Three of check_turbo's rules have now been invalidated by design changes
+they were not re-read against, and this round killed two of them.
+
+  - "ends near any Marking" was real while Turbo suppressed the ring's lane
+    lines and became a tautology the moment it stopped - the peel now lies along
+    a ring divider for its whole first phase, so the nearest marking is ~0
+    always, and the rule passed a peel rotated 40 degrees off its exit
+  - scoping it to the exit arms' own markings was still not enough. Measured
+    over the whole peel it ALSO passed the rotated peel, because a 30-degree arc
+    and an 80-stud arm cross somewhere however they are turned
+
+What it asks now is the narrow question: each peel's FAR END, against the lane
+lines of the exit it was built for, keyed per (exit, divider) so a ring handing
+three of four boundaries over correctly cannot cover for the fourth. The exit
+arms' markings are kept by identity as they are emitted rather than found later
+by name, the same fix the gore triangles needed - every marking in the scene is
+called "Marking", so any search matches the line the peel starts on.
+
+Eight turbo cases clean, including the two 3-lane ones that were failing:
+uk/us 2-lane 4-leg, 1-lane fallback, skew, tight 3-leg, uk 3-lane with 2-lane
+exits, uk 3-lane with 3-lane exits, us 3-lane 3-leg. Three break-tests written
+one per rule - peel shoved 1.5 lanes off any divider, peel rotated off its
+exits, peel run backwards - and each is caught by the rule it targets. Standard
+bare-ground suite unchanged.
+
+Not confirmed in Studio.
+
 ## Roundabout: turbo is a peel-off at each exit, not a spiral round the ring
 
 Settled by asking rather than guessing again. Four rounds went into spiralling

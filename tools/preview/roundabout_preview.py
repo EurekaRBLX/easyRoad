@@ -444,7 +444,9 @@ TURBO_FLING_FRACTION = 0.35
 # Deliberately tighter than the region's open-road LaneLine (1 m / 5 m), which
 # puts ~5 dashes on a whole quadrant and reads as an unmarked ring. See
 # RoundaboutBuilder.
-TURBO_DASH_M, TURBO_GAP_M = 1.0, 1.5
+# LONG mark, SHORT gap - the hazard ratio, not a permissive lane line. See
+# RoundaboutBuilder.
+TURBO_DASH_M, TURBO_GAP_M = 4.0, 2.0
 # How far down the exit arm the peel lands, and its share of the gap back to
 # the previous exit - see RoundaboutBuilder.
 TURBO_PEEL_INTO_M = 9.0
@@ -485,26 +487,27 @@ def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, exits):
         plus = math.hypot(b[0] + br[0]*arm["outer"] - center[0], b[1] + br[1]*arm["outer"] - center[1])
         minus = math.hypot(b[0] - br[0]*arm["outer"] - center[0], b[1] - br[1]*arm["outer"] - center[1])
         outer_sign = 1 if plus >= minus else -1
+        # The exit arm may be narrower than the ring - see RoundaboutBuilder.
+        arm_lanes = max(1, int((arm["outer"] + arm["inner"]) / lane_studs + 0.5))
         for k in range(1, lanes):
+            if lanes - k > arm_lanes - 1:
+                continue
             a0 = angles[i] - travel * sweep
             r0 = island_r + k * lane_studs
             off = outer_sign * (arm["outer"] - (lanes - k) * lane_studs)
-            # BLENDED between the ring's divider and the arm's lane line - a
-            # free cubic between them sags 8 studs toward the island. See
-            # RoundaboutBuilder.
-            samples = max(8, math.ceil(sweep / TURBO_ARC_STEP_RAD))
-            pts, cum = [], [0.0]
-            for j in range(samples + 1):
-                t = j / samples
-                blend = t * t * (3 - 2 * t)
-                ang = a0 + travel * sweep * t
-                on_ring = (center[0] + math.cos(ang) * r0, center[1] + math.sin(ang) * r0)
-                ap, ar, _ = curve.frame(into * t)
-                on_arm = (ap[0] + ar[0] * off, ap[1] + ar[1] * off)
-                pts.append((on_ring[0] + (on_arm[0] - on_ring[0]) * blend,
-                            on_ring[1] + (on_arm[1] - on_ring[1]) * blend))
-                if j:
-                    cum.append(cum[-1] + math.dist(pts[j - 1], pts[j]))
+            # TWO PHASES, not one blended curve - see RoundaboutBuilder.
+            arc_n = max(4, math.ceil(sweep / TURBO_ARC_STEP_RAD))
+            pts = []
+            for j in range(arc_n + 1):
+                ang = a0 + travel * sweep * (j / arc_n)
+                pts.append((center[0] + math.cos(ang) * r0, center[1] + math.sin(ang) * r0))
+            arm_n = max(4, math.ceil(into / max(1e-6, TURBO_ARC_STEP_RAD * r0)))
+            for j in range(1, arm_n + 1):
+                ap, ar, _ = curve.frame(into * j / arm_n)
+                pts.append((ap[0] + ar[0] * off, ap[1] + ar[1] * off))
+            cum = [0.0]
+            for j in range(1, len(pts)):
+                cum.append(cum[-1] + math.dist(pts[j - 1], pts[j]))
             total = cum[-1]
 
             def at_len(dd):
@@ -526,7 +529,13 @@ def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, exits):
                     mid = ((q0[0] + q1[0]) / 2, (q0[1] + q1[1]) / 2)
                     out.append(Part("Marking", rect(mid, right_of(fwd), fwd, mw / 2, length / 2),
                                     MARK_C, mid, 0.03))
-                    spans.append((math.atan2(q0[1] - center[1], q0[0] - center[0]),
+                    # Tagged with the exit it belongs to. check_turbo needs to
+                    # ask about ONE peel's far end against ONE arm's lines;
+                    # asked over the whole scene at once the question answers
+                    # itself, because a peel and an arm's lane lines are both
+                    # long and always cross somewhere.
+                    spans.append((i, k,
+                                  math.atan2(q0[1] - center[1], q0[0] - center[0]),
                                   math.hypot(q0[0] - center[0], q0[1] - center[1]),
                                   math.atan2(q1[1] - center[1], q1[0] - center[0]),
                                   math.hypot(q1[0] - center[0], q1[1] - center[1])))
@@ -563,21 +572,51 @@ def check_turbo(scene):
     cx, cy = scene["center"]
     radii = [math.hypot(p.center[0] - cx, p.center[1] - cy) for p in spiral]
 
-    want_lo = inner + lane_studs
-    if abs(min(radii) - want_lo) > lane_studs * 0.75:
-        faults.append(f"peel starts at r={min(radii):.1f}, want ~{want_lo:.1f} "
-                      f"(the ring's own lane divider)")
+    # On SOME ring divider - not necessarily the innermost. A ring wider than
+    # its exits emits no peel for the boundaries the arms cannot receive, so
+    # pinning this to inner + one lane failed a correctly-built 3-lane ring.
+    k_at_start = (min(radii) - inner) / lane_studs
+    if abs(k_at_start - round(k_at_start)) > 0.35 or not (1 <= round(k_at_start) <= lanes - 1):
+        faults.append(f"peel starts at r={min(radii):.1f}, which is {k_at_start:.2f} "
+                      f"lanes off the island - not on any ring divider")
 
-    mine = {id(p) for p in spiral}
-    far = max(spiral, key=lambda p: math.hypot(p.center[0] - cx, p.center[1] - cy))
-    near = min((math.dist(far.center, q.center) for q in scene["parts"]
-                if q.name == "Marking" and id(q) not in mine), default=1e9)
+    # Landing: each peel's FAR END, against the lane lines of the exit it was
+    # built for, and nothing else.
+    #
+    # Both halves of that had to be narrowed. The earlier form asked for the
+    # nearest "Marking" of any kind, which was a real test while Turbo
+    # suppressed the ring's lane lines and became a tautology the moment it
+    # stopped - the peel lies exactly along a ring divider for its whole first
+    # phase, so the nearest marking is ~0 always. Scoping it to the exit arms
+    # was not enough either: measured over the whole peel it still passed a peel
+    # rotated 40 degrees off its exit, because a 30-degree arc and an 80-stud
+    # arm cross somewhere no matter how they are turned. Only the END of the
+    # peel says anything about where it hands over.
+    #
+    # Third rule in this file invalidated by a design change it was not re-read
+    # against - see ROUNDABOUT.md 3.8.
     reach = (TURBO_DASH_M + TURBO_GAP_M) * SCALE
-    if near > reach:
-        faults.append(f"peel ends {near:.1f} studs from the nearest other marking "
-                      f"(allow {reach:.1f}) - it is not joining anything")
+    # Greatest radius is the far end: the peel's radius is monotonic by
+    # construction (ring arc at constant radius, then out along the arm), and
+    # the rule below this one fails the case where it is not. Keyed per
+    # (exit, divider) so a ring handing three of its four boundaries over
+    # correctly cannot cover for the fourth.
+    ends: dict = {}
+    for n, k, a0, r0, a1, r1 in scene["spiral_spans"]:
+        for a, r in ((a0, r0), (a1, r1)):
+            if (n, k) not in ends or r > ends[(n, k)][1]:
+                ends[(n, k)] = (a, r)
+    for (n, k), (a, r) in sorted(ends.items()):
+        arm_marks = scene["exit_markings"][n] if n < len(scene["exit_markings"]) else []
+        if not arm_marks:
+            continue
+        tip = (cx + math.cos(a) * r, cy + math.sin(a) * r)
+        near = min(math.dist(tip, q.center) for q in arm_marks)
+        if near > reach:
+            faults.append(f"exit {n} divider {k}: the peel ends {near:.1f} studs from that "
+                          f"arm's own lane lines (allow {reach:.1f}) - it hands over to nothing")
 
-    for _, r0, _, r1 in scene["spiral_spans"]:
+    for _, _, _, r0, _, r1 in scene["spiral_spans"]:
         if r1 < r0 - 0.5:
             faults.append("peel moves inward along its own length")
             break
@@ -617,6 +656,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
 
     sectors, arm_parts, gore_tris, apron_tris = [], [], [], []
     exit_traces = []          # (curve, arm) per exit, for the turbo peel
+    exit_markings = []        # per exit arm, that arm's OWN lane lines
     angles = [d for d, _ in legs]
     for deg, spoke_profile in legs:
         a = math.radians(deg)
@@ -667,8 +707,18 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
             p0 = (math.cos(xa)*exit_arm["merge"], math.sin(xa)*exit_arm["merge"])
             p1 = (cut[0]+r[0]*exit_arm["lat"], cut[1]+r[1]*exit_arm["lat"])
             exit_ = arm_curve(p0, rt(xa), p1, (-inward[0], -inward[1]))
-            arm_parts += emit_road(exit_, exit_arm["comps"], -ARM_SINK)
+            emitted = emit_road(exit_, exit_arm["comps"], -ARM_SINK)
+            arm_parts += emitted
             exit_traces.append((exit_, exit_arm))
+            # Kept by IDENTITY rather than found later by name or position.
+            # check_turbo has to ask whether the peel lands on THE EXIT ARM's
+            # own line, and every marking in the scene is named "Marking" - so
+            # a search would happily match the ring's concentric divider, which
+            # the peel lies along for its whole first phase. That is not a
+            # hypothetical: the rule was written before Turbo kept the ring's
+            # dividers, and once it did, "nearest other marking" became a
+            # measurement of the line the peel STARTS on.
+            exit_markings.append([p for p in emitted if p.name == "Marking"])
 
         if entry and exit_:
             def gore_edge(curve, sst, arm):
@@ -847,6 +897,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     parts += spiral
     return dict(tag=tag, parts=parts, gore=gore_tris, apron=apron_tris,
                 spiral=spiral, spiral_spans=spiral_spans, markings=markings,
+                exit_markings=exit_markings,
                 ring_r=ring_r, ring_lanes=ring_lanes, drive_on_left=drive_on_left,
                 island_r=island_r, island=island, legs=leg_info,
                 sectors=cl,

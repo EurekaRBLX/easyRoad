@@ -251,14 +251,23 @@ line instead, because the line they were aiming at is out in the arm and moving.
 
 Two things about how it is built, both learned by getting them wrong:
 
-- **The peel is a BLEND, not a cubic.** A cubic pinned to the ring tangent at
-  one end and the arm tangent at the other sags between them — measured r=57.8
-  against a divider at 66.4, a marking bulging eight studs toward the island.
-  Capping the handles did not help: the span is 61° of arc once the arm's own
-  swing is counted, and no handle length makes a straight-ish chord follow a
-  circle that far. It now interpolates between two curves that are each correct
-  on their own — the ring's divider and the arm's lane line — sampled at
-  matching progress, so it starts exactly on one and ends exactly on the other.
+- **The peel is TWO PHASES, and there is nothing to interpolate.** It is the
+  ring's own divider as far as the exit, then the exit arm's own lane line.
+  Those two already join: the arm merges **tangentially** and its outer edge
+  lands on the ring's kerb, so at the merge the arm's boundary k lanes in from
+  that edge *is* the ring's boundary k lanes out from the island — position and
+  heading both continuous, and the radius monotonic because phase one holds it
+  constant and phase two only runs outward. Two constructions came first. A
+  cubic pinned to the ring tangent at one end and the arm tangent at the other
+  sagged: measured r=57.8 against a divider at 66.4, a marking bulging eight
+  studs toward the island. Capping the handles did not help — the span is 61° of
+  arc once the arm's own swing is counted, and no handle length makes a
+  straight-ish chord follow a circle that far. Blending the two curves by
+  progress cured the sag but pairs mismatched parameters: early on it mixes a
+  ring point with an arm point 40° away, and the chord between them cuts inward.
+  1.4 studs on a 3-lane ring — small, but a kink in the one line a driver is
+  being asked to follow out of the roundabout, and it was the 3-lane cases that
+  surfaced it.
 - **Which offset sign points outward is MEASURED, not assumed.** That was got
   wrong twice: once by omitting the flow factor (invisible on left-hand drive,
   mirrored on right) and once by adding it (target 22 studs the wrong way, peel
@@ -538,9 +547,10 @@ actually emits** — rigid boxes per station interval, not idealised polygons.
 | `scan_mouths` | bare ground **and** overhang, cut → ring | a wrong marking (it counts a marking Part as coverage); anything narrower than two sample pitches; whether raised material *should* be raised, only that the splitter island is |
 | `circulating_width` | narrowest DRIVABLE width of the ring, all the way round | anything outside the ring band; it answers "can you drive round it", nothing else |
 | `seam_steps` | lateral extent at the cut | the *shape* of an end cap |
+| `check_turbo` (run it via `turbo_check.py`) | each peel starts on a ring divider, runs outward, and its FAR END lands on the lane lines of the exit it was built for | whether the peel is the right line to draw at all — that is a judgement from reference photographs, and it was wrong six times while every check stayed green |
 | `check_parity.py` | constants shared with the Lua | the algorithm, and any missing rule set |
 
-Four lessons that cost real time:
+Five lessons that cost real time:
 
 0. **Every check here answers one question, and says nothing about the rest.**
    `scan_gaps` and `scan_mouths` both look for MISSING material, so neither can
@@ -556,6 +566,19 @@ Four lessons that cost real time:
    purpose. Stripping the apron out of a built scene and confirming the numbers
    come back is what proved the mouth fix was real rather than invisible.
 
+0. **An invariant kept across a design change certifies what you stopped
+   wanting.** Three of `check_turbo`'s rules have now died this way. The first
+   asserted the peel "reaches the ring's outer edge at each exit" — that
+   property turned out to *be* the defect, so it was replaced rather than
+   relaxed. The second asked whether the peel ended near any `Marking`; a real
+   test while Turbo suppressed the ring's lane lines, and a tautology the moment
+   it stopped, because the peel now lies along a ring divider for its whole
+   first phase and the nearest marking is always ~0. Scoping it to the exit
+   arms' own markings was still not enough: measured over the whole peel it
+   passed a peel rotated 40° off its exit, since a 30° arc and an 80-stud arm
+   cross somewhere however they are turned. Only the peel's **far end**, against
+   **that exit's** lines, says anything. Each of those passed everything until a
+   break-test was written for it specifically.
 1. **`scan_gaps` never looked at the mouths.** On a 40-stud ring it covers
    29.9→50.1 studs and never examined 50.1→92.7 — 68% of the built radius, and
    every bit of the entry/exit slip. Every "no bare ground" it printed for a
@@ -581,6 +604,17 @@ python3 -c "import roundabout_preview as P; \
 Renders `out/probe_parts.png` and `out/probe_gaps.png` — **magenta is bare
 ground**. Run the full suite with `python3 roundabout_preview.py` (no
 `--no-render`, which is how you get the images).
+
+The turbo peel has its own runner, because its interesting cases are lane-count
+combinations rather than radii and because it carries the break-tests:
+
+```sh
+python3 tools/preview/turbo_check.py
+```
+
+Eight scenes plus one break-test per `check_turbo` rule. The break-tests are the
+point — every rule that has silently died here passed the real geometry right up
+until one was written for it.
 
 ---
 

@@ -709,7 +709,12 @@ local TURBO_ARC_STEP_RAD = math.rad(2)
 local TURBO_FLING_FRACTION = 0.35
 -- Dash geometry for the circulating divider, deliberately not the region's
 -- open-road LaneLine - see where they are used.
-local TURBO_DASH_M, TURBO_GAP_M = 1.0, 1.5
+-- LONG mark, SHORT gap: the hazard ratio. A mark shorter than its gap reads as
+-- an ordinary permissive lane line - cross when it suits you - which is the
+-- opposite of what this line means. The peel is where a driver becomes
+-- committed to the exit, so it is marked the way a warning line is, about 2:1
+-- mark to gap rather than the region's open-road 1:5.
+local TURBO_DASH_M, TURBO_GAP_M = 4.0, 2.0
 -- How far down the exit arm the peel lands. It has to reach far enough that it
 -- is unambiguously ON the arm's own lane line rather than grazing the ring's
 -- edge, and not so far that it draws a lane boundary halfway to the approach.
@@ -956,7 +961,22 @@ local function buildTurboMarkings(
 				>= distanceXZ(base - baseRight * arm.OuterOffsetStuds, center)
 			then 1
 			else -1
+		-- The exit arm may be narrower than the ring. Ring boundary k sits
+		-- (lanes - k) lanes in from the kerb, and the arm's outer edge IS the
+		-- kerb, so the arm needs an internal boundary that far in - it has them
+		-- at 1 .. armLanes-1 only. A 3-lane ring feeding 2-lane exits has no
+		-- third boundary to hand to, and stepping in anyway walks past the arm's
+		-- inner edge: the peel then runs INWARD, from the k=1 divider down
+		-- toward the island, which is the opposite of a hand-off.
+		--
+		-- This was present but invisible while the peel was short-dashed - the
+		-- dashes simply sampled past it. Switching to the long hazard mark is
+		-- what surfaced it.
+		local armLanes = math.max(1, math.floor((arm.OuterOffsetStuds + arm.InnerOffsetStuds) / laneStuds + 0.5))
 		for k = 1, lanes - 1 do
+			if lanes - k > armLanes - 1 then
+				continue
+			end
 			local startAngle = angles[i] - travel * sweep
 			local ringRadius = innerRadiusStuds + k * laneStuds
 			-- `* travel` for the same reason goreEdge multiplies by flow: profile
@@ -965,36 +985,48 @@ local function buildTurboMarkings(
 			-- left-hand drive, where the factor is +1, and mirrors the peel onto
 			-- the wrong side of the arm on right-hand drive.
 			local offset = outerSign * (arm.OuterOffsetStuds - (lanes - k) * laneStuds)
-			-- BLENDED, not a free cubic. A cubic pinned to the ring tangent at
-			-- one end and the arm tangent at the other sags between them: the
-			-- control polygon cuts the chord, and measured on a 4-leg 2+2 the
-			-- peel dropped to r=57.8 against a divider at 66.4 - a marking
-			-- bulging eight studs toward the island on its way out. Capping the
-			-- handles did not fix it, because the span is 61 degrees of arc once
-			-- the arm's own swing is counted, and no handle length makes a
-			-- straight-ish chord follow a circle that far.
+			-- TWO PHASES, not one curve fitted across the whole span: the
+			-- ring's own divider as far as the exit, then the exit arm's own
+			-- lane line. There is nothing to interpolate between them. The arm
+			-- merges TANGENTIALLY to the ring and its outer edge lands on the
+			-- ring's kerb, so at the merge the arm's boundary k lanes in from
+			-- that edge IS the ring's boundary k lanes out from the island:
+			-- position and heading are both already continuous, and the radius
+			-- rises monotonically because phase one holds it constant and phase
+			-- two only ever runs outward.
 			--
-			-- So interpolate between two curves that are each right on their own
-			-- - the ring's divider and the arm's lane line - rather than
-			-- inventing a third. Both endpoints are sampled at matching
-			-- progress, so the result starts exactly on the divider, ends
-			-- exactly on the arm's line, and cannot dip below either.
-			local samples = math.max(8, math.ceil(sweep / TURBO_ARC_STEP_RAD))
+			-- Two constructions came before this one. A free cubic pinned to the
+			-- ring tangent at one end and the arm tangent at the other sagged:
+			-- the control polygon cuts the chord, and on a 4-leg 2+2 the peel
+			-- dropped to r=57.8 against a divider at 66.4 - eight studs toward
+			-- the island on its way out. Capping the handles did not help, since
+			-- the span is 61 degrees of arc once the arm's own swing is counted
+			-- and no handle length makes a straight-ish chord follow a circle
+			-- that far. Blending the two curves by progress cured the sag but
+			-- pairs mismatched parameters: early on it mixes a ring point with
+			-- an arm point 40 degrees away, and the chord between them cuts
+			-- inward. Only 1.4 studs on a 3-lane ring, but a kink in the one
+			-- line a driver is being asked to follow out of the roundabout.
+			local arcSamples = math.max(4, math.ceil(sweep / TURBO_ARC_STEP_RAD))
 			local pts: { Vector3 } = {}
-			local cum: { number } = { 0 }
-			for j = 0, samples do
-				local t = j / samples
-				local blend = t * t * (3 - 2 * t)
-				local onRing = ringPointAt(center, startAngle + travel * sweep * t, ringRadius, y)
-				local armS = into * t
+			for j = 0, arcSamples do
+				local t = j / arcSamples
+				table.insert(pts, ringPointAt(center, startAngle + travel * sweep * t, ringRadius, y))
+			end
+			-- The arc's angular step converted to arc length at this radius, so
+			-- both phases are sampled to one visual tolerance rather than to a
+			-- count each.
+			local armSamples = math.max(4, math.ceil(into / math.max(1e-6, TURBO_ARC_STEP_RAD * ringRadius)))
+			for j = 1, armSamples do
+				local armS = into * j / armSamples
 				local aPos = curve:PosAt(armS)
 				local aTan = flatUnit(curve:TangentAt(armS))
 				local onArm = aPos + rightOf(aTan) * offset
-				local q = onRing:Lerp(Vector3.new(onArm.X, y, onArm.Z), blend)
-				table.insert(pts, q)
-				if j > 0 then
-					table.insert(cum, cum[j] + (pts[j + 1] - pts[j]).Magnitude)
-				end
+				table.insert(pts, Vector3.new(onArm.X, y, onArm.Z))
+			end
+			local cum: { number } = { 0 }
+			for j = 2, #pts do
+				table.insert(cum, cum[j - 1] + (pts[j] - pts[j - 1]).Magnitude)
 			end
 			local total = cum[#cum]
 			local function pointAtLength(d: number): Vector3
