@@ -78,15 +78,16 @@ analysis and the two-fill design in `ROUNDABOUT.md` §5.3d.
 Every result in these docs is headless. The user's screenshots are the
 authority, and they have repeatedly shown defects the tooling passed.
 
-### Structures - placement workflow built, unconfirmed live
-`STRUCTURES.md` is the contract. Road Tools and the Road Inspector can import a
-selected Workspace Model into `ServerStorage/EasyRoadAssets`, tile it as a
-viaduct or tunnel module, and auto-place viaduct piers by downward raycast.
-No-asset tunnel mode generates a concrete shell. Structure data
+### Structures - placement/management workflow built, unconfirmed live
+`STRUCTURES.md` is the contract. The top-level Road Assets surface imports and
+manages Workspace Models in `ServerStorage/EasyRoadAssets`; Road Tools and the
+Road Inspector only select/configure them. Custom Models tile as viaduct/tunnel
+modules. No-asset viaducts generate a slab, parapets, and downward-raycast
+piers; no-asset tunnels generate a base, walls, and segmented arched vault. Structure data
 survives all known road rebuild paths. Tunnel Terrain excavation, special
-portal/abutment modules, custom pier assets, and asset-library management are
-still open. The Python parity render/check is
-`tools/preview/structure_preview.py`.
+portal/abutment modules, custom pier assets, and in-place asset replacement are
+still open. The Python render/checks are `tools/preview/structure_preview.py`
+and `tools/preview/hardware_reference_check.py`.
 
 ---
 
@@ -168,8 +169,8 @@ is a stronger guarantee than the `chordExcursion` guard now used instead.
    pedestrian/cycle crossings, and a Commonwealth zig-zag toggle. Define the
    basic EasyRoad signal socket/controller plus optional EasyLight extension
    contract before coupling any traffic-light UI to geometry.
-3. **Live-check the new structure workflow.** Ctrl-select a road and source
-   Model, import both explicit-socket and automatic-socket cases, then exercise
+3. **Live-check the new structure workflow.** Use Road Assets to import both
+   explicit-socket and automatic-socket Models, then exercise
    curves, elevated Terrain raycasts, Apply/Revert, split, and junction trims.
 4. **Static identifier checking.** Still the highest-value safety tool before a
    large new system; no Luau runtime currently checks undefined identifiers.

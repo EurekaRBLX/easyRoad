@@ -17,7 +17,6 @@
 
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local RunService = game:GetService("RunService")
-local Selection = game:GetService("Selection")
 local UserInputService = game:GetService("UserInputService")
 
 local Packages = script.Parent.Parent.Packages
@@ -62,7 +61,6 @@ export type RoadSession = {
 	SetStructure: (structure: RoadInstance.StructureData) -> (),
 	GetStructureAssets: (kind: StructureAssets.AssetKind?) -> { StructureAssets.AssetInfo },
 	GetStructureStatus: () -> string?,
-	ImportStructureAsset: (kind: StructureAssets.AssetKind) -> (),
 	GetRoundaboutRadius: () -> number,
 	SetRoundaboutRadius: (value: number) -> (),
 	GetRoundaboutLaneCount: () -> number,
@@ -1241,33 +1239,6 @@ local function createRoadSession(
 
 	function session.GetStructureStatus(): string?
 		return structureStatus
-	end
-
-	function session.ImportStructureAsset(kind: StructureAssets.AssetKind)
-		local candidate = StructureAssets.FindImportCandidate(Selection:Get(), nil)
-		if not candidate then
-			structureStatus = "Select a Workspace Model in Explorer, then import it again."
-			changeSignal:Fire()
-			return
-		end
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadImport", "Import road structure model")
-		local info, message = StructureAssets.Import(candidate, kind)
-		if info then
-			local copy = StructureBuilder.CloneData(structure)
-			copy.Mode = kind
-			copy.AssetId = info.Id
-			structure = copy
-			structureStatus = message
-			if recording then
-				ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
-			end
-		else
-			structureStatus = message
-			if recording then
-				ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Cancel)
-			end
-		end
-		changeSignal:Fire()
 	end
 
 	function session.GetRoundaboutRadius(): number

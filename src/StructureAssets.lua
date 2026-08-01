@@ -164,6 +164,55 @@ function StructureAssets.Get(assetId: string): Model?
 	return nil
 end
 
+function StructureAssets.UsageCount(assetId: string): number
+	local count = 0
+	for _, descendant in workspace:GetDescendants() do
+		if not descendant:IsA("Model") or descendant:GetAttribute("RW_Road") ~= true then
+			continue
+		end
+		local raw = descendant:GetAttribute("RW_StructureJson")
+		if typeof(raw) ~= "string" then
+			continue
+		end
+		local ok, decoded = pcall(HttpService.JSONDecode, HttpService, raw)
+		if ok and typeof(decoded) == "table" and decoded.AssetId == assetId then
+			count += 1
+		end
+	end
+	return count
+end
+
+function StructureAssets.Rename(assetId: string, requestedName: string): (boolean, string)
+	local asset = StructureAssets.Get(assetId)
+	if not asset then
+		return false, "That road asset no longer exists."
+	end
+	local name = requestedName:match("^%s*(.-)%s*$") or ""
+	if name == "" then
+		return false, "Asset name cannot be empty."
+	end
+	asset.Name = name
+	return true, "Renamed road asset to " .. name .. "."
+end
+
+function StructureAssets.Delete(assetId: string): (boolean, string)
+	local asset = StructureAssets.Get(assetId)
+	if not asset then
+		return false, "That road asset no longer exists."
+	end
+	local uses = StructureAssets.UsageCount(assetId)
+	if uses > 0 then
+		return false, string.format(
+			"This asset is used by %d placed road%s. Change those roads before deleting it.",
+			uses,
+			if uses == 1 then "" else "s"
+		)
+	end
+	local name = asset.Name
+	asset:Destroy()
+	return true, "Deleted road asset " .. name .. "."
+end
+
 -- Finds a source Model in a multi-selection containing the selected road too.
 -- A selected BasePart inside a Model is accepted; its nearest Model ancestor is
 -- used. Generated road/structure descendants and already-imported assets are

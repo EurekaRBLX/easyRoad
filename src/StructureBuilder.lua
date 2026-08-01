@@ -1,6 +1,7 @@
 --!strict
--- Repeats imported rigid Models along a placed road and, for viaducts, places
--- simple concrete piers by raycasting vertically down to Terrain/world parts.
+-- Repeats imported rigid Models along a placed road. Without a custom asset it
+-- builds a concrete viaduct deck/parapets or a tunnel base/walls/arched vault;
+-- viaduct piers are projected vertically down to Terrain/world parts.
 
 local Workspace = game:GetService("Workspace")
 
@@ -14,7 +15,8 @@ local GENERATED_NAME = "EasyRoadStructure"
 local EPSILON = 0.05
 local MAX_MODULES = 2000
 local MAX_PIERS = 1000
-local MAX_TUNNEL_SEGMENTS = 2000
+local MAX_PROCEDURAL_PARTS = 6000
+local TUNNEL_ARCH_SEGMENTS = 9
 
 local StructureBuilder = {}
 
@@ -225,6 +227,10 @@ local function raycastExclusions(road: Model): { Instance }
 	return excluded
 end
 
+local function viaductSlabThickness(scale: number): number
+	return math.max(0.55 * scale, 1.5)
+end
+
 local function placePiers(
 	parent: Model,
 	road: Model,
@@ -259,7 +265,9 @@ local function placePiers(
 	for index = 1, targetCount do
 		local station = curve.Length * index / (targetCount + 1)
 		local frame = curve:FrameAt(station)
-		local top = curve:PosAt(station) + frame.UpVector * (data.ModuleOffsetM * scale)
+		local top = curve:PosAt(station)
+			+ frame.UpVector
+				* (data.ModuleOffsetM * scale - settings.RoadThicknessStuds - viaductSlabThickness(scale))
 		local result = Workspace:Raycast(top + Vector3.new(0, 2, 0), Vector3.new(0, -(maxDrop + 2), 0), params)
 		if result then
 			local height = top.Y - result.Position.Y
@@ -283,7 +291,7 @@ local function placePiers(
 	return count
 end
 
-local function tunnelRoadWidthStuds(road: Model, settings: Settings.EasyRoadSettings): number
+local function roadWidthStuds(road: Model, settings: Settings.EasyRoadSettings): number
 	local roadData = RoadInstance.Read(road)
 	if not roadData then
 		return 10 * settings.MetersToStuds
@@ -295,7 +303,7 @@ local function tunnelRoadWidthStuds(road: Model, settings: Settings.EasyRoadSett
 	return math.max(widthM * settings.MetersToStuds, 4)
 end
 
-local function makeTunnelPart(name: string, size: Vector3, frame: CFrame, parent: Folder): Part
+local function makeConcretePart(name: string, size: Vector3, frame: CFrame, parent: Folder): Part
 	local part = Instance.new("Part")
 	part.Name = name
 	part.Anchored = true
@@ -313,8 +321,82 @@ local function makeTunnelPart(name: string, size: Vector3, frame: CFrame, parent
 	return part
 end
 
--- A usable no-asset tunnel: an open-bottom concrete box following the road,
--- with sufficient side and overhead clearance for ordinary Roblox traffic.
+-- The no-asset viaduct mirrors the hardware reference's construction rather
+-- than leaving a normal road floating on bare columns: a structural slab runs
+-- under the pavement, with continuous concrete parapets on both outside edges.
+local function placeProceduralViaduct(
+	parent: Model,
+	road: Model,
+	curve: PolyCurve.PolyCurve,
+	data: RoadInstance.StructureData,
+	settings: Settings.EasyRoadSettings
+): number
+	if curve.Length < EPSILON then
+		return 0
+	end
+	local scale = settings.MetersToStuds
+	local roadWidth = roadWidthStuds(road, settings)
+	local edgeAllowance = 0.45 * scale
+	local deckWidth = roadWidth + edgeAllowance * 2
+	local slabThickness = viaductSlabThickness(scale)
+	local barrierThickness = math.max(0.35 * scale, 0.8)
+	local barrierHeight = math.max(1.2 * scale, 2.5)
+	local offset = data.ModuleOffsetM * scale
+	local step = math.max(settings.MaxSegmentLengthStuds, 4)
+	local segmentCount = math.min(
+		math.floor(MAX_PROCEDURAL_PARTS / 3),
+		math.max(1, math.ceil(curve.Length / step))
+	)
+	local folder = Instance.new("Folder")
+	folder.Name = "ProceduralViaduct"
+	folder:SetAttribute("RW_ProceduralViaduct", true)
+	folder.Parent = parent
+
+	local partCount = 0
+	for index = 1, segmentCount do
+		local s0 = curve.Length * (index - 1) / segmentCount
+		local s1 = curve.Length * index / segmentCount
+		local p0 = curve:PosAt(s0)
+		local p1 = curve:PosAt(s1)
+		local chord = (p1 - p0).Magnitude
+		if chord < EPSILON then
+			continue
+		end
+		local middle = (p0 + p1) * 0.5
+		local roadFrame = curve:FrameAt((s0 + s1) * 0.5)
+		local frame = safeLookAt(middle, middle + (p1 - p0), roadFrame.UpVector)
+		frame = frame + roadFrame.UpVector * offset
+		local depth = chord + math.min(0.2, chord * 0.05)
+		local slabY = -settings.RoadThicknessStuds - slabThickness / 2
+
+		makeConcretePart(
+			string.format("DeckSlab_%04d", index),
+			Vector3.new(deckWidth, slabThickness, depth),
+			frame * CFrame.new(0, slabY, 0),
+			folder
+		)
+		for _, side in { -1, 1 } do
+			makeConcretePart(
+				string.format("Parapet_%s_%04d", if side < 0 then "Left" else "Right", index),
+				Vector3.new(barrierThickness, barrierHeight, depth),
+				frame
+					* CFrame.new(
+						side * (deckWidth / 2 - barrierThickness / 2),
+						barrierHeight / 2,
+						0
+					),
+				folder
+			)
+		end
+		partCount += 3
+	end
+	return partCount
+end
+
+-- A usable no-asset tunnel following the reference assets: a structural base,
+-- tall sidewalls, and a segmented elliptical concrete vault. It provides
+-- vehicle clearance without pretending that a flat three-Part box is a real
+-- tunnel.
 -- Terrain carving is deliberately not implicit because rebuilding/deleting a
 -- road cannot faithfully reconstruct arbitrary terrain that was removed.
 local function placeProceduralTunnel(
@@ -328,15 +410,20 @@ local function placeProceduralTunnel(
 		return 0
 	end
 	local scale = settings.MetersToStuds
-	local roadWidth = tunnelRoadWidthStuds(road, settings)
+	local roadWidth = roadWidthStuds(road, settings)
 	local sideClearance = 0.75 * scale
-	local clearanceHeight = 5 * scale
 	local thickness = math.max(0.35 * scale, 0.5)
 	local innerHalfWidth = roadWidth / 2 + sideClearance
 	local outerWidth = innerHalfWidth * 2 + thickness * 2
+	local wallHeight = math.max(6 * scale, innerHalfWidth * 0.72)
+	local roofRise = math.max(2.5 * scale, innerHalfWidth * 0.22)
 	local offset = data.ModuleOffsetM * scale
 	local step = math.max(settings.MaxSegmentLengthStuds, 4)
-	local segmentCount = math.min(MAX_TUNNEL_SEGMENTS, math.max(1, math.ceil(curve.Length / step)))
+	local partsPerSegment = TUNNEL_ARCH_SEGMENTS + 3
+	local segmentCount = math.min(
+		math.floor(MAX_PROCEDURAL_PARTS / partsPerSegment),
+		math.max(1, math.ceil(curve.Length / step))
+	)
 	local folder = Instance.new("Folder")
 	folder.Name = "ProceduralTunnel"
 	folder:SetAttribute("RW_ProceduralTunnel", true)
@@ -358,26 +445,45 @@ local function placeProceduralTunnel(
 		frame = frame + roadFrame.UpVector * offset
 		local overlap = math.min(0.2, chord * 0.05)
 		local depth = chord + overlap
+		local floorTop = -settings.RoadThicknessStuds
 
-		makeTunnelPart(
-			string.format("WallLeft_%04d", index),
-			Vector3.new(thickness, clearanceHeight + thickness, depth),
-			frame * CFrame.new(-innerHalfWidth - thickness / 2, clearanceHeight / 2, 0),
-			folder
-		)
-		makeTunnelPart(
-			string.format("WallRight_%04d", index),
-			Vector3.new(thickness, clearanceHeight + thickness, depth),
-			frame * CFrame.new(innerHalfWidth + thickness / 2, clearanceHeight / 2, 0),
-			folder
-		)
-		makeTunnelPart(
-			string.format("Roof_%04d", index),
+		makeConcretePart(
+			string.format("Base_%04d", index),
 			Vector3.new(outerWidth, thickness, depth),
-			frame * CFrame.new(0, clearanceHeight + thickness / 2, 0),
+			frame * CFrame.new(0, floorTop - thickness / 2, 0),
 			folder
 		)
-		partCount += 3
+		makeConcretePart(
+			string.format("WallLeft_%04d", index),
+			Vector3.new(thickness, wallHeight, depth),
+			frame * CFrame.new(-innerHalfWidth - thickness / 2, floorTop + wallHeight / 2, 0),
+			folder
+		)
+		makeConcretePart(
+			string.format("WallRight_%04d", index),
+			Vector3.new(thickness, wallHeight, depth),
+			frame * CFrame.new(innerHalfWidth + thickness / 2, floorTop + wallHeight / 2, 0),
+			folder
+		)
+		for archIndex = 1, TUNNEL_ARCH_SEGMENTS do
+			local theta0 = math.pi * (archIndex - 1) / TUNNEL_ARCH_SEGMENTS
+			local theta1 = math.pi * archIndex / TUNNEL_ARCH_SEGMENTS
+			local x0 = -innerHalfWidth * math.cos(theta0)
+			local y0 = floorTop + wallHeight + roofRise * math.sin(theta0)
+			local x1 = -innerHalfWidth * math.cos(theta1)
+			local y1 = floorTop + wallHeight + roofRise * math.sin(theta1)
+			local panelWidth = math.sqrt((x1 - x0) ^ 2 + (y1 - y0) ^ 2) + 0.08
+			local panelAngle = math.atan2(y1 - y0, x1 - x0)
+			makeConcretePart(
+				string.format("Vault_%02d_%04d", archIndex, index),
+				Vector3.new(panelWidth, thickness, depth),
+				frame
+					* CFrame.new((x0 + x1) / 2, (y0 + y1) / 2, 0)
+					* CFrame.Angles(0, 0, panelAngle),
+				folder
+			)
+		end
+		partCount += partsPerSegment
 	end
 	return partCount
 end
@@ -413,6 +519,8 @@ function StructureBuilder.Render(
 			return false, err
 		end
 		moduleCount = count
+	elseif data.Mode == "Viaduct" then
+		proceduralPartCount = placeProceduralViaduct(generated, road, curve, data, settings)
 	elseif data.Mode == "Tunnel" then
 		proceduralPartCount = placeProceduralTunnel(generated, road, curve, data, settings)
 	end
@@ -425,12 +533,24 @@ function StructureBuilder.Render(
 	generated.Parent = road
 
 	if data.Mode == "Viaduct" then
-		return true, string.format("Built %d modules and %d raycast piers.", moduleCount, pierCount)
+		if data.AssetId then
+			return true, string.format("Built %d custom viaduct modules and %d raycast piers.", moduleCount, pierCount)
+		end
+		return true,
+			string.format(
+				"Built a procedural viaduct deck and parapets with %d parts and %d raycast piers.",
+				proceduralPartCount,
+				pierCount
+			)
 	end
 	if data.AssetId then
 		return true, string.format("Built %d custom tunnel modules. Terrain excavation is explicit.", moduleCount)
 	end
-	return true, string.format("Built a procedural tunnel shell with %d parts. Terrain excavation is explicit.", proceduralPartCount)
+	return true,
+		string.format(
+			"Built a procedural tunnel base, walls, and arched vault with %d parts. Terrain excavation is explicit.",
+			proceduralPartCount
+		)
 end
 
 return StructureBuilder

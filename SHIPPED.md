@@ -4,12 +4,32 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Dedicated Road Assets UI and real procedural structure defaults
+
+The React-Lua top mode bar now separates **Road Assets** from **Road Editor**.
+Road Assets owns Workspace Model import plus stored-asset selection, rename,
+usage count, and safe deletion; deletion is refused while any placed road still
+references that asset. Road Tools and placed-road editing no longer show an
+import button and stay focused on choosing/configuring a structure.
+
+The standalone cross-section editor and placed-road designer were lowered to a
+360-pixel bottom surface with a 16-pixel margin, instead of covering roughly
+420-470 pixels of the viewport. The Software dock now describes easyRoad only.
+
+No-asset viaducts now generate an actual concrete structural slab and continuous
+edge parapets in addition to terrain-projected piers. No-asset tunnels now
+generate a base, tall sidewalls, and a nine-panel elliptical vault instead of a
+flat three-Part box. The user's five `hardware/*.rbxmx` viaduct/tunnel Models
+are checked-in geometry references; a new XML checker confirms their structural
+cues, and the Python structure preview validates/renders the slab, raycast-pier
+elevation, and arched tunnel cross-section. Terrain excavation remains explicit.
+
 ## Studio-facing structures, selectable junctions, and Software settings
 
-The structure system is now part of **Road Tools** instead of being reachable
+The structure system is available in **Road Tools** instead of being reachable
 only after placing a road and opening its inspector. Ground, Elevated viaduct,
-and Tunnel modes, custom Model import/library selection, pier settings, and
-status are available before placement. Every committed road is stamped and
+and Tunnel modes, stored-asset selection, pier settings, and status are
+available before placement; import/management now lives in Road Assets. Every committed road is stamped and
 rendered immediately, and the choice remains active for chained segments.
 
 Viaduct mode raycasts at least one candidate support on a short span instead of
@@ -25,8 +45,8 @@ on. Those surfaces are now queryable; road placement already excludes the whole
 Junctions folder from ground raycasts. A Python static integration check locks
 that selection and UI wiring in place.
 
-Settings now includes a local **Software** dock matching easyRail's product
-information panel.
+Settings now includes a local **Software** dock with easyRoad build and product
+information.
 
 ## Custom structure Models, viaducts, tunnels, and raycast piers
 

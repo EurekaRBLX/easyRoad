@@ -120,7 +120,6 @@ local function RoadInspector(props: {
 			Assets = session.GetStructureAssets(structureKind),
 			Status = session.GetStructureStatus(),
 			OnChange = session.SetStructure,
-			OnImport = session.ImportStructureAsset,
 		}),
 	})
 end

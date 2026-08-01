@@ -38,17 +38,18 @@ socket/attribute contract EasyLight can depend on. Then render stop/crossing
 markings in the Python junction preview and add break-tests for approach-side
 mirroring, line setback, and zig-zag clipping.
 
-## Model-backed viaducts and tunnels - PLACEMENT WORKFLOW SHIPPED
+## Model-backed and procedural viaducts/tunnels - WORKFLOW SHIPPED
 
 The selected-Model ownership and rigid-module path now exists; see
 `STRUCTURES.md` and `SHIPPED.md`. A Workspace Model is copied into
 `ServerStorage/EasyRoadAssets`, explicit `EasyRoadStart` / `EasyRoadEnd`
 Attachments define its socket chord (or the importer creates bounding-box
-sockets), and Road Tools exposes the selected asset/config before placement.
+sockets), and the dedicated Road Assets surface imports, lists, renames, and
+deletes unused assets. Road Tools exposes only structure selection/config before placement.
 Every committed road serializes it immediately. Viaduct mode
-can use the procedural road as its deck, tiles an optional custom model, and
+generates a structural slab and parapets, tiles an optional custom model, and
 raycasts generic concrete piers down to Terrain/world parts. Tunnel mode tiles
-an optional custom model or generates a default concrete shell without
+an optional custom model or generates a base, sidewalls, and segmented arched vault without
 destructively editing Terrain. Road edits, bus
 bays, splits, junction trimming, and roundabout trimming regenerate structures.
 
@@ -57,7 +58,7 @@ Follow-ups still open:
 - start/middle/end modules for portals, abutments, and expansion joints;
 - user-provided pier models and explicit pier socket Attachments;
 - turn/grade warnings for a rigid module that is too long for the curve;
-- rename, replace, and delete controls for the game-owned asset library;
+- replace/update-in-place for an existing game-owned asset;
 - an explicit undoable Terrain excavation/restoration phase for tunnels;
 - live Studio validation of selection UX, sockets, collisions, and raycasts.
 

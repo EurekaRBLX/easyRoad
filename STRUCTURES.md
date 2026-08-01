@@ -13,31 +13,36 @@ lining, and ground-projected supports.
 
 ## Building from Road Tools
 
-1. Open **Road Tools** and scroll to **Structure / Custom Model**.
+1. Open **Road Tools** and scroll to **Structure**.
 2. Choose **Ground level**, **Elevated viaduct**, or **Tunnel**.
 3. Set **Elevation** above the terrain for a viaduct or below it for a tunnel.
 4. Place the road normally. The selected structure is serialized and generated
    as soon as each segment is committed; the choice stays active along the
    placement chain.
 
-Viaduct mode uses the generated road as its deck and raycasts piers down to the
-world even when no custom module is selected. Tunnel mode builds a procedural
-concrete wall-and-roof shell when no custom module is selected.
+Without a custom module, viaduct mode builds a structural slab and edge
+parapets beneath/along the generated road, then raycasts piers down to the
+world. Tunnel mode builds a base, tall sidewalls, and a segmented arched vault.
 
 ## Importing a Model
 
 1. Put the source `Model` in Workspace and orient its forward direction along
    local **-Z** if it does not have explicit sockets.
-2. For a new road, select the source Model (or a Part inside it) in Explorer,
-   choose the matching structure mode in Road Tools, and press **Import selected
-   Model** before placing.
-3. For an existing road, Ctrl-select the road and source Model, open **Edit on
-   Road Builder**, choose the matching mode, import, then press **Apply to Road**.
+2. Open **Road Assets** from the top mode bar, then press **Import Selection as
+   Viaduct** or **Import Selection as Tunnel**. The same surface lists every
+   stored asset and provides rename/delete controls.
+3. Open **Road Tools**, choose the matching structure mode and select the
+   imported asset before placing. For an existing road, select it, open **Edit
+   on Road Builder**, choose the asset, then press **Apply to Road**.
 
 The importer clones the Model into `ServerStorage/EasyRoadAssets`. The source
 remains untouched in Workspace and may be deleted afterward. The stored clone,
 its generated ID, and the road's configuration are saved with the Roblox place;
 no external asset upload is required.
+
+Deletion is refused while a placed road still references the asset, so a road
+cannot silently lose its structure source. Rename and all import/delete changes
+participate in Studio undo history.
 
 Scripts and LocalScripts inside rendered module clones are disabled so a
 single source script is not executed once per repeated road module. ModuleScripts
@@ -65,9 +70,10 @@ leaving an uncovered gap.
 
 ## Viaducts
 
-An elevated viaduct may omit a custom module; the procedural EasyRoad surface
-then acts as the deck. Auto piers are distributed along the span (including one
-on short spans) and raycast vertically down. Generated road, junction, and roundabout folders are
+An elevated viaduct may omit a custom module. EasyRoad then emits a continuous
+concrete structural slab below the road plus concrete parapets at both outer
+edges. Auto piers are distributed along the span (including one on short spans)
+and meet the slab underside after raycasting vertically down. Generated road, junction, and roundabout folders are
 excluded so a pier searches for Terrain or world geometry rather than landing
 on another generated road. No pier is made for a miss, a hit beyond Max drop,
 or a ground-level hit with no visible clearance.
@@ -78,8 +84,9 @@ explicit pier sockets are later extensions.
 ## Tunnels
 
 Tunnel mode repeats an imported tunnel module when one is selected. With no
-custom asset it builds a concrete open-bottom box shell: two walls and a roof
-follow every road segment, sized from the road's widest cross-section.
+custom asset it builds a concrete base slab, tall sidewalls, and a nine-panel
+elliptical vault following every road segment, sized from the road's widest
+cross-section.
 
 It does **not** edit Roblox Terrain. Excavating and later restoring Terrain is a
 destructive operation with different undo/data requirements, so it remains a
@@ -90,10 +97,18 @@ separate explicit feature rather than a side effect of selecting a tunnel.
 - Asset library: `ServerStorage/EasyRoadAssets`
 - Road configuration attribute: `RW_StructureJson`
 - Generated road child: `EasyRoadStructure`
-- Generated subfolders: `Modules`, `Piers`, or `ProceduralTunnel`
+- Generated subfolders: `Modules`, `Piers`, `ProceduralViaduct`, or `ProceduralTunnel`
 
 Generated children are disposable. EasyRoad recreates them from the serialized
 road configuration after lane, marking, bus-bay, split, junction, and
 roundabout rebuilds. Edit the source library Model and re-apply only after a
 future replace/update workflow exists; direct edits to generated clones will be
 overwritten.
+
+## Hardware references and validation
+
+The `hardware/*.rbxmx` files are geometry references, not automatically shipped
+as a user's asset library. Their deck, parapet, wall, and crown proportions
+informed the procedural defaults. `tools/preview/hardware_reference_check.py`
+parses those XML files, while `structure_preview.py` validates and renders the
+procedural slab/piers and arched tunnel cross-section without Roblox Studio.

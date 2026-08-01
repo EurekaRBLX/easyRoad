@@ -1,10 +1,11 @@
 --!strict
 -- The top-of-viewport mode bar: industrial glassmorphism pill with the
--- three plugin functions, kept deliberately separate so each surface
+-- four plugin functions, kept deliberately separate so each surface
 -- serves one job (CS2-style):
 --
 --   Road Tools   - placement: compact tool panel bottom-left
 --   Road Editor  - create / edit road types: full designer bottom bar
+--   Road Assets  - import / rename / remove custom structure Models
 --   Settings     - grand settings (region profile, scale, banking, ...)
 --                  docked in the Studio sidebar panel
 
@@ -20,11 +21,13 @@ local Components = require("./Components")
 local function TopBar(props: {
 	ToolsActive: boolean,
 	EditorActive: boolean,
+	AssetsActive: boolean,
 	RegionalOpen: boolean,
 	KeybindsOpen: boolean,
 	SoftwareOpen: boolean,
 	OnTools: () -> (),
 	OnEditor: () -> (),
+	OnAssets: () -> (),
 	OnOpenRegional: () -> (),
 	OnOpenKeybinds: () -> (),
 	OnOpenSoftware: () -> (),
@@ -99,13 +102,19 @@ local function TopBar(props: {
 				OnClick = props.OnEditor,
 				LayoutOrder = 3,
 			}),
+			Assets = e(Components.Button, {
+				Text = "Road Assets",
+				Selected = props.AssetsActive,
+				OnClick = props.OnAssets,
+				LayoutOrder = 4,
+			}),
 			Settings = e(Components.Button, {
 				Text = "Settings",
 				Selected = settingsSelected,
 				OnClick = function()
 					setMenuOpen(not menuOpen)
 				end,
-				LayoutOrder = 4,
+				LayoutOrder = 5,
 			}),
 		}),
 		-- Settings home menu: pick Regional Preference or Keybinds, each its

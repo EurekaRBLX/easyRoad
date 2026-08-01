@@ -55,10 +55,11 @@ To rebuild `dist/` yourself without Rojo: `python3 tools/build_rbxmx.py`.
    taper in/out. After placing a transition, the chain continues with the
    target profile.
 6. **Viaducts and tunnels**: in Road Tools choose the structure mode before
-   placing. Viaduct mode uses the road as its deck and raycasts concrete piers
-   down to the world; Tunnel mode generates a concrete shell. Select and import
-   a Workspace Model there to replace either procedural structure with your own
-   socketed bridge/tunnel module. See [`STRUCTURES.md`](STRUCTURES.md).
+   placing. Viaduct mode generates a structural slab, edge parapets, and
+   terrain-projected concrete piers; Tunnel mode generates a base, tall walls,
+   and a segmented arched vault. To replace either procedural structure, open
+   **Road Assets**, import a Workspace Model, then choose it from Road Tools.
+   See [`STRUCTURES.md`](STRUCTURES.md).
 
 ### Custom roads (Edit Roads...)
 
@@ -88,7 +89,7 @@ sessions.
   automatically: shorter where curvature is higher).
 
 The Settings menu also includes **Software**, showing the local easyRoad build
-and product information in the same style as easyRail.
+and product information.
 
 ## Architecture
 
@@ -104,7 +105,7 @@ src/
   RoadSplit.lua            Splits one road at one or more shared junction nodes
   JunctionInstance.lua     First-class junction node data and road connectivity
   StructureAssets.lua      Imports game-owned custom bridge/tunnel Models
-  StructureBuilder.lua     Tiles modules, raycasts piers, builds tunnel shells
+  StructureBuilder.lua     Tiles modules; builds viaducts, tunnels, and piers
   Geometry/
     CurveSegment.lua       Line / quadratic / cubic segments, arc-length tables,
                            signed ground-plane curvature
@@ -119,6 +120,7 @@ src/
   UI/
     Theme.lua              Colors and metrics
     Components.lua         Button / dropdown / number field / checkbox / rows
+    RoadAssetsPanel.lua    Imports, renames, and removes custom structure Models
     EasyRoadGui.lua        Main panel + page routing
     LaneEditor.lua         Custom road (cross-section) editor
     SettingsGui.lua        Grand settings page

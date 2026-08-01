@@ -109,7 +109,6 @@ export type RoadEditSession = {
 	IsDirty: () -> boolean,
 	SetProfile: (profile: RoadProfile.RoadProfile) -> (),
 	SetStructure: (structure: RoadInstance.StructureData) -> (),
-	ImportStructureAsset: (kind: StructureAssets.AssetKind) -> (),
 	Apply: () -> (),
 	Revert: () -> (),
 	Deselect: () -> (),
@@ -1091,36 +1090,6 @@ local function createRoadEditSession(
 	function session.SetStructure(structure: RoadInstance.StructureData)
 		editingStructure = StructureBuilder.CloneData(structure)
 		structureStatus = nil
-		changeSignal:Fire()
-	end
-
-	function session.ImportStructureAsset(kind: StructureAssets.AssetKind)
-		if not selectedRoad or not editingStructure then
-			return
-		end
-		local candidate = StructureAssets.FindImportCandidate(Selection:Get(), selectedRoad)
-		if not candidate then
-			structureStatus = "Ctrl-select this road and a source Model in Workspace, then import again."
-			changeSignal:Fire()
-			return
-		end
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadAssetImport", "Import road structure asset")
-		local info, message = StructureAssets.Import(candidate, kind)
-		if info then
-			local copy = StructureBuilder.CloneData(editingStructure)
-			copy.Mode = kind
-			copy.AssetId = info.Id
-			editingStructure = copy
-			structureStatus = info.Name .. ": " .. message
-			if recording then
-				ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
-			end
-		else
-			structureStatus = message
-			if recording then
-				ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Cancel)
-			end
-		end
 		changeSignal:Fire()
 	end
 

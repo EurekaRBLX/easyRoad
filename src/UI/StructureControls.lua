@@ -36,9 +36,7 @@ local function StructureControls(props: {
 	Assets: { StructureAssets.AssetInfo },
 	Status: string?,
 	OnChange: (structure: RoadInstance.StructureData) -> (),
-	OnImport: (kind: StructureAssets.AssetKind) -> (),
 	LayoutOrder: number?,
-	PlacementMode: boolean?,
 })
 	local structure = props.Structure
 	local function change(transform: (copy: RoadInstance.StructureData) -> ())
@@ -57,7 +55,7 @@ local function StructureControls(props: {
 			SortOrder = Enum.SortOrder.LayoutOrder,
 			Padding = UDim.new(0, 4),
 		}),
-		Header = e(Components.Section, { Text = "Structure / Custom Model", LayoutOrder = 1 }),
+		Header = e(Components.Section, { Text = "Structure", LayoutOrder = 1 }),
 		Mode = e(Components.Row, { LayoutOrder = 2 }, {
 			Label = e(Components.Label, { Text = "Mode", Width = 62, LayoutOrder = 1 }),
 			Field = e(Components.Dropdown, {
@@ -81,7 +79,7 @@ local function StructureControls(props: {
 		local assetOptions: { Components.DropdownOption } = {
 			{
 				Id = "__none__",
-				Text = if kind == "Viaduct" then "Procedural road deck" else "Procedural tunnel shell",
+				Text = if kind == "Viaduct" then "Procedural slab + parapets" else "Procedural arched tunnel",
 			},
 		}
 		for _, asset in props.Assets do
@@ -105,26 +103,8 @@ local function StructureControls(props: {
 			}),
 		})
 		order += 1
-		children.Import = e(Components.Button, {
-			Text = "Import selected Model as " .. kind,
-			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = order,
-			OnClick = function()
-				props.OnImport(kind)
-			end,
-		})
-		order += 1
-		children.ImportHelp = note(
-			(if props.PlacementMode
-					then "Select any Workspace Model in Explorer. "
-					else "Ctrl-select this road and any Workspace Model. ")
-				.. "EasyRoad copies it to ServerStorage/EasyRoadAssets; "
-				.. "EasyRoadStart/EasyRoadEnd Attachments are preferred, otherwise bounding-box sockets are added.",
-			order
-		)
-		order += 1
 		children.ElevationHelp = note(
-			"Set positive/negative Elevation while placing road points to create viaduct grades or sunken tunnel alignments.",
+			"Import and manage custom Models from Road Assets. Set positive/negative Elevation for viaduct grades or sunken tunnel alignments.",
 			order
 		)
 		order += 1
@@ -182,7 +162,7 @@ local function StructureControls(props: {
 			end
 		else
 			children.TunnelNote = note(
-				"Without a custom module, EasyRoad generates concrete walls and a roof along the alignment. Terrain excavation remains explicit so rebuilding a road never destroys terrain unexpectedly.",
+				"Without a custom module, EasyRoad generates a structural base, sidewalls, and segmented arched vault. Terrain excavation remains explicit.",
 				order
 			)
 			order += 1

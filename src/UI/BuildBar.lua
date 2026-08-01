@@ -118,7 +118,6 @@ local function BuildBar(props: {
 	StructureAssets: { StructureAssets.AssetInfo },
 	StructureStatus: string?,
 	SetStructure: (structure: RoadInstance.StructureData) -> (),
-	ImportStructureAsset: (kind: StructureAssets.AssetKind) -> (),
 	RoundaboutRadius: number,
 	SetRoundaboutRadius: (value: number) -> (),
 	RoundaboutLaneCount: number,
@@ -376,8 +375,6 @@ local function BuildBar(props: {
 		Assets = props.StructureAssets,
 		Status = props.StructureStatus,
 		OnChange = props.SetStructure,
-		OnImport = props.ImportStructureAsset,
-		PlacementMode = true,
 		LayoutOrder = 3,
 	})
 	children.Hint = e("TextLabel", {

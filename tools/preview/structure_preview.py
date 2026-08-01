@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Headless validation + PNG preview for rigid structure modules and piers.
+"""Headless validation + PNG preview for road structure generation.
 
 This ports StructureBuilder.lua's socket-chord module stepping, evenly-spaced
-downward pillar projection, and default procedural tunnel shell. It deliberately
+downward pillar projection, procedural viaduct deck, and arched tunnel. It deliberately
 stays stdlib-only like the other preview tools: `raster.py` writes the PNG
 without Pillow.
 
     python3 tools/preview/structure_preview.py --check
     python3 tools/preview/structure_preview.py --out structure_preview.png
 
-The PNG contains, from top to bottom: viaduct plan, viaduct side elevation,
-and procedural tunnel cutaway plan. Alternating module colours make custom
+The PNG contains, from top to bottom: custom-module plan, procedural viaduct
+side elevation, and procedural tunnel cross-section. Alternating module colours make custom
 module overlaps/gaps visible; yellow dots/columns are raycast pier stations and
 the green profile is terrain.
 """
@@ -26,6 +26,8 @@ from raster import Canvas
 ARC_SAMPLES = 64
 EPSILON = 0.05
 MAX_MODULES = 2000
+MAX_PROCEDURAL_PARTS = 6000
+TUNNEL_ARCH_SEGMENTS = 9
 
 
 def dist(a, b):
@@ -133,9 +135,11 @@ def terrain_y(position):
 def projected_piers(curve, spacing, max_drop):
     piers = []
     target_count = max(1, math.floor(curve.length/spacing))
+    support_drop = -viaduct_section(86.0)["slab_bottom"]
     for index in range(1, target_count+1):
         station = curve.length*index/(target_count+1)
-        top = curve.pos(station)
+        road = curve.pos(station)
+        top = (road[0], road[1]-support_drop, road[2])
         ground = terrain_y(top)
         height = top[1]-ground
         if 0.5 < height <= max_drop:
@@ -170,6 +174,74 @@ def pier_errors(piers):
     return errors
 
 
+def viaduct_section(road_width, scale=3.571, road_thickness=1.0):
+    """Port of the procedural slab/parapet cross-section dimensions."""
+    edge_allowance = 0.45*scale
+    deck_width = road_width + edge_allowance*2
+    slab_thickness = max(0.55*scale, 1.5)
+    barrier_thickness = max(0.35*scale, 0.8)
+    barrier_height = max(1.2*scale, 2.5)
+    return {
+        "deck_width": deck_width,
+        "slab_bottom": -road_thickness-slab_thickness,
+        "slab_top": -road_thickness,
+        "barrier_thickness": barrier_thickness,
+        "barrier_height": barrier_height,
+    }
+
+
+def tunnel_section(road_width, scale=3.571, road_thickness=1.0):
+    """Port of the base/walls/nine-panel elliptical vault cross-section."""
+    side_clearance = 0.75*scale
+    thickness = max(0.35*scale, 0.5)
+    inner_half = road_width/2 + side_clearance
+    wall_height = max(6*scale, inner_half*0.72)
+    roof_rise = max(2.5*scale, inner_half*0.22)
+    floor_top = -road_thickness
+    panels = []
+    for index in range(TUNNEL_ARCH_SEGMENTS):
+        theta0 = math.pi*index/TUNNEL_ARCH_SEGMENTS
+        theta1 = math.pi*(index+1)/TUNNEL_ARCH_SEGMENTS
+        panels.append((
+            (-inner_half*math.cos(theta0), floor_top+wall_height+roof_rise*math.sin(theta0)),
+            (-inner_half*math.cos(theta1), floor_top+wall_height+roof_rise*math.sin(theta1)),
+        ))
+    return {
+        "inner_half": inner_half,
+        "thickness": thickness,
+        "wall_height": wall_height,
+        "roof_rise": roof_rise,
+        "floor_top": floor_top,
+        "panels": panels,
+    }
+
+
+def procedural_errors():
+    errors = []
+    road_width = 86.0
+    viaduct = viaduct_section(road_width)
+    if viaduct["deck_width"] <= road_width:
+        errors.append("viaduct slab does not extend beyond the road")
+    if viaduct["barrier_height"] <= 0 or viaduct["slab_bottom"] >= viaduct["slab_top"]:
+        errors.append("invalid viaduct cross-section")
+    tunnel = tunnel_section(road_width)
+    panels = tunnel["panels"]
+    expected_y = tunnel["floor_top"]+tunnel["wall_height"]
+    if len(panels) != TUNNEL_ARCH_SEGMENTS:
+        errors.append("wrong tunnel vault panel count")
+    if abs(panels[0][0][0]+tunnel["inner_half"]) > 1e-9 or abs(panels[-1][1][0]-tunnel["inner_half"]) > 1e-9:
+        errors.append("vault does not meet both walls")
+    if abs(panels[0][0][1]-expected_y) > 1e-9 or abs(panels[-1][1][1]-expected_y) > 1e-9:
+        errors.append("vault endpoints do not meet the wall tops")
+    for previous, current in zip(panels, panels[1:]):
+        if dist(previous[1], current[0]) > 1e-9:
+            errors.append("gap between tunnel vault panels")
+    crown = max(point[1] for panel in panels for point in panel)
+    if crown <= expected_y:
+        errors.append("tunnel vault has no crown rise")
+    return errors
+
+
 def validate_parity():
     root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     with open(os.path.join(root, "src", "StructureBuilder.lua"), encoding="utf-8") as handle:
@@ -179,9 +251,17 @@ def validate_parity():
     expected = {
         "EPSILON": EPSILON,
         "MAX_MODULES": MAX_MODULES,
+        "MAX_PROCEDURAL_PARTS": MAX_PROCEDURAL_PARTS,
+        "TUNNEL_ARCH_SEGMENTS": TUNNEL_ARCH_SEGMENTS,
         "ARC_SAMPLES": ARC_SAMPLES,
     }
-    sources = {"EPSILON": builder, "MAX_MODULES": builder, "ARC_SAMPLES": curve_source}
+    sources = {
+        "EPSILON": builder,
+        "MAX_MODULES": builder,
+        "MAX_PROCEDURAL_PARTS": builder,
+        "TUNNEL_ARCH_SEGMENTS": builder,
+        "ARC_SAMPLES": curve_source,
+    }
     for name, value in expected.items():
         match = re.search(rf"local\s+{name}\s*=\s*([0-9.]+)", sources[name])
         assert match, f"could not find Lua {name}"
@@ -197,6 +277,8 @@ def validate_geometry():
     piers = projected_piers(curve, 42.0, 100.0)
     assert len(piers) >= 4, "demo should exercise several terrain projections"
     errors = pier_errors(piers)
+    assert not errors, "; ".join(errors)
+    errors = procedural_errors()
     assert not errors, "; ".join(errors)
     return curve, ranges, piers
 
@@ -237,7 +319,7 @@ def render(path):
         x, y = map_plan(top, 20)
         canvas.disc(x, y, 5, (244, 196, 74))
 
-    # Viaduct side elevation: green terrain and concrete raycast columns.
+    # Procedural viaduct side elevation: structural slab/parapet over columns.
     def side(station, elevation):
         return 75+station*4.1, 470-elevation*5.0
     terrain = []
@@ -256,30 +338,53 @@ def render(path):
         canvas.fill_poly([(a[0]-5, a[1]), (a[0]+5, a[1]), (b[0]+7, b[1]), (b[0]-7, b[1])],
                          (139, 143, 148))
         canvas.disc(b[0], b[1], 4, (244, 196, 74))
-    for index, (start, end) in enumerate(ranges):
-        p0, p1 = curve.pos(start), curve.pos(end)
-        a, b = side(start, p0[1]), side(end, p1[1])
-        canvas.fill_poly(quad_around(a, b, 7), module_colors[index % 2])
-    canvas.polyline(road, (225, 230, 235), 2)
+    slab = [(x, y+3) for x, y in road]
+    canvas.polyline(slab, (139, 143, 148), 16)
+    canvas.polyline(road, (225, 230, 235), 4)
+    canvas.polyline([(x, y-5) for x, y in road], (174, 178, 183), 5)
 
-    # Procedural tunnel cutaway plan: concrete side walls around the road.
-    # The roof is intentionally omitted in plan so the carriageway remains
-    # visible; Lua emits one roof Part alongside every pair of wall Parts.
-    tunnel_points = [map_plan(curve.pos(curve.length*i/180), 520) for i in range(181)]
-    left, right = [], []
-    for index, point in enumerate(tunnel_points):
-        before = tunnel_points[max(0, index-1)]
-        after = tunnel_points[min(len(tunnel_points)-1, index+1)]
-        dx, dy = after[0]-before[0], after[1]-before[1]
-        length = math.hypot(dx, dy) or 1.0
-        nx, ny = -dy/length*24, dx/length*24
-        left.append((point[0]+nx, point[1]+ny))
-        right.append((point[0]-nx, point[1]-ny))
-    canvas.polyline(tunnel_points, (48, 53, 60), 26)
-    canvas.polyline(left, (139, 143, 148), 9)
-    canvas.polyline(right, (139, 143, 148), 9)
-    canvas.polyline(left, (205, 213, 222), 2)
-    canvas.polyline(right, (205, 213, 222), 2)
+    # Procedural tunnel cross-section: base, tall walls, and the same nine
+    # contiguous elliptical vault panels emitted by StructureBuilder.lua.
+    road_width = 86.0
+    tunnel = tunnel_section(road_width)
+    section_scale = 4.35
+    center_x = 550
+    floor_y = 708
+
+    def section_point(point):
+        x, y = point
+        return center_x+x*section_scale, floor_y-(y-tunnel["floor_top"])*section_scale
+
+    outer_half = tunnel["inner_half"]+tunnel["thickness"]
+    base_bottom = floor_y+tunnel["thickness"]*section_scale
+    canvas.fill_poly([
+        section_point((-outer_half, tunnel["floor_top"])),
+        section_point((outer_half, tunnel["floor_top"])),
+        (center_x+outer_half*section_scale, base_bottom),
+        (center_x-outer_half*section_scale, base_bottom),
+    ], (139, 143, 148))
+    wall_top_y = tunnel["floor_top"]+tunnel["wall_height"]
+    for side_sign in (-1, 1):
+        inner_x = side_sign*tunnel["inner_half"]
+        outer_x = side_sign*outer_half
+        canvas.fill_poly([
+            section_point((inner_x, tunnel["floor_top"])),
+            section_point((outer_x, tunnel["floor_top"])),
+            section_point((outer_x, wall_top_y)),
+            section_point((inner_x, wall_top_y)),
+        ], (139, 143, 148))
+    for panel in tunnel["panels"]:
+        canvas.line(section_point(panel[0]), section_point(panel[1]), (139, 143, 148),
+                    max(3, round(tunnel["thickness"]*section_scale)))
+
+    # Road slab and lane markings remain visibly inside the generated shell.
+    road_left = center_x-road_width*section_scale/2
+    road_right = center_x+road_width*section_scale/2
+    canvas.fill_poly([(road_left, floor_y-5), (road_right, floor_y-5),
+                      (road_right, floor_y), (road_left, floor_y)], (48, 53, 60))
+    for fraction in (-0.25, 0.0, 0.25):
+        x = center_x+road_width*section_scale*fraction
+        canvas.line((x, floor_y-7), (x, floor_y-4), (225, 230, 235), 2)
 
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     canvas.save(path)
@@ -293,10 +398,12 @@ def main():
     args = parser.parse_args()
     if args.out:
         curve, ranges, piers = render(args.out)
-        print(f"wrote {args.out}: {len(ranges)} modules, {len(piers)} terrain-projected piers, {curve.length:.1f} studs")
+        print(f"wrote {args.out}: {len(ranges)} modules, {len(piers)} terrain-projected piers, "
+              f"{TUNNEL_ARCH_SEGMENTS} tunnel-vault panels, {curve.length:.1f} studs")
     else:
         curve, ranges, piers = validate_geometry()
-        print(f"structure checks passed: {len(ranges)} modules cover {curve.length:.1f} studs; {len(piers)} piers touch terrain")
+        print(f"structure checks passed: {len(ranges)} modules cover {curve.length:.1f} studs; "
+              f"{len(piers)} piers touch terrain; {TUNNEL_ARCH_SEGMENTS} tunnel-vault panels are contiguous")
     return 0
 
 

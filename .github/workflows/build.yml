@@ -11,6 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate road and structure geometry
+        run: python3 tools/preview/validate.py
+
       - name: Install Rojo
         env:
           GH_TOKEN: ${{ github.token }}

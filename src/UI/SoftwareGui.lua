@@ -1,7 +1,6 @@
 --!strict
 -- Settings / Software: local product identity and build information.
--- Mirrors easyRail's software dock so the two tools expose the same
--- predictable Settings surface.
+-- Kept self-contained: this panel describes easyRoad only.
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -101,15 +100,10 @@ local function SoftwareGui(props: {
 			Dim = true,
 			LayoutOrder = 8,
 		}),
-		Note = e(Line, {
-			Text = "The road counterpart to easyRail, built as a local Roblox Studio plugin.",
-			Dim = true,
-			LayoutOrder = 9,
-		}),
 		Close = e(Components.Button, {
 			Text = "Close",
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 10,
+			LayoutOrder = 9,
 			OnClick = props.OnClose,
 		}),
 	})

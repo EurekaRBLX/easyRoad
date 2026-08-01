@@ -9,6 +9,7 @@
 --   Road Tools   - placement session; compact tool panel bottom-left
 --   Road Editor  - create/edit road types; full designer bottom bar
 --                  (properties | lane strip | modules palette)
+--   Road Assets  - import/manage reusable Roblox structure Models
 --   Settings     - grand settings, as separate docks named by function
 --                  (Regional Preference, Keybinds) rather than tabs in
 --                  one panel - toggled together by the Settings button
@@ -18,6 +19,7 @@
 
 local CoreGui = game:GetService("CoreGui")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local Selection = game:GetService("Selection")
 
 local Packages = script.Parent.Parent.Packages
 local React = require(Packages.React)
@@ -37,6 +39,7 @@ local JunctionInstance = require("./JunctionInstance")
 local JunctionBuilder = require("./Mesh/JunctionBuilder")
 local RoundaboutBuilder = require("./Mesh/RoundaboutBuilder")
 local RoadDesigner = require("./UI/RoadDesigner")
+local RoadAssetsPanel = require("./UI/RoadAssetsPanel")
 local RoadInspector = require("./UI/RoadInspector")
 local BuildBar = require("./UI/BuildBar")
 local RoadLibraryPanel = require("./UI/RoadLibraryPanel")
@@ -75,6 +78,9 @@ return function(
 	-- Library road being edited in the Road Editor (a working copy; only
 	-- written to the library when the user saves)
 	local designProfile: RoadProfile.RoadProfile? = nil
+	local assetManagerOpen = false
+	local assetManagerSelectedId: string? = nil
+	local assetManagerStatus: string? = nil
 
 	-- Shared with the session so HUD clicks don't also place road points
 	local uiState: createRoadSession.UiState = { Hovered = false }
@@ -263,6 +269,7 @@ return function(
 		editSession.CancelMarkingStretchPlacement()
 		editSession.CancelKerbStretchPlacement()
 		designProfile = nil -- Tools and Editor are exclusive modes
+		assetManagerOpen = false
 		pluginOpen = true
 		setButtonActive(true)
 		local initialProfile = profileOverride or library.Get(settings.DefaultProfileId) or library.GetDefault()
@@ -294,6 +301,7 @@ return function(
 		plugin:Deactivate()
 		pluginOpen = true
 		setButtonActive(true)
+		assetManagerOpen = false
 		local source = sourceProfile or library.Get(settings.DefaultProfileId) or library.GetDefault()
 		designProfile = RoadProfile.Clone(source)
 		updateUI()
@@ -301,6 +309,82 @@ return function(
 
 	local function closeEditor()
 		designProfile = nil
+		updateUI()
+	end
+
+	local function openAssetManager()
+		destroySession()
+		editSession.CancelBayPlacement()
+		editSession.CancelMarkingStretchPlacement()
+		editSession.CancelKerbStretchPlacement()
+		plugin:Deactivate()
+		designProfile = nil
+		assetManagerOpen = true
+		assetManagerStatus = nil
+		pluginOpen = true
+		setButtonActive(true)
+		local assets = StructureAssets.List(nil)
+		if not assetManagerSelectedId and #assets > 0 then
+			assetManagerSelectedId = assets[1].Id
+		end
+		updateUI()
+	end
+
+	local function closeAssetManager()
+		assetManagerOpen = false
+		updateUI()
+	end
+
+	local function importRoadAsset(kind: StructureAssets.AssetKind)
+		local source = StructureAssets.FindImportCandidate(Selection:Get(), nil)
+		if not source then
+			assetManagerStatus = "Select a Workspace Model containing at least one BasePart first."
+			updateUI()
+			return
+		end
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadAssetImport", "Import road asset")
+		local imported, message = StructureAssets.Import(source, kind)
+		if recording then
+			ChangeHistoryService:FinishRecording(
+				recording,
+				if imported then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
+			)
+		end
+		if imported then
+			assetManagerSelectedId = imported.Id
+			assetManagerStatus = string.format("Imported %s as %s. %s", imported.Name, kind, message)
+		else
+			assetManagerStatus = message
+		end
+		updateUI()
+	end
+
+	local function renameRoadAsset(assetId: string, name: string)
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadAssetRename", "Rename road asset")
+		local ok, message = StructureAssets.Rename(assetId, name)
+		if recording then
+			ChangeHistoryService:FinishRecording(
+				recording,
+				if ok then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
+			)
+		end
+		assetManagerStatus = message
+		updateUI()
+	end
+
+	local function deleteRoadAsset(assetId: string)
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadAssetDelete", "Delete road asset")
+		local ok, message = StructureAssets.Delete(assetId)
+		if recording then
+			ChangeHistoryService:FinishRecording(
+				recording,
+				if ok then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
+			)
+		end
+		if ok then
+			assetManagerSelectedId = nil
+		end
+		assetManagerStatus = message
 		updateUI()
 	end
 
@@ -337,6 +421,7 @@ return function(
 			assert(topRoot):render(React.createElement(TopBar, {
 				ToolsActive = session ~= nil,
 				EditorActive = designProfile ~= nil,
+				AssetsActive = assetManagerOpen,
 				RegionalOpen = regionalDock.Enabled,
 				KeybindsOpen = keybindsDock.Enabled,
 				SoftwareOpen = softwareDock.Enabled,
@@ -365,6 +450,13 @@ return function(
 				end,
 				OnOpenKeybinds = function()
 					keybindsDock.Enabled = not keybindsDock.Enabled
+				end,
+				OnAssets = function()
+					if assetManagerOpen then
+						closeAssetManager()
+					else
+						openAssetManager()
+					end
 				end,
 				OnOpenSoftware = function()
 					softwareDock.Enabled = not softwareDock.Enabled
@@ -482,8 +574,42 @@ return function(
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
-				Position = UDim2.new(0, 12, 1, -40),
-				Size = UDim2.new(1, -24, 0, 470),
+				Position = UDim2.new(0, 12, 1, -16),
+				Size = UDim2.new(1, -24, 0, 360),
+			}
+		elseif assetManagerOpen then
+			local assets = StructureAssets.List(nil)
+			local selectedId = assetManagerSelectedId
+			local selectedExists = false
+			for _, asset in assets do
+				if asset.Id == selectedId then
+					selectedExists = true
+					break
+				end
+			end
+			if not selectedExists then
+				selectedId = if #assets > 0 then assets[1].Id else nil
+				assetManagerSelectedId = selectedId
+			end
+			bottomContent = React.createElement(RoadAssetsPanel, {
+				Assets = assets,
+				SelectedId = selectedId,
+				Status = assetManagerStatus,
+				UsageCount = if selectedId then StructureAssets.UsageCount(selectedId) else 0,
+				OnSelect = function(id: string?)
+					assetManagerSelectedId = id
+					assetManagerStatus = nil
+					updateUI()
+				end,
+				OnImport = importRoadAsset,
+				OnRename = renameRoadAsset,
+				OnDelete = deleteRoadAsset,
+				OnClose = closeAssetManager,
+			})
+			bottomFrameProps = {
+				AnchorPoint = Vector2.new(0, 1),
+				Position = UDim2.new(0, 12, 1, -16),
+				Size = UDim2.new(0, 560, 0, 300),
 			}
 		elseif session then
 			local currentSession = session :: createRoadSession.RoadSession
@@ -559,7 +685,6 @@ return function(
 						StructureAssets = currentSession.GetStructureAssets(placementStructureKind),
 						StructureStatus = currentSession.GetStructureStatus(),
 						SetStructure = currentSession.SetStructure,
-						ImportStructureAsset = currentSession.ImportStructureAsset,
 						RoundaboutRadius = currentSession.GetRoundaboutRadius(),
 						SetRoundaboutRadius = function(value: number)
 							currentSession.SetRoundaboutRadius(value)
@@ -721,8 +846,8 @@ return function(
 			})
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
-				Position = UDim2.new(0, 12, 1, -40),
-				Size = UDim2.new(1, -24, 0, 420),
+				Position = UDim2.new(0, 12, 1, -16),
+				Size = UDim2.new(1, -24, 0, 360),
 			}
 		elseif junctionEditSession.GetSelectedJunction() then
 			-- Both radius figures depend on the approaches meeting here AND on the
@@ -878,6 +1003,7 @@ return function(
 		local showPieMenu = menuRoad ~= nil
 			and not session
 			and not designProfile
+			and not assetManagerOpen
 			and (
 				editSession.IsShowingMenu()
 				or editSession.IsShowingSegmentMenu()
@@ -1243,6 +1369,7 @@ return function(
 		if not pluginOpen then
 			destroySession()
 			designProfile = nil
+			assetManagerOpen = false
 			plugin:Deactivate()
 		end
 		setButtonActive(pluginOpen)
