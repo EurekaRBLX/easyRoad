@@ -226,7 +226,7 @@ def emit_road(curve, components, y_base=0.0, solid_lane_lines=False, lane_lines=
             if width <= 1e-4:
                 continue
             center_off = (offs[c][0]+w_m/2)*SCALE
-            raised = kind == "Sidewalk"
+            raised = kind in ("Sidewalk", "Median")
             edge_dist = max(abs(center_off-width/2), abs(center_off+width/2))
             miter = edge_dist*k*nominal
             padding = miter + 0.08

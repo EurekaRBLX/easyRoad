@@ -22,10 +22,14 @@ serialized on the junction and `JunctionBuilder` resolves the matching radius
 while constructing each curb-return boundary. Old junctions read as linked and
 migrate without losing their existing radius.
 
-`multinode_junction_preview.py` checks stable ids, linked/default resolution,
-independent overrides, and a non-self-intersecting four-arm pad. Its bird's-eye
-render shows the owner node, approach ports, corner nodes, and four different
-radii. The preview is part of the standard validator.
+`multinode_junction_preview.py` now shares `preview_core` with the roundabout
+preview instead of drawing an idealised lane diagram. Its bird's-eye render
+uses EasyRoad Drive/Median/Sidewalk component tuples, UK left-hand direction
+ordering, UK dimensions, the shared material colours, and white road markings.
+The `uk6x4` case joins a custom 3+3 boulevard to the exact built-in UK 2+2
+avenue profile. Matching `*_parts.png` and magenta `*_gaps.png` views check the
+component-width mouths, triangulated pad, stable corner ids, and independent
+corner radii. The preview is part of the standard validator.
 
 ## Procedural gap controls, parallel carriageways, and one-way highways
 

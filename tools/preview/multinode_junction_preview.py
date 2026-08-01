@@ -1,211 +1,451 @@
 #!/usr/bin/env python3
-"""Check and render the v2 multinode intersection controller from above.
+"""Component-faithful ordinary-junction preview, matching roundabout_preview.
 
-The geometry is the same angular-neighbour walk as JunctionBuilder: roads own
-stable approach ids, each adjacent approach pair owns a stable corner id, and
-the corner chooses either the linked default radius or its own override.
+This is not an idealised lane diagram. It uses the same ``preview_core``
+pipeline as ``roundabout_preview.py``:
+
+* EasyRoad component tuples (kind, width metres, traffic direction)
+* ``emit_road`` rigid Part strips and marking Parts
+* UK dimensions, left-hand traffic, colours, and scale
+* material-colour ``*_parts.png`` plus magenta ``*_gaps.png`` output
+
+On top of that shared road emitter it ports the ordinary junction's own walk:
+stable approach ids, angular-neighbour corner ids, per-corner fillets, asphalt
+pad triangulation, sidewalk corner bands, and median noses.
 
     python3 tools/preview/multinode_junction_preview.py --check
-    python3 tools/preview/multinode_junction_preview.py --out multinode.png
+    python3 tools/preview/multinode_junction_preview.py uk6x4 --out out
 """
 import argparse
 import math
 import os
 import sys
 
-from junction_pad_preview import (MAX_CORNER_SPAN_RAD, add, angle_delta,
-                                  corner_kerb, mag, mul, self_intersects, sub)
+from junction_pad_preview import (
+    MAX_CORNER_SPAN_RAD,
+    add,
+    angle_delta,
+    corner_kerb,
+    fill_pad,
+    mag,
+    mul,
+    segments_cross,
+    self_intersects,
+    sub,
+    through_kerb,
+)
+from preview_core import (
+    ASPHALT_C,
+    Cubic,
+    FLAT,
+    GROUND,
+    LANE_M,
+    MEDIAN_C,
+    MEDIAN_M,
+    Part,
+    PolyCurve,
+    SCALE,
+    SIDEWALK_C,
+    SW_M,
+    emit_road,
+    is_roadway,
+    offsets_m,
+    point_in,
+)
 from raster import Canvas
 
 
-DEFAULT_RADIUS = 14.0
-BEARINGS = {"A1": 0.0, "A2": 90.0, "A3": 180.0, "A4": 270.0}
-OVERRIDES = {"A1>A2": 8.0, "A2>A3": 20.0, "A3>A4": 30.0, "A4>A1": 12.0}
+DEFAULT_RADIUS_M = 6.0
+PAD_MARGIN_STUDS = 6.0
+APPROACH_RUN_STUDS = 150.0
+SELECTED_CORNER = "A1>A2"
 
 
-def build_multinode(order, linked, overrides=None, trim=72.0, kerb_half=17.0):
-    """Return approach ports, corner nodes/boundaries, and the pad outline."""
-    overrides = overrides or {}
+def uk_two_way(lanes_each_way, median=True):
+    """RoadProfile.BuiltInProfiles' UK ordering and direction signs.
+
+    Looking along the road curve, UK forward traffic is on the left. The
+    four-lane form is byte-for-data equivalent to ``builtin_four_lane``.
+    ``lanes_each_way=3`` is the requested custom six-lane boulevard, built from
+    the same Drive/Median/Sidewalk components rather than painted rectangles.
+    """
+    left = [("Drive", LANE_M, 1)] * lanes_each_way
+    right = [("Drive", LANE_M, -1)] * lanes_each_way
+    middle = [("Median", MEDIAN_M, 0)] if median else []
+    return [("Sidewalk", SW_M, 0)] + left + middle + right + [("Sidewalk", SW_M, 0)]
+
+
+def case(approaches, radii=None):
+    return {"approaches": approaches, "radii": radii or {}}
+
+
+SIX_LANE_BOULEVARD = uk_two_way(3)
+FOUR_LANE_AVENUE = uk_two_way(2)
+
+CASES = {
+    "uk6x4": case(
+        [
+            ("A1", 0, SIX_LANE_BOULEVARD),
+            ("A2", 90, FOUR_LANE_AVENUE),
+            ("A3", 180, SIX_LANE_BOULEVARD),
+            ("A4", 270, FOUR_LANE_AVENUE),
+        ],
+        {"A4>A1": 6.0, "A1>A2": 12.0, "A2>A3": 8.0, "A3>A4": 10.0},
+    ),
+    "uk4x4": case(
+        [(f"A{i + 1}", angle, FOUR_LANE_AVENUE) for i, angle in enumerate((0, 90, 180, 270))]
+    ),
+}
+
+
+def straight_curve(start, finish):
+    delta = sub(finish, start)
+    p1 = add(start, mul(delta, 1 / 3))
+    p2 = add(start, mul(delta, 2 / 3))
+    return PolyCurve([Cubic(start, p1, p2, finish)])
+
+
+def component_extents(components):
+    offsets = offsets_m(components)
+    roadway = [index for index, component in enumerate(components) if is_roadway(component)]
+    if roadway:
+        kerb_left = offsets[roadway[0]][0]
+        kerb_right = offsets[roadway[-1]][1]
+    else:
+        kerb_left, kerb_right = offsets[0][0], offsets[-1][1]
+    median_indices = [i for i, component in enumerate(components) if component[0] == "Median"]
+    median = None
+    if median_indices:
+        median = offsets[median_indices[0]][0], offsets[median_indices[-1]][1]
+    return {
+        "outer_left": offsets[0][0],
+        "outer_right": offsets[-1][1],
+        "kerb_left": kerb_left,
+        "kerb_right": kerb_right,
+        "median": median,
+        "total_m": sum(component[1] for component in components),
+    }
+
+
+def offset_kerb_polyline(kerb, width_start, width_end, pin_start, pin_end):
+    """Port of JunctionBuilder.offsetKerbPolyline (junction centre is 0,0)."""
+    if len(kerb) < 2:
+        return [pin_start, pin_end]
+    outer = []
+    for index, point in enumerate(kerb):
+        alpha = index / (len(kerb) - 1)
+        width = width_start + (width_end - width_start) * alpha
+        previous = kerb[max(0, index - 1)]
+        following = kerb[min(len(kerb) - 1, index + 1)]
+        tangent = sub(following, previous)
+        length = mag(tangent)
+        if length < 1e-6 or width < 1e-4:
+            outer.append(point)
+            continue
+        n1 = -tangent[1] / length, tangent[0] / length
+        n2 = -n1[0], -n1[1]
+        away = point
+        normal = n1 if n1[0] * away[0] + n1[1] * away[1] >= n2[0] * away[0] + n2[1] * away[1] else n2
+        outer.append(add(point, mul(normal, width)))
+    outer[0], outer[-1] = pin_start, pin_end
+    return outer
+
+
+def centroid(poly):
+    return sum(point[0] for point in poly) / len(poly), sum(point[1] for point in poly) / len(poly)
+
+
+def make_part(name, poly, colour, height):
+    return Part(name, list(poly), colour, centroid(poly), height)
+
+
+def build_scene(tag, definition, order=None):
+    specs = list(definition["approaches"])
+    if order is not None:
+        by_id = {spec[0]: spec for spec in specs}
+        specs = [by_id[approach_id] for approach_id in order]
+
+    widest_half = max(component_extents(components)["total_m"] * SCALE / 2 for _, _, components in specs)
+    trim = widest_half + PAD_MARGIN_STUDS
+    road_parts = []
     approaches = []
-    for approach_id in order:
-        bearing = math.radians(BEARINGS[approach_id])
-        out = math.cos(bearing), math.sin(bearing)
-        mid = mul(out, trim)
-        normal = -out[1], out[0]
-        points = [
-            {"Road": approach_id, "Kerb": add(mid, mul(normal, kerb_half)), "Out": out},
-            {"Road": approach_id, "Kerb": sub(mid, mul(normal, kerb_half)), "Out": out},
-        ]
-        angle = math.atan2(mid[1], mid[0])
-        d1 = angle_delta(math.atan2(points[0]["Kerb"][1], points[0]["Kerb"][0]), angle)
-        d2 = angle_delta(math.atan2(points[1]["Kerb"][1], points[1]["Kerb"][0]), angle)
-        cw, ccw = (points[0], points[1]) if d1 <= d2 else (points[1], points[0])
-        approaches.append({"Id": approach_id, "Angle": angle, "Mid": mid,
-                           "Left": points[0]["Kerb"], "Right": points[1]["Kerb"],
-                           "Cw": cw, "Ccw": ccw, "Out": out})
-    approaches.sort(key=lambda approach: approach["Angle"])
+    mouths = []
+    all_kerb_points = []
 
-    corners, pad = [], []
+    for approach_id, bearing_deg, components in specs:
+        bearing = math.radians(bearing_deg)
+        outward = math.cos(bearing), math.sin(bearing)
+        cut = mul(outward, trim)
+        far = mul(outward, trim + APPROACH_RUN_STUDS)
+        curve = straight_curve(far, cut)  # junction is at this road's END
+        road_parts.extend(emit_road(curve, components))
+
+        extents = component_extents(components)
+        position, right, _forward = curve.frame(curve.length)
+
+        def world(offset_m):
+            return add(position, mul(right, offset_m * SCALE))
+
+        left = {
+            "Road": approach_id,
+            "ApproachId": approach_id,
+            "Kerb": world(extents["kerb_left"]),
+            "Outer": world(extents["outer_left"]),
+            "Out": outward,
+        }
+        right_point = {
+            "Road": approach_id,
+            "ApproachId": approach_id,
+            "Kerb": world(extents["kerb_right"]),
+            "Outer": world(extents["outer_right"]),
+            "Out": outward,
+        }
+        points = [left, right_point]
+        all_kerb_points.extend(point["Kerb"] for point in points)
+        mid = mul(add(left["Kerb"], right_point["Kerb"]), 0.5)
+        angle = math.atan2(mid[1], mid[0])
+        d1 = angle_delta(math.atan2(left["Kerb"][1], left["Kerb"][0]), angle)
+        d2 = angle_delta(math.atan2(right_point["Kerb"][1], right_point["Kerb"][0]), angle)
+        cw, ccw = (left, right_point) if d1 <= d2 else (right_point, left)
+        median = None
+        if extents["median"]:
+            median = world(extents["median"][0]), world(extents["median"][1])
+        approach = {
+            "Id": approach_id,
+            "Bearing": bearing_deg,
+            "Angle": angle,
+            "Out": outward,
+            "Mid": mid,
+            "Cw": cw,
+            "Ccw": ccw,
+            "OuterLeft": left["Outer"],
+            "OuterRight": right_point["Outer"],
+            "Components": components,
+            "Median": median,
+        }
+        approaches.append(approach)
+        mouths.append({"Road": approach_id, "L": left["Kerb"], "R": right_point["Kerb"]})
+
+    approaches.sort(key=lambda approach: approach["Angle"])
+    pad = []
+    corners = []
+
+    def append_unique(point):
+        if not pad or mag(sub(pad[-1], point)) >= 0.05:
+            pad.append(point)
+
     for index, approach in enumerate(approaches):
         following = approaches[(index + 1) % len(approaches)]
         span = (following["Angle"] - approach["Angle"]) % (2 * math.pi)
         turn = min(span, 2 * math.pi - span)
-        if not math.radians(20) <= turn <= MAX_CORNER_SPAN_RAD:
-            continue
+        a, b = approach["Ccw"], following["Cw"]
+        real_corner = math.radians(20) <= turn <= MAX_CORNER_SPAN_RAD
+        crosses_mouth = False
+        if real_corner:
+            for mouth in mouths:
+                if mouth["Road"] not in (a["Road"], b["Road"]) and segments_cross(
+                    a["Kerb"], b["Kerb"], mouth["L"], mouth["R"]
+                ):
+                    crosses_mouth = True
+                    break
         corner_id = f'{approach["Id"]}>{following["Id"]}'
-        radius = DEFAULT_RADIUS if linked else overrides.get(corner_id, DEFAULT_RADIUS)
-        boundary, kind = corner_kerb(approach["Ccw"], following["Cw"], radius,
-                                     span > math.pi, "shipped")
-        for point in boundary:
-            if not pad or mag(sub(point, pad[-1])) >= 0.05:
-                pad.append(point)
-        corners.append({"Id": corner_id, "Index": index + 1, "Radius": radius,
-                        "Mid": boundary[len(boundary) // 2], "Boundary": boundary,
-                        "Kind": kind})
-    return approaches, corners, pad
+        radius_m = definition["radii"].get(corner_id, DEFAULT_RADIUS_M)
+        if real_corner and not crosses_mouth:
+            kerb, kind = corner_kerb(a, b, radius_m * SCALE, span > math.pi, "shipped")
+        else:
+            kerb, kind = through_kerb(a, b, "shipped")
+        outer = offset_kerb_polyline(
+            kerb,
+            mag(sub(a["Outer"], a["Kerb"])),
+            mag(sub(b["Outer"], b["Kerb"])),
+            a["Outer"],
+            b["Outer"],
+        )
+        for point in kerb:
+            append_unique(point)
+        corners.append({
+            "Id": corner_id,
+            "From": approach["Id"],
+            "To": following["Id"],
+            "RadiusM": radius_m,
+            "Kerb": kerb,
+            "Outer": outer,
+            "Kind": kind,
+        })
+
+    triangles, outline, fill_path = fill_pad(pad, all_kerb_points)
+    if triangles is None:
+        triangles = []
+
+    junction_parts = [make_part("JunctionSurface", triangle, ASPHALT_C, 0.0) for triangle in triangles]
+    for corner in corners:
+        kerb, outer = corner["Kerb"], corner["Outer"]
+        for index in range(len(kerb) - 1):
+            tri_a = (outer[index], kerb[index], kerb[index + 1])
+            tri_b = (outer[index], kerb[index + 1], outer[index + 1])
+            junction_parts.append(make_part("SidewalkCorner", tri_a, SIDEWALK_C, 0.125 * SCALE))
+            junction_parts.append(make_part("SidewalkCorner", tri_b, SIDEWALK_C, 0.125 * SCALE))
+
+    for approach in approaches:
+        if not approach["Median"]:
+            continue
+        left, right_point = approach["Median"]
+        middle = mul(add(left, right_point), 0.5)
+        inward = mul(middle, -1)
+        inward_length = mag(inward)
+        if inward_length < 1e-6:
+            continue
+        nose_length = max(1.5, min(6.0, mag(sub(left, right_point)) * 0.6))
+        tip = add(middle, mul(inward, nose_length / inward_length))
+        junction_parts.append(make_part("MedianNose", (left, right_point, tip), MEDIAN_C, 0.125 * SCALE))
+
+    return {
+        "tag": tag,
+        "parts": road_parts + junction_parts,
+        "road_parts": road_parts,
+        "junction_parts": junction_parts,
+        "approaches": approaches,
+        "corners": corners,
+        "pad": pad,
+        "outline": outline,
+        "triangles": triangles,
+        "fill_path": fill_path,
+        "trim": trim,
+        "drive_on_left": True,
+    }
 
 
-def polygon_area(poly):
-    return abs(sum(poly[i][0] * poly[(i + 1) % len(poly)][1]
-                   - poly[(i + 1) % len(poly)][0] * poly[i][1]
-                   for i in range(len(poly)))) * 0.5
+def scan_mouth_seams(scene):
+    """Probe every full component-width mouth just inside/outside its cut."""
+    material = [part for part in scene["parts"] if part.name != "Marking"]
+    holes = []
+    for approach in scene["approaches"]:
+        outer_a, outer_b = approach["OuterLeft"], approach["OuterRight"]
+        for along in (-0.35, 0.0, 0.35):
+            shift = mul(approach["Out"], along)
+            for sample in range(1, 100):
+                alpha = sample / 100
+                point = add(add(outer_a, mul(sub(outer_b, outer_a), alpha)), shift)
+                if not any(point_in(part.poly, point) for part in material):
+                    holes.append((approach["Id"], along, alpha))
+    return holes
+
+
+def scan_pad_fill(scene):
+    holes = []
+    surfaces = [part for part in scene["junction_parts"] if part.name == "JunctionSurface"]
+    outline = scene["outline"]
+    if not outline:
+        return [(0.0, 0.0)]
+    xs, ys = [point[0] for point in outline], [point[1] for point in outline]
+    for xi in range(41):
+        for yi in range(41):
+            point = (min(xs) + (max(xs) - min(xs)) * xi / 40,
+                     min(ys) + (max(ys) - min(ys)) * yi / 40)
+            if point_in(outline, point) and not any(point_in(part.poly, point) for part in surfaces):
+                holes.append(point)
+    return holes
+
+
+def scene_problems(scene, definition):
+    problems = []
+    if scene["fill_path"] != "corner walk":
+        problems.append(f'{scene["tag"]}: pad required {scene["fill_path"]} fallback')
+    if not scene["triangles"] or self_intersects(scene["outline"]):
+        problems.append(f'{scene["tag"]}: pad is missing or self-intersecting')
+    if len(scene["approaches"]) != len(definition["approaches"]):
+        problems.append(f'{scene["tag"]}: approach count changed')
+    if len(scene["corners"]) != len(definition["approaches"]):
+        problems.append(f'{scene["tag"]}: angular neighbours did not yield one corner each')
+    expected_radii = {
+        corner["Id"]: definition["radii"].get(corner["Id"], DEFAULT_RADIUS_M)
+        for corner in scene["corners"]
+    }
+    actual_radii = {corner["Id"]: corner["RadiusM"] for corner in scene["corners"]}
+    if actual_radii != expected_radii:
+        problems.append(f'{scene["tag"]}: corner radii did not resolve by stable id')
+    if scan_mouth_seams(scene):
+        problems.append(f'{scene["tag"]}: component-width mouth seam has uncovered samples')
+    if scan_pad_fill(scene):
+        problems.append(f'{scene["tag"]}: triangulated pad has uncovered samples')
+    required_parts = {"Drive", "Sidewalk", "Median", "Marking", "JunctionSurface", "SidewalkCorner", "MedianNose"}
+    present = {part.name for part in scene["parts"]}
+    missing = required_parts - present
+    if missing:
+        problems.append(f'{scene["tag"]}: component renderer omitted {sorted(missing)}')
+    return problems
 
 
 def checks():
     problems = []
-    approaches, corners, pad = build_multinode(list(BEARINGS), False, OVERRIDES)
-    shuffled = build_multinode(["A3", "A1", "A4", "A2"], False, OVERRIDES)
-    if [corner["Id"] for corner in corners] != [corner["Id"] for corner in shuffled[1]]:
-        problems.append("corner ids changed when connected-road enumeration changed")
-    if {corner["Id"]: corner["Radius"] for corner in corners} != OVERRIDES:
-        problems.append("per-corner overrides did not resolve by stable corner id")
-    linked = build_multinode(list(BEARINGS), True, OVERRIDES)[1]
-    if any(corner["Radius"] != DEFAULT_RADIUS for corner in linked):
-        problems.append("linked mode did not force the shared default radius")
-    if len(approaches) != 4 or len(corners) != 4:
-        problems.append("four approaches did not yield four corner nodes")
-    if len(pad) < 16 or polygon_area(pad) <= 1 or self_intersects(pad):
-        problems.append("multinode pad is degenerate or self-intersecting")
+    for name, definition in CASES.items():
+        scene = build_scene(name, definition)
+        problems.extend(scene_problems(scene, definition))
+        reversed_order = [spec[0] for spec in reversed(definition["approaches"])]
+        shuffled = build_scene(name + "_shuffled", definition, reversed_order)
+        if [corner["Id"] for corner in scene["corners"]] != [corner["Id"] for corner in shuffled["corners"]]:
+            problems.append(f"{name}: connected-road enumeration changed stable corner ids")
+
+    six = CASES["uk6x4"]["approaches"]
+    boulevard = next(components for approach_id, _, components in six if approach_id == "A1")
+    avenue = next(components for approach_id, _, components in six if approach_id == "A2")
+    if sum(component[0] == "Drive" for component in boulevard) != 6:
+        problems.append("uk6x4: boulevard is not six real Drive components")
+    if sum(component[0] == "Drive" for component in avenue) != 4:
+        problems.append("uk6x4: avenue is not four real Drive components")
+    if [component[2] for component in boulevard if component[0] == "Drive"] != [1, 1, 1, -1, -1, -1]:
+        problems.append("uk6x4: boulevard does not use UK left-hand direction ordering")
+    if boulevard[0][:2] != ("Sidewalk", SW_M) or any(
+        component[:2] == ("Median", MEDIAN_M) for component in boulevard
+    ) is False:
+        problems.append("uk6x4: boulevard is not built from current UK sidewalk/median dimensions")
     return problems
 
 
-FONT = {
-    "0":("111","101","101","101","111"), "1":("010","110","010","010","111"),
-    "2":("111","001","111","100","111"), "3":("111","001","111","001","111"),
-    "4":("101","101","111","001","001"), "5":("111","100","111","001","111"),
-    "6":("111","100","111","101","111"), "7":("111","001","010","010","010"),
-    "8":("111","101","111","101","111"), "9":("111","101","111","001","111"),
-    "A":("010","101","111","101","101"), "C":("111","100","100","100","111"),
-    "D":("110","101","101","101","110"), "E":("111","100","110","100","111"),
-    "I":("111","010","010","010","111"), "J":("001","001","001","101","111"),
-    "K":("101","101","110","101","101"), "L":("100","100","100","100","111"),
-    "M":("10001","11011","10101","10101","10101"), "N":("1001","1101","1011","1001","1001"),
-    "O":("111","101","101","101","111"), "P":("110","101","110","100","100"),
-    "R":("110","101","110","101","101"), "S":("111","100","111","001","111"),
-    "T":("111","010","010","010","010"), "U":("101","101","101","101","111"),
-    "V":("101","101","101","101","010"), "W":("10101","10101","10101","11011","10001"),
-    "Y":("101","101","010","010","010"), "-":("000","000","111","000","000"),
-    ">":("100","010","001","010","100"), ":":("0","1","0","1","0"),
-    ".":("0","0","0","0","1"), " ":("0","0","0","0","0"),
-}
-
-
-def text_draw(canvas, xy, value, color, scale=3):
-    x, y = xy
-    cursor = x
-    for char in value.upper():
-        glyph = FONT.get(char, FONT[" "])
-        width = max(len(row) for row in glyph)
-        for row_index, row in enumerate(glyph):
-            for column, on in enumerate(row):
-                if on == "1":
-                    canvas.fill_poly([(cursor + column*scale, y + row_index*scale),
-                                      (cursor + (column+1)*scale-1, y + row_index*scale),
-                                      (cursor + (column+1)*scale-1, y + (row_index+1)*scale-1),
-                                      (cursor + column*scale, y + (row_index+1)*scale-1)], color)
-        cursor += (width + 1) * scale
-
-
-def world(point):
-    return 600 + point[0] * 3.0, 400 - point[1] * 3.0
-
-
-def dashed(canvas, a, b, color, width=2, pieces=16):
-    for index in range(0, pieces, 2):
-        t0, t1 = index / pieces, (index + 1) / pieces
-        canvas.line((a[0] + (b[0]-a[0])*t0, a[1] + (b[1]-a[1])*t0),
-                    (a[0] + (b[0]-a[0])*t1, a[1] + (b[1]-a[1])*t1), color, width)
-
-
-def render(path):
-    problems = checks()
-    if problems:
-        raise AssertionError("; ".join(problems))
-    approaches, corners, pad = build_multinode(list(BEARINGS), False, OVERRIDES)
-    canvas = Canvas(1200, 800, (38, 65, 50))
-    for x in range(0, 1200, 40):
-        canvas.line((x, 0), (x, 800), (44, 73, 57), 1)
-    for y in range(0, 800, 40):
-        canvas.line((0, y), (1200, y), (44, 73, 57), 1)
-
-    # Carriageways behind the junction pad.
-    for approach in approaches:
-        out = approach["Out"]
-        normal = -out[1], out[0]
-        near, far = mul(out, 35), mul(out, 145)
-        road = [add(near, mul(normal, 17)), add(far, mul(normal, 17)),
-                sub(far, mul(normal, 17)), sub(near, mul(normal, 17))]
-        canvas.fill_poly([world(point) for point in road], (55, 59, 64))
-        for dash in range(45, 145, 24):
-            p0, p1 = world(mul(out, dash)), world(mul(out, dash + 12))
-            canvas.line(p0, p1, (220, 220, 210), 3)
-
-    canvas.fill_poly([world(point) for point in pad], (55, 59, 64))
-    canvas.polyline([world(point) for point in pad + [pad[0]]], (224, 224, 215), 3)
-
-    centre_px = world((0, 0))
-    for approach in approaches:
-        left, right, mid = world(approach["Left"]), world(approach["Right"]), world(approach["Mid"])
-        canvas.line(left, right, (239, 83, 80), 5)
-        canvas.disc(mid[0], mid[1], 7, (239, 83, 80))
-        dashed(canvas, centre_px, mid, (142, 151, 162), 2)
-        label = approach["Id"]
-        text_draw(canvas, (mid[0] + 10, mid[1] - 20), label, (245, 245, 238), 3)
-
-    selected = "A2>A3"
-    for corner in corners:
-        mid = world(corner["Mid"])
-        color = (255, 166, 64) if corner["Id"] == selected else (71, 199, 226)
-        canvas.polyline([world(point) for point in corner["Boundary"]], color, 5 if corner["Id"] == selected else 3)
-        dashed(canvas, centre_px, mid, (142, 151, 162), 2)
-        canvas.disc(mid[0], mid[1], 9 if corner["Id"] == selected else 7, color)
-        text_draw(canvas, (mid[0] + 12, mid[1] - 8), f'{corner["Index"]}:{corner["Radius"]:.0f}M',
-                  (245, 245, 238), 3)
-
-    canvas.disc(centre_px[0], centre_px[1], 11, (247, 198, 45))
-    text_draw(canvas, (centre_px[0] + 16, centre_px[1] - 8), "OWNER", (245, 245, 238), 3)
-    text_draw(canvas, (40, 36), "MULTINODE JUNCTION - BIRD EYE", (245, 245, 238), 4)
-    text_draw(canvas, (40, 710), "RED PORT   CYAN CORNER   ORANGE SELECTED   YELLOW OWNER", (245, 245, 238), 3)
-    text_draw(canvas, (40, 744), "PER CORNER RADII: 8M  20M  30M  12M", (245, 245, 238), 3)
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    canvas.save(path)
+def render(scene, outdir):
+    """Same two outputs as roundabout_preview: material parts and gap map."""
+    points = [vertex for part in scene["parts"] for vertex in part.poly]
+    margin = 12.0
+    low = min(point[0] for point in points) - margin, min(point[1] for point in points) - margin
+    high = max(point[0] for point in points) + margin, max(point[1] for point in points) + margin
+    image_scale = min(3.0, 1500 / max(high[0] - low[0], high[1] - low[1]))
+    width = max(1, int((high[0] - low[0]) * image_scale))
+    height = max(1, int((high[1] - low[1]) * image_scale))
+    transform = lambda point: ((point[0] - low[0]) * image_scale, (point[1] - low[1]) * image_scale)
+    written = []
+    for flat in (False, True):
+        canvas = Canvas(width, height, GROUND if flat else (250, 250, 250))
+        for part in sorted(scene["parts"], key=lambda item: item.y):
+            canvas.fill_poly([transform(vertex) for vertex in part.poly], FLAT if flat else part.color)
+        suffix = "gaps" if flat else "parts"
+        name = f'junction_{scene["tag"]}_{suffix}.png'
+        canvas.save(os.path.join(outdir, name))
+        written.append(name)
+    return written
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true")
-    parser.add_argument("--out")
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("cases", nargs="*", help=f'known: {" ".join(CASES)}')
+    parser.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "out"))
+    parser.add_argument("--check", action="store_true", help="run every case without rendering")
     args = parser.parse_args()
-    problems = checks()
+    names = list(CASES) if args.check or not args.cases else args.cases
+    problems = checks() if args.check else []
+    if not args.check:
+        os.makedirs(args.out, exist_ok=True)
+        for name in names:
+            if name not in CASES:
+                raise SystemExit(f'unknown case {name!r}; known: {" ".join(CASES)}')
+            scene = build_scene(name, CASES[name])
+            problems.extend(scene_problems(scene, CASES[name]))
+            for output in render(scene, args.out):
+                print(f"wrote {os.path.join(args.out, output)}")
     if problems:
         for problem in problems:
             print("FAILED:", problem)
         return 1
-    if args.out:
-        render(args.out)
-        print(f"wrote {args.out}: four stable approach ports and four independently radiused corner nodes")
-    else:
-        print("multinode junction checks passed: stable ids, linked radii, overrides, and simple pad")
+    print("multinode component preview passed: UK profiles, stable corners, pad fill, and mouth seams")
     return 0
 
 
