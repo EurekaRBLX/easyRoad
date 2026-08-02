@@ -6711,9 +6711,106 @@ local function clampSectors(sectors: { MouthSector }): { MouthSector }
 	return clamped
 end
 
--- Delete the ring's own outer pavement/kerb parts that fall inside an entry
--- sector, so each mouth is an actual opening in the circulating carriageway
--- rather than a continuous raised band the traffic would have to cross.
+-- Half of the angular footprint a generated ring Part occupies about `center`.
+-- Testing only the Part's centre is not enough here: the long tangential edge of
+-- a sidewalk or solid marking can be centred just outside a mouth sector while
+-- one of its corners still projects well inside it. In Studio that surviving
+-- corner reads as a concrete wedge or a white slash across the mouth even though
+-- the centre-only Python coverage scan calls the opening clean.
+local function partTopPolygon(part: BasePart): { Vector3 }
+	local half = part.Size / 2
+	return {
+		(part.CFrame * CFrame.new(-half.X, half.Y, -half.Z)).Position,
+		(part.CFrame * CFrame.new(half.X, half.Y, -half.Z)).Position,
+		(part.CFrame * CFrame.new(half.X, half.Y, half.Z)).Position,
+		(part.CFrame * CFrame.new(-half.X, half.Y, half.Z)).Position,
+	}
+end
+
+local function angularFootprintHalfSpan(part: BasePart, center: Vector3, centerAngle: number): number
+	local angularHalf = 0
+	for _, corner in partTopPolygon(part) do
+		local offset = corner - center
+		local flat = Vector3.new(offset.X, 0, offset.Z)
+		if flat.Magnitude &gt; 1e-6 then
+			angularHalf = math.max(angularHalf, math.abs(angleDelta(math.atan2(flat.Z, flat.X), centerAngle)))
+		end
+	end
+	return angularHalf
+end
+
+-- Clips one convex Part footprint to one side of the radial line at
+-- `boundaryAngle`. `keepSign` is +1 for the counter-clockwise side and -1 for
+-- the clockwise side. Ring strips are short enough that a boundary-straddler
+-- can meet at most one mouth edge (the mandatory inter-mouth kerb gap is wider
+-- than one strip), so this produces the exact outside fragment we need without
+-- a general polygon-difference operation.
+local function clipToAngularSide(
+	polygon: { Vector3 },
+	center: Vector3,
+	boundaryAngle: number,
+	keepSign: number
+): { Vector3 }
+	local boundaryX = math.cos(boundaryAngle)
+	local boundaryZ = math.sin(boundaryAngle)
+	local function side(point: Vector3): number
+		local x = point.X - center.X
+		local z = point.Z - center.Z
+		return keepSign * (boundaryX * z - boundaryZ * x)
+	end
+
+	local clipped: { Vector3 } = {}
+	local previous = polygon[#polygon]
+	local previousSide = side(previous)
+	local previousInside = previousSide &gt;= -1e-6
+	for _, current in polygon do
+		local currentSide = side(current)
+		local currentInside = currentSide &gt;= -1e-6
+		if currentInside ~= previousInside then
+			local denominator = previousSide - currentSide
+			if math.abs(denominator) &gt; 1e-9 then
+				table.insert(clipped, previous:Lerp(current, previousSide / denominator))
+			end
+		end
+		if currentInside then
+			table.insert(clipped, current)
+		end
+		previous = current
+		previousSide = currentSide
+		previousInside = currentInside
+	end
+	return clipped
+end
+
+local function replaceWithClippedPolygon(part: BasePart, polygon: { Vector3 })
+	local parent = part.Parent
+	if not parent then
+		return
+	end
+	local template = part:Clone()
+	if not template:IsA("Part") then
+		template:Destroy()
+		part:Destroy()
+		return
+	end
+	local depth = part.Size.Y
+	local down = -part.CFrame.UpVector
+	template.Parent = nil
+	part:Destroy()
+	local function makePart(): Part
+		return template:Clone() :: Part
+	end
+	for i = 2, #polygon - 1 do
+		FillTriangle(polygon[1], polygon[i], polygon[i + 1], depth, down, makePart, parent)
+	end
+	template:Destroy()
+end
+
+-- Delete ring pavement/kerb Parts wholly inside an entry sector and clip a Part
+-- that crosses either sector boundary to the exact radial ray. The outside
+-- fragment must survive: deleting the whole straddler opens a several-stud hole
+-- on sparse three-leg rings, while keeping it whole causes the Studio clipping
+-- and excess-marking report this path exists to prevent.
 -- `minRadiusStuds` restricts removal to the OUTER band. Without it the filter
 -- is purely angular and takes out every marking in the sector at any radius -
 -- including a multi-lane ring's inter-lane dashes and, worse, the edge line
@@ -6742,10 +6839,18 @@ local function openRingPavement(
 			continue
 		end
 		local angle = math.atan2(flat.Z, flat.X)
+		local angularHalf = angularFootprintHalfSpan(part, center, angle)
 		for _, sector in sectors do
 			local delta = angleDelta(angle, sector.Angle)
 			if delta &lt;= sector.Ahead and -delta &lt;= sector.Behind then
 				part:Destroy()
+				break
+			elseif delta &lt;= sector.Ahead + angularHalf and -delta &lt;= sector.Behind + angularHalf then
+				local aheadSide = delta &gt; sector.Ahead
+				local boundaryAngle = sector.Angle + (if aheadSide then sector.Ahead else -sector.Behind)
+				local clipped =
+					clipToAngularSide(partTopPolygon(part), center, boundaryAngle, if aheadSide then 1 else -1)
+				replaceWithClippedPolygon(part, clipped)
 				break
 			end
 		end

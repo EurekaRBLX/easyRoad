@@ -529,8 +529,11 @@ circulating Drive/Drive dividers to solid.
 This deliberately does **not** replace `Markings.lua`: ordinary roads retain
 regional boundary rules, the Road Editor, restrictions, and both stretch
 systems. The generated ring and arms are the only callers of the exact-plan
-hook. Headless checks are clean; live Studio comparison against the UK target
-is still required.
+hook. The first live Studio comparison showed extra white slashes despite this
+line plan being correct. They were fragments of the ring's outer edge line whose
+Part centres lay outside a mouth while their corners crossed inside. The exact
+sector-boundary clip in section 5.4 now removes only those fragments. A rebuilt
+Studio comparison against the UK target is still required.
 
 Requested on top of that: a **Turbo / Continuous** toggle in the roundabout
 build panel, with a default in regional settings.
@@ -549,7 +552,7 @@ The long thin V-notch down the middle of every approach. Three rounds of
 raised-or-nothing; the answer was a second fill. Design and thresholds in §3.7,
 measurements in §4.4.
 
-### 5.4 Clipping at arm ends — mitigated headlessly, live confirmation open
+### 5.4 Clipping at mouth-sector boundaries — fixed headlessly, live recheck open
 A wedge of raised pavement jutting across the asphalt where an arm meets its
 approach. This was recorded as "detector built, does not reproduce" across 1+1,
 2+2, medians and a 3/1 approach. **That detector was scanning the wrong ground**
@@ -574,13 +577,19 @@ seam with its approach. Treat it as a lead, not a closure. What it does settle
 is why the overhang check could not find it: the check excludes the splitter
 island by identity, and the splitter island was the thing at fault.
 
-The Lua now replaces the constant-width raised pavement Part touching the
-approach cut with exact station-edge triangles. It deliberately keeps padded
-interior and ring-end strips: replacing the full chain opened measurable gaps
-in four standard headless cases. Width-changing arms already rebuild the full
-pavement/shoulder chain exactly. The Python port models this cut-cap rule and
-the standard cases remain gap-clean. Next step is a Studio look; keep this open
-until the reported overlap is visibly gone.
+The Lua still replaces the constant-width raised pavement Part touching the
+approach cut with exact station-edge triangles, but the next Studio screenshot
+proved that was not the reported wedge. The visible defect was a ring sidewalk
+Part straddling the angular edge of a mouth: `openRingPavement` kept it because
+its centre was outside, even though its corner was inside.
+
+The opening pass now measures the full Part footprint. A fully interior Part is
+deleted; a straddler is clipped by the radial boundary half-plane and its exact
+outside polygon is triangulated back into the ring. The outer edge-line Parts
+use the same operation, removing the excess white slashes. Whole-Part deletion
+was rejected because it opens multi-stud holes on three-leg rings. The Python
+port models and asserts the clipped boundary. Next step is the rebuilt Studio
+look; keep this open until the reported overlap is visibly gone.
 
 ### 5.5 Smaller, known limits
 - **Crowded rings.** 5+ legs, or wide approaches on a small radius, squeeze the

@@ -114,9 +114,13 @@ regressions are fixed headlessly. Generated rings and arms now use the Python
 preview's dedicated white edge/divider marking plan rather than ordinary-road
 defaults. Constant-width arm pavement keeps its ring overlap but replaces the
 raised approach-cut cap with exact station-edge triangles; tapering arms retain
-their full exact surface chain. The Python port models the same cap and
-`dump_compare.py` now honours the requested radius. Reinstall the rebuilt dist
-and compare a UK 2-lane ring side-by-side before closing live visual parity.
+their full exact surface chain. A later Studio check found the remaining wedges
+and extra strokes at the ring opening itself: centre-only sector removal kept
+boundary-straddling sidewalk/outer-line corners. Those Parts are now clipped at
+the exact sector ray, retaining the outside fragment so sparse rings do not gain
+holes. The Python port models and rejects boundary intrusion. Reinstall the
+rebuilt dist and compare a UK 2-lane ring side-by-side before closing live visual
+parity.
 
 ### Nothing has been confirmed in Studio
 Every result in these docs is headless. The user's screenshots are the

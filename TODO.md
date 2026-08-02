@@ -217,9 +217,9 @@ well understood they are, not by value.
    advice while using the requested radius, so its output describes the ring
    Studio actually builds.
 
-6. **Clipping: pavement over the carriageway at an arm end.** Live screenshot
-   shows a wedge of raised pavement jutting across the asphalt where an arm
-   meets its approach.
+6. ~~**Clipping: pavement over the carriageway at an arm end.**~~ ROOT CAUSE
+   FIXED HEADLESS; LIVE RECHECK OPEN. The newest Studio view showed that the
+   visible wedge was at a ring mouth boundary, not the approach-cut cap.
 
    `scan_mouths` now DETECTS this class - it classifies each swept sample as
    deck or raised and flags raised material strictly inside the carriageway's
@@ -236,14 +236,14 @@ well understood they are, not by value.
    `seam_steps` reports 0.00 flush there, but it measures lateral EXTENT, not
    the shape of the cap, so a diagonal corner poking out would not move it.
 
-   **Mitigation shipped headlessly, live confirmation still required.** A
-   constant-width arm keeps its padded interior/ring-end pavement coverage, but
-   its raised Part at the approach cut is replaced by exact station-edge
-   triangles. Width-changing pavement/shoulder arms already use exact triangle
-   chains. The Python port now models the same cap rule and the quick suite is
-   clean; only Studio can confirm the reported visual overlap is gone.
+   The earlier approach-cut mitigation remains valid but did not fix the live
+   report. Actual cause: `openRingPavement` tested only each ring Part's centre.
+   A sidewalk Part centred just outside the mouth could still project a corner
+   across it. The builder now clips boundary straddlers to the exact sector ray
+   and retains their outside fragment. Deleting each whole straddler was tested
+   and rejected because it opened 6-7 stud holes on `uk3`.
 
-7. ~~**Markings: match the preview's layout.**~~ SHIPPED HEADLESS; LIVE
+7. ~~**Markings: match the preview's layout.**~~ SHIPPED HEADLESS; REBUILT-DIST
    CONFIRMATION OPEN.
 
    User's call, given the two renders side by side: the roundabout should look
@@ -270,8 +270,10 @@ well understood they are, not by value.
    white roadway edges, 3m/3m dashed Drive/Drive dividers, solid
    Drive/Shoulder separators, and solid circulating dividers in SolidLanes
    mode. Dash phase and the final partial dash match `emit_road`. Ordinary roads
-   still use the complete `Markings.Compute` pipeline. Remaining step: reinstall
-   the rebuilt dist and compare a live UK 2-lane ring against the bird's-eye
+   still use the complete `Markings.Compute` pipeline. The excess live strokes
+   were surviving fragments of the ring's outer edge line at sector boundaries,
+   not extra lines in this plan; the same exact sector clip now trims them.
+   Remaining step: reinstall the rebuilt dist and compare against the bird's-eye
    target.
 
 8. **The radius suggestion is not offered by the Roundabout tool in the Road

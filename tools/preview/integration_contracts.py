@@ -56,6 +56,7 @@ def main():
     multinode_preview = source("tools/preview/multinode_junction_preview.py")
     preview_core = source("tools/preview/preview_core.py")
     roundabout = source("src/Mesh/RoundaboutBuilder.lua")
+    roundabout_preview = source("tools/preview/roundabout_preview.py")
     dump_compare = source("tools/preview/dump_compare.py")
 
     require(junction, 'part.Name = "JunctionSurface"', "junction surface factory missing", problems)
@@ -84,6 +85,9 @@ def main():
     require(preview_core, "MARK_C = (245, 245, 245)", "Python roundabout marking colour changed without its Lua contract", problems)
     require(roundabout, "MarkingLines = roundaboutMarkingLines(", "roundabout builds still fall through to generic road markings", problems)
     require(roundabout, "local function replaceCutPavementCaps()", "roundabout approach seams still use padded pavement end caps", problems)
+    require(roundabout, "local function angularFootprintHalfSpan(", "roundabout mouth opening still clips ring Parts by centre only", problems)
+    require(roundabout, "local function clipToAngularSide(", "roundabout mouth boundary Parts are deleted instead of clipped exactly", problems)
+    require(roundabout_preview, "def ring_boundary_intrusions(", "Python preview does not reject ring Parts intruding across a mouth boundary", problems)
     require(dump_compare, "grown = args.radius", "roundabout dump comparison still grows the requested radius", problems)
     reject(dump_compare, "grown = max(args.radius, minimum)", "roundabout dump comparison disagrees with the live radius rule", problems)
     require(dump_compare, "road_centre, _cut_shoulder = P.arm_from_group", "roundabout dump comparison still expects the old arm-profile contract", problems)

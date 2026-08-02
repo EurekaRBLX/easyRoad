@@ -4,6 +4,27 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Exact roundabout mouth-sector clipping
+
+The live Studio comparison confirmed why the Python render looked cleaner even
+after the marking-plan port: `openRingPavement` decided whether to remove each
+ring sidewalk or outer edge-line Part from its **centre point only**. A Part
+whose centre sat just outside the mouth still had a long tangential corner
+inside it, leaving the concrete wedges and white slashes visible in the report.
+
+The live builder now measures every candidate Part's full top-face angular
+footprint. Parts wholly inside the mouth are removed; boundary straddlers are
+clipped against the exact radial sector ray and their outside polygon is rebuilt
+with exact triangles. Keeping that fragment matters: deleting the whole
+straddler removed the visual intrusion but opened 6-7 stud holes in the sparse
+three-leg UK case.
+
+The Python preview uses the same polygon clip and now fails if any retained ring
+sidewalk/edge-line vertex lies strictly inside a mouth sector. The standard full
+validator and the extended small-radius, five-leg, stress, turbo, and highway
+matrix report zero boundary intrusion and flush seams. The one documented
+`stress_us` arm tear is unchanged and remains the sole known-open failure.
+
 ## Preview-matched roundabout markings and exact approach caps
 
 Generated roundabout rings and arms now use the accepted Python preview as

@@ -287,6 +287,57 @@ def angle_delta(a, b):
     return d-2*math.pi if d > math.pi else d
 
 
+def angular_half_span(part, center, center_angle):
+    return max(
+        abs(angle_delta(math.atan2(point[1]-center[1], point[0]-center[0]),
+                        center_angle))
+        for point in part.poly
+    )
+
+
+def clip_to_angular_side(poly, center, boundary_angle, keep_sign):
+    """Clip convex `poly` to one side of a radial mouth-boundary line."""
+    boundary = (math.cos(boundary_angle), math.sin(boundary_angle))
+
+    def side(point):
+        x, y = point[0]-center[0], point[1]-center[1]
+        return keep_sign * (boundary[0]*y - boundary[1]*x)
+
+    clipped = []
+    previous = poly[-1]
+    previous_side = side(previous)
+    previous_inside = previous_side >= -1e-9
+    for current in poly:
+        current_side = side(current)
+        current_inside = current_side >= -1e-9
+        if current_inside != previous_inside:
+            denominator = previous_side-current_side
+            if abs(denominator) > 1e-12:
+                t = previous_side/denominator
+                clipped.append((previous[0]+(current[0]-previous[0])*t,
+                                previous[1]+(current[1]-previous[1])*t))
+        if current_inside:
+            clipped.append(current)
+        previous = current
+        previous_side = current_side
+        previous_inside = current_inside
+    return clipped
+
+
+def ring_boundary_intrusions(parts, center, sectors, tolerance=1e-7):
+    """Return clipped-ring vertices that remain strictly inside a mouth."""
+    intrusions = []
+    for part in parts:
+        for point in part.poly:
+            angle = math.atan2(point[1]-center[1], point[0]-center[0])
+            for sector_angle, ahead, behind in sectors:
+                delta = angle_delta(angle, sector_angle)
+                if delta < ahead-tolerance and -delta < behind-tolerance:
+                    intrusions.append((part, point, sector_angle))
+                    break
+    return intrusions
+
+
 def clamp_sectors(sectors):
     """sectors are (angle, ahead, behind)."""
     if not sectors:
@@ -908,18 +959,43 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
 
     cl = clamp_sectors(sectors)
     min_radius = ring_kerb - MARKING_W_M*1.5*SCALE - 0.5
-    kept, removed = [], 0
+    kept, removed, clipped = [], 0, 0
     for p in ring_parts:
         if p in parts_ring_pavement:
             rad = math.hypot(*p.center)
             if rad >= min_radius:
                 ang = math.atan2(p.center[1], p.center[0])
-                if any(angle_delta(ang, sa) <= ah and -angle_delta(ang, sa) <= bh
-                       for sa, ah, bh in cl):
-                    removed += 1
+                angular_half = angular_half_span(p, center, ang)
+                handled = False
+                for sa, ah, bh in cl:
+                    delta = angle_delta(ang, sa)
+                    if delta <= ah and -delta <= bh:
+                        removed += 1
+                        handled = True
+                        break
+                    if delta <= ah+angular_half and -delta <= bh+angular_half:
+                        ahead_side = delta > ah
+                        boundary_angle = sa + (ah if ahead_side else -bh)
+                        outside = clip_to_angular_side(
+                            p.poly, center, boundary_angle, 1 if ahead_side else -1)
+                        if len(outside) >= 3:
+                            clipped_center = (sum(q[0] for q in outside)/len(outside),
+                                              sum(q[1] for q in outside)/len(outside))
+                            kept.append(Part(p.name, outside, p.color,
+                                             clipped_center, p.y))
+                            clipped += 1
+                        else:
+                            removed += 1
+                        handled = True
+                        break
+                if handled:
                     continue
         kept.append(p)
     parts = kept + arm_parts
+    outer_ring_parts = [
+        p for p in kept
+        if p.name in ("Sidewalk", "Marking") and math.dist(p.center, center) >= min_radius
+    ]
     spiral, spiral_spans = (
         turbo_spiral(center, ring_r, island_r, ring_lanes, LANE_M, drive_on_left,
                      exit_traces)
@@ -929,11 +1005,13 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 spiral=spiral, spiral_spans=spiral_spans, markings=markings,
                 exit_markings=exit_markings, arm_kinds=arm_kinds,
                 shoulder_tapers=shoulder_tapers,
+                outer_ring_parts=outer_ring_parts,
                 ring_r=ring_r, ring_lanes=ring_lanes, drive_on_left=drive_on_left,
                 island_r=island_r, island=island, legs=leg_info,
                 sectors=cl,
                 outerR=outerR, ring_kerb=ring_kerb, cutR=cutR, center=center,
-                n_ring=len(ring_parts), n_arms=len(arm_parts), removed=removed)
+                n_ring=len(ring_parts), n_arms=len(arm_parts), removed=removed,
+                clipped=clipped)
 
 
 # --- rendering ---------------------------------------------------------------
@@ -1304,8 +1382,16 @@ def report(scene, holes, pitch, hairline):
     print(f"{scene['tag']}: {len(scene['parts'])} parts "
           f"({scene['n_ring']} ring, {scene['n_arms']} arms/stems), "
           f"{len(scene['gore'])} gore tris, {scene['removed']} ring pavement parts "
-          f"removed in mouths")
+          f"removed and {scene['clipped']} boundary parts clipped in mouths")
     ok = True
+    boundary_intrusions = ring_boundary_intrusions(
+        scene["outer_ring_parts"], scene["center"], scene["sectors"])
+    if boundary_intrusions:
+        ok = False
+        print(f"    RING OPENING: {len(boundary_intrusions)} boundary vertices "
+              f"still intrude into mouth sectors")
+    else:
+        print("    ring openings: no sidewalk/edge-line boundary intrusion")
     mouth = scan_mouths(scene)
     mouth_over = [m for m in mouth if m["kind"] == "overhang"]
     if mouth_over:
