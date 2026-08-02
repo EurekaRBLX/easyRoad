@@ -518,15 +518,19 @@ importing `RegionStyles`' union — it is a leaf module everything else reads an
 is worth keeping free of that dependency for one field. The two lists are kept
 in step by hand.
 
-### 5.3 Markings do not match the preview
-The preview never ported `Mesh/Markings.lua`; it approximates it in ~30 lines.
-**Do not "fix" this by replacing `Markings.lua` with the Python rule** — eleven
-modules read its specs and the swap would delete the boundary dropdown, kerb
-lines, restriction lines, dash overrides and the marking-stretch and
-kerb-stretch features. The roundabout's ring and arm profiles are built *inline
-with no marking specs*, so every gap falls through to region defaults tuned for
-a straight road. Setting explicit specs on those two profiles is the fix, and it
-is profile data, not engine code.
+### 5.3 ~~Markings do not match the preview~~ — SHIPPED HEADLESS
+The preview never ported `Mesh/Markings.lua`; it approximates it with solid
+white roadway edges, dashed white Drive/Drive boundaries, and solid
+Drive/non-Drive roadway separators. The Lua now supplies that same
+roundabout-owned line plan directly to RoadBuilder, with the preview's 3m/3m
+dash rhythm, origin phase, and final partial dash. SolidLanes switches only the
+circulating Drive/Drive dividers to solid.
+
+This deliberately does **not** replace `Markings.lua`: ordinary roads retain
+regional boundary rules, the Road Editor, restrictions, and both stretch
+systems. The generated ring and arms are the only callers of the exact-plan
+hook. Headless checks are clean; live Studio comparison against the UK target
+is still required.
 
 Requested on top of that: a **Turbo / Continuous** toggle in the roundabout
 build panel, with a default in regional settings.
@@ -545,7 +549,7 @@ The long thin V-notch down the middle of every approach. Three rounds of
 raised-or-nothing; the answer was a second fill. Design and thresholds in §3.7,
 measurements in §4.4.
 
-### 5.4 Clipping at arm ends — still open, but the old evidence was worthless
+### 5.4 Clipping at arm ends — mitigated headlessly, live confirmation open
 A wedge of raised pavement jutting across the asphalt where an arm meets its
 approach. This was recorded as "detector built, does not reproduce" across 1+1,
 2+2, medians and a 3/1 approach. **That detector was scanning the wrong ground**
@@ -570,10 +574,13 @@ seam with its approach. Treat it as a lead, not a closure. What it does settle
 is why the overhang check could not find it: the check excludes the splitter
 island by identity, and the splitter island was the thing at fault.
 
-Next step is unchanged: compare the arm's first/last emitted Part against the
-approach's **in the Lua** — CFrame and Size, not lateral extent (`seam_steps`
-reads 0.00 flush there because extent is not what differs). And now also worth
-a Studio look first, since something in this class has changed.
+The Lua now replaces the constant-width raised pavement Part touching the
+approach cut with exact station-edge triangles. It deliberately keeps padded
+interior and ring-end strips: replacing the full chain opened measurable gaps
+in four standard headless cases. Width-changing arms already rebuild the full
+pavement/shoulder chain exactly. The Python port models this cut-cap rule and
+the standard cases remain gap-clean. Next step is a Studio look; keep this open
+until the reported overlap is visibly gone.
 
 ### 5.5 Smaller, known limits
 - **Crowded rings.** 5+ legs, or wide approaches on a small radius, squeeze the
@@ -639,9 +646,10 @@ Five lessons that cost real time:
    every bit of the entry/exit slip. Every "no bare ground" it printed for a
    year was about the annulus that was already fine. `scan_mouths` exists now
    because of this.
-2. **The preview did not apply the plugin's radius growth.** So every
-   small-radius case it certified was a ring the plugin would never build.
-   Fixed; `build(..., grow=False)` inspects un-grown geometry deliberately.
+2. **The preview and plugin once disagreed about radius growth.** Both now use
+   the requested radius by default; `build(..., grow=True)` is an explicit
+   suggestion-sized experiment only. `dump_compare.py` was the last stale path
+   and now reports the advisory minimum without applying it.
 0. **The port can be wrong in ways nothing compares.** `split_approach_lanes`
    spelled "is this roadway?" as `!= "Sidewalk"` where the Lua uses
    `RoadProfile.IsRoadway`, whose table excludes `Median`. So on every median

@@ -40,6 +40,14 @@ export type BuildOptions = {
 	-- Same idea for the road's own left/right kerb-restriction line (see
 	-- RoadEditSession's kerb-stretch mode) - also passed straight through.
 	KerbStretches: { Markings.KerbStretch }?,
+	-- Internal callers with purpose-built geometry can provide an exact marking
+	-- plan while still reusing RoadBuilder's curve-following Part emitter.
+	-- Ordinary roads leave this nil and continue through Markings.Compute.
+	MarkingLines: { Markings.MarkingLine }?,
+	-- The headless roundabout appearance contract begins each dashed boundary at
+	-- the curve origin and keeps its final partial dash. Ordinary road dash
+	-- phasing remains unchanged when this is nil/false.
+	MarkingDashStartsAtZero: boolean?,
 }
 
 local MARKING_THICKNESS = 0.05
@@ -773,15 +781,20 @@ function RoadBuilder.Build(options: BuildOptions): Model
 
 	-- Markings -------------------------------------------------------------------
 	if settings.AutoMarkings then
-		local lines = Markings.Compute(componentsStart, componentsEnd, style, {
-			KerbRestriction = options.ProfileStart.KerbRestriction,
-			MarkingColor = options.ProfileStart.MarkingColor,
-			DashLengthM = options.ProfileStart.MarkingDashLengthM,
-			DashGapM = options.ProfileStart.MarkingDashGapM,
-			MarkingStretches = options.MarkingStretches,
-			KerbStretches = options.KerbStretches,
-			KerbIndent = options.ProfileStart.KerbIndent,
-		})
+		local lines: { Markings.MarkingLine }
+		if options.MarkingLines then
+			lines = options.MarkingLines
+		else
+			lines = Markings.Compute(componentsStart, componentsEnd, style, {
+				KerbRestriction = options.ProfileStart.KerbRestriction,
+				MarkingColor = options.ProfileStart.MarkingColor,
+				DashLengthM = options.ProfileStart.MarkingDashLengthM,
+				DashGapM = options.ProfileStart.MarkingDashGapM,
+				MarkingStretches = options.MarkingStretches,
+				KerbStretches = options.KerbStretches,
+				KerbIndent = options.ProfileStart.KerbIndent,
+			})
+		end
 		local markingWidth = style.MarkingWidthM * scale
 
 		-- Interpolates the roll (superelevation) already computed per
@@ -876,16 +889,46 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			local function renderDashed(lateral: number)
 				local dashLength = line.DashLengthM * scale
 				local gapLength = line.DashGapM * scale
-				local s = gapLength / 2
 				local dashIndex = 0
-				while s + dashLength < math.min(length, hiS) do
-					if s >= loS then
-						local s0 = s
-						local s1 = s + dashLength
-						placeMarkingSpan(s0, s1, offsetAt(s0) + lateral, offsetAt(s1) + lateral, 0, color, dashIndex)
-						dashIndex += 1
+				if options.MarkingDashStartsAtZero then
+					local s = 0
+					local limit = math.min(length, hiS)
+					while s < limit do
+						local s0 = math.max(s, loS)
+						local s1 = math.min(s + dashLength, limit)
+						if s1 > s0 then
+							placeMarkingSpan(
+								s0,
+								s1,
+								offsetAt(s0) + lateral,
+								offsetAt(s1) + lateral,
+								0,
+								color,
+								dashIndex
+							)
+							dashIndex += 1
+						end
+						s += dashLength + gapLength
 					end
-					s += dashLength + gapLength
+				else
+					local s = gapLength / 2
+					while s + dashLength < math.min(length, hiS) do
+						if s >= loS then
+							local s0 = s
+							local s1 = s + dashLength
+							placeMarkingSpan(
+								s0,
+								s1,
+								offsetAt(s0) + lateral,
+								offsetAt(s1) + lateral,
+								0,
+								color,
+								dashIndex
+							)
+							dashIndex += 1
+						end
+						s += dashLength + gapLength
+					end
 				end
 			end
 

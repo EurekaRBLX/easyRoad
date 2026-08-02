@@ -211,10 +211,11 @@ well understood they are, not by value.
    (item 8), because silently ignoring the number the user typed is the
    underlying complaint.
 
-   `roundabout_preview.build()` now applies the same growth (`grow=True` by
-   default, `min_radius_studs` moved in from dump_compare) so the two finally
-   build the same ring. Every earlier small-radius "clean" was reported about
-   a ring the plugin would never have built.
+   `roundabout_preview.build()` now defaults to `grow=False`, matching the live
+   builder's requested-radius rule. `grow=True` remains an explicit
+   suggestion-sized what-if view. `dump_compare.py` also reports the minimum as
+   advice while using the requested radius, so its output describes the ring
+   Studio actually builds.
 
 6. **Clipping: pavement over the carriageway at an arm end.** Live screenshot
    shows a wedge of raised pavement jutting across the asphalt where an arm
@@ -235,10 +236,15 @@ well understood they are, not by value.
    `seam_steps` reports 0.00 flush there, but it measures lateral EXTENT, not
    the shape of the cap, so a diagonal corner poking out would not move it.
 
-   Next: compare the arm's first/last emitted Part against the approach road's
-   last/first one in the LUA, not the port - part CFrame and Size, not extent.
+   **Mitigation shipped headlessly, live confirmation still required.** A
+   constant-width arm keeps its padded interior/ring-end pavement coverage, but
+   its raised Part at the approach cut is replaced by exact station-edge
+   triangles. Width-changing pavement/shoulder arms already use exact triangle
+   chains. The Python port now models the same cap rule and the quick suite is
+   clean; only Studio can confirm the reported visual overlap is gone.
 
-7. **Markings: match the preview's layout.** DECIDED, not built.
+7. ~~**Markings: match the preview's layout.**~~ SHIPPED HEADLESS; LIVE
+   CONFIRMATION OPEN.
 
    User's call, given the two renders side by side: the roundabout should look
    like `tools/preview/out/uk4_parts.png`. That is the TARGET APPEARANCE.
@@ -260,17 +266,13 @@ well understood they are, not by value.
    marking-stretch and kerb-stretch feature set. The preview's rule has two
    marking types and no concept of a stretch.
 
-   The target look does not need any of that. `ringComponents` and
-   `armProfileFor` build their profiles INLINE with no marking specs at all,
-   so every gap falls through to region defaults tuned for a straight road.
-   Give the ring and arm profiles explicit specs - dashed between circulating
-   lanes, edge lines at the roadway edges - and the render matches while the
-   engine stays.
-
-   Next step: diff `Markings.Compute`'s output for the inline `roundabout_ring`
-   and `roundabout_arm` profiles against the preview's rule for the same
-   components, then set the specs to close the gap. Small and local; it is
-   profile data, not engine code.
+   Implemented as a roundabout-only marking plan passed to RoadBuilder: solid
+   white roadway edges, 3m/3m dashed Drive/Drive dividers, solid
+   Drive/Shoulder separators, and solid circulating dividers in SolidLanes
+   mode. Dash phase and the final partial dash match `emit_road`. Ordinary roads
+   still use the complete `Markings.Compute` pipeline. Remaining step: reinstall
+   the rebuilt dist and compare a live UK 2-lane ring against the bird's-eye
+   target.
 
 8. **The radius suggestion is not offered by the Roundabout tool in the Road
    Builder widget**, only on the junction panel. `RoundaboutBuilder.SuggestedRadiusStuds`

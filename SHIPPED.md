@@ -4,6 +4,31 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Preview-matched roundabout markings and exact approach caps
+
+Generated roundabout rings and arms now use the accepted Python preview as
+their marking appearance contract instead of falling through to marking rules
+tuned for ordinary straight roads. A roundabout-owned plan emits solid white
+roadway edges, 3m/3m dashed white Drive/Drive dividers, solid
+Drive/Shoulder separators, and solid circulating dividers in SolidLanes mode.
+RoadBuilder accepts this plan through an internal optional hook; ordinary roads,
+regional styles, marking stretches, kerb restrictions, and the Road Editor keep
+using Markings.Compute unchanged. Roundabout dash phase now also starts at the
+curve origin and retains the final partial dash, matching the Python renderer.
+
+At constant-width approach seams, only the raised pavement strip touching the
+approach cut is replaced by exact station-edge triangles. This removes the
+rotated padded end cap that could project across the adjoining carriageway
+without deleting the padded interior/ring-end overlap needed to keep the mouth
+closed. Width-changing pavement and shoulder tapers retain their full exact
+triangle chain. Per-roundabout sidewalk/marking overrides now flow consistently
+through ring, mouth, and arm construction.
+
+The Python port models the same cut-cap rule, and the dump comparator no longer
+silently grows a requested radius that the live builder honours. The quick
+roundabout cases, parity checker, and static integration contracts are clean;
+Studio confirmation remains required for actual Part rendering and z-fighting.
+
 ## Cross-platform StyLua formatting gate
 
 The repository now carries `.stylua.toml` with Luau syntax, tabs, and LF line

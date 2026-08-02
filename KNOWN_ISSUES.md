@@ -4,6 +4,13 @@ Confirmed bugs that are logged but not yet fixed. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `SHIPPED.md` for what's already been fixed/built.
 
+- **Live roundabout appearance parity is not yet confirmed.** The user reported
+  that the Python UK preview had cleaner markings and no visible Part clipping
+  while the generated Studio roundabout did. The Lua now owns the preview's
+  marking plan and replaces the raised pavement cap at each approach cut with
+  exact geometry, but the headless renderer cannot prove Roblox height,
+  z-fighting, or final Part appearance. Keep this open until the rebuilt dist is
+  checked side-by-side in Studio.
 - **The `stress_us` four-approach roundabout preview has one deterministic mouth
   tear sample.** The full validator measures a 3.00-stud hole on leg 2,
   73.6 studs from the approach cut. The roundabout port and builder were

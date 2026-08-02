@@ -155,14 +155,41 @@ def emit_arm(curve, components, cut_pavement_m, cut_shoulder_m, cut_at_start,
     needs_taper = cut_shoulder_m > 1e-6 or any(
         abs(components[i][1] - cut_pavement_m) > 1e-6 for i in sidewalk_indices)
     emitted = emit_road(curve, components, -ARM_SINK)
+    offs = offsets_m(components)
+    max_offset = sum(c[1] for c in components) / 2 * SCALE
+    stations = build_stations(curve, MAX_SEGMENT_LENGTH, CHORD_TOLERANCE, max_offset)
     if not needs_taper:
+        # Preserve the padded interior and ring-end overlap, but replace the
+        # raised strip at the approach cut with an exact quad. That cap cannot
+        # project diagonally over the adjoining carriageway.
+        if sidewalk_indices and len(stations) >= 3:
+            interval = 0 if cut_at_start else len(stations) - 2
+            s0, s1 = stations[interval], stations[interval + 1]
+            p0, r0, _ = curve.frame(s0)
+            p1, r1, _ = curve.frame(s1)
+            for index in sidewalk_indices:
+                edge = offs[index]
+                poly = [
+                    (p0[0] + r0[0] * edge[0] * SCALE,
+                     p0[1] + r0[1] * edge[0] * SCALE),
+                    (p0[0] + r0[0] * edge[1] * SCALE,
+                     p0[1] + r0[1] * edge[1] * SCALE),
+                    (p1[0] + r1[0] * edge[1] * SCALE,
+                     p1[1] + r1[1] * edge[1] * SCALE),
+                    (p1[0] + r1[0] * edge[0] * SCALE,
+                     p1[1] + r1[1] * edge[0] * SCALE),
+                ]
+                center = (sum(p[0] for p in poly) / 4,
+                          sum(p[1] for p in poly) / 4)
+                candidates = [p for p in emitted if p.name == "Sidewalk"]
+                victim = min(candidates, key=lambda p: math.dist(p.center, center))
+                emitted.remove(victim)
+                emitted.append(Part("Sidewalk", poly, SIDEWALK_C, center,
+                                    -ARM_SINK + 0.125 * SCALE))
         return emitted, []
 
     parts = [p for p in emitted if p.name != "Sidewalk"]
     shoulder_parts = []
-    offs = offsets_m(components)
-    max_offset = sum(c[1] for c in components) / 2 * SCALE
-    stations = build_stations(curve, MAX_SEGMENT_LENGTH, CHORD_TOLERANCE, max_offset)
 
     def ring_alpha(station):
         t = station / curve.length if cut_at_start else 1.0 - station / curve.length

@@ -18,6 +18,7 @@ local CurveSegment = require("../Geometry/CurveSegment")
 local PolyCurve = require("../Geometry/PolyCurve")
 local FillTriangle = require("./FillTriangle")
 local RoadBuilder = require("./RoadBuilder")
+local Markings = require("./Markings")
 local RoadInstance = require("../RoadInstance")
 local RoadProfile = require("../RoadProfile")
 local RoadSplit = require("../RoadSplit")
@@ -30,6 +31,9 @@ local RoundaboutBuilder = {}
 
 local ROUNDABOUTS_FOLDER_NAME = "Roundabouts"
 local BEZIER_CIRCLE_K = 0.5522847498307936
+local ROUNDABOUT_DASH_LENGTH_M = 3
+local ROUNDABOUT_DASH_GAP_M = 3
+local ROUNDABOUT_MARKING_COLOR = Color3.fromRGB(245, 245, 245)
 
 -- How far past the ring's outer edge each approach is cut back, so the entry
 -- and exit arms have the length to split apart and swing round onto the rim.
@@ -127,6 +131,75 @@ local function ringComponents(
 		table.insert(components, sidewalk)
 	end
 	return components
+end
+
+-- The Python roundabout preview is the accepted appearance contract. It uses a
+-- deliberately small rule set: solid white lines just inside both roadway
+-- edges, dashed white dividers between Drive lanes, and a solid white separator
+-- wherever a Drive lane meets another roadway kind such as Shoulder. Build
+-- those lines explicitly for roundabout-owned profiles instead of allowing
+-- straight-road regional defaults to choose a different visual grammar.
+local function roundaboutMarkingLines(
+	profile: RoadProfile.RoadProfile,
+	style: RegionStyles.RegionStyle,
+	solidLaneLines: boolean
+): { Markings.MarkingLine }
+	local components = profile.Components
+	local offsets = RoadProfile.ComponentOffsetsM(profile)
+	local roadwayIndices: { number } = {}
+	for i, component in components do
+		if RoadProfile.IsRoadway(component.Kind) then
+			table.insert(roadwayIndices, i)
+		end
+	end
+
+	local lines: { Markings.MarkingLine } = {}
+	local function addLine(offsetM: number, lineType: RegionStyles.LineType)
+		table.insert(lines, {
+			OffsetStartM = offsetM,
+			OffsetEndM = offsetM,
+			Line = lineType,
+			Color = ROUNDABOUT_MARKING_COLOR,
+			DashLengthM = ROUNDABOUT_DASH_LENGTH_M,
+			DashGapM = ROUNDABOUT_DASH_GAP_M,
+		})
+	end
+
+	if #roadwayIndices > 0 then
+		local firstIndex = roadwayIndices[1]
+		local lastIndex = roadwayIndices[#roadwayIndices]
+		local first = components[firstIndex]
+		local last = components[lastIndex]
+		local leftCoveredByShoulder = first.Kind == "Shoulder"
+			and first.WidthM <= 1e-6
+			and firstIndex < #components
+			and components[firstIndex + 1].Kind == "Drive"
+		local rightCoveredByShoulder = last.Kind == "Shoulder"
+			and last.WidthM <= 1e-6
+			and lastIndex > 1
+			and components[lastIndex - 1].Kind == "Drive"
+		local inset = style.MarkingWidthM * 1.5
+		if not leftCoveredByShoulder then
+			addLine(offsets[firstIndex].Left + inset, "Solid")
+		end
+		if not rightCoveredByShoulder then
+			addLine(offsets[lastIndex].Right - inset, "Solid")
+		end
+	end
+
+	for i = 1, #components - 1 do
+		local a = components[i]
+		local b = components[i + 1]
+		if RoadProfile.IsRoadway(a.Kind) and RoadProfile.IsRoadway(b.Kind) then
+			if a.Kind == "Drive" and b.Kind == "Drive" then
+				addLine(offsets[i].Right, if solidLaneLines then "Solid" else "Dashed")
+			elseif (a.Kind == "Drive") ~= (b.Kind == "Drive") then
+				addLine(offsets[i].Right, "Solid")
+			end
+		end
+	end
+
+	return lines
 end
 
 -- The ring's own outer pavement width. Zero when the pavement is opted out,
@@ -341,6 +414,8 @@ function RoundaboutBuilder.Create(
 		Style = style,
 		Settings = flatSettings(settings),
 		Preview = false,
+		MarkingLines = roundaboutMarkingLines(profile, style, style.RoundaboutMarkings == "SolidLanes"),
+		MarkingDashStartsAtZero = true,
 	}
 	local model = RoadBuilder.Build(ringOptions)
 	model:SetAttribute("RW_Road", nil)
@@ -919,7 +994,7 @@ local function buildTurboMarkings(
 		part.TopSurface = Enum.SurfaceType.Smooth
 		part.BottomSurface = Enum.SurfaceType.Smooth
 		part.Material = Enum.Material.SmoothPlastic
-		part.Color = style.LaneLine.Color
+		part.Color = ROUNDABOUT_MARKING_COLOR
 		part.Size = Vector3.new(markingWidth, RoadBuilder.MarkingThicknessStuds, span)
 		part.CFrame = CFrame.lookAt((p0 + p1) / 2, p1, Vector3.yAxis)
 		part.Parent = ring
@@ -1333,6 +1408,8 @@ local function buildArm(
 		-- exactly where planMouth placed them. Only the physical surface outside
 		-- that line is replaced below.
 		ExcludeComponentIndices = if needsSurfaceTaper then sidewalkIndices else nil,
+		MarkingLines = roundaboutMarkingLines(arm.Profile, style, false),
+		MarkingDashStartsAtZero = true,
 	}
 	local model = RoadBuilder.Build(options)
 
@@ -1351,6 +1428,7 @@ local function buildArm(
 			part.Anchored = true
 			part.CanCollide = false
 			part.CanTouch = false
+			part.CanQuery = false
 			part.CastShadow = false
 			part.TopSurface = Enum.SurfaceType.Smooth
 			part.BottomSurface = Enum.SurfaceType.Smooth
@@ -1403,15 +1481,113 @@ local function buildArm(
 					surfacePoints(s1)
 				local down = -curve:FrameAt((s0 + s1) / 2).UpVector
 				if math.max(shoulderWidth0, shoulderWidth1) * scale >= 0.02 then
-					FillTriangle(shoulderInner0, shoulderOuter0, shoulderOuter1, roadDepth, down, makeShoulderPart, model)
-					FillTriangle(shoulderInner0, shoulderOuter1, shoulderInner1, roadDepth, down, makeShoulderPart, model)
+					FillTriangle(
+						shoulderInner0,
+						shoulderOuter0,
+						shoulderOuter1,
+						roadDepth,
+						down,
+						makeShoulderPart,
+						model
+					)
+					FillTriangle(
+						shoulderInner0,
+						shoulderOuter1,
+						shoulderInner1,
+						roadDepth,
+						down,
+						makeShoulderPart,
+						model
+					)
 				end
 				if math.max(pavementWidth0, pavementWidth1) * scale >= 0.02 then
-					FillTriangle(pavementInner0, pavementOuter0, pavementOuter1, pavementDepth, down, makePavementPart, model)
-					FillTriangle(pavementInner0, pavementOuter1, pavementInner1, pavementDepth, down, makePavementPart, model)
+					FillTriangle(
+						pavementInner0,
+						pavementOuter0,
+						pavementOuter1,
+						pavementDepth,
+						down,
+						makePavementPart,
+						model
+					)
+					FillTriangle(
+						pavementInner0,
+						pavementOuter1,
+						pavementInner1,
+						pavementDepth,
+						down,
+						makePavementPart,
+						model
+					)
 				end
 			end
 		end
+	elseif #sidewalkIndices > 0 then
+		-- Constant-width raised surfaces can keep RoadBuilder's padded interior
+		-- strips: that overlap is what closes the mouth against the ring. Replace
+		-- only the strip at the approach cut, where a rotated rectangular end cap
+		-- can project across the adjoining carriageway.
+		local function replaceCutPavementCaps()
+			local scale = settings.MetersToStuds
+			local curbHeight = style.CurbHeightM * scale
+			local pavementDepth = settings.RoadThicknessStuds + curbHeight
+			local offsets = RoadProfile.ComponentOffsetsM(arm.Profile)
+			local stations = RoadBuilder.StationsFor(options)
+			-- With one interval the cut cap is also the ring cap. Keep its overlap
+			-- rather than opening a hole at the mouth.
+			if #stations < 3 then
+				return
+			end
+			local intervalIndex = if cutAtStart then 1 else #stations - 1
+			local s0 = stations[intervalIndex]
+			local s1 = stations[intervalIndex + 1]
+
+			local function makePavementPart(): Part
+				local part = Instance.new("Part")
+				part.Name = "Sidewalk"
+				part.Anchored = true
+				part.CanCollide = false
+				part.CanTouch = false
+				part.CanQuery = false
+				part.CastShadow = false
+				part.TopSurface = Enum.SurfaceType.Smooth
+				part.BottomSurface = Enum.SurfaceType.Smooth
+				part.Material = Enum.Material.Concrete
+				part.Color = style.SidewalkColor
+				return part
+			end
+
+			for _, componentIndex in sidewalkIndices do
+				for _, descendant in model:GetDescendants() do
+					local stationStart = descendant:GetAttribute("RW_StationStartStuds")
+					local stationEnd = descendant:GetAttribute("RW_StationEndStuds")
+					if
+						descendant:IsA("BasePart")
+						and descendant.Name == "Sidewalk"
+						and descendant:GetAttribute("RW_ComponentStartIndex") == componentIndex
+						and typeof(stationStart) == "number"
+						and typeof(stationEnd) == "number"
+						and math.abs(stationStart - s0) < 1e-4
+						and math.abs(stationEnd - s1) < 1e-4
+					then
+						descendant:Destroy()
+					end
+				end
+
+				local edge = offsets[componentIndex]
+				local frame0 = curve:FrameAt(s0)
+				local frame1 = curve:FrameAt(s1)
+				local left0 = (frame0 * CFrame.new(edge.Left * scale, curbHeight, 0)).Position
+				local right0 = (frame0 * CFrame.new(edge.Right * scale, curbHeight, 0)).Position
+				local left1 = (frame1 * CFrame.new(edge.Left * scale, curbHeight, 0)).Position
+				local right1 = (frame1 * CFrame.new(edge.Right * scale, curbHeight, 0)).Position
+				local down = -curve:FrameAt((s0 + s1) / 2).UpVector
+				FillTriangle(left0, right0, right1, pavementDepth, down, makePavementPart, model)
+				FillTriangle(left0, right1, left1, pavementDepth, down, makePavementPart, model)
+			end
+		end
+
+		replaceCutPavementCaps()
 	end
 	-- Not a free-standing editable road - owned by the roundabout mesh.
 	model:SetAttribute("RW_Road", nil)
@@ -1785,14 +1961,7 @@ local function planMouth(
 		-- outward, and which of those matches the curve depends on which END of
 		-- the road the junction sits at - so it is neither "always the exit" nor
 		-- a property of the arm alone.
-		local profile = armProfileFor(
-			group,
-			solo,
-			style,
-			scale,
-			travelsInward == atStart,
-			ringSidewalkWidthM(style)
-		)
+		local profile = armProfileFor(group, solo, style, scale, travelsInward == atStart, ringSidewalkWidthM(style))
 		local mergeRadius = ringKerbRadiusStuds - profile.OuterOffsetStuds
 		if mergeRadius <= 1 then
 			return nil
@@ -1909,7 +2078,8 @@ local function buildMouth(
 				ARM_HANDLE
 			),
 		})
-		buildArm(entryCurve :: PolyCurve.PolyCurve, entry.Profile, entry.CutPavementM, true, style, settings).Parent = ring
+		buildArm(entryCurve :: PolyCurve.PolyCurve, entry.Profile, entry.CutPavementM, true, style, settings).Parent =
+			ring
 		ringKerbRadius = entry.MergeRadius + entry.Profile.OuterOffsetStuds
 	end
 
@@ -1924,7 +2094,8 @@ local function buildMouth(
 				ARM_HANDLE
 			),
 		})
-		buildArm(exitCurve :: PolyCurve.PolyCurve, exit.Profile, exit.CutPavementM, false, style, settings).Parent = ring
+		buildArm(exitCurve :: PolyCurve.PolyCurve, exit.Profile, exit.CutPavementM, false, style, settings).Parent =
+			ring
 		ringKerbRadius = exit.MergeRadius + exit.Profile.OuterOffsetStuds
 	end
 
@@ -2035,14 +2206,7 @@ local function packingRadiusStuds(
 			if not group then
 				return
 			end
-			local arm = armProfileFor(
-				group,
-				solo,
-				style,
-				scale,
-				travelsInward == atStart,
-				ringSidewalkWidthM(style)
-			)
+			local arm = armProfileFor(group, solo, style, scale, travelsInward == atStart, ringSidewalkWidthM(style))
 			-- FULL width, pavement included. The kerb is what must not overrun
 			-- the next mouth's kerb; counting only the roadway lets two mouths
 			-- sit a pavement's width inside each other.
@@ -2203,9 +2367,11 @@ function RoundaboutBuilder.CreateAtJunction(
 	local ringOptions = {
 		Curve = ringCurve,
 		ProfileStart = profile,
-		Style = style,
+		Style = ringStyle,
 		Settings = flatSettings(settings),
 		Preview = false,
+		MarkingLines = roundaboutMarkingLines(profile, ringStyle, ringStyle.RoundaboutMarkings == "SolidLanes"),
+		MarkingDashStartsAtZero = true,
 	}
 	local ring = RoadBuilder.Build(ringOptions)
 	ring:SetAttribute("RW_Road", nil)
@@ -2236,7 +2402,7 @@ function RoundaboutBuilder.CreateAtJunction(
 		RoadBuilder.StationsFor(ringOptions)
 	)
 
-	local ringKerbRadius = outerRadiusStuds - ringSidewalkWidthM(style) * scale
+	local ringKerbRadius = outerRadiusStuds - ringSidewalkWidthM(ringStyle) * scale
 
 	-- Cut every approach back past the outer pavement so its entry/exit pair has
 	-- the room to split apart and swing round onto the rim.
@@ -2273,7 +2439,7 @@ function RoundaboutBuilder.CreateAtJunction(
 			center,
 			ringKerbRadius,
 			laneWidthM,
-			style,
+			ringStyle,
 			settings
 		)
 		if plan then
@@ -2284,7 +2450,7 @@ function RoundaboutBuilder.CreateAtJunction(
 	local mouthSectors: { MouthSector } = {}
 	local exitTraces: { ExitTrace } = {}
 	for i, plan in plans do
-		local sector, trace = buildMouth(ring, plan, center, splitBudgetFor(plans, i), style, settings)
+		local sector, trace = buildMouth(ring, plan, center, splitBudgetFor(plans, i), ringStyle, settings)
 		table.insert(mouthSectors, sector)
 		if trace then
 			table.insert(exitTraces, trace)
@@ -2300,7 +2466,7 @@ function RoundaboutBuilder.CreateAtJunction(
 	-- hardcoded 1-stud margin any region whose MarkingWidthM is 0.2 or more
 	-- pushes the edge line inside the bound, and it survives as a white line
 	-- painted straight across the mouth.
-	local edgeLineInset = style.MarkingWidthM * 1.5 * scale
+	local edgeLineInset = ringStyle.MarkingWidthM * 1.5 * scale
 	openRingPavement(ringPavement, center, mouthSectors, ringKerbRadius - edgeLineInset - 0.5)
 
 	-- After openRingPavement, deliberately. The spiral is laid only on the arcs

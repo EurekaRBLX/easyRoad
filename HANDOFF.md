@@ -109,15 +109,14 @@ instead of chording. Regression test: `tools/preview/junction_pad_preview.py`,
 66 cases, all filling exactly once over.
 
 ### Roundabout — see ROUNDABOUT.md
-Fixed this session: the R=34–36 bare-ground band (an own-goal regression), the
-centre island's polygon mismatch, approach detection, roads passing beside the
-ring, the forced radius minimum, and the splitter running down the approach.
-Added: optional pavement, optional island, Continuous/SolidLanes markings.
-
-**Still open, highest priority: the mouth INDENTATION** — the V-notch down each
-approach. It has now been through three wrong states because raised-or-nothing
-is a false choice; near the cut that wedge is carriageway, not median. Full
-analysis and the two-fill design in `ROUNDABOUT.md` §5.3d.
+The mouth indentation, radius inflation, island/ring gaps, and splitter
+regressions are fixed headlessly. Generated rings and arms now use the Python
+preview's dedicated white edge/divider marking plan rather than ordinary-road
+defaults. Constant-width arm pavement keeps its ring overlap but replaces the
+raised approach-cut cap with exact station-edge triangles; tapering arms retain
+their full exact surface chain. The Python port models the same cap and
+`dump_compare.py` now honours the requested radius. Reinstall the rebuilt dist
+and compare a UK 2-lane ring side-by-side before closing live visual parity.
 
 ### Nothing has been confirmed in Studio
 Every result in these docs is headless. The user's screenshots are the

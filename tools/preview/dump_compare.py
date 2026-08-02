@@ -38,7 +38,7 @@ def min_radius(legs, lane_count, lane_w, dol):
         for group in (inbound, outbound):
             if not group:
                 continue
-            comps, outer, _inner, _centre = P.arm_from_group(group, dol, solo)
+            comps, outer, _inner, _centre, _cut_shoulder = P.arm_from_group(group, dol, solo)
             width = sum(c[1] for c in comps) * P.SCALE
             total += width
             widest = max(widest, width)
@@ -91,7 +91,10 @@ def main():
     legs = [(b, P.two_way(args.approach_lanes, args.approach_lanes, dol)) for b in bearings]
 
     minimum = min_radius(legs, args.lanes, args.lane_width, dol)
-    grown = max(args.radius, minimum)
+    # Minimum is advice only. The live builder deliberately honours the radius
+    # the user requested, so growing it here compares against a ring Studio
+    # never builds.
+    grown = args.radius
     ring_total = max(1, args.lanes) * args.lane_width + P.SW_M
     outer = grown + ring_total / 2 * P.SCALE
     kerb = outer - P.SW_M * P.SCALE
@@ -120,7 +123,7 @@ def main():
             if not group:
                 print(f"     {label}: none")
                 continue
-            comps, outer_off, inner_off, road_centre = P.arm_from_group(group, dol, solo)
+            comps, outer_off, inner_off, road_centre, _cut_shoulder = P.arm_from_group(group, dol, solo)
             merge = kerb - outer_off
             span_centre = (group["left"] + group["right"]) / 2
             lat = (span_centre - road_centre) if travels_inward else (span_centre + road_centre)
