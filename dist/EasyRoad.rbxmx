@@ -18979,7 +18979,7 @@ local function SoftwareGui(props: {
 			LayoutOrder = 7,
 		}),
 		License = e(Line, {
-			Text = "Distributed as freeware",
+			Text = "Distributed under AGPL 3.0 License",
 			Dim = true,
 			LayoutOrder = 8,
 		}),
