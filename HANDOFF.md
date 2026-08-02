@@ -125,6 +125,20 @@ lanes with shoulders. The Road Editor/placed-road designer is 440 pixels tall
 so its upper property/library columns no longer overflow the lane strip.
 Validate the curved offset port with `tools/preview/parallel_preview.py`.
 
+### Marking boundaries - centre line and Road Editor path built, unconfirmed live
+
+`RightBoundary` remains serialized once on the component to the physical
+boundary's left, but the UI no longer exposes it as a lane-owned field. **Show
+lane markings** inserts selectors between adjacent Drive lane tiles and opens a
+boundary editor naming both lanes. `Markings.IsEditableLaneBoundary` includes
+the opposing-direction centre line; `RoadEditSession` hit-testing and
+`Markings.Compute` both use that contract, so a centre line can receive an
+explicit profile rule or a longitudinal marking stretch. In **All** mode the
+centre line is its own group rather than leaking into either direction's lane
+siblings. Reinstall the rebuilt dist and live-check a 3+3 bidirectional road.
+`tools/preview/marking_boundary_preview.py` renders that case with the selected
+centre stretch in amber and runs its grouping assertions in the validator.
+
 ---
 
 ## How to actually make progress here

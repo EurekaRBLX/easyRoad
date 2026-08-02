@@ -14,8 +14,9 @@ local RegionStyles = require("./RegionStyles")
 
 export type ComponentKind = "Drive" | "Sidewalk" | "Median" | "Shoulder" | "Bike" | "Parking" | "Bay"
 
--- Marking rule for the boundary on the RIGHT side of a lane (only applies
--- between same-direction traffic lanes). "Auto" defers to the region style.
+-- Marking rule for the boundary on the RIGHT side of a lane. It applies to
+-- both ordinary lane lines and the centre line between opposing Drive lanes;
+-- "Auto" defers to the appropriate region lane/centre style.
 export type BoundaryRule = "Auto" | "None" | "Solid" | "DoubleSolid" | "SolidDash" | "DashSolid"
 
 export type ProfileComponent = {

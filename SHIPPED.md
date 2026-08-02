@@ -4,6 +4,29 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Explicit between-lane marking editor and editable centre-line stretches
+
+Road Editor no longer presents `RightBoundary` as if it belonged to whichever
+lane tile happens to be selected. A **Show lane markings** control reveals a
+real marking selector in each gap between adjacent Drive lane tiles. The glyph
+previews the region/default or explicit single, double, dashed, or mixed rule;
+selecting it opens a boundary editor that names both neighbouring lanes. Lane
+width, direction, reorder, and removal remain on the lane tile itself. Hiding
+the markings returns the compact cross-section, and the strip is shorter now
+that marking and lane controls share one context-sensitive row.
+
+Opposing traffic is no longer a special uneditable hole. Every Drive/Drive
+boundary is now a valid Road Editor and marking-stretch target. The centre line
+keeps its region centre-line colour and dash rhythm under Auto, but explicit
+boundary rules and longitudinal marking stretches run through the same splice
+pipeline as ordinary lane lines. **All** still selects only one same-direction
+lane group; an opposing-direction centre line is deliberately a one-boundary
+group. Static integration contracts guard the centre-line hit test, render
+splice, between-tile selector, and removal of the old lane-owned field. The
+standard validator also runs `marking_boundary_preview.py`: its UK-style 3+3
+road asserts the two same-direction groups plus the singleton centre boundary,
+and renders the selected centre-line stretch in amber for visual QA.
+
 ## Thin procedural bases with downward-compensated walls
 
 The broad procedural base could visually cover the road surface, especially

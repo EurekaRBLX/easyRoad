@@ -55,14 +55,14 @@ export type MarkingOptions = {
 	KerbStretches: { KerbStretch }?,
 }
 
--- A user-placed override on one or more same-direction lane boundaries'
+-- A user-placed override on one or more Drive/Drive lane boundaries'
 -- markings over part of the road's length (e.g. a dashed lane line forced
 -- solid approaching a junction) - see RoadEditSession's
 -- PlacingMarkingStretch/ConfirmingMarkingStretch modes for how these are
 -- captured, including the All/Individual/Select boundary-selection modes
 -- that decide what ComponentIndices ends up holding.
 --
--- ComponentIndices is any set of same-direction Drive/Drive boundary
+-- ComponentIndices is any set of Drive/Drive boundary
 -- indices (each between components[i] and components[i + 1]) - not
 -- necessarily a whole contiguous run, since Select mode can pick an
 -- arbitrary subset. Each listed index gets its own independent override;
@@ -128,16 +128,29 @@ function Markings.IsSameDirectionBoundary(components: { RoadProfile.ProfileCompo
 	return sameDirBoundaries(components)[componentIndex] == true
 end
 
+-- Every painted lane/centre boundary the Road Editor and marking-stretch
+-- tool may edit. Opposing Drive lanes are included: their centre line is a
+-- boundary too, even though it is deliberately not part of either adjacent
+-- same-direction sibling run.
+function Markings.IsEditableLaneBoundary(components: { RoadProfile.ProfileComponent }, componentIndex: number): boolean
+	local a, b = components[componentIndex], components[componentIndex + 1]
+	return a ~= nil and b ~= nil and a.Kind == "Drive" and b.Kind == "Drive"
+end
+
 -- Every boundary index in componentIndex's own contiguous same-direction
 -- run (including componentIndex itself) - a run breaks wherever the
--- direction changes or a non-Drive component interrupts it. Empty if
--- componentIndex isn't a same-direction Drive/Drive boundary at all. Used
+-- direction changes or a non-Drive component interrupts it. An opposing
+-- centre line is its own one-boundary run; a non-Drive boundary is empty. Used
 -- for the "All" selection mode (and its drag-ghost preview) - "Individual"
 -- and "Select" build their own ComponentIndices sets directly instead.
 function Markings.SiblingBoundaries(components: { RoadProfile.ProfileComponent }, componentIndex: number): { number }
+	if not Markings.IsEditableLaneBoundary(components, componentIndex) then
+		return {}
+	end
 	local isSameDirBoundary = sameDirBoundaries(components)
 	if not isSameDirBoundary[componentIndex] then
-		return {}
+		-- An opposing-direction centre line is intentionally its own group.
+		return { componentIndex }
 	end
 	local lo, hi = componentIndex, componentIndex
 	while isSameDirBoundary[lo - 1] do
@@ -280,13 +293,13 @@ function Markings.Compute(
 	-- (e.g. solid approaching two separate junctions on the same lane
 	-- pair) - each MarkingStretch is independent, never merged or replaced
 	-- by another one on the same boundary. Indices that no longer resolve
-	-- to a valid same-direction boundary (e.g. after a structural profile
+	-- to a valid Drive/Drive boundary (e.g. after a structural profile
 	-- edit) are silently skipped rather than erroring.
 	local stretchByBoundary: { [number]: { MarkingStretch } } = {}
 	if options and options.MarkingStretches then
 		for _, stretch in options.MarkingStretches :: { MarkingStretch } do
 			for _, j in stretch.ComponentIndices do
-				if Markings.IsSameDirectionBoundary(componentsStart, j) then
+				if Markings.IsEditableLaneBoundary(componentsStart, j) then
 					if not stretchByBoundary[j] then
 						stretchByBoundary[j] = {}
 					end
@@ -296,7 +309,7 @@ function Markings.Compute(
 		end
 	end
 
-	-- Emits a same-direction lane boundary's line, splicing in every
+	-- Emits an editable lane/centre boundary's line, splicing in every
 	-- MarkingStretch that targets this boundary (sorted by station) as its
 	-- own middle sub-range, with the base line type resuming between and
 	-- around them. Always emits the "before"/"between"/"after" pieces even
@@ -543,7 +556,31 @@ function Markings.Compute(
 			local a, b = component, nextComponent
 			if a.Kind == "Drive" and b.Kind == "Drive" then
 				if a.Direction ~= 0 and b.Direction ~= 0 and a.Direction ~= b.Direction then
-					addSpec(boundaryStart, boundaryEnd, style.CenterLine, trafficLineColor(style.CenterLine.Color))
+					-- Centre lines share the editable-boundary pipeline. Auto keeps
+					-- the region's centre-line style; an explicit RightBoundary or
+					-- marking stretch changes the line type without losing its colour.
+					local rule = a.RightBoundary
+					if rule ~= nil and rule ~= "Auto" then
+						emitBoundaryLine(
+							i,
+							boundaryStart,
+							boundaryEnd,
+							rule :: RegionStyles.LineType,
+							trafficLineColor(style.CenterLine.Color),
+							style.CenterLine.DashLengthM,
+							style.CenterLine.DashGapM
+						)
+					else
+						emitBoundaryLine(
+							i,
+							boundaryStart,
+							boundaryEnd,
+							style.CenterLine.Line,
+							trafficLineColor(style.CenterLine.Color),
+							style.CenterLine.DashLengthM,
+							style.CenterLine.DashGapM
+						)
+					end
 				else
 					-- Same-direction boundary: apply the component's rule
 					local rule = a.RightBoundary

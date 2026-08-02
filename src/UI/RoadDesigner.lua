@@ -6,7 +6,8 @@
 --   RoadDesigner.LaneStripCard   - the cross-section as a row of tiles
 --                                  (module icon, direction arrow, width;
 --                                  click to select, then edit width /
---                                  direction / marking, reorder, remove)
+--                                  direction, reorder, remove; show markings
+--                                  to edit the boundaries between lane tiles)
 --   RoadDesigner.RoadLibraryList - scrollable road picker (rendered
 --                                  cross-section thumbnail + name) used
 --                                  instead of a plain dropdown
@@ -51,17 +52,12 @@ export type DesignerAction = {
 	OnClick: () -> (),
 }
 
--- Tall enough for every row LaneStripCard can show at once: Header + the
--- 78-stud tile Strip + the Controls row (width/direction/reorder/remove) +
--- the conditional Marking row (shown whenever the selected lane isn't the
--- rightmost one) + card padding/list-layout gaps between them. Previously
--- only sized for Header+Strip+Controls (no Marking row) - selecting a lane
--- that also showed the Marking row pushed the card's total content past
--- this fixed-height Frame's own bottom edge, spilling out below the whole
--- panel (reported live: "there is still a window below my road cross
--- section" - that overflow, not a separate window).
-local STRIP_HEIGHT = 190
+-- Header + 78-stud tile strip + one context-sensitive editor row. Lane
+-- markings now use that same editor row after their between-tile marker is
+-- selected, rather than adding a second row below the selected lane controls.
+local STRIP_HEIGHT = 158
 local TILE_WIDTH = 58
+local BOUNDARY_BUTTON_WIDTH = 20
 
 local LINE_TYPE_LABELS: { [string]: string } = {
 	None = "No line",
@@ -410,10 +406,97 @@ local function LaneTile(props: {
 	})
 end
 
+-- An explicit click target for the physical marking between two Drive lane
+-- tiles. The glyph mirrors the current rule (including double/mixed lines),
+-- while the wider transparent button keeps a thin road line easy to select.
+local function BoundaryButton(props: {
+	BoundaryIndex: number,
+	Line: RegionStyles.LineType,
+	Color: Color3,
+	Selected: boolean,
+	OnClick: () -> (),
+	LayoutOrder: number,
+})
+	local hovered, setHovered = React.useState(false)
+	local children: { [string]: any } = {
+		Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+		Stroke = props.Selected and e("UIStroke", {
+			Color = Theme.ACCENT_HOVER,
+			Thickness = 2,
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		}),
+	}
+
+	local function addStroke(key: string, x: number, dashed: boolean)
+		if dashed then
+			for segment = 1, 3 do
+				children[key .. segment] = e("Frame", {
+					AnchorPoint = Vector2.new(0.5, 0),
+					Position = UDim2.new(0.5, x, 0, 9 + (segment - 1) * 20),
+					Size = UDim2.new(0, 2, 0, 11),
+					BackgroundColor3 = props.Color,
+					BorderSizePixel = 0,
+				})
+			end
+		else
+			children[key] = e("Frame", {
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.new(0.5, x, 0.5, 0),
+				Size = UDim2.new(0, 2, 0, 58),
+				BackgroundColor3 = props.Color,
+				BorderSizePixel = 0,
+			})
+		end
+	end
+
+	if props.Line == "None" then
+		children.None = e("TextLabel", {
+			Text = "X",
+			TextColor3 = Theme.DIM,
+			BackgroundTransparency = 1,
+			Size = UDim2.fromScale(1, 1),
+			Font = Theme.FONT_BOLD,
+			TextSize = 12,
+		})
+	elseif props.Line == "DoubleSolid" then
+		addStroke("Left", -2, false)
+		addStroke("Right", 2, false)
+	elseif props.Line == "DoubleDashed" then
+		addStroke("Left", -2, true)
+		addStroke("Right", 2, true)
+	elseif props.Line == "SolidDash" then
+		addStroke("Left", -2, false)
+		addStroke("Right", 2, true)
+	elseif props.Line == "DashSolid" then
+		addStroke("Left", -2, true)
+		addStroke("Right", 2, false)
+	else
+		addStroke("Line", 0, props.Line == "Dashed")
+	end
+
+	return e("TextButton", {
+		Name = "LaneBoundary_" .. props.BoundaryIndex,
+		Text = "",
+		BackgroundColor3 = if props.Selected then Theme.SELECTED else Theme.FIELD,
+		BackgroundTransparency = if props.Selected then 0.25 elseif hovered then 0.55 else 1,
+		AutoButtonColor = false,
+		Size = UDim2.new(0, BOUNDARY_BUTTON_WIDTH, 1, 0),
+		LayoutOrder = props.LayoutOrder,
+		[React.Event.Activated] = props.OnClick,
+		[React.Event.MouseEnter] = function()
+			setHovered(true)
+		end,
+		[React.Event.MouseLeave] = function()
+			setHovered(false)
+		end,
+	}, children)
+end
+
 -- The lane strip card: header, tile strip, and (when a tile is selected)
 -- the edit controls for that lane. Pinned full-width along the bottom.
 local function LaneStripCard(props: {
 	Profile: RoadProfile.RoadProfile,
+	RegionStyle: RegionStyles.RegionStyle,
 	ReadOnly: boolean?,
 	SelectedIndex: number, -- 0 = none
 	OnSelect: (index: number) -> (), -- 0 clears
@@ -427,6 +510,18 @@ local function LaneStripCard(props: {
 	local count = #profile.Components
 	local sel: number? = if props.SelectedIndex >= 1 and props.SelectedIndex <= count then props.SelectedIndex else nil
 	local selected: RoadProfile.ProfileComponent? = if sel then profile.Components[sel :: number] else nil
+	local showMarkings, setShowMarkings = React.useState(false)
+	local selectedBoundaryIndex, setSelectedBoundaryIndex = React.useState(0)
+	local boundaryIndex: number? = if selectedBoundaryIndex >= 1
+		and selectedBoundaryIndex < count
+		and Markings.IsEditableLaneBoundary(profile.Components, selectedBoundaryIndex)
+		then selectedBoundaryIndex
+		else nil
+
+	React.useEffect(function()
+		setSelectedBoundaryIndex(0)
+		return nil
+	end, { profile.Id, count } :: { any })
 
 	local function changeSelected(patch: (component: RoadProfile.ProfileComponent) -> RoadProfile.ProfileComponent)
 		local index = sel
@@ -441,11 +536,24 @@ local function LaneStripCard(props: {
 		end)
 	end
 
-	-- Number keys 1-4 set the selected lane's right-side marking directly,
-	-- matching the dropdown's options minus Auto - only live while a lane
-	-- with a marking to set (not the last one) is selected.
+	local function changeBoundary(index: number, rule: RoadProfile.BoundaryRule?)
+		props.OnChange(function(copy)
+			local component = copy.Components[index]
+			if component then
+				copy.Components[index] = {
+					Kind = component.Kind,
+					WidthM = component.WidthM,
+					Direction = component.Direction,
+					RightBoundary = rule,
+				}
+			end
+		end)
+	end
+
+	-- Number keys 1-4 set the explicitly selected between-lane boundary,
+	-- matching the dropdown's options minus Auto.
 	React.useEffect(function()
-		if readOnly or not sel or (sel :: number) >= count then
+		if readOnly or not boundaryIndex then
 			return nil
 		end
 		local cn = UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
@@ -454,34 +562,58 @@ local function LaneStripCard(props: {
 			end
 			local rule = NUMBER_KEY_TO_BOUNDARY[input.KeyCode]
 			if rule then
-				changeSelected(function(component)
-					return {
-						Kind = component.Kind,
-						WidthM = component.WidthM,
-						Direction = component.Direction,
-						RightBoundary = rule,
-					}
-				end)
+				changeBoundary(boundaryIndex :: number, rule)
 			end
 		end)
 		return function()
 			cn:Disconnect()
 		end
-	end, { sel, readOnly, count } :: { any })
+	end, { boundaryIndex, readOnly } :: { any })
 
 	local children: { [string]: any } = {}
 	decorateCard(children)
-	children.Header = e(Components.Section, {
-		Text = string.format("Road Layout - %.1f m", RoadProfile.TotalWidthM(profile)),
-		First = true,
+	children.Header = e("Frame", {
+		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
+		BackgroundTransparency = 1,
 		LayoutOrder = 1,
+	}, {
+		Title = e("TextLabel", {
+			Text = string.upper(string.format("Road Layout - %.1f m", RoadProfile.TotalWidthM(profile))),
+			TextColor3 = Theme.DIM,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -150, 1, 0),
+			Font = Theme.FONT_BOLD,
+			TextSize = Theme.HEADER_TEXT_SIZE,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+		}),
+		MarkingToggle = not readOnly and e("TextButton", {
+			Text = if showMarkings then "Hide lane markings" else "Show lane markings",
+			TextColor3 = Theme.WHITE,
+			BackgroundColor3 = if showMarkings then Theme.SELECTED else Theme.BUTTON,
+			BackgroundTransparency = if showMarkings then 0.1 else Theme.GLASS_ELEMENT_TRANSPARENCY,
+			AnchorPoint = Vector2.new(1, 0),
+			Position = UDim2.new(1, 0, 0, 0),
+			Size = UDim2.new(0, 146, 1, 0),
+			Font = Theme.FONT,
+			TextSize = 14,
+			[React.Event.Activated] = function()
+				local nextValue = not showMarkings
+				setShowMarkings(nextValue)
+				if not nextValue then
+					setSelectedBoundaryIndex(0)
+				end
+			end,
+		}, {
+			Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+		}),
 	})
 
 	local tiles: { [string]: any } = {
 		Layout = e("UIListLayout", {
 			FillDirection = Enum.FillDirection.Horizontal,
 			SortOrder = Enum.SortOrder.LayoutOrder,
-			Padding = UDim.new(0, 4),
+			Padding = UDim.new(0, if showMarkings then 0 else 4),
 			HorizontalAlignment = Enum.HorizontalAlignment.Center,
 		}),
 	}
@@ -492,11 +624,40 @@ local function LaneStripCard(props: {
 			Selected = sel == index,
 			ReadOnly = readOnly,
 			OnClick = function()
+				setSelectedBoundaryIndex(0)
 				props.OnSelect(if props.SelectedIndex == index then 0 else index)
 			end,
 			OnHoverChanged = props.OnTileHoverChanged,
-			LayoutOrder = index,
+			LayoutOrder = index * 2 - 1,
 		})
+		if showMarkings and index < count and Markings.IsEditableLaneBoundary(profile.Components, index) then
+			local nextComponent = profile.Components[index + 1]
+			local opposing = component.Direction ~= 0
+				and nextComponent.Direction ~= 0
+				and component.Direction ~= nextComponent.Direction
+			local spec = if opposing then props.RegionStyle.CenterLine else props.RegionStyle.LaneLine
+			local rule = component.RightBoundary
+			local line: RegionStyles.LineType = if rule ~= nil and rule ~= "Auto"
+				then rule :: RegionStyles.LineType
+				else spec.Line
+			tiles["Boundary" .. index] = e(BoundaryButton, {
+				BoundaryIndex = index,
+				Line = line,
+				Color = spec.Color,
+				Selected = boundaryIndex == index,
+				OnClick = function()
+					props.OnSelect(0)
+					setSelectedBoundaryIndex(if selectedBoundaryIndex == index then 0 else index)
+				end,
+				LayoutOrder = index * 2,
+			})
+		elseif showMarkings and index < count then
+			tiles["Gap" .. index] = e("Frame", {
+				Size = UDim2.new(0, 4, 1, 0),
+				BackgroundTransparency = 1,
+				LayoutOrder = index * 2,
+			})
+		end
 	end
 	local stripScrollProps = Components.ScrollBar()
 	stripScrollProps.Size = UDim2.new(1, 0, 0, 78)
@@ -523,6 +684,34 @@ local function LaneStripCard(props: {
 			Text = "Lane editing is disabled for transition roads.",
 			Dim = true,
 			LayoutOrder = 3,
+		})
+	elseif boundaryIndex then
+		local left = profile.Components[boundaryIndex :: number]
+		local right = profile.Components[(boundaryIndex :: number) + 1]
+		children.Controls = e(Components.Row, { LayoutOrder = 3 }, {
+			Label = e(Components.Label, {
+				Text = string.format(
+					"Boundary between %s %s and %s %s",
+					KIND_LABEL[left.Kind] or left.Kind,
+					arrowFor(left.Direction),
+					KIND_LABEL[right.Kind] or right.Kind,
+					arrowFor(right.Direction)
+				),
+				LayoutOrder = 1,
+				Width = 260,
+			}),
+			Dropdown = e(Components.Dropdown, {
+				Options = BOUNDARY_OPTIONS,
+				SelectedId = left.RightBoundary or "Auto",
+				OnSelected = function(id: string)
+					changeBoundary(
+						boundaryIndex :: number,
+						if id == "Auto" then nil else (id :: RoadProfile.BoundaryRule)
+					)
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
 		})
 	elseif selected then
 		local selectedComponent = selected :: RoadProfile.ProfileComponent
@@ -610,32 +799,11 @@ local function LaneStripCard(props: {
 				Size = UDim2.new(0, 26, 0, Theme.ROW_HEIGHT),
 			}),
 		})
-		-- Lane marking is split onto its own row: a distinct concern from
-		-- width/direction/reorder, and needs room for a readable label.
-		if (sel :: number) < count then
-			children.Marking = e(Components.Row, { LayoutOrder = 4 }, {
-				Label = e(Components.Label, { Text = "Lane marking", LayoutOrder = 1, Width = 90 }),
-				Dropdown = e(Components.Dropdown, {
-					Options = BOUNDARY_OPTIONS,
-					SelectedId = selectedComponent.RightBoundary or "Auto",
-					OnSelected = function(id: string)
-						changeSelected(function(component)
-							return {
-								Kind = component.Kind,
-								WidthM = component.WidthM,
-								Direction = component.Direction,
-								RightBoundary = if id == "Auto" then nil else (id :: RoadProfile.BoundaryRule),
-							}
-						end)
-					end,
-					LayoutOrder = 2,
-					Grow = true,
-				}),
-			})
-		end
 	else
 		children.Controls = e(Components.Label, {
-			Text = "Click a lane tile to edit it; click or drag modules from the palette.",
+			Text = if showMarkings
+				then "Select a line between two lane tiles to edit that boundary."
+				else "Select a lane tile to edit it, or show lane markings to edit a boundary.",
 			Dim = true,
 			LayoutOrder = 3,
 		})
@@ -1231,6 +1399,7 @@ local function Panel(
 			}),
 			StripCard = e(LaneStripCard, {
 				Profile = profile,
+				RegionStyle = props.RegionStyle,
 				ReadOnly = readOnly,
 				SelectedIndex = selectedIndex,
 				OnSelect = setSelectedIndex,

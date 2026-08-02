@@ -42,6 +42,9 @@ def main():
     profiles = source("src/RoadProfile.lua")
     curve = source("src/Geometry/CurveSegment.lua")
     parallel_controls = source("src/UI/ParallelControls.lua")
+    road_designer = source("src/UI/RoadDesigner.lua")
+    road_edit_session = source("src/RoadEditSession.lua")
+    markings = source("src/Mesh/Markings.lua")
     loader = source("loader.server.lua")
     main_source = source("src/main.lua")
     top_bar = source("src/UI/TopBar.lua")
@@ -110,6 +113,15 @@ def main():
     require(parallel_controls, 'Label = "Opposite traffic directions"', "opposed roadway pairs are not configurable", problems)
     require(parallel_controls, 'string.format("Roadway %d runs in reverse"', "multi-roadway direction controls are missing", problems)
     require(main_source, "local ROAD_DESIGNER_HEIGHT = 440", "Road Editor columns are too short for their fixed content", problems)
+    require(markings, "function Markings.IsEditableLaneBoundary", "opposing Drive lanes are not exposed as editable marking boundaries", problems)
+    centre_start = markings.find('if a.Direction ~= 0 and b.Direction ~= 0 and a.Direction ~= b.Direction then')
+    centre_end = markings.find("else", centre_start)
+    require(markings[centre_start:centre_end], "emitBoundaryLine(", "centre lines bypass marking stretches and boundary overrides", problems)
+    require(road_edit_session, "Markings.IsEditableLaneBoundary(components, i)", "marking-stretch hit testing still excludes the centre line", problems)
+    require(road_designer, '"Show lane markings"', "Road Editor cannot reveal explicit marking boundaries", problems)
+    require(road_designer, "local function BoundaryButton", "Road Editor has no between-lane marking selector", problems)
+    require(road_designer, '"Boundary between %s %s and %s %s"', "Road Editor does not identify both lanes around a selected boundary", problems)
+    reject(road_designer, 'Text = "Lane marking"', "Road Editor still presents a boundary as a selected-lane property", problems)
 
     for lane_count in range(1, 6):
         require(
@@ -134,7 +146,7 @@ def main():
         for problem in problems:
             print("FAILED:", problem)
         return 1
-    print("integration contracts passed: multinode junctions, assets, procedural structures, parallel roadways, highway presets, Software dock")
+    print("integration contracts passed: multinode junctions, assets, procedural structures, parallel roadways, marking boundaries, highway presets, Software dock")
     return 0
 
 

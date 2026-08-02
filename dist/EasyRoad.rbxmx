@@ -4039,14 +4039,14 @@ export type MarkingOptions = {
 	KerbStretches: { KerbStretch }?,
 }
 
--- A user-placed override on one or more same-direction lane boundaries'
+-- A user-placed override on one or more Drive/Drive lane boundaries'
 -- markings over part of the road's length (e.g. a dashed lane line forced
 -- solid approaching a junction) - see RoadEditSession's
 -- PlacingMarkingStretch/ConfirmingMarkingStretch modes for how these are
 -- captured, including the All/Individual/Select boundary-selection modes
 -- that decide what ComponentIndices ends up holding.
 --
--- ComponentIndices is any set of same-direction Drive/Drive boundary
+-- ComponentIndices is any set of Drive/Drive boundary
 -- indices (each between components[i] and components[i + 1]) - not
 -- necessarily a whole contiguous run, since Select mode can pick an
 -- arbitrary subset. Each listed index gets its own independent override;
@@ -4112,16 +4112,29 @@ function Markings.IsSameDirectionBoundary(components: { RoadProfile.ProfileCompo
 	return sameDirBoundaries(components)[componentIndex] == true
 end
 
+-- Every painted lane/centre boundary the Road Editor and marking-stretch
+-- tool may edit. Opposing Drive lanes are included: their centre line is a
+-- boundary too, even though it is deliberately not part of either adjacent
+-- same-direction sibling run.
+function Markings.IsEditableLaneBoundary(components: { RoadProfile.ProfileComponent }, componentIndex: number): boolean
+	local a, b = components[componentIndex], components[componentIndex + 1]
+	return a ~= nil and b ~= nil and a.Kind == "Drive" and b.Kind == "Drive"
+end
+
 -- Every boundary index in componentIndex's own contiguous same-direction
 -- run (including componentIndex itself) - a run breaks wherever the
--- direction changes or a non-Drive component interrupts it. Empty if
--- componentIndex isn't a same-direction Drive/Drive boundary at all. Used
+-- direction changes or a non-Drive component interrupts it. An opposing
+-- centre line is its own one-boundary run; a non-Drive boundary is empty. Used
 -- for the "All" selection mode (and its drag-ghost preview) - "Individual"
 -- and "Select" build their own ComponentIndices sets directly instead.
 function Markings.SiblingBoundaries(components: { RoadProfile.ProfileComponent }, componentIndex: number): { number }
+	if not Markings.IsEditableLaneBoundary(components, componentIndex) then
+		return {}
+	end
 	local isSameDirBoundary = sameDirBoundaries(components)
 	if not isSameDirBoundary[componentIndex] then
-		return {}
+		-- An opposing-direction centre line is intentionally its own group.
+		return { componentIndex }
 	end
 	local lo, hi = componentIndex, componentIndex
 	while isSameDirBoundary[lo - 1] do
@@ -4264,13 +4277,13 @@ function Markings.Compute(
 	-- (e.g. solid approaching two separate junctions on the same lane
 	-- pair) - each MarkingStretch is independent, never merged or replaced
 	-- by another one on the same boundary. Indices that no longer resolve
-	-- to a valid same-direction boundary (e.g. after a structural profile
+	-- to a valid Drive/Drive boundary (e.g. after a structural profile
 	-- edit) are silently skipped rather than erroring.
 	local stretchByBoundary: { [number]: { MarkingStretch } } = {}
 	if options and options.MarkingStretches then
 		for _, stretch in options.MarkingStretches :: { MarkingStretch } do
 			for _, j in stretch.ComponentIndices do
-				if Markings.IsSameDirectionBoundary(componentsStart, j) then
+				if Markings.IsEditableLaneBoundary(componentsStart, j) then
 					if not stretchByBoundary[j] then
 						stretchByBoundary[j] = {}
 					end
@@ -4280,7 +4293,7 @@ function Markings.Compute(
 		end
 	end
 
-	-- Emits a same-direction lane boundary's line, splicing in every
+	-- Emits an editable lane/centre boundary's line, splicing in every
 	-- MarkingStretch that targets this boundary (sorted by station) as its
 	-- own middle sub-range, with the base line type resuming between and
 	-- around them. Always emits the "before"/"between"/"after" pieces even
@@ -4527,7 +4540,31 @@ function Markings.Compute(
 			local a, b = component, nextComponent
 			if a.Kind == "Drive" and b.Kind == "Drive" then
 				if a.Direction ~= 0 and b.Direction ~= 0 and a.Direction ~= b.Direction then
-					addSpec(boundaryStart, boundaryEnd, style.CenterLine, trafficLineColor(style.CenterLine.Color))
+					-- Centre lines share the editable-boundary pipeline. Auto keeps
+					-- the region's centre-line style; an explicit RightBoundary or
+					-- marking stretch changes the line type without losing its colour.
+					local rule = a.RightBoundary
+					if rule ~= nil and rule ~= "Auto" then
+						emitBoundaryLine(
+							i,
+							boundaryStart,
+							boundaryEnd,
+							rule :: RegionStyles.LineType,
+							trafficLineColor(style.CenterLine.Color),
+							style.CenterLine.DashLengthM,
+							style.CenterLine.DashGapM
+						)
+					else
+						emitBoundaryLine(
+							i,
+							boundaryStart,
+							boundaryEnd,
+							style.CenterLine.Line,
+							trafficLineColor(style.CenterLine.Color),
+							style.CenterLine.DashLengthM,
+							style.CenterLine.DashGapM
+						)
+					end
 				else
 					-- Same-direction boundary: apply the component's rule
 					local rule = a.RightBoundary
@@ -9105,9 +9142,10 @@ local StructureBuilder = require("./StructureBuilder")
 --                  pull-in carved into the road's cross-section).
 --   ConfirmingBay - after a bay's drawn, adjust its length/width (defaults:
 --                  the dragged size) before committing the geometry rebuild.
---   PlacingMarkingStretch - click a same-direction lane boundary, then drag
+--   PlacingMarkingStretch - click any Drive/Drive boundary, then drag
 --                  along the road to pick the free-form sub-range where its
---                  marking (and every same-direction sibling boundary's)
+--                  marking (and every same-direction sibling boundary's;
+--                  an opposing centre line is its own group)
 --                  should be overridden to a different line type.
 --   ConfirmingMarkingStretch - adjust the dragged range/line type before
 --                  committing.
@@ -9201,7 +9239,7 @@ export type RoadEditSession = {
 	SetBayDraftLength: (lengthStuds: number) -&gt; (),
 	SetBayDraftWidth: (widthM: number) -&gt; (),
 	ConfirmBay: () -&gt; (),
-	-- Marking stretch: click a same-direction lane boundary and drag
+	-- Marking stretch: click any Drive/Drive lane/centre boundary and drag
 	-- free-form along the road to override it (and, depending on
 	-- selection mode, related boundaries) to a different line type over
 	-- that sub-range.
@@ -9274,7 +9312,7 @@ local function createRoadEditSession(
 	local stretchDragComponentIndex: number? = nil
 	local stretchGhosts: { Part } = {}
 	-- Which boundaries a drag applies to: "All" (the whole same-direction
-	-- sibling run - the default), "Individual" (just the clicked
+	-- sibling run, or the centre line alone - the default), "Individual" (just the clicked
 	-- boundary), or "Select" (an arbitrary, user-built set - see
 	-- stretchSelectedIndices below, toggled by plain clicks while in this
 	-- mode). Persists across separate stretch placements on the same road
@@ -9396,12 +9434,12 @@ local function createRoadEditSession(
 		changeSignal:Fire()
 	end
 
-	-- Finds the same-direction Drive/Drive boundary nearest the click's
+	-- Finds the editable Drive/Drive boundary nearest the click's
 	-- lateral position - mirrors exactly the condition Markings.lua uses to
-	-- decide a boundary is a lane-changing rule candidate at all (kerb/edge
-	-- lines and opposing-direction center lines aren't valid stretch
-	-- targets), so a click always resolves to something Markings.Compute
-	-- will actually recognise as a member of a sibling run.
+	-- decide a boundary is an editable lane/centre marking (kerb/edge
+	-- lines aren't valid stretch targets, but an opposing-direction centre
+	-- line is), so a click always resolves to something Markings.Compute
+	-- will actually recognise as an editable boundary.
 	local function resolveComponentIndexFromHit(station: number, hitPosition: Vector3): number?
 		if not originalData then
 			return nil
@@ -9414,7 +9452,7 @@ local function createRoadEditSession(
 		local bestIndex: number? = nil
 		local bestDistance = math.huge
 		for i = 1, #components - 1 do
-			if Markings.IsSameDirectionBoundary(components, i) and offsets[i] then
+			if Markings.IsEditableLaneBoundary(components, i) and offsets[i] then
 				local distance = math.abs(lateralOffsetM - offsets[i].Right)
 				if distance &lt; bestDistance then
 					bestDistance = distance
@@ -10166,7 +10204,7 @@ local function createRoadEditSession(
 		-- just tweaks an existing one) can leave a stretch pointing at the
 		-- wrong boundary. Accepted as a known v1 limitation rather than
 		-- solved now - Markings.lua simply drops a stretch whose
-		-- ComponentIndex no longer resolves to a same-direction boundary.
+		-- ComponentIndex no longer resolves to a Drive/Drive boundary.
 		local buildOptions = {
 			Curve = originalData.Curve,
 			ProfileStart = editingProfile,
@@ -11370,8 +11408,9 @@ local RegionStyles = require("./RegionStyles")
 
 export type ComponentKind = "Drive" | "Sidewalk" | "Median" | "Shoulder" | "Bike" | "Parking" | "Bay"
 
--- Marking rule for the boundary on the RIGHT side of a lane (only applies
--- between same-direction traffic lanes). "Auto" defers to the region style.
+-- Marking rule for the boundary on the RIGHT side of a lane. It applies to
+-- both ordinary lane lines and the centre line between opposing Drive lanes;
+-- "Auto" defers to the appropriate region lane/centre style.
 export type BoundaryRule = "Auto" | "None" | "Solid" | "DoubleSolid" | "SolidDash" | "DashSolid"
 
 export type ProfileComponent = {
@@ -17191,7 +17230,8 @@ return RoadAssetsPanel
 --   RoadDesigner.LaneStripCard   - the cross-section as a row of tiles
 --                                  (module icon, direction arrow, width;
 --                                  click to select, then edit width /
---                                  direction / marking, reorder, remove)
+--                                  direction, reorder, remove; show markings
+--                                  to edit the boundaries between lane tiles)
 --   RoadDesigner.RoadLibraryList - scrollable road picker (rendered
 --                                  cross-section thumbnail + name) used
 --                                  instead of a plain dropdown
@@ -17236,17 +17276,12 @@ export type DesignerAction = {
 	OnClick: () -&gt; (),
 }
 
--- Tall enough for every row LaneStripCard can show at once: Header + the
--- 78-stud tile Strip + the Controls row (width/direction/reorder/remove) +
--- the conditional Marking row (shown whenever the selected lane isn't the
--- rightmost one) + card padding/list-layout gaps between them. Previously
--- only sized for Header+Strip+Controls (no Marking row) - selecting a lane
--- that also showed the Marking row pushed the card's total content past
--- this fixed-height Frame's own bottom edge, spilling out below the whole
--- panel (reported live: "there is still a window below my road cross
--- section" - that overflow, not a separate window).
-local STRIP_HEIGHT = 190
+-- Header + 78-stud tile strip + one context-sensitive editor row. Lane
+-- markings now use that same editor row after their between-tile marker is
+-- selected, rather than adding a second row below the selected lane controls.
+local STRIP_HEIGHT = 158
 local TILE_WIDTH = 58
+local BOUNDARY_BUTTON_WIDTH = 20
 
 local LINE_TYPE_LABELS: { [string]: string } = {
 	None = "No line",
@@ -17595,10 +17630,97 @@ local function LaneTile(props: {
 	})
 end
 
+-- An explicit click target for the physical marking between two Drive lane
+-- tiles. The glyph mirrors the current rule (including double/mixed lines),
+-- while the wider transparent button keeps a thin road line easy to select.
+local function BoundaryButton(props: {
+	BoundaryIndex: number,
+	Line: RegionStyles.LineType,
+	Color: Color3,
+	Selected: boolean,
+	OnClick: () -&gt; (),
+	LayoutOrder: number,
+})
+	local hovered, setHovered = React.useState(false)
+	local children: { [string]: any } = {
+		Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+		Stroke = props.Selected and e("UIStroke", {
+			Color = Theme.ACCENT_HOVER,
+			Thickness = 2,
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+		}),
+	}
+
+	local function addStroke(key: string, x: number, dashed: boolean)
+		if dashed then
+			for segment = 1, 3 do
+				children[key .. segment] = e("Frame", {
+					AnchorPoint = Vector2.new(0.5, 0),
+					Position = UDim2.new(0.5, x, 0, 9 + (segment - 1) * 20),
+					Size = UDim2.new(0, 2, 0, 11),
+					BackgroundColor3 = props.Color,
+					BorderSizePixel = 0,
+				})
+			end
+		else
+			children[key] = e("Frame", {
+				AnchorPoint = Vector2.new(0.5, 0.5),
+				Position = UDim2.new(0.5, x, 0.5, 0),
+				Size = UDim2.new(0, 2, 0, 58),
+				BackgroundColor3 = props.Color,
+				BorderSizePixel = 0,
+			})
+		end
+	end
+
+	if props.Line == "None" then
+		children.None = e("TextLabel", {
+			Text = "X",
+			TextColor3 = Theme.DIM,
+			BackgroundTransparency = 1,
+			Size = UDim2.fromScale(1, 1),
+			Font = Theme.FONT_BOLD,
+			TextSize = 12,
+		})
+	elseif props.Line == "DoubleSolid" then
+		addStroke("Left", -2, false)
+		addStroke("Right", 2, false)
+	elseif props.Line == "DoubleDashed" then
+		addStroke("Left", -2, true)
+		addStroke("Right", 2, true)
+	elseif props.Line == "SolidDash" then
+		addStroke("Left", -2, false)
+		addStroke("Right", 2, true)
+	elseif props.Line == "DashSolid" then
+		addStroke("Left", -2, true)
+		addStroke("Right", 2, false)
+	else
+		addStroke("Line", 0, props.Line == "Dashed")
+	end
+
+	return e("TextButton", {
+		Name = "LaneBoundary_" .. props.BoundaryIndex,
+		Text = "",
+		BackgroundColor3 = if props.Selected then Theme.SELECTED else Theme.FIELD,
+		BackgroundTransparency = if props.Selected then 0.25 elseif hovered then 0.55 else 1,
+		AutoButtonColor = false,
+		Size = UDim2.new(0, BOUNDARY_BUTTON_WIDTH, 1, 0),
+		LayoutOrder = props.LayoutOrder,
+		[React.Event.Activated] = props.OnClick,
+		[React.Event.MouseEnter] = function()
+			setHovered(true)
+		end,
+		[React.Event.MouseLeave] = function()
+			setHovered(false)
+		end,
+	}, children)
+end
+
 -- The lane strip card: header, tile strip, and (when a tile is selected)
 -- the edit controls for that lane. Pinned full-width along the bottom.
 local function LaneStripCard(props: {
 	Profile: RoadProfile.RoadProfile,
+	RegionStyle: RegionStyles.RegionStyle,
 	ReadOnly: boolean?,
 	SelectedIndex: number, -- 0 = none
 	OnSelect: (index: number) -&gt; (), -- 0 clears
@@ -17612,6 +17734,18 @@ local function LaneStripCard(props: {
 	local count = #profile.Components
 	local sel: number? = if props.SelectedIndex &gt;= 1 and props.SelectedIndex &lt;= count then props.SelectedIndex else nil
 	local selected: RoadProfile.ProfileComponent? = if sel then profile.Components[sel :: number] else nil
+	local showMarkings, setShowMarkings = React.useState(false)
+	local selectedBoundaryIndex, setSelectedBoundaryIndex = React.useState(0)
+	local boundaryIndex: number? = if selectedBoundaryIndex &gt;= 1
+		and selectedBoundaryIndex &lt; count
+		and Markings.IsEditableLaneBoundary(profile.Components, selectedBoundaryIndex)
+		then selectedBoundaryIndex
+		else nil
+
+	React.useEffect(function()
+		setSelectedBoundaryIndex(0)
+		return nil
+	end, { profile.Id, count } :: { any })
 
 	local function changeSelected(patch: (component: RoadProfile.ProfileComponent) -&gt; RoadProfile.ProfileComponent)
 		local index = sel
@@ -17626,11 +17760,24 @@ local function LaneStripCard(props: {
 		end)
 	end
 
-	-- Number keys 1-4 set the selected lane's right-side marking directly,
-	-- matching the dropdown's options minus Auto - only live while a lane
-	-- with a marking to set (not the last one) is selected.
+	local function changeBoundary(index: number, rule: RoadProfile.BoundaryRule?)
+		props.OnChange(function(copy)
+			local component = copy.Components[index]
+			if component then
+				copy.Components[index] = {
+					Kind = component.Kind,
+					WidthM = component.WidthM,
+					Direction = component.Direction,
+					RightBoundary = rule,
+				}
+			end
+		end)
+	end
+
+	-- Number keys 1-4 set the explicitly selected between-lane boundary,
+	-- matching the dropdown's options minus Auto.
 	React.useEffect(function()
-		if readOnly or not sel or (sel :: number) &gt;= count then
+		if readOnly or not boundaryIndex then
 			return nil
 		end
 		local cn = UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
@@ -17639,34 +17786,58 @@ local function LaneStripCard(props: {
 			end
 			local rule = NUMBER_KEY_TO_BOUNDARY[input.KeyCode]
 			if rule then
-				changeSelected(function(component)
-					return {
-						Kind = component.Kind,
-						WidthM = component.WidthM,
-						Direction = component.Direction,
-						RightBoundary = rule,
-					}
-				end)
+				changeBoundary(boundaryIndex :: number, rule)
 			end
 		end)
 		return function()
 			cn:Disconnect()
 		end
-	end, { sel, readOnly, count } :: { any })
+	end, { boundaryIndex, readOnly } :: { any })
 
 	local children: { [string]: any } = {}
 	decorateCard(children)
-	children.Header = e(Components.Section, {
-		Text = string.format("Road Layout - %.1f m", RoadProfile.TotalWidthM(profile)),
-		First = true,
+	children.Header = e("Frame", {
+		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
+		BackgroundTransparency = 1,
 		LayoutOrder = 1,
+	}, {
+		Title = e("TextLabel", {
+			Text = string.upper(string.format("Road Layout - %.1f m", RoadProfile.TotalWidthM(profile))),
+			TextColor3 = Theme.DIM,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, -150, 1, 0),
+			Font = Theme.FONT_BOLD,
+			TextSize = Theme.HEADER_TEXT_SIZE,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+		}),
+		MarkingToggle = not readOnly and e("TextButton", {
+			Text = if showMarkings then "Hide lane markings" else "Show lane markings",
+			TextColor3 = Theme.WHITE,
+			BackgroundColor3 = if showMarkings then Theme.SELECTED else Theme.BUTTON,
+			BackgroundTransparency = if showMarkings then 0.1 else Theme.GLASS_ELEMENT_TRANSPARENCY,
+			AnchorPoint = Vector2.new(1, 0),
+			Position = UDim2.new(1, 0, 0, 0),
+			Size = UDim2.new(0, 146, 1, 0),
+			Font = Theme.FONT,
+			TextSize = 14,
+			[React.Event.Activated] = function()
+				local nextValue = not showMarkings
+				setShowMarkings(nextValue)
+				if not nextValue then
+					setSelectedBoundaryIndex(0)
+				end
+			end,
+		}, {
+			Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+		}),
 	})
 
 	local tiles: { [string]: any } = {
 		Layout = e("UIListLayout", {
 			FillDirection = Enum.FillDirection.Horizontal,
 			SortOrder = Enum.SortOrder.LayoutOrder,
-			Padding = UDim.new(0, 4),
+			Padding = UDim.new(0, if showMarkings then 0 else 4),
 			HorizontalAlignment = Enum.HorizontalAlignment.Center,
 		}),
 	}
@@ -17677,11 +17848,40 @@ local function LaneStripCard(props: {
 			Selected = sel == index,
 			ReadOnly = readOnly,
 			OnClick = function()
+				setSelectedBoundaryIndex(0)
 				props.OnSelect(if props.SelectedIndex == index then 0 else index)
 			end,
 			OnHoverChanged = props.OnTileHoverChanged,
-			LayoutOrder = index,
+			LayoutOrder = index * 2 - 1,
 		})
+		if showMarkings and index &lt; count and Markings.IsEditableLaneBoundary(profile.Components, index) then
+			local nextComponent = profile.Components[index + 1]
+			local opposing = component.Direction ~= 0
+				and nextComponent.Direction ~= 0
+				and component.Direction ~= nextComponent.Direction
+			local spec = if opposing then props.RegionStyle.CenterLine else props.RegionStyle.LaneLine
+			local rule = component.RightBoundary
+			local line: RegionStyles.LineType = if rule ~= nil and rule ~= "Auto"
+				then rule :: RegionStyles.LineType
+				else spec.Line
+			tiles["Boundary" .. index] = e(BoundaryButton, {
+				BoundaryIndex = index,
+				Line = line,
+				Color = spec.Color,
+				Selected = boundaryIndex == index,
+				OnClick = function()
+					props.OnSelect(0)
+					setSelectedBoundaryIndex(if selectedBoundaryIndex == index then 0 else index)
+				end,
+				LayoutOrder = index * 2,
+			})
+		elseif showMarkings and index &lt; count then
+			tiles["Gap" .. index] = e("Frame", {
+				Size = UDim2.new(0, 4, 1, 0),
+				BackgroundTransparency = 1,
+				LayoutOrder = index * 2,
+			})
+		end
 	end
 	local stripScrollProps = Components.ScrollBar()
 	stripScrollProps.Size = UDim2.new(1, 0, 0, 78)
@@ -17708,6 +17908,34 @@ local function LaneStripCard(props: {
 			Text = "Lane editing is disabled for transition roads.",
 			Dim = true,
 			LayoutOrder = 3,
+		})
+	elseif boundaryIndex then
+		local left = profile.Components[boundaryIndex :: number]
+		local right = profile.Components[(boundaryIndex :: number) + 1]
+		children.Controls = e(Components.Row, { LayoutOrder = 3 }, {
+			Label = e(Components.Label, {
+				Text = string.format(
+					"Boundary between %s %s and %s %s",
+					KIND_LABEL[left.Kind] or left.Kind,
+					arrowFor(left.Direction),
+					KIND_LABEL[right.Kind] or right.Kind,
+					arrowFor(right.Direction)
+				),
+				LayoutOrder = 1,
+				Width = 260,
+			}),
+			Dropdown = e(Components.Dropdown, {
+				Options = BOUNDARY_OPTIONS,
+				SelectedId = left.RightBoundary or "Auto",
+				OnSelected = function(id: string)
+					changeBoundary(
+						boundaryIndex :: number,
+						if id == "Auto" then nil else (id :: RoadProfile.BoundaryRule)
+					)
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
 		})
 	elseif selected then
 		local selectedComponent = selected :: RoadProfile.ProfileComponent
@@ -17795,32 +18023,11 @@ local function LaneStripCard(props: {
 				Size = UDim2.new(0, 26, 0, Theme.ROW_HEIGHT),
 			}),
 		})
-		-- Lane marking is split onto its own row: a distinct concern from
-		-- width/direction/reorder, and needs room for a readable label.
-		if (sel :: number) &lt; count then
-			children.Marking = e(Components.Row, { LayoutOrder = 4 }, {
-				Label = e(Components.Label, { Text = "Lane marking", LayoutOrder = 1, Width = 90 }),
-				Dropdown = e(Components.Dropdown, {
-					Options = BOUNDARY_OPTIONS,
-					SelectedId = selectedComponent.RightBoundary or "Auto",
-					OnSelected = function(id: string)
-						changeSelected(function(component)
-							return {
-								Kind = component.Kind,
-								WidthM = component.WidthM,
-								Direction = component.Direction,
-								RightBoundary = if id == "Auto" then nil else (id :: RoadProfile.BoundaryRule),
-							}
-						end)
-					end,
-					LayoutOrder = 2,
-					Grow = true,
-				}),
-			})
-		end
 	else
 		children.Controls = e(Components.Label, {
-			Text = "Click a lane tile to edit it; click or drag modules from the palette.",
+			Text = if showMarkings
+				then "Select a line between two lane tiles to edit that boundary."
+				else "Select a lane tile to edit it, or show lane markings to edit a boundary.",
 			Dim = true,
 			LayoutOrder = 3,
 		})
@@ -18416,6 +18623,7 @@ local function Panel(
 			}),
 			StripCard = e(LaneStripCard, {
 				Profile = profile,
+				RegionStyle = props.RegionStyle,
 				ReadOnly = readOnly,
 				SelectedIndex = selectedIndex,
 				OnSelect = setSelectedIndex,

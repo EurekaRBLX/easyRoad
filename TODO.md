@@ -591,12 +591,18 @@ type over a free-form sub-range, siblings moving together - see
 `SHIPPED.md`) shipped a real v1, but a few things were deliberately scoped
 out rather than solved, and should get their own pass later:
 
+Completed in the current pass: the opposing-direction centre line is now an
+editable stretch target and accepts the same explicit boundary rules as a lane
+line. Road Editor reveals markings as selectors physically between the two
+Drive lane tiles, with a boundary-specific editor, instead of showing a
+misleading `Lane marking` property inside one selected lane.
+
 - **`ComponentIndices`-keyed storage isn't stable across a structural
   profile edit.** A stretch stores which cross-section boundaries it
   targets by index; if the user later adds/removes/reorders lanes in the
   designer and hits Apply, an existing stretch can end up pointing at the
   wrong boundary (or silently drop an index, if it no longer resolves to a
-  same-direction boundary at all - `Markings.lua` degrades safely per
+  Drive/Drive boundary at all - `Markings.lua` degrades safely per
   index, it just doesn't warn). A `RightBoundary` rule doesn't have this
   problem since it lives on the component itself and moves/deletes with
   it; a stretch is a separate list keyed by position instead.

@@ -42,9 +42,10 @@ local StructureBuilder = require("./StructureBuilder")
 --                  pull-in carved into the road's cross-section).
 --   ConfirmingBay - after a bay's drawn, adjust its length/width (defaults:
 --                  the dragged size) before committing the geometry rebuild.
---   PlacingMarkingStretch - click a same-direction lane boundary, then drag
+--   PlacingMarkingStretch - click any Drive/Drive boundary, then drag
 --                  along the road to pick the free-form sub-range where its
---                  marking (and every same-direction sibling boundary's)
+--                  marking (and every same-direction sibling boundary's;
+--                  an opposing centre line is its own group)
 --                  should be overridden to a different line type.
 --   ConfirmingMarkingStretch - adjust the dragged range/line type before
 --                  committing.
@@ -138,7 +139,7 @@ export type RoadEditSession = {
 	SetBayDraftLength: (lengthStuds: number) -> (),
 	SetBayDraftWidth: (widthM: number) -> (),
 	ConfirmBay: () -> (),
-	-- Marking stretch: click a same-direction lane boundary and drag
+	-- Marking stretch: click any Drive/Drive lane/centre boundary and drag
 	-- free-form along the road to override it (and, depending on
 	-- selection mode, related boundaries) to a different line type over
 	-- that sub-range.
@@ -211,7 +212,7 @@ local function createRoadEditSession(
 	local stretchDragComponentIndex: number? = nil
 	local stretchGhosts: { Part } = {}
 	-- Which boundaries a drag applies to: "All" (the whole same-direction
-	-- sibling run - the default), "Individual" (just the clicked
+	-- sibling run, or the centre line alone - the default), "Individual" (just the clicked
 	-- boundary), or "Select" (an arbitrary, user-built set - see
 	-- stretchSelectedIndices below, toggled by plain clicks while in this
 	-- mode). Persists across separate stretch placements on the same road
@@ -333,12 +334,12 @@ local function createRoadEditSession(
 		changeSignal:Fire()
 	end
 
-	-- Finds the same-direction Drive/Drive boundary nearest the click's
+	-- Finds the editable Drive/Drive boundary nearest the click's
 	-- lateral position - mirrors exactly the condition Markings.lua uses to
-	-- decide a boundary is a lane-changing rule candidate at all (kerb/edge
-	-- lines and opposing-direction center lines aren't valid stretch
-	-- targets), so a click always resolves to something Markings.Compute
-	-- will actually recognise as a member of a sibling run.
+	-- decide a boundary is an editable lane/centre marking (kerb/edge
+	-- lines aren't valid stretch targets, but an opposing-direction centre
+	-- line is), so a click always resolves to something Markings.Compute
+	-- will actually recognise as an editable boundary.
 	local function resolveComponentIndexFromHit(station: number, hitPosition: Vector3): number?
 		if not originalData then
 			return nil
@@ -351,7 +352,7 @@ local function createRoadEditSession(
 		local bestIndex: number? = nil
 		local bestDistance = math.huge
 		for i = 1, #components - 1 do
-			if Markings.IsSameDirectionBoundary(components, i) and offsets[i] then
+			if Markings.IsEditableLaneBoundary(components, i) and offsets[i] then
 				local distance = math.abs(lateralOffsetM - offsets[i].Right)
 				if distance < bestDistance then
 					bestDistance = distance
@@ -1103,7 +1104,7 @@ local function createRoadEditSession(
 		-- just tweaks an existing one) can leave a stretch pointing at the
 		-- wrong boundary. Accepted as a known v1 limitation rather than
 		-- solved now - Markings.lua simply drops a stretch whose
-		-- ComponentIndex no longer resolves to a same-direction boundary.
+		-- ComponentIndex no longer resolves to a Drive/Drive boundary.
 		local buildOptions = {
 			Curve = originalData.Curve,
 			ProfileStart = editingProfile,
