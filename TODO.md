@@ -8,6 +8,9 @@ Planned/requested work not yet built, roughly ordered by how developed the
 plan is. Not user-facing; internal planning only. See `SHIPPED.md` for
 what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
+Performance work is tracked separately in `OPTIMIZATION.md`, beginning with
+2048-stud straight-run Parts and lateral coalescing of identical lane surfaces.
+
 ## Next major system - intersection controls, crossings, and signals
 
 The geometry can create and trim ordinary intersections, but it does not yet
@@ -68,10 +71,11 @@ Follow-ups still open:
 - live Studio validation of selection UX, sockets, collisions, and raycasts.
 
 Completed in the current follow-up: procedural road/structure seating overlap,
-outside-edge segment coverage, per-road concrete colour, parapet/tunnel gap
-controls, a concrete elevated-median toggle, and collapsed advanced structure
-controls. Parallel placement supports 2-16 curved carriageways, opposed pairs,
-and per-roadway reversal for larger groups. Parallel groups do not yet
+surface-safe thin bases with downward-compensated edge walls, outside-edge
+segment coverage, per-road concrete colour, parapet/tunnel gap controls, a
+concrete elevated-median toggle, and collapsed advanced structure controls.
+Parallel placement supports 2-16 curved carriageways, opposed pairs, and
+per-roadway reversal for larger groups. Parallel groups do not yet
 synthesize coordinated junction splits/connections automatically; a straight
 primary can still use the ordinary single-road crossing path.
 

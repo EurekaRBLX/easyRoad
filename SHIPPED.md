@@ -4,6 +4,26 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Thin procedural bases with downward-compensated walls
+
+The broad procedural base could visually cover the road surface, especially
+with a large interface-overlap setting. Both structure types now use a thin
+central base (`0.2m`, with a small stud minimum), and overlap is capped so its
+top remains at least 0.08 studs below the road surface.
+
+The lost depth is kept at the edges instead of under the entire carriageway:
+viaduct parapets now continue downward as fascia walls to the original deck
+depth, and tunnel sidewalls continue below the shortened base to the original
+shell depth. Piers terminate against the new central-base underside. The Python
+structure preview measures the surface clearance, the shorter bases, the
+downward wall compensation, pier contact, and tunnel-vault continuity.
+
+Added `OPTIMIZATION.md` as the dedicated performance backlog. Its first two
+targets are up-to-2048-stud Parts for compatible straight runs and lateral
+coalescing of adjacent identical lane surfaces, with explicit split conditions,
+measurement requirements, and correctness gates. These optimizations are
+planned, not claimed as shipped.
+
 ## Selected-junction panel opens instead of crashing in radius advice
 
 Studio selection was working: the junction Model selected in Explorer and the

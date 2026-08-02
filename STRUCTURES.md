@@ -20,9 +20,10 @@ lining, and ground-projected supports.
    as soon as each segment is committed; the choice stays active along the
    placement chain.
 
-Without a custom module, viaduct mode builds a structural slab and edge
-parapets beneath/along the generated road, then raycasts piers down to the
-world. Tunnel mode builds a base, tall sidewalls, and a segmented arched vault.
+Without a custom module, viaduct mode builds a thin central structural base and
+edge parapet/fascia walls beneath/along the generated road, then raycasts piers
+down to the world. Tunnel mode builds a thin base, bottom-extended sidewalls,
+and a segmented arched vault.
 
 Road Tools keeps the common mode/asset choices visible and collapses the
 geometry fields under **Edit advanced structure options**. Those fields control
@@ -77,9 +78,11 @@ leaving an uncovered gap.
 
 ## Viaducts
 
-An elevated viaduct may omit a custom module. EasyRoad then emits a continuous
-concrete structural slab below the road plus concrete parapets at both outer
-edges. Auto piers are distributed along the span (including one on short spans)
+An elevated viaduct may omit a custom module. EasyRoad then emits a continuous,
+thin concrete base below the road plus concrete parapet/fascia walls at both
+outer edges. Those walls extend downward to retain the old structural depth
+without carrying a broad concrete block up near the asphalt. Auto piers are
+distributed along the span (including one on short spans)
 and meet the slab underside after raycasting vertically down. Generated road, junction, and roundabout folders are
 excluded so a pier searches for Terrain or world geometry rather than landing
 on another generated road. No pier is made for a miss, a hit beyond Max drop,
@@ -90,16 +93,18 @@ explicit pier sockets are later extensions.
 
 Procedural slab/parapet segments use outside-edge arc allowance in their
 longitudinal depth, so bends and grade changes overlap instead of opening a
-hairline between rigid Parts. The default interface overlap also seats the slab
-slightly into the road underside; set it to zero only for a deliberate flush
-joint. Parapet gap is measured outward from the road edge.
+hairline between rigid Parts. The default interface overlap also seats the base
+slightly into the road underside, but it is capped so the concrete always stays
+at least 0.08 studs below the road surface. Set it to zero only for a deliberate
+flush underside joint. Parapet gap is measured outward from the road edge.
 
 ## Tunnels
 
 Tunnel mode repeats an imported tunnel module when one is selected. With no
-custom asset it builds a concrete base slab, tall sidewalls, and a nine-panel
-elliptical vault following every road segment, sized from the road's widest
-cross-section.
+custom asset it builds a thin concrete base, sidewalls extended below that base
+to preserve the shell depth, and a nine-panel elliptical vault following every
+road segment, sized from the road's widest cross-section. The same surface-
+clearance cap prevents the base from covering the generated asphalt.
 
 It does **not** edit Roblox Terrain. Excavating and later restoring Terrain is a
 destructive operation with different undo/data requirements, so it remains a

@@ -1,8 +1,9 @@
 # EasyRoad — handoff
 
 Read this first. `ROUNDABOUT.md` is the deep dive on the roundabout (the most
-expensive part of this project), `TODO.md` is the live backlog, `SHIPPED.md` the
-chronological history, `KNOWN_ISSUES.md` confirmed bugs.
+expensive part of this project), `TODO.md` is the live feature backlog,
+`OPTIMIZATION.md` the measured performance plan, `SHIPPED.md` the chronological
+history, and `KNOWN_ISSUES.md` confirmed bugs.
 
 ---
 

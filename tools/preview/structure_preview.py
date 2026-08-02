@@ -28,6 +28,7 @@ EPSILON = 0.05
 MAX_MODULES = 2000
 MAX_PROCEDURAL_PARTS = 6000
 TUNNEL_ARCH_SEGMENTS = 9
+STRUCTURE_SURFACE_CLEARANCE_STUDS = 0.08
 
 
 def dist(a, b):
@@ -174,37 +175,56 @@ def pier_errors(piers):
     return errors
 
 
+def central_base_thickness(scale):
+    return max(0.2*scale, 0.65)
+
+
+def safe_interface_overlap(requested_m, scale, road_thickness, base_thickness):
+    return min(requested_m*scale, base_thickness*0.9,
+               max(road_thickness-STRUCTURE_SURFACE_CLEARANCE_STUDS, 0))
+
+
 def viaduct_section(road_width, scale=3.571, road_thickness=1.0,
                     interface_overlap_m=0.2, parapet_gap_m=0.0):
-    """Port of the procedural slab/parapet cross-section dimensions."""
+    """Port of the thin base and downward-extended parapet/fascia."""
     edge_allowance = 0.45*scale
-    slab_thickness = max(0.55*scale, 1.5)
+    base_thickness = central_base_thickness(scale)
+    fascia_depth = max(0.55*scale, 1.5)
     barrier_thickness = max(0.35*scale, 0.8)
     barrier_height = max(1.2*scale, 2.5)
     barrier_center = road_width/2 + parapet_gap_m*scale + barrier_thickness/2
     deck_half = max(road_width/2+edge_allowance, barrier_center+barrier_thickness/2)
-    interface_overlap = min(interface_overlap_m*scale, slab_thickness*0.9)
-    slab_top = -road_thickness+interface_overlap
+    interface_overlap = safe_interface_overlap(
+        interface_overlap_m, scale, road_thickness, base_thickness)
+    base_top = -road_thickness+interface_overlap
     return {
         "deck_width": deck_half*2,
-        "slab_bottom": slab_top-slab_thickness,
-        "slab_top": slab_top,
+        "slab_bottom": base_top-base_thickness,
+        "slab_top": base_top,
+        "base_thickness": base_thickness,
+        "fascia_depth": fascia_depth,
+        "fascia_bottom": base_top-fascia_depth,
         "barrier_thickness": barrier_thickness,
         "barrier_height": barrier_height,
+        "barrier_bottom": base_top-fascia_depth,
         "barrier_inner": barrier_center-barrier_thickness/2,
     }
 
 
 def tunnel_section(road_width, scale=3.571, road_thickness=1.0,
                    interface_overlap_m=0.2, wall_clearance_m=0.75):
-    """Port of the base/walls/nine-panel elliptical vault cross-section."""
+    """Port of the thin base, bottom-extended walls, and elliptical vault."""
     side_clearance = wall_clearance_m*scale
     thickness = max(0.35*scale, 0.5)
+    base_thickness = central_base_thickness(scale)
     inner_half = road_width/2 + side_clearance
     wall_height = max(6*scale, inner_half*0.72)
     roof_rise = max(2.5*scale, inner_half*0.22)
-    interface_overlap = min(interface_overlap_m*scale, thickness*0.9)
+    interface_overlap = safe_interface_overlap(
+        interface_overlap_m, scale, road_thickness, base_thickness)
     floor_top = -road_thickness+interface_overlap
+    wall_bottom = floor_top-thickness
+    wall_top = floor_top+wall_height
     panels = []
     for index in range(TUNNEL_ARCH_SEGMENTS):
         theta0 = math.pi*index/TUNNEL_ARCH_SEGMENTS
@@ -216,7 +236,11 @@ def tunnel_section(road_width, scale=3.571, road_thickness=1.0,
     return {
         "inner_half": inner_half,
         "thickness": thickness,
+        "base_thickness": base_thickness,
+        "base_bottom": floor_top-base_thickness,
         "wall_height": wall_height,
+        "wall_bottom": wall_bottom,
+        "wall_top": wall_top,
         "roof_rise": roof_rise,
         "floor_top": floor_top,
         "panels": panels,
@@ -231,13 +255,17 @@ def procedural_errors():
         errors.append("viaduct slab does not extend beyond the road")
     if viaduct["barrier_height"] <= 0 or viaduct["slab_bottom"] >= viaduct["slab_top"]:
         errors.append("invalid viaduct cross-section")
-    if viaduct["slab_top"] <= -1.0:
-        errors.append("viaduct slab does not overlap the road underside")
+    if viaduct["slab_top"] > -STRUCTURE_SURFACE_CLEARANCE_STUDS+1e-9:
+        errors.append("viaduct base can cover the road surface")
+    if viaduct["base_thickness"] >= viaduct["fascia_depth"]:
+        errors.append("viaduct central base was not shortened")
+    if viaduct["barrier_bottom"] >= viaduct["slab_bottom"]:
+        errors.append("viaduct walls do not compensate below the shortened base")
     if abs(viaduct["barrier_inner"]-road_width/2) > 1e-9:
         errors.append("default viaduct parapet leaves an edge gap")
     tunnel = tunnel_section(road_width)
     panels = tunnel["panels"]
-    expected_y = tunnel["floor_top"]+tunnel["wall_height"]
+    expected_y = tunnel["wall_top"]
     if len(panels) != TUNNEL_ARCH_SEGMENTS:
         errors.append("wrong tunnel vault panel count")
     if abs(panels[0][0][0]+tunnel["inner_half"]) > 1e-9 or abs(panels[-1][1][0]-tunnel["inner_half"]) > 1e-9:
@@ -250,6 +278,12 @@ def procedural_errors():
     crown = max(point[1] for panel in panels for point in panel)
     if crown <= expected_y:
         errors.append("tunnel vault has no crown rise")
+    if tunnel["floor_top"] > -STRUCTURE_SURFACE_CLEARANCE_STUDS+1e-9:
+        errors.append("tunnel base can cover the road surface")
+    if tunnel["base_thickness"] >= tunnel["thickness"]:
+        errors.append("tunnel central base was not shortened")
+    if tunnel["wall_bottom"] >= tunnel["base_bottom"]:
+        errors.append("tunnel walls do not compensate below the shortened base")
     return errors
 
 
@@ -264,6 +298,7 @@ def validate_parity():
         "MAX_MODULES": MAX_MODULES,
         "MAX_PROCEDURAL_PARTS": MAX_PROCEDURAL_PARTS,
         "TUNNEL_ARCH_SEGMENTS": TUNNEL_ARCH_SEGMENTS,
+        "STRUCTURE_SURFACE_CLEARANCE_STUDS": STRUCTURE_SURFACE_CLEARANCE_STUDS,
         "ARC_SAMPLES": ARC_SAMPLES,
     }
     sources = {
@@ -271,6 +306,7 @@ def validate_parity():
         "MAX_MODULES": builder,
         "MAX_PROCEDURAL_PARTS": builder,
         "TUNNEL_ARCH_SEGMENTS": builder,
+        "STRUCTURE_SURFACE_CLEARANCE_STUDS": builder,
         "ARC_SAMPLES": curve_source,
     }
     for name, value in expected.items():
@@ -349,10 +385,17 @@ def render(path):
         canvas.fill_poly([(a[0]-5, a[1]), (a[0]+5, a[1]), (b[0]+7, b[1]), (b[0]-7, b[1])],
                          (139, 143, 148))
         canvas.disc(b[0], b[1], 4, (244, 196, 74))
-    slab = [(x, y+3) for x, y in road]
-    canvas.polyline(slab, (139, 143, 148), 16)
+    viaduct = viaduct_section(86.0)
+    wall_top = [side(curve.length*index/180, curve.pos(curve.length*index/180)[1]+viaduct["barrier_height"])
+                for index in range(181)]
+    wall_bottom = [side(curve.length*index/180, curve.pos(curve.length*index/180)[1]+viaduct["barrier_bottom"])
+                   for index in range(181)]
+    canvas.fill_poly(wall_top+list(reversed(wall_bottom)), (139, 143, 148))
+    base_bottom = [side(curve.length*index/180, curve.pos(curve.length*index/180)[1]+viaduct["slab_bottom"])
+                   for index in range(181)]
+    canvas.polyline(base_bottom, (92, 97, 104), 2)
     canvas.polyline(road, (225, 230, 235), 4)
-    canvas.polyline([(x, y-5) for x, y in road], (174, 178, 183), 5)
+    canvas.polyline(wall_top, (174, 178, 183), 3)
 
     # Procedural tunnel cross-section: base, tall walls, and the same nine
     # contiguous elliptical vault panels emitted by StructureBuilder.lua.
@@ -367,20 +410,20 @@ def render(path):
         return center_x+x*section_scale, floor_y-(y-tunnel["floor_top"])*section_scale
 
     outer_half = tunnel["inner_half"]+tunnel["thickness"]
-    base_bottom = floor_y+tunnel["thickness"]*section_scale
+    base_bottom = floor_y+tunnel["base_thickness"]*section_scale
     canvas.fill_poly([
         section_point((-outer_half, tunnel["floor_top"])),
         section_point((outer_half, tunnel["floor_top"])),
         (center_x+outer_half*section_scale, base_bottom),
         (center_x-outer_half*section_scale, base_bottom),
     ], (139, 143, 148))
-    wall_top_y = tunnel["floor_top"]+tunnel["wall_height"]
+    wall_top_y = tunnel["wall_top"]
     for side_sign in (-1, 1):
         inner_x = side_sign*tunnel["inner_half"]
         outer_x = side_sign*outer_half
         canvas.fill_poly([
-            section_point((inner_x, tunnel["floor_top"])),
-            section_point((outer_x, tunnel["floor_top"])),
+            section_point((inner_x, tunnel["wall_bottom"])),
+            section_point((outer_x, tunnel["wall_bottom"])),
             section_point((outer_x, wall_top_y)),
             section_point((inner_x, wall_top_y)),
         ], (139, 143, 148))

@@ -12803,8 +12803,30 @@ local function raycastExclusions(road: Model): { Instance }
 	return excluded
 end
 
-local function viaductSlabThickness(scale: number): number
+-- Keep the broad central base visually below the asphalt. The deeper structural
+-- silhouette belongs at the edges (viaduct fascia/parapets and tunnel walls),
+-- where extending downward cannot cover the road surface.
+local STRUCTURE_SURFACE_CLEARANCE_STUDS = 0.08
+
+local function centralBaseThickness(scale: number): number
+	return math.max(0.2 * scale, 0.65)
+end
+
+local function viaductFasciaDepth(scale: number): number
 	return math.max(0.55 * scale, 1.5)
+end
+
+local function safeInterfaceOverlap(
+	requestedM: number,
+	scale: number,
+	roadThickness: number,
+	baseThickness: number
+): number
+	return math.min(
+		requestedM * scale,
+		baseThickness * 0.9,
+		math.max(roadThickness - STRUCTURE_SURFACE_CLEARANCE_STUDS, 0)
+	)
 end
 
 local function proceduralDepth(curve: PolyCurve.PolyCurve, s0: number, s1: number, halfWidth: number): number
@@ -12831,8 +12853,13 @@ local function placePiers(
 	local maxDrop = math.max(data.MaxPillarHeightM * scale, 1)
 	local width = math.max(data.PillarWidthM * scale, 0.2)
 	local depth = math.max(data.PillarDepthM * scale, 0.2)
-	local slabThickness = viaductSlabThickness(scale)
-	local interfaceOverlap = math.min(data.InterfaceOverlapM * scale, slabThickness * 0.9)
+	local baseThickness = centralBaseThickness(scale)
+	local interfaceOverlap = safeInterfaceOverlap(
+		data.InterfaceOverlapM,
+		scale,
+		settings.RoadThicknessStuds,
+		baseThickness
+	)
 	local concreteColor = StructureBuilder.ColorFromHex(data.ConcreteColorHex)
 	local folder = Instance.new("Folder")
 	folder.Name = "Piers"
@@ -12859,7 +12886,7 @@ local function placePiers(
 					data.ModuleOffsetM * scale
 					- settings.RoadThicknessStuds
 					+ interfaceOverlap
-					- slabThickness
+					- baseThickness
 				)
 		local result = Workspace:Raycast(top + Vector3.new(0, 2, 0), Vector3.new(0, -(maxDrop + 2), 0), params)
 		if result then
@@ -12932,8 +12959,14 @@ local function placeProceduralViaduct(
 	local concreteColor = StructureBuilder.ColorFromHex(data.ConcreteColorHex)
 	local parapetGap = data.ViaductParapetGapM * scale
 	local edgeAllowance = 0.45 * scale
-	local slabThickness = viaductSlabThickness(scale)
-	local interfaceOverlap = math.min(data.InterfaceOverlapM * scale, slabThickness * 0.9)
+	local baseThickness = centralBaseThickness(scale)
+	local fasciaDepth = viaductFasciaDepth(scale)
+	local interfaceOverlap = safeInterfaceOverlap(
+		data.InterfaceOverlapM,
+		scale,
+		settings.RoadThicknessStuds,
+		baseThickness
+	)
 	local barrierThickness = math.max(0.35 * scale, 0.8)
 	local barrierHeight = math.max(1.2 * scale, 2.5)
 	local barrierCenter = roadWidth / 2 + parapetGap + barrierThickness / 2
@@ -12965,23 +12998,27 @@ local function placeProceduralViaduct(
 		local frame = safeLookAt(middle, middle + (p1 - p0), roadFrame.UpVector)
 		frame = frame + roadFrame.UpVector * offset
 		local depth = proceduralDepth(curve, s0, s1, deckHalfWidth)
-		local slabY = -settings.RoadThicknessStuds + interfaceOverlap - slabThickness / 2
+		local baseTopY = -settings.RoadThicknessStuds + interfaceOverlap
+		local baseY = baseTopY - baseThickness / 2
+		local barrierBottom = baseTopY - fasciaDepth
+		local fullBarrierHeight = barrierHeight - barrierBottom
+		local barrierY = (barrierHeight + barrierBottom) / 2
 
 		makeConcretePart(
 			string.format("DeckSlab_%04d", index),
-			Vector3.new(deckWidth, slabThickness, depth),
-			frame * CFrame.new(0, slabY, 0),
+			Vector3.new(deckWidth, baseThickness, depth),
+			frame * CFrame.new(0, baseY, 0),
 			concreteColor,
 			folder
 		)
 		for _, side in { -1, 1 } do
 			makeConcretePart(
 				string.format("Parapet_%s_%04d", if side &lt; 0 then "Left" else "Right", index),
-				Vector3.new(barrierThickness, barrierHeight, depth),
+				Vector3.new(barrierThickness, fullBarrierHeight, depth),
 				frame
 					* CFrame.new(
 						side * barrierCenter,
-						barrierHeight / 2,
+						barrierY,
 						0
 					),
 				concreteColor,
@@ -13014,7 +13051,13 @@ local function placeProceduralTunnel(
 	local concreteColor = StructureBuilder.ColorFromHex(data.ConcreteColorHex)
 	local sideClearance = data.TunnelWallClearanceM * scale
 	local thickness = math.max(0.35 * scale, 0.5)
-	local interfaceOverlap = math.min(data.InterfaceOverlapM * scale, thickness * 0.9)
+	local baseThickness = centralBaseThickness(scale)
+	local interfaceOverlap = safeInterfaceOverlap(
+		data.InterfaceOverlapM,
+		scale,
+		settings.RoadThicknessStuds,
+		baseThickness
+	)
 	local innerHalfWidth = roadWidth / 2 + sideClearance
 	local outerWidth = innerHalfWidth * 2 + thickness * 2
 	local wallHeight = math.max(6 * scale, innerHalfWidth * 0.72)
@@ -13047,25 +13090,28 @@ local function placeProceduralTunnel(
 		frame = frame + roadFrame.UpVector * offset
 		local depth = proceduralDepth(curve, s0, s1, outerWidth / 2)
 		local floorTop = -settings.RoadThicknessStuds + interfaceOverlap
+		local wallBottom = floorTop - thickness
+		local fullWallHeight = wallHeight + thickness
+		local wallY = (floorTop + wallHeight + wallBottom) / 2
 
 		makeConcretePart(
 			string.format("Base_%04d", index),
-			Vector3.new(outerWidth, thickness, depth),
-			frame * CFrame.new(0, floorTop - thickness / 2, 0),
+			Vector3.new(outerWidth, baseThickness, depth),
+			frame * CFrame.new(0, floorTop - baseThickness / 2, 0),
 			concreteColor,
 			folder
 		)
 		makeConcretePart(
 			string.format("WallLeft_%04d", index),
-			Vector3.new(thickness, wallHeight, depth),
-			frame * CFrame.new(-innerHalfWidth - thickness / 2, floorTop + wallHeight / 2, 0),
+			Vector3.new(thickness, fullWallHeight, depth),
+			frame * CFrame.new(-innerHalfWidth - thickness / 2, wallY, 0),
 			concreteColor,
 			folder
 		)
 		makeConcretePart(
 			string.format("WallRight_%04d", index),
-			Vector3.new(thickness, wallHeight, depth),
-			frame * CFrame.new(innerHalfWidth + thickness / 2, floorTop + wallHeight / 2, 0),
+			Vector3.new(thickness, fullWallHeight, depth),
+			frame * CFrame.new(innerHalfWidth + thickness / 2, wallY, 0),
 			concreteColor,
 			folder
 		)
