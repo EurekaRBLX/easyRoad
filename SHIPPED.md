@@ -4,6 +4,47 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Independent structure finishes and twin-pillar viaduct bents
+
+Procedural structures no longer share one hard-coded concrete appearance.
+Each road serializes a base/pier finish, a separate viaduct edge-wall finish,
+and separate tunnel side-wall and roof finishes; every finish has its own
+Roblox material and colour. Settings exposes the same groups as defaults for
+new roads. Imported Roblox Models retain their authored appearance, while a
+custom viaduct can still use the base finish for EasyRoad-generated supports.
+Older road/settings JSON migrates to the previous grey Concrete appearance.
+
+Viaduct supports now expose the existing pillar width clearly and add Single
+or Twin layout. Twin stations raycast both column centres independently and
+emit the pair atomically, then place a transverse cap beam under the slab.
+Centre separation plus cap width, height, and depth are editable; cap width is
+clamped to cover both pillars. The updated Python structure preview renders the
+twin cross-section and distinct finish channels and asserts cap coverage,
+terrain contact, base clearance, wall compensation, and tunnel-vault joins.
+
+## Exact-straight surface coalescing with preserved raw road data
+
+RoadBuilder now has a conservative straight-road fast path. Only a monotonic,
+collinear set of line/Bezier control points with a constant cross-section can
+use it; shallow curves, transitions, and sliced bay geometry keep the existing
+adaptive emitter. Compatible surface ranges are emitted in Parts no longer
+than 2048 studs, with marking and kerb-stretch endpoints retained as hard split
+points. A 5000-stud straight therefore uses three longitudinal ranges instead
+of 625 default 8-stud intervals.
+
+Adjacent identical Drive lanes on that path are one asphalt surface band, but
+their lane mathematics are unchanged: markings still compute from the original
+profile components. Generated surfaces carry source component-index and station
+ranges, while the parent road keeps its full serialized curve, profiles, bay,
+stretch, junction, and structure metadata. Editors and rebuilders continue to
+read that authoritative Model data rather than infer anything from Part count.
+
+`straight_optimization_preview.py` checks the 2048 boundary cases, 4096+ runs,
+forced edit splits, material/colour mismatches, Drive-only compatibility, and
+the source-metadata contract. Its before/after render measures a 5000-stud 3+3
+boulevard at 5625 -> 15 surface Parts (99.73% fewer); live Studio timing and
+place-size benchmarking remain follow-up measurements.
+
 ## Explicit between-lane marking editor and editable centre-line stretches
 
 Road Editor no longer presents `RightBoundary` as if it belonged to whichever

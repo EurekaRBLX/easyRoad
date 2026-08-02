@@ -9,10 +9,12 @@ without Pillow.
     python3 tools/preview/structure_preview.py --check
     python3 tools/preview/structure_preview.py --out structure_preview.png
 
-The PNG contains, from top to bottom: custom-module plan, procedural viaduct
-side elevation, and procedural tunnel cross-section. Alternating module colours make custom
-module overlaps/gaps visible; yellow dots/columns are raycast pier stations and
-the green profile is terrain.
+The PNG contains a custom-module plan, procedural viaduct side elevation,
+twin-pillar/cap-beam cross-section, and procedural tunnel cross-section.
+Distinct finish colours verify that bases, edge/side walls, and tunnel roofs
+remain independently styleable. Alternating module colours make custom module
+overlaps/gaps visible; yellow dots/columns are raycast stations and the green
+profile is terrain.
 """
 import argparse
 import bisect
@@ -29,6 +31,11 @@ MAX_MODULES = 2000
 MAX_PROCEDURAL_PARTS = 6000
 TUNNEL_ARCH_SEGMENTS = 9
 STRUCTURE_SURFACE_CLEARANCE_STUDS = 0.08
+
+BASE_FINISH = (101, 126, 153)
+VIADUCT_WALL_FINISH = (178, 145, 99)
+TUNNEL_WALL_FINISH = (111, 148, 126)
+TUNNEL_ROOF_FINISH = (145, 122, 169)
 
 
 def dist(a, b):
@@ -211,6 +218,23 @@ def viaduct_section(road_width, scale=3.571, road_thickness=1.0,
     }
 
 
+def twin_support_section(scale=3.571, pillar_width_m=1.8,
+                         pillar_separation_m=6.0, cap_width_m=9.0,
+                         cap_height_m=1.0, cap_depth_m=2.2):
+    """Port of the clamped twin-column and transverse cap-beam dimensions."""
+    pillar_width = max(pillar_width_m*scale, 0.2)
+    separation = max(pillar_separation_m*scale, pillar_width)
+    cap_width = max(cap_width_m*scale, separation+pillar_width)
+    return {
+        "pillar_width": pillar_width,
+        "pillar_centres": (-separation/2, separation/2),
+        "separation": separation,
+        "cap_width": cap_width,
+        "cap_height": max(cap_height_m*scale, 0.2),
+        "cap_depth": max(cap_depth_m*scale, pillar_width),
+    }
+
+
 def tunnel_section(road_width, scale=3.571, road_thickness=1.0,
                    interface_overlap_m=0.2, wall_clearance_m=0.75):
     """Port of the thin base, bottom-extended walls, and elliptical vault."""
@@ -263,6 +287,14 @@ def procedural_errors():
         errors.append("viaduct walls do not compensate below the shortened base")
     if abs(viaduct["barrier_inner"]-road_width/2) > 1e-9:
         errors.append("default viaduct parapet leaves an edge gap")
+    twin = twin_support_section()
+    left, right = twin["pillar_centres"]
+    if abs((right-left)-twin["separation"]) > 1e-9:
+        errors.append("twin pillar centres do not match configured separation")
+    if twin["cap_width"]+1e-9 < twin["separation"]+twin["pillar_width"]:
+        errors.append("cap beam does not cover both pillar widths")
+    if twin["cap_height"] <= 0 or twin["cap_depth"] <= 0:
+        errors.append("invalid cap beam dimensions")
     tunnel = tunnel_section(road_width)
     panels = tunnel["panels"]
     expected_y = tunnel["wall_top"]
@@ -349,10 +381,10 @@ def quad_around(a, b, half_width):
 
 def render(path):
     curve, ranges, piers = validate_geometry()
-    canvas = Canvas(1100, 760, (29, 34, 43))
+    canvas = Canvas(1200, 760, (29, 34, 43))
     # Panel separators.
-    canvas.line((40, 250), (1060, 250), (72, 82, 96), 2)
-    canvas.line((40, 505), (1060, 505), (72, 82, 96), 2)
+    canvas.line((40, 250), (1160, 250), (72, 82, 96), 2)
+    canvas.line((40, 505), (1160, 505), (72, 82, 96), 2)
 
     # Viaduct plan: dark procedural deck, alternating imported modules, pier dots.
     plan_points = [map_plan(curve.pos(curve.length*i/180), 20) for i in range(181)]
@@ -383,26 +415,74 @@ def render(path):
         a = side(_station, top[1])
         b = side(_station, ground)
         canvas.fill_poly([(a[0]-5, a[1]), (a[0]+5, a[1]), (b[0]+7, b[1]), (b[0]-7, b[1])],
-                         (139, 143, 148))
+                         BASE_FINISH)
         canvas.disc(b[0], b[1], 4, (244, 196, 74))
     viaduct = viaduct_section(86.0)
     wall_top = [side(curve.length*index/180, curve.pos(curve.length*index/180)[1]+viaduct["barrier_height"])
                 for index in range(181)]
     wall_bottom = [side(curve.length*index/180, curve.pos(curve.length*index/180)[1]+viaduct["barrier_bottom"])
                    for index in range(181)]
-    canvas.fill_poly(wall_top+list(reversed(wall_bottom)), (139, 143, 148))
+    canvas.fill_poly(wall_top+list(reversed(wall_bottom)), VIADUCT_WALL_FINISH)
     base_bottom = [side(curve.length*index/180, curve.pos(curve.length*index/180)[1]+viaduct["slab_bottom"])
                    for index in range(181)]
-    canvas.polyline(base_bottom, (92, 97, 104), 2)
+    canvas.polyline(base_bottom, BASE_FINISH, 3)
     canvas.polyline(road, (225, 230, 235), 4)
     canvas.polyline(wall_top, (174, 178, 183), 3)
+
+    # Twin-pillar viaduct cross-section. Each column is independently
+    # projected, and both terminate at the underside of the transverse cap.
+    twin = twin_support_section()
+    viaduct_cross = viaduct_section(86.0)
+    twin_center_x = 285
+    support_scale = 4.0
+    deck_y = 555
+    road_half_px = 86.0*support_scale/2
+    deck_half_px = viaduct_cross["deck_width"]*support_scale/2
+    base_height_px = viaduct_cross["base_thickness"]*support_scale
+    canvas.fill_poly([
+        (twin_center_x-deck_half_px, deck_y),
+        (twin_center_x+deck_half_px, deck_y),
+        (twin_center_x+deck_half_px, deck_y+base_height_px),
+        (twin_center_x-deck_half_px, deck_y+base_height_px),
+    ], BASE_FINISH)
+    barrier_width_px = viaduct_cross["barrier_thickness"]*support_scale
+    barrier_top_y = deck_y-viaduct_cross["barrier_height"]*support_scale
+    barrier_bottom_y = deck_y-viaduct_cross["barrier_bottom"]*support_scale
+    for sign in (-1, 1):
+        inner_x = twin_center_x+sign*road_half_px
+        x0 = inner_x-barrier_width_px if sign < 0 else inner_x
+        canvas.fill_poly([
+            (x0, barrier_top_y), (x0+barrier_width_px, barrier_top_y),
+            (x0+barrier_width_px, barrier_bottom_y), (x0, barrier_bottom_y),
+        ], VIADUCT_WALL_FINISH)
+    cap_width_px = twin["cap_width"]*support_scale
+    cap_height_px = twin["cap_height"]*support_scale
+    cap_top = deck_y+base_height_px
+    canvas.fill_poly([
+        (twin_center_x-cap_width_px/2, cap_top),
+        (twin_center_x+cap_width_px/2, cap_top),
+        (twin_center_x+cap_width_px/2, cap_top+cap_height_px),
+        (twin_center_x-cap_width_px/2, cap_top+cap_height_px),
+    ], BASE_FINISH)
+    ground_y = 730
+    pillar_width_px = twin["pillar_width"]*support_scale
+    for centre in twin["pillar_centres"]:
+        x = twin_center_x+centre*support_scale
+        canvas.fill_poly([
+            (x-pillar_width_px/2, cap_top+cap_height_px),
+            (x+pillar_width_px/2, cap_top+cap_height_px),
+            (x+pillar_width_px/2, ground_y),
+            (x-pillar_width_px/2, ground_y),
+        ], BASE_FINISH)
+        canvas.disc(x, ground_y, 4, (244, 196, 74))
+    canvas.fill_poly([(70, ground_y), (500, ground_y), (500, 750), (70, 750)], (55, 94, 64))
 
     # Procedural tunnel cross-section: base, tall walls, and the same nine
     # contiguous elliptical vault panels emitted by StructureBuilder.lua.
     road_width = 86.0
     tunnel = tunnel_section(road_width)
     section_scale = 4.35
-    center_x = 550
+    center_x = 865
     floor_y = 708
 
     def section_point(point):
@@ -416,7 +496,7 @@ def render(path):
         section_point((outer_half, tunnel["floor_top"])),
         (center_x+outer_half*section_scale, base_bottom),
         (center_x-outer_half*section_scale, base_bottom),
-    ], (139, 143, 148))
+    ], BASE_FINISH)
     wall_top_y = tunnel["wall_top"]
     for side_sign in (-1, 1):
         inner_x = side_sign*tunnel["inner_half"]
@@ -426,9 +506,9 @@ def render(path):
             section_point((outer_x, tunnel["wall_bottom"])),
             section_point((outer_x, wall_top_y)),
             section_point((inner_x, wall_top_y)),
-        ], (139, 143, 148))
+        ], TUNNEL_WALL_FINISH)
     for panel in tunnel["panels"]:
-        canvas.line(section_point(panel[0]), section_point(panel[1]), (139, 143, 148),
+        canvas.line(section_point(panel[0]), section_point(panel[1]), TUNNEL_ROOF_FINISH,
                     max(3, round(tunnel["thickness"]*section_scale)))
 
     # Road slab and lane markings remain visibly inside the generated shell.

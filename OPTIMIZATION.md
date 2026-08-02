@@ -19,10 +19,18 @@ transitioning, junction-connected, elevated, and tunnel roads:
 Keep a repeatable benchmark place or generator. Report both totals and the
 worst individual road so a large map cannot hide one pathological segment.
 
-## P0 — straight-run longitudinal coalescing
+## P0 — straight-run longitudinal coalescing (phase 1 shipped)
 
 A genuinely straight, constant cross-section run should use long Parts rather
 than inheriting the normal curve station spacing.
+
+Phase 1 is implemented in `RoadBuilder`: a whole build whose Bezier control
+points prove one monotonic, collinear, constant-grade path uses explicit
+stations up to 2048 studs apart. The proof is deliberately exact rather than a
+curvature sample, so shallow curves retain adaptive segmentation. Profile
+transitions and sliced bus-bay geometry also retain the old emitter. Marking
+and kerb-stretch endpoints are mandatory stations; separate road/junction trims
+already arrive as separate build ranges.
 
 - Emit one longitudinal Part per compatible surface band for up to **2048
   studs**, Roblox's Part-axis limit. Split longer runs into consecutive Parts,
@@ -36,7 +44,7 @@ than inheriting the normal curve station spacing.
 - Add a regression covering 2048, just below/above 2048, and a multi-part run
   longer than 4096 studs.
 
-## P0 — lateral coalescing on straight runs
+## P0 — lateral coalescing on straight runs (Drive phase shipped)
 
 Adjacent lane/component surfaces may share one Part when their rendered surface
 signature is identical:
@@ -53,6 +61,22 @@ The first target is adjacent Drive lanes with identical asphalt material and
 colour on a straight section. Do not merge sidewalks, medians, shoulders, bike
 lanes, parking, or differently styled lanes merely because they happen to look
 similar in one theme; expand the compatibility table only with tests.
+
+That first target is now implemented. Adjacent Drive components merge only on
+the exact-straight fast path and only while their material, colour, height, and
+exclusion state remain compatible. Lane markings still compute from the raw
+component arrays. Every emitted surface carries its source component-index and
+station range, while the road Model continues to store the complete serialized
+curve and profiles used by reopen, rebuild, split, junction, marking, and
+structure systems.
+
+Headless baseline (surface Parts only, default 8-stud legacy segmentation): a
+5000-stud 3+3 boulevard falls from 5625 surface Parts to 15 (99.73% fewer: five
+lateral bands across three longitudinal ranges). `straight_optimization_preview.py`
+covers just below/at/above 2048 studs, 4096+, forced edit boundaries, signature
+mismatches, source metadata, and produces the before/after render. Studio build
+time, GC, place-size, and live edit/reopen measurements remain required before
+closing the wider measurement program.
 
 ## P1 — incremental rebuilds
 
@@ -96,6 +120,10 @@ These need profiling before implementation:
   does not alter saved authoritative geometry;
 - parallelized pure geometry planning outside Instance creation if Roblox's
   execution model and determinism make it worthwhile.
+
+- recognize and coalesce proven straight sub-runs inside a mixed straight/curve
+  PolyCurve without weakening the exact-control-point proof or crossing curve
+  segment/edit boundaries; phase 1 optimizes whole exact-straight builds.
 
 ## Acceptance gates
 

@@ -10,6 +10,7 @@ local RoadInstance = require("./RoadInstance")
 local RoadProfile = require("./RoadProfile")
 local Settings = require("./Settings")
 local StructureAssets = require("./StructureAssets")
+local StructureMaterials = require("./StructureMaterials")
 
 local GENERATED_NAME = "EasyRoadStructure"
 local EPSILON = 0.05
@@ -53,7 +54,19 @@ function StructureBuilder.DefaultData(settings: Settings.EasyRoadSettings?): Roa
 		PillarWidthM = 1.8,
 		PillarDepthM = 1.8,
 		MaxPillarHeightM = 200,
+		PillarLayout = "Single",
+		PillarSeparationM = 6,
+		CapBeamWidthM = 9,
+		CapBeamHeightM = 1,
+		CapBeamDepthM = 2.2,
 		ConcreteColorHex = if settings then settings.StructureConcreteColorHex else DEFAULT_CONCRETE_HEX,
+		BaseMaterial = if settings then settings.StructureBaseMaterial else "Concrete",
+		ViaductWallColorHex = if settings then settings.ViaductWallColorHex else DEFAULT_CONCRETE_HEX,
+		ViaductWallMaterial = if settings then settings.ViaductWallMaterial else "Concrete",
+		TunnelWallColorHex = if settings then settings.TunnelWallColorHex else DEFAULT_CONCRETE_HEX,
+		TunnelWallMaterial = if settings then settings.TunnelWallMaterial else "Concrete",
+		TunnelRoofColorHex = if settings then settings.TunnelRoofColorHex else DEFAULT_CONCRETE_HEX,
+		TunnelRoofMaterial = if settings then settings.TunnelRoofMaterial else "Concrete",
 		InterfaceOverlapM = if settings then settings.StructureInterfaceOverlapM else 0.2,
 		ViaductParapetGapM = if settings then settings.ViaductParapetGapM else 0,
 		TunnelWallClearanceM = if settings then settings.TunnelWallClearanceM else 0.75,
@@ -71,7 +84,19 @@ function StructureBuilder.CloneData(data: RoadInstance.StructureData): RoadInsta
 		PillarWidthM = data.PillarWidthM,
 		PillarDepthM = data.PillarDepthM,
 		MaxPillarHeightM = data.MaxPillarHeightM,
+		PillarLayout = data.PillarLayout,
+		PillarSeparationM = data.PillarSeparationM,
+		CapBeamWidthM = data.CapBeamWidthM,
+		CapBeamHeightM = data.CapBeamHeightM,
+		CapBeamDepthM = data.CapBeamDepthM,
 		ConcreteColorHex = data.ConcreteColorHex,
+		BaseMaterial = data.BaseMaterial,
+		ViaductWallColorHex = data.ViaductWallColorHex,
+		ViaductWallMaterial = data.ViaductWallMaterial,
+		TunnelWallColorHex = data.TunnelWallColorHex,
+		TunnelWallMaterial = data.TunnelWallMaterial,
+		TunnelRoofColorHex = data.TunnelRoofColorHex,
+		TunnelRoofMaterial = data.TunnelRoofMaterial,
 		InterfaceOverlapM = data.InterfaceOverlapM,
 		ViaductParapetGapM = data.ViaductParapetGapM,
 		TunnelWallClearanceM = data.TunnelWallClearanceM,
@@ -310,6 +335,11 @@ local function placePiers(
 	local maxDrop = math.max(data.MaxPillarHeightM * scale, 1)
 	local width = math.max(data.PillarWidthM * scale, 0.2)
 	local depth = math.max(data.PillarDepthM * scale, 0.2)
+	local twin = data.PillarLayout == "Twin"
+	local separation = math.max(data.PillarSeparationM * scale, width)
+	local capHeight = math.max(data.CapBeamHeightM * scale, 0.2)
+	local capDepth = math.max(data.CapBeamDepthM * scale, depth)
+	local capWidth = math.max(data.CapBeamWidthM * scale, separation + width)
 	local baseThickness = centralBaseThickness(scale)
 	local interfaceOverlap = safeInterfaceOverlap(
 		data.InterfaceOverlapM,
@@ -318,6 +348,7 @@ local function placePiers(
 		baseThickness
 	)
 	local concreteColor = StructureBuilder.ColorFromHex(data.ConcreteColorHex)
+	local baseMaterial = StructureMaterials.Resolve(data.BaseMaterial)
 	local folder = Instance.new("Folder")
 	folder.Name = "Piers"
 	folder.Parent = parent
@@ -332,7 +363,8 @@ local function placePiers(
 	-- elevated span. The old spacing/2 loop produced zero piers whenever a
 	-- road was shorter than roughly half the configured spacing, which made
 	-- a perfectly valid short viaduct look like a floating road.
-	local targetCount = math.min(MAX_PIERS, math.max(1, math.floor(curve.Length / spacing)))
+	local maxStations = if twin then math.floor(MAX_PIERS / 2) else MAX_PIERS
+	local targetCount = math.min(maxStations, math.max(1, math.floor(curve.Length / spacing)))
 	local count = 0
 	for index = 1, targetCount do
 		local station = curve.Length * index / (targetCount + 1)
@@ -345,24 +377,66 @@ local function placePiers(
 					+ interfaceOverlap
 					- baseThickness
 				)
-		local result = Workspace:Raycast(top + Vector3.new(0, 2, 0), Vector3.new(0, -(maxDrop + 2), 0), params)
-		if result then
-			local height = top.Y - result.Position.Y
-			-- At ground level the ray immediately hits the terrain; no decorative
-			-- stub is emitted. A real viaduct support needs visible clearance.
-			if height > 0.5 then
+		local supportFrame = flatFrameAt(top, frame.LookVector)
+		local columnTopY = top.Y - (if twin then capHeight else 0)
+		local lateralOffsets = if twin then { -separation / 2, separation / 2 } else { 0 }
+		local columnHits: { { LateralOffset: number, GroundPosition: Vector3, Height: number } } = {}
+		for _, lateralOffset in lateralOffsets do
+			local projected = top + supportFrame.RightVector * lateralOffset
+			local result = Workspace:Raycast(
+				Vector3.new(projected.X, top.Y + 2, projected.Z),
+				Vector3.new(0, -(maxDrop + 2), 0),
+				params
+			)
+			if result then
+				local height = columnTopY - result.Position.Y
+				-- At ground level the ray immediately hits the terrain; no decorative
+				-- stub is emitted. A real viaduct support needs visible clearance.
+				if height > 0.5 then
+					table.insert(columnHits, {
+						LateralOffset = lateralOffset,
+						GroundPosition = result.Position,
+						Height = height,
+					})
+				end
+			end
+		end
+		-- A twin station is atomic: if either projection has no usable ground,
+		-- omit the whole bent rather than leaving one column under a two-column cap.
+		local requiredColumns = if twin then 2 else 1
+		if #columnHits == requiredColumns then
+			for columnIndex, hit in columnHits do
 				count += 1
+				local projected = top + supportFrame.RightVector * hit.LateralOffset
 				local part = Instance.new("Part")
-				part.Name = string.format("Pier_%04d", count)
+				part.Name = if twin
+					then string.format("Pier_%04d_%s", index, if columnIndex == 1 then "Left" else "Right")
+					else string.format("Pier_%04d", count)
 				part.Anchored = true
-				part.Material = Enum.Material.Concrete
+				part.Material = baseMaterial
 				part.Color = concreteColor
-				part.Size = Vector3.new(width, height, depth)
-				part.CFrame = flatFrameAt(Vector3.new(top.X, result.Position.Y + height / 2, top.Z), frame.LookVector)
+				part.Size = Vector3.new(width, hit.Height, depth)
+				part.CFrame = flatFrameAt(
+					Vector3.new(projected.X, hit.GroundPosition.Y + hit.Height / 2, projected.Z),
+					frame.LookVector
+				)
 				part:SetAttribute("RW_StationStuds", station)
-				part:SetAttribute("RW_GroundPosition", result.Position)
+				part:SetAttribute("RW_GroundPosition", hit.GroundPosition)
+				part:SetAttribute("RW_PillarLayout", data.PillarLayout)
 				part.Parent = folder
 			end
+		end
+		if twin and #columnHits == requiredColumns then
+			local cap = Instance.new("Part")
+			cap.Name = string.format("CapBeam_%04d", index)
+			cap.Anchored = true
+			cap.Material = baseMaterial
+			cap.Color = concreteColor
+			cap.Size = Vector3.new(capWidth, capHeight, capDepth)
+			cap.CFrame = supportFrame * CFrame.new(0, -capHeight / 2, 0)
+			cap:SetAttribute("RW_StationStuds", station)
+			cap:SetAttribute("RW_PillarLayout", "Twin")
+			cap.Parent = folder
 		end
 	end
 	return count
@@ -380,7 +454,14 @@ local function roadWidthStuds(road: Model, settings: Settings.EasyRoadSettings):
 	return math.max(widthM * settings.MetersToStuds, 4)
 end
 
-local function makeConcretePart(name: string, size: Vector3, frame: CFrame, color: Color3, parent: Folder): Part
+local function makeStructurePart(
+	name: string,
+	size: Vector3,
+	frame: CFrame,
+	color: Color3,
+	material: Enum.Material,
+	parent: Folder
+): Part
 	local part = Instance.new("Part")
 	part.Name = name
 	part.Anchored = true
@@ -388,7 +469,7 @@ local function makeConcretePart(name: string, size: Vector3, frame: CFrame, colo
 	part.CanTouch = true
 	part.CanQuery = true
 	part.CastShadow = true
-	part.Material = Enum.Material.Concrete
+	part.Material = material
 	part.Color = color
 	part.Size = size
 	part.CFrame = frame
@@ -414,6 +495,9 @@ local function placeProceduralViaduct(
 	local scale = settings.MetersToStuds
 	local roadWidth = roadWidthStuds(road, settings)
 	local concreteColor = StructureBuilder.ColorFromHex(data.ConcreteColorHex)
+	local baseMaterial = StructureMaterials.Resolve(data.BaseMaterial)
+	local wallColor = StructureBuilder.ColorFromHex(data.ViaductWallColorHex)
+	local wallMaterial = StructureMaterials.Resolve(data.ViaductWallMaterial)
 	local parapetGap = data.ViaductParapetGapM * scale
 	local edgeAllowance = 0.45 * scale
 	local baseThickness = centralBaseThickness(scale)
@@ -461,15 +545,16 @@ local function placeProceduralViaduct(
 		local fullBarrierHeight = barrierHeight - barrierBottom
 		local barrierY = (barrierHeight + barrierBottom) / 2
 
-		makeConcretePart(
+		makeStructurePart(
 			string.format("DeckSlab_%04d", index),
 			Vector3.new(deckWidth, baseThickness, depth),
 			frame * CFrame.new(0, baseY, 0),
 			concreteColor,
+			baseMaterial,
 			folder
 		)
 		for _, side in { -1, 1 } do
-			makeConcretePart(
+			makeStructurePart(
 				string.format("Parapet_%s_%04d", if side < 0 then "Left" else "Right", index),
 				Vector3.new(barrierThickness, fullBarrierHeight, depth),
 				frame
@@ -478,7 +563,8 @@ local function placeProceduralViaduct(
 						barrierY,
 						0
 					),
-				concreteColor,
+				wallColor,
+				wallMaterial,
 				folder
 			)
 		end
@@ -506,6 +592,11 @@ local function placeProceduralTunnel(
 	local scale = settings.MetersToStuds
 	local roadWidth = roadWidthStuds(road, settings)
 	local concreteColor = StructureBuilder.ColorFromHex(data.ConcreteColorHex)
+	local baseMaterial = StructureMaterials.Resolve(data.BaseMaterial)
+	local wallColor = StructureBuilder.ColorFromHex(data.TunnelWallColorHex)
+	local wallMaterial = StructureMaterials.Resolve(data.TunnelWallMaterial)
+	local roofColor = StructureBuilder.ColorFromHex(data.TunnelRoofColorHex)
+	local roofMaterial = StructureMaterials.Resolve(data.TunnelRoofMaterial)
 	local sideClearance = data.TunnelWallClearanceM * scale
 	local thickness = math.max(0.35 * scale, 0.5)
 	local baseThickness = centralBaseThickness(scale)
@@ -551,25 +642,28 @@ local function placeProceduralTunnel(
 		local fullWallHeight = wallHeight + thickness
 		local wallY = (floorTop + wallHeight + wallBottom) / 2
 
-		makeConcretePart(
+		makeStructurePart(
 			string.format("Base_%04d", index),
 			Vector3.new(outerWidth, baseThickness, depth),
 			frame * CFrame.new(0, floorTop - baseThickness / 2, 0),
 			concreteColor,
+			baseMaterial,
 			folder
 		)
-		makeConcretePart(
+		makeStructurePart(
 			string.format("WallLeft_%04d", index),
 			Vector3.new(thickness, fullWallHeight, depth),
 			frame * CFrame.new(-innerHalfWidth - thickness / 2, wallY, 0),
-			concreteColor,
+			wallColor,
+			wallMaterial,
 			folder
 		)
-		makeConcretePart(
+		makeStructurePart(
 			string.format("WallRight_%04d", index),
 			Vector3.new(thickness, fullWallHeight, depth),
 			frame * CFrame.new(innerHalfWidth + thickness / 2, wallY, 0),
-			concreteColor,
+			wallColor,
+			wallMaterial,
 			folder
 		)
 		for archIndex = 1, TUNNEL_ARCH_SEGMENTS do
@@ -581,13 +675,14 @@ local function placeProceduralTunnel(
 			local y1 = floorTop + wallHeight + roofRise * math.sin(theta1)
 			local panelWidth = math.sqrt((x1 - x0) ^ 2 + (y1 - y0) ^ 2) + 0.08
 			local panelAngle = math.atan2(y1 - y0, x1 - x0)
-			makeConcretePart(
+			makeStructurePart(
 				string.format("Vault_%02d_%04d", archIndex, index),
 				Vector3.new(panelWidth, thickness, depth),
 				frame
 					* CFrame.new((x0 + x1) / 2, (y0 + y1) / 2, 0)
 					* CFrame.Angles(0, 0, panelAngle),
-				concreteColor,
+				roofColor,
+				roofMaterial,
 				folder
 			)
 		end
@@ -596,7 +691,12 @@ local function placeProceduralTunnel(
 	return partCount
 end
 
-local function restyleElevatedMedian(road: Model, enabled: boolean, concreteColor: Color3)
+local function restyleElevatedMedian(
+	road: Model,
+	enabled: boolean,
+	baseColor: Color3,
+	baseMaterial: Enum.Material
+)
 	for _, descendant in road:GetDescendants() do
 		if not descendant:IsA("BasePart") or descendant.Name ~= "Median" then
 			continue
@@ -614,8 +714,8 @@ local function restyleElevatedMedian(road: Model, enabled: boolean, concreteColo
 		if enabled then
 			part:SetAttribute("RW_ElevatedMedianStyled", true)
 			part:SetAttribute("RW_OriginalMedianColor", part.Color)
-			part.Material = Enum.Material.Concrete
-			part.Color = concreteColor
+			part.Material = baseMaterial
+			part.Color = baseColor
 		end
 	end
 end
@@ -627,7 +727,8 @@ function StructureBuilder.Render(
 	settings: Settings.EasyRoadSettings
 ): (boolean, string)
 	local concreteColor = StructureBuilder.ColorFromHex(data.ConcreteColorHex)
-	restyleElevatedMedian(road, data.Mode == "Viaduct" and data.ConcreteMedian, concreteColor)
+	local baseMaterial = StructureMaterials.Resolve(data.BaseMaterial)
+	restyleElevatedMedian(road, data.Mode == "Viaduct" and data.ConcreteMedian, concreteColor, baseMaterial)
 	StructureBuilder.Clear(road)
 	if data.Mode == "None" then
 		return true, "Ground-level road; no generated structure."

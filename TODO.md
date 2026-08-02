@@ -8,8 +8,10 @@ Planned/requested work not yet built, roughly ordered by how developed the
 plan is. Not user-facing; internal planning only. See `SHIPPED.md` for
 what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
-Performance work is tracked separately in `OPTIMIZATION.md`, beginning with
-2048-stud straight-run Parts and lateral coalescing of identical lane surfaces.
+Performance work is tracked separately in `OPTIMIZATION.md`. The first exact-
+straight phase (2048-stud longitudinal Parts plus identical adjacent Drive-lane
+surface merging) is shipped; mixed straight/curve sub-runs, Studio benchmarks,
+and the P1 incremental/preview/structure work remain open there.
 
 ## Next major system - intersection controls, crossings, and signals
 
@@ -72,8 +74,10 @@ Follow-ups still open:
 
 Completed in the current follow-up: procedural road/structure seating overlap,
 surface-safe thin bases with downward-compensated edge walls, outside-edge
-segment coverage, per-road concrete colour, parapet/tunnel gap controls, a
-concrete elevated-median toggle, and collapsed advanced structure controls.
+segment coverage, independent material/colour controls for the base, viaduct
+walls, tunnel sidewalls, and tunnel roof, parapet/tunnel gap controls, a
+base-matched elevated-median toggle, collapsed advanced structure controls,
+and single/twin raycast piers with editable column and cap-beam dimensions.
 Parallel placement supports 2-16 curved carriageways, opposed pairs, and
 per-roadway reversal for larger groups. Parallel groups do not yet
 synthesize coordinated junction splits/connections automatically; a straight

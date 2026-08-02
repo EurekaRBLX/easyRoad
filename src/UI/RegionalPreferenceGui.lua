@@ -16,9 +16,15 @@ local RegionStyles = require("../RegionStyles")
 local RegionLibraryModule = require("../RegionLibrary")
 local Settings = require("../Settings")
 local StructureBuilder = require("../StructureBuilder")
+local StructureMaterials = require("../StructureMaterials")
 local Units = require("../Units")
 
 type RegionLibrary = RegionLibraryModule.RegionLibrary
+
+local materialOptions: { Components.DropdownOption } = {}
+for _, entry in StructureMaterials.Entries do
+	table.insert(materialOptions, { Id = entry.Id, Text = entry.Text })
+end
 
 local function LabeledRow(props: {
 	Label: string,
@@ -38,6 +44,46 @@ local function LabeledRow(props: {
 	return e(Components.Row, {
 		LayoutOrder = props.LayoutOrder,
 	}, children)
+end
+
+local function FinishDefaults(props: {
+	Label: string,
+	ColorHex: string,
+	Material: StructureMaterials.MaterialName,
+	LayoutOrder: number,
+	OnColorChanged: (color: Color3) -> (),
+	OnMaterialChanged: (material: StructureMaterials.MaterialName) -> (),
+})
+	return e("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = props.LayoutOrder,
+	}, {
+		Layout = e("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4) }),
+		Header = e(Components.Section, { Text = props.Label, LayoutOrder = 1 }),
+		Material = e(LabeledRow, {
+			Label = "Material",
+			LayoutOrder = 2,
+			children = {
+				Dropdown = e(Components.Dropdown, {
+					Options = materialOptions,
+					SelectedId = props.Material,
+					Grow = true,
+					LayoutOrder = 2,
+					OnSelected = function(id: string)
+						props.OnMaterialChanged(StructureMaterials.Sanitize(id))
+					end,
+				}),
+			},
+		}),
+		ColorLabel = e(Components.Label, { Text = "Colour", Dim = true, LayoutOrder = 3 }),
+		Color = e(Components.ColorField, {
+			Value = StructureBuilder.ColorFromHex(props.ColorHex),
+			LayoutOrder = 4,
+			OnChanged = props.OnColorChanged,
+		}),
+	})
 end
 
 local function RegionalPreferenceGui(props: {
@@ -452,21 +498,65 @@ local function RegionalPreferenceGui(props: {
 			Text = "Procedural structures",
 			LayoutOrder = 40,
 		}),
-		StructureColorLabel = e(Components.Label, {
-			Text = "Default concrete colour",
+		BaseFinish = e(FinishDefaults, {
+			Label = "Structural base, piers, and caps",
+			ColorHex = settings.StructureConcreteColorHex,
+			Material = settings.StructureBaseMaterial,
 			LayoutOrder = 41,
-		}),
-		StructureColor = e(Components.ColorField, {
-			Value = StructureBuilder.ColorFromHex(settings.StructureConcreteColorHex),
-			LayoutOrder = 42,
-			OnChanged = function(color: Color3)
+			OnColorChanged = function(color: Color3)
 				settings.StructureConcreteColorHex = StructureBuilder.ColorToHex(color)
+				props.OnSettingsChanged()
+			end,
+			OnMaterialChanged = function(material: StructureMaterials.MaterialName)
+				settings.StructureBaseMaterial = material
+				props.OnSettingsChanged()
+			end,
+		}),
+		ViaductWallFinish = e(FinishDefaults, {
+			Label = "Viaduct edge walls",
+			ColorHex = settings.ViaductWallColorHex,
+			Material = settings.ViaductWallMaterial,
+			LayoutOrder = 42,
+			OnColorChanged = function(color: Color3)
+				settings.ViaductWallColorHex = StructureBuilder.ColorToHex(color)
+				props.OnSettingsChanged()
+			end,
+			OnMaterialChanged = function(material: StructureMaterials.MaterialName)
+				settings.ViaductWallMaterial = material
+				props.OnSettingsChanged()
+			end,
+		}),
+		TunnelWallFinish = e(FinishDefaults, {
+			Label = "Tunnel side walls",
+			ColorHex = settings.TunnelWallColorHex,
+			Material = settings.TunnelWallMaterial,
+			LayoutOrder = 43,
+			OnColorChanged = function(color: Color3)
+				settings.TunnelWallColorHex = StructureBuilder.ColorToHex(color)
+				props.OnSettingsChanged()
+			end,
+			OnMaterialChanged = function(material: StructureMaterials.MaterialName)
+				settings.TunnelWallMaterial = material
+				props.OnSettingsChanged()
+			end,
+		}),
+		TunnelRoofFinish = e(FinishDefaults, {
+			Label = "Tunnel roof",
+			ColorHex = settings.TunnelRoofColorHex,
+			Material = settings.TunnelRoofMaterial,
+			LayoutOrder = 44,
+			OnColorChanged = function(color: Color3)
+				settings.TunnelRoofColorHex = StructureBuilder.ColorToHex(color)
+				props.OnSettingsChanged()
+			end,
+			OnMaterialChanged = function(material: StructureMaterials.MaterialName)
+				settings.TunnelRoofMaterial = material
 				props.OnSettingsChanged()
 			end,
 		}),
 		StructureOverlap = e(LabeledRow, {
 			Label = "Road overlap (m)",
-			LayoutOrder = 43,
+			LayoutOrder = 45,
 			children = {
 				Field = e(Components.NumberField, {
 					Value = settings.StructureInterfaceOverlapM,
@@ -482,7 +572,7 @@ local function RegionalPreferenceGui(props: {
 		}),
 		ParapetGap = e(LabeledRow, {
 			Label = "Viaduct parapet gap (m)",
-			LayoutOrder = 44,
+			LayoutOrder = 46,
 			children = {
 				Field = e(Components.NumberField, {
 					Value = settings.ViaductParapetGapM,
@@ -498,7 +588,7 @@ local function RegionalPreferenceGui(props: {
 		}),
 		TunnelClearance = e(LabeledRow, {
 			Label = "Tunnel wall clearance (m)",
-			LayoutOrder = 45,
+			LayoutOrder = 47,
 			children = {
 				Field = e(Components.NumberField, {
 					Value = settings.TunnelWallClearanceM,
@@ -513,9 +603,9 @@ local function RegionalPreferenceGui(props: {
 			},
 		}),
 		ElevatedMedian = e(Components.Checkbox, {
-			Label = "Concrete median on viaducts",
+			Label = "Match structural base on viaduct medians",
 			Checked = settings.ElevatedMedianConcrete,
-			LayoutOrder = 46,
+			LayoutOrder = 48,
 			OnToggled = function(checked: boolean)
 				settings.ElevatedMedianConcrete = checked
 				props.OnSettingsChanged()
@@ -523,7 +613,7 @@ local function RegionalPreferenceGui(props: {
 		}),
 		ParallelGap = e(LabeledRow, {
 			Label = "Parallel roadway gap (m)",
-			LayoutOrder = 47,
+			LayoutOrder = 49,
 			children = {
 				Field = e(Components.NumberField, {
 					Value = settings.ParallelRoadwayGapM,

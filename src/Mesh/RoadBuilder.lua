@@ -56,6 +56,8 @@ local MIN_STEP = 0.4
 local MAX_TURN_PER_STEP = 0.2 -- Radians of heading change allowed per strip
 local MAX_ROLL_PER_STEP = 0.02 -- Radians of superelevation (bank) change allowed per strip
 local ROLL_WEDGE_EPSILON = 1e-4 -- Roll change (radians) per strip above which a flat box would visibly kink
+local MAX_PART_AXIS_STUDS = 2048 -- Roblox BasePart axis limit
+local EXACT_STRAIGHT_EPSILON = 1e-4
 
 local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
 	Drive = Enum.Material.Asphalt,
@@ -209,6 +211,92 @@ local function buildStations(
 	return stations
 end
 
+-- A conservative proof that the whole input is one geometrically straight,
+-- constant-grade run. This deliberately inspects every Bezier control point
+-- instead of sampling curvature: a sufficiently shallow curve must keep the
+-- adaptive emitter, however straight it happens to look at a few samples.
+-- Monotonic projections reject collinear Beziers that double back on
+-- themselves. SlicedPolyCurve views also fall back because their retained
+-- source control points extend outside the slice's own endpoint range.
+local function isExactStraightCurve(curve: PolyCurve.PolyCurve): boolean
+	local startPosition = curve:PosAt(0)
+	local endPosition = curve:PosAt(curve.Length)
+	local chord = endPosition - startPosition
+	local chordLength = chord.Magnitude
+	if chordLength < 1e-3 then
+		return false
+	end
+	if math.abs(curve.Length - chordLength) > EXACT_STRAIGHT_EPSILON * math.max(1, chordLength) then
+		return false
+	end
+
+	local direction = chord / chordLength
+	local previousProjection = -EXACT_STRAIGHT_EPSILON
+	for _, segment in curve.Segments do
+		local points: { Vector3 }
+		if segment.Kind == "Line" then
+			points = { segment.P0, segment.P1 }
+		elseif segment.Kind == "Quadratic" then
+			points = { segment.P0, segment.P1, segment.P2 :: Vector3 }
+		else
+			points = { segment.P0, segment.P1, segment.P2 :: Vector3, segment.P3 :: Vector3 }
+		end
+		for _, point in points do
+			local delta = point - startPosition
+			local projection = delta:Dot(direction)
+			local rejection = delta - direction * projection
+			if rejection.Magnitude > EXACT_STRAIGHT_EPSILON then
+				return false
+			end
+			if projection + EXACT_STRAIGHT_EPSILON < previousProjection then
+				return false
+			end
+			if projection < -EXACT_STRAIGHT_EPSILON or projection > chordLength + EXACT_STRAIGHT_EPSILON then
+				return false
+			end
+			previousProjection = projection
+		end
+	end
+	return math.abs(previousProjection - chordLength) <= EXACT_STRAIGHT_EPSILON
+end
+
+-- Long straight surfaces do not need the normal curve station density. Keep
+-- each interval at or below Roblox's 2048-stud Part limit, while retaining
+-- explicit edit boundaries so a marking/kerb stretch never becomes hidden
+-- inside one opaque generated surface range.
+local function straightStations(options: BuildOptions, length: number): { number }
+	local boundaries = { 0, length }
+	if options.MarkingStretches then
+		for _, stretch in options.MarkingStretches :: { Markings.MarkingStretch } do
+			table.insert(boundaries, math.clamp(stretch.FromStationStuds, 0, length))
+			table.insert(boundaries, math.clamp(stretch.ToStationStuds, 0, length))
+		end
+	end
+	if options.KerbStretches then
+		for _, stretch in options.KerbStretches :: { Markings.KerbStretch } do
+			table.insert(boundaries, math.clamp(stretch.FromStationStuds, 0, length))
+			table.insert(boundaries, math.clamp(stretch.ToStationStuds, 0, length))
+		end
+	end
+	table.sort(boundaries)
+
+	local stations = { 0 }
+	for _, boundary in boundaries do
+		local last = stations[#stations]
+		if boundary <= last + EXACT_STRAIGHT_EPSILON then
+			continue
+		end
+		while boundary - last > MAX_PART_AXIS_STUDS do
+			last += MAX_PART_AXIS_STUDS
+			table.insert(stations, last)
+		end
+		if boundary - stations[#stations] > EXACT_STRAIGHT_EPSILON then
+			table.insert(stations, boundary)
+		end
+	end
+	return stations
+end
+
 -- Whether this build is a widening/narrowing transition, and the length of
 -- the taper it happens over.
 --
@@ -239,6 +327,9 @@ local function stationsForOptions(
 	isTransition: boolean,
 	taperLength: number
 ): { number }
+	if not isTransition and isExactStraightCurve(options.Curve) then
+		return straightStations(options, options.Curve.Length)
+	end
 	local settings = options.Settings
 	local maxStep = if preview then settings.PreviewMaxSegmentLengthStuds else settings.MaxSegmentLengthStuds
 	if isTransition then
@@ -323,6 +414,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	end
 
 	local isTransition, taperLength = transitionPlan(options, scale, length)
+	local optimizedStraight = not isTransition and isExactStraightCurve(curve)
 	-- 0 before the taper begins, then 0 -> 1 across the taper zone.
 	-- Smoothstepped (3t^2 - 2t^3) rather than a plain linear ramp: a linear
 	-- ramp has a derivative of 0 in the flat zone before it and a nonzero
@@ -507,6 +599,40 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	-- cross-section width. No FillTriangle wedges are used for curve
 	-- joints any more - see BuildWithBay below for where wedges are still
 	-- useful (an actually-abrupt shape, not a curve-following one).
+	--
+	-- On an exactly straight, constant-profile run, adjacent Drive components
+	-- with the same surface signature are emitted as one wider band. Markings
+	-- are still planned from the untouched component arrays below, so the
+	-- visual lane boundaries and every editable component index remain intact.
+	local bandEndByStart: { [number]: number } = {}
+	local mergedIntoPrevious: { [number]: boolean } = {}
+	if optimizedStraight then
+		local c = 1
+		while c <= componentCount do
+			local bandEnd = c
+			local kind = componentsStart[c].Kind
+			if not excludedComponents[c] and kind == "Drive" then
+				local material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
+				local color = colorForKind(kind, style)
+				while bandEnd + 1 <= componentCount do
+					local nextIndex = bandEnd + 1
+					local nextKind = componentsStart[nextIndex].Kind
+					if excludedComponents[nextIndex]
+						or nextKind ~= "Drive"
+						or (MATERIAL_BY_KIND[nextKind] or Enum.Material.Asphalt) ~= material
+						or colorForKind(nextKind, style) ~= color
+					then
+						break
+					end
+					bandEnd = nextIndex
+					mergedIntoPrevious[nextIndex] = true
+				end
+			end
+			bandEndByStart[c] = bandEnd
+			c = bandEnd + 1
+		end
+	end
+
 	for i = 1, stationCount - 1 do
 		local s0 = stations[i]
 		local s1 = stations[i + 1]
@@ -535,11 +661,16 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		local rollDelta = math.abs(rolls[i + 1] - rolls[i])
 
 		for c = 1, componentCount do
-			if excludedComponents[c] then
+			if excludedComponents[c] or mergedIntoPrevious[c] then
 				continue
 			end
-			local w0 = stationWidths[i][c]
-			local w1 = stationWidths[i + 1][c]
+			local componentEnd = bandEndByStart[c] or c
+			local w0 = 0
+			local w1 = 0
+			for sourceIndex = c, componentEnd do
+				w0 += stationWidths[i][sourceIndex]
+				w1 += stationWidths[i + 1][sourceIndex]
+			end
 			local width = (w0 + w1) / 2
 			if width < 0.05 then
 				continue
@@ -555,7 +686,8 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			-- components (sidewalk/median) stand a curb height above
 			-- it. Alternating strips drop by a sub-visible epsilon so
 			-- overlapping neighbor strips never z-fight.
-			local centerY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2) - (i % 2) * 0.004
+			local centerY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2)
+				- (if optimizedStraight then 0 else (i % 2) * 0.004)
 
 			local edgeDistance = math.max(math.abs(centerOffset - width / 2), math.abs(centerOffset + width / 2))
 			local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
@@ -564,13 +696,18 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			-- can't reproduce the curvature-scaled sawtooth the old
 			-- far-edge pad caused; just a little extra overlap insurance
 			-- against any remaining sliver of a gap.
-			local padding = miter + 0.08
+			local padding = if optimizedStraight then 0 else miter + 0.08
 
 			local function makeTransitionPart(): Part
 				local part = makePart(preview)
 				part.Name = kind
 				part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
 				part.Color = colorForKind(kind, style)
+				part:SetAttribute("RW_ComponentStartIndex", c)
+				part:SetAttribute("RW_ComponentEndIndex", componentEnd)
+				part:SetAttribute("RW_StationStartStuds", s0)
+				part:SetAttribute("RW_StationEndStuds", s1)
+				part:SetAttribute("RW_SurfaceCoalesced", optimizedStraight and (componentEnd > c or nominalLength > settings.MaxSegmentLengthStuds))
 				return part
 			end
 
@@ -689,7 +826,8 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			part.Name = "Marking"
 			part.Material = Enum.Material.SmoothPlastic
 			part.Color = color
-			part.Size = Vector3.new(markingWidth, MARKING_THICKNESS, segLength + extraLength)
+			local appliedExtraLength = if optimizedStraight then 0 else extraLength
+			part.Size = Vector3.new(markingWidth, MARKING_THICKNESS, segLength + appliedExtraLength)
 			part.CFrame = CFrame.lookAt(mid, mid + forward, frame1.UpVector)
 			part.Parent = model
 		end
@@ -772,6 +910,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 
 	-- Metadata for endpoint snapping and later editing ---------------------------
 	RoadInstance.StampModel(model, curve, options.ProfileStart, options.ProfileEnd)
+	model:SetAttribute("RW_StraightSurfaceCoalesced", optimizedStraight)
 
 	return model
 end

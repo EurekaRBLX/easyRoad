@@ -121,7 +121,7 @@ def main():
         print("roundabout:", " ".join(cases))
         import road_preview as rd
         print("road:      ", " ".join(rd.CASES))
-        print("scripts:    turbo_check.py road_break_tests.py structure_preview.py --check parallel_preview.py --check multinode_junction_preview.py --check marking_boundary_preview.py --check structure_break_tests.py hardware_reference_check.py integration_contracts.py check_parity.py")
+        print("scripts:    turbo_check.py road_break_tests.py straight_optimization_preview.py --check structure_preview.py --check parallel_preview.py --check multinode_junction_preview.py --check marking_boundary_preview.py --check structure_break_tests.py hardware_reference_check.py integration_contracts.py check_parity.py")
         return 0
 
     problems, stale = [], []
@@ -137,6 +137,7 @@ def main():
     for script, script_args in (
             ("turbo_check.py", ()),
             ("road_break_tests.py", ()),
+            ("straight_optimization_preview.py", ("--check",)),
             ("structure_preview.py", ("--check",)),
             ("parallel_preview.py", ("--check",)),
             ("multinode_junction_preview.py", ("--check",)),

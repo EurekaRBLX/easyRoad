@@ -54,6 +54,24 @@ a real parameter of a different function in the same file.
 
 ## Current state
 
+### Exact-straight road surfaces — built, needs live performance confirmation
+
+`RoadBuilder` now proves a whole curve is monotonic and exactly collinear from
+its raw control points before replacing the normal adaptive stations with
+up-to-2048-stud ranges. It keeps marking/kerb-stretch endpoints as split points,
+merges only adjacent identical Drive surfaces, and stamps each output surface
+with source component/station ranges. The complete curve/profile metadata stays
+on the road Model and remains authoritative for editing, rebuilds, junctions,
+markings, and structures; no consumer maps behavior from generated Part
+granularity. Curves, transitions, and sliced bay builds explicitly fall back.
+
+Run `tools/preview/straight_optimization_preview.py --check` for boundary and
+metadata contracts or render its before/after view. Its 5000-stud 3+3 baseline
+is 5625 -> 15 surface Parts. Still do a live Studio build/reopen/edit/split test
+and record timings/serialized-place size before treating headless count savings
+as a complete performance benchmark. Mixed straight sub-runs inside one curved
+PolyCurve remain an `OPTIMIZATION.md` follow-up.
+
 ### Multinode junction editing - built, unconfirmed live
 
 One logical junction now derives stable approach ids from persistent road-end
@@ -114,9 +132,16 @@ portal/abutment modules, custom pier assets, and in-place asset replacement are
 still open. The Python render/checks are `tools/preview/structure_preview.py`
 and `tools/preview/hardware_reference_check.py`.
 
-The latest follow-up adds configurable concrete colour, interface overlap,
-parapet/tunnel clearance, outside-edge longitudinal coverage, and concrete
-viaduct medians. Detailed structure settings are collapsed in Road Tools.
+The latest follow-up adds independent material/colour channels for the
+structural base/piers, viaduct edge walls, tunnel sidewalls, and tunnel roof,
+plus interface overlap, parapet/tunnel clearance, outside-edge longitudinal
+coverage, and base-matched viaduct medians. Detailed structure settings are
+collapsed in Road Tools; Settings holds the defaults for new roads. Imported
+Models keep their own appearance. Viaduct supports can be a single adjustable
+pillar or an atomic twin-column bent with independently raycast feet and a
+configurable transverse cap beam. Old serialized roads migrate to the original
+grey Concrete and Single layout. Validate both paths with
+`tools/preview/structure_preview.py --check`.
 Parallel placement builds 2-16 offset PolyCurves with opposed-pair or per-road
 direction choices. It does not yet synthesize coordinated parallel junctions;
 straight primaries retain the ordinary single-road crossing path, while a

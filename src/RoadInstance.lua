@@ -15,6 +15,7 @@ local CurveSegment = require("./Geometry/CurveSegment")
 local PolyCurve = require("./Geometry/PolyCurve")
 local RoadProfile = require("./RoadProfile")
 local Markings = require("./Mesh/Markings")
+local StructureMaterials = require("./StructureMaterials")
 
 export type BayData = {
 	StationStuds: number,
@@ -29,6 +30,7 @@ export type BayData = {
 }
 
 export type StructureMode = "None" | "Viaduct" | "Tunnel"
+export type PillarLayout = "Single" | "Twin"
 
 export type StructureData = {
 	Mode: StructureMode,
@@ -42,9 +44,22 @@ export type StructureData = {
 	PillarWidthM: number,
 	PillarDepthM: number,
 	MaxPillarHeightM: number,
+	PillarLayout: PillarLayout,
+	PillarSeparationM: number,
+	CapBeamWidthM: number,
+	CapBeamHeightM: number,
+	CapBeamDepthM: number,
 	-- Procedural structure appearance/fit. Stored per road so changing the
 	-- global defaults never restyles an already-placed viaduct or tunnel.
+	-- ConcreteColorHex is the legacy serialized name for the base/pier colour.
 	ConcreteColorHex: string,
+	BaseMaterial: StructureMaterials.MaterialName,
+	ViaductWallColorHex: string,
+	ViaductWallMaterial: StructureMaterials.MaterialName,
+	TunnelWallColorHex: string,
+	TunnelWallMaterial: StructureMaterials.MaterialName,
+	TunnelRoofColorHex: string,
+	TunnelRoofMaterial: StructureMaterials.MaterialName,
 	InterfaceOverlapM: number,
 	ViaductParapetGapM: number,
 	TunnelWallClearanceM: number,
@@ -231,9 +246,38 @@ local function structureFromModel(model: Model): StructureData?
 		MaxPillarHeightM = if typeof(decoded.MaxPillarHeightM) == "number"
 			then math.max(decoded.MaxPillarHeightM, 0.1)
 			else 200,
+		PillarLayout = if decoded.PillarLayout == "Twin" then "Twin" else "Single",
+		PillarSeparationM = if typeof(decoded.PillarSeparationM) == "number"
+			then math.max(decoded.PillarSeparationM, 0.1)
+			else 6,
+		CapBeamWidthM = if typeof(decoded.CapBeamWidthM) == "number"
+			then math.max(decoded.CapBeamWidthM, 0.1)
+			else 9,
+		CapBeamHeightM = if typeof(decoded.CapBeamHeightM) == "number"
+			then math.max(decoded.CapBeamHeightM, 0.1)
+			else 1,
+		CapBeamDepthM = if typeof(decoded.CapBeamDepthM) == "number"
+			then math.max(decoded.CapBeamDepthM, 0.1)
+			else 2.2,
 		ConcreteColorHex = if typeof(decoded.ConcreteColorHex) == "string"
 			then decoded.ConcreteColorHex
 			else "#696B70",
+		BaseMaterial = StructureMaterials.Sanitize(decoded.BaseMaterial),
+		ViaductWallColorHex = if typeof(decoded.ViaductWallColorHex) == "string"
+			then decoded.ViaductWallColorHex
+			elseif typeof(decoded.ConcreteColorHex) == "string" then decoded.ConcreteColorHex
+			else "#696B70",
+		ViaductWallMaterial = StructureMaterials.Sanitize(decoded.ViaductWallMaterial),
+		TunnelWallColorHex = if typeof(decoded.TunnelWallColorHex) == "string"
+			then decoded.TunnelWallColorHex
+			elseif typeof(decoded.ConcreteColorHex) == "string" then decoded.ConcreteColorHex
+			else "#696B70",
+		TunnelWallMaterial = StructureMaterials.Sanitize(decoded.TunnelWallMaterial),
+		TunnelRoofColorHex = if typeof(decoded.TunnelRoofColorHex) == "string"
+			then decoded.TunnelRoofColorHex
+			elseif typeof(decoded.ConcreteColorHex) == "string" then decoded.ConcreteColorHex
+			else "#696B70",
+		TunnelRoofMaterial = StructureMaterials.Sanitize(decoded.TunnelRoofMaterial),
 		InterfaceOverlapM = if typeof(decoded.InterfaceOverlapM) == "number"
 			then math.max(decoded.InterfaceOverlapM, 0)
 			else 0.2,

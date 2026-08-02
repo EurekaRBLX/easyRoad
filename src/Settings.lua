@@ -7,6 +7,7 @@
 -- quality. Per-road configuration lives in RoadProfile / RoadLibrary instead.
 
 local Keybinds = require("./Keybinds")
+local StructureMaterials = require("./StructureMaterials")
 
 local kSettingsKey = "easyRoadState"
 
@@ -82,6 +83,13 @@ export type EasyRoadSettings = {
 	-- Defaults copied into each new procedural viaduct/tunnel. Existing roads
 	-- keep their serialized values when these defaults change.
 	StructureConcreteColorHex: string,
+	StructureBaseMaterial: StructureMaterials.MaterialName,
+	ViaductWallColorHex: string,
+	ViaductWallMaterial: StructureMaterials.MaterialName,
+	TunnelWallColorHex: string,
+	TunnelWallMaterial: StructureMaterials.MaterialName,
+	TunnelRoofColorHex: string,
+	TunnelRoofMaterial: StructureMaterials.MaterialName,
 	StructureInterfaceOverlapM: number,
 	ViaductParapetGapM: number,
 	TunnelWallClearanceM: number,
@@ -136,6 +144,22 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		StructureConcreteColorHex = if typeof(raw.StructureConcreteColorHex) == "string"
 			then raw.StructureConcreteColorHex
 			else "#696B70",
+		StructureBaseMaterial = StructureMaterials.Sanitize(raw.StructureBaseMaterial),
+		ViaductWallColorHex = if typeof(raw.ViaductWallColorHex) == "string"
+			then raw.ViaductWallColorHex
+			elseif typeof(raw.StructureConcreteColorHex) == "string" then raw.StructureConcreteColorHex
+			else "#696B70",
+		ViaductWallMaterial = StructureMaterials.Sanitize(raw.ViaductWallMaterial),
+		TunnelWallColorHex = if typeof(raw.TunnelWallColorHex) == "string"
+			then raw.TunnelWallColorHex
+			elseif typeof(raw.StructureConcreteColorHex) == "string" then raw.StructureConcreteColorHex
+			else "#696B70",
+		TunnelWallMaterial = StructureMaterials.Sanitize(raw.TunnelWallMaterial),
+		TunnelRoofColorHex = if typeof(raw.TunnelRoofColorHex) == "string"
+			then raw.TunnelRoofColorHex
+			elseif typeof(raw.StructureConcreteColorHex) == "string" then raw.StructureConcreteColorHex
+			else "#696B70",
+		TunnelRoofMaterial = StructureMaterials.Sanitize(raw.TunnelRoofMaterial),
 		StructureInterfaceOverlapM = if typeof(raw.StructureInterfaceOverlapM) == "number"
 			then math.max(raw.StructureInterfaceOverlapM, 0)
 			else 0.2,
@@ -180,6 +204,13 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		MaxSegmentLengthStuds = settings.MaxSegmentLengthStuds,
 		PreviewMaxSegmentLengthStuds = settings.PreviewMaxSegmentLengthStuds,
 		StructureConcreteColorHex = settings.StructureConcreteColorHex,
+		StructureBaseMaterial = settings.StructureBaseMaterial,
+		ViaductWallColorHex = settings.ViaductWallColorHex,
+		ViaductWallMaterial = settings.ViaductWallMaterial,
+		TunnelWallColorHex = settings.TunnelWallColorHex,
+		TunnelWallMaterial = settings.TunnelWallMaterial,
+		TunnelRoofColorHex = settings.TunnelRoofColorHex,
+		TunnelRoofMaterial = settings.TunnelRoofMaterial,
 		StructureInterfaceOverlapM = settings.StructureInterfaceOverlapM,
 		ViaductParapetGapM = settings.ViaductParapetGapM,
 		TunnelWallClearanceM = settings.TunnelWallClearanceM,

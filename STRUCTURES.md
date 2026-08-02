@@ -27,10 +27,12 @@ and a segmented arched vault.
 
 Road Tools keeps the common mode/asset choices visible and collapses the
 geometry fields under **Edit advanced structure options**. Those fields control
-the concrete colour, the small overlap that seats the road into the structure,
-parapet gap or tunnel wall clearance, pier dimensions, and whether a viaduct
-changes generated grass medians to concrete. Settings exposes the same values
-as defaults for new placement sessions.
+independent material/colour finishes for the structural base, viaduct edge
+walls, tunnel sidewalls, and tunnel roof; the small overlap that seats the road
+into the structure; parapet gap or tunnel wall clearance; pier layout and
+dimensions; and whether a viaduct matches generated grass medians to its base
+finish. Settings exposes the same finish and fit values as defaults for new
+placement sessions. Imported modules keep their authored appearance.
 
 ## Importing a Model
 
@@ -79,17 +81,21 @@ leaving an uncovered gap.
 ## Viaducts
 
 An elevated viaduct may omit a custom module. EasyRoad then emits a continuous,
-thin concrete base below the road plus concrete parapet/fascia walls at both
+thin structural base below the road plus parapet/fascia walls at both
 outer edges. Those walls extend downward to retain the old structural depth
 without carrying a broad concrete block up near the asphalt. Auto piers are
-distributed along the span (including one on short spans)
-and meet the slab underside after raycasting vertically down. Generated road, junction, and roundabout folders are
+distributed along the span (including one on short spans) and meet the slab
+underside after raycasting vertically down. Single layout emits one adjustable
+centre pillar. Twin layout raycasts both configurable lateral centres
+independently, emits the pair only when both projections find usable ground,
+and places an adjustable transverse cap beam between the columns and slab.
+Generated road, junction, and roundabout folders are
 excluded so a pier searches for Terrain or world geometry rather than landing
 on another generated road. No pier is made for a miss, a hit beyond Max drop,
 or a ground-level hit with no visible clearance.
 
-The generic concrete pier is intentionally simple. Custom pier Models and
-explicit pier sockets are later extensions.
+The generic procedural support can use the configured structural base material
+and colour. Custom pier Models and explicit pier sockets are later extensions.
 
 Procedural slab/parapet segments use outside-edge arc allowance in their
 longitudinal depth, so bends and grade changes overlap instead of opening a
@@ -129,4 +135,5 @@ The `hardware/*.rbxmx` files are geometry references, not automatically shipped
 as a user's asset library. Their deck, parapet, wall, and crown proportions
 informed the procedural defaults. `tools/preview/hardware_reference_check.py`
 parses those XML files, while `structure_preview.py` validates and renders the
-procedural slab/piers and arched tunnel cross-section without Roblox Studio.
+procedural slab/piers, twin cap beam, independently styled wall/roof channels,
+and arched tunnel cross-section without Roblox Studio.

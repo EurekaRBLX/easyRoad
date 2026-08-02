@@ -14,6 +14,12 @@ local Theme = require("./Theme")
 local RoadInstance = require("../RoadInstance")
 local StructureAssets = require("../StructureAssets")
 local StructureBuilder = require("../StructureBuilder")
+local StructureMaterials = require("../StructureMaterials")
+
+local materialOptions: { Components.DropdownOption } = {}
+for _, entry in StructureMaterials.Entries do
+	table.insert(materialOptions, { Id = entry.Id, Text = entry.Text })
+end
 
 local function note(text: string, order: number)
 	return e("TextLabel", {
@@ -75,6 +81,45 @@ local function StructureControls(props: {
 	}
 
 	local order = 3
+	local function addFinishControls(
+		key: string,
+		title: string,
+		colorHex: string,
+		material: StructureMaterials.MaterialName,
+		colorField: string,
+		materialField: string
+	)
+		children[key .. "Section"] = e(Components.Section, { Text = title, LayoutOrder = order })
+		order += 1
+		children[key .. "Material"] = e(Components.Row, { LayoutOrder = order }, {
+			Label = e(Components.Label, { Text = "Material", Width = 72, LayoutOrder = 1 }),
+			Field = e(Components.Dropdown, {
+				Options = materialOptions,
+				SelectedId = material,
+				Grow = true,
+				LayoutOrder = 2,
+				OnSelected = function(id: string)
+					change(function(copy)
+						(copy :: any)[materialField] = StructureMaterials.Sanitize(id)
+					end)
+				end,
+			}),
+		})
+		order += 1
+		children[key .. "ColorLabel"] = note("Colour", order)
+		order += 1
+		children[key .. "Color"] = e(Components.ColorField, {
+			Value = StructureBuilder.ColorFromHex(colorHex),
+			LayoutOrder = order,
+			OnChanged = function(color: Color3)
+				change(function(copy)
+					(copy :: any)[colorField] = StructureBuilder.ColorToHex(color)
+				end)
+			end,
+		})
+		order += 1
+	end
+
 	if structure.Mode ~= "None" then
 		local kind = structure.Mode :: StructureAssets.AssetKind
 		local assetOptions: { Components.DropdownOption } = {
@@ -121,17 +166,7 @@ local function StructureControls(props: {
 		order += 1
 
 		if advancedOpen then
-			children.ColorLabel = note("Procedural concrete colour", order)
-			order += 1
-			children.Color = e(Components.ColorField, {
-				Value = StructureBuilder.ColorFromHex(structure.ConcreteColorHex),
-				LayoutOrder = order,
-				OnChanged = function(color: Color3)
-					change(function(copy)
-						copy.ConcreteColorHex = StructureBuilder.ColorToHex(color)
-					end)
-				end,
-			})
+			children.FitSection = e(Components.Section, { Text = "Position and fit", LayoutOrder = order })
 			order += 1
 			children.Offset = e(Components.Row, { LayoutOrder = order }, {
 				Label = e(Components.Label, { Text = "Y offset (m)", LayoutOrder = 1 }),
@@ -162,9 +197,60 @@ local function StructureControls(props: {
 				}),
 			})
 			order += 1
+
+			if structure.AssetId then
+				children.AssetAppearance = note(
+					"Custom module materials and colours stay exactly as authored in the imported Roblox Model.",
+					order
+				)
+				order += 1
+			end
+
+			if not structure.AssetId or kind == "Viaduct" then
+				addFinishControls(
+					"BaseFinish",
+					if structure.AssetId then "Pier and cap finish" else "Structural base finish",
+					structure.ConcreteColorHex,
+					structure.BaseMaterial,
+					"ConcreteColorHex",
+					"BaseMaterial"
+				)
+			end
+			if not structure.AssetId and kind == "Viaduct" then
+				addFinishControls(
+					"ViaductWallFinish",
+					"Viaduct edge wall finish",
+					structure.ViaductWallColorHex,
+					structure.ViaductWallMaterial,
+					"ViaductWallColorHex",
+					"ViaductWallMaterial"
+				)
+			elseif not structure.AssetId and kind == "Tunnel" then
+				addFinishControls(
+					"TunnelWallFinish",
+					"Tunnel side wall finish",
+					structure.TunnelWallColorHex,
+					structure.TunnelWallMaterial,
+					"TunnelWallColorHex",
+					"TunnelWallMaterial"
+				)
+				addFinishControls(
+					"TunnelRoofFinish",
+					"Tunnel roof finish",
+					structure.TunnelRoofColorHex,
+					structure.TunnelRoofMaterial,
+					"TunnelRoofColorHex",
+					"TunnelRoofMaterial"
+				)
+			end
 		end
 
 		if kind == "Viaduct" and advancedOpen then
+			children.ViaductGeometrySection = e(Components.Section, {
+				Text = "Viaduct geometry",
+				LayoutOrder = order,
+			})
+			order += 1
 			children.ParapetGap = e(Components.Row, { LayoutOrder = order }, {
 				Label = e(Components.Label, { Text = "Parapet gap (m)", LayoutOrder = 1 }),
 				Field = e(Components.NumberField, {
@@ -181,7 +267,7 @@ local function StructureControls(props: {
 			})
 			order += 1
 			children.ConcreteMedian = e(Components.Checkbox, {
-				Label = "Use concrete for elevated medians",
+				Label = "Match structural base on elevated medians",
 				Checked = structure.ConcreteMedian,
 				LayoutOrder = order,
 				OnToggled = function(checked: boolean)
@@ -190,6 +276,8 @@ local function StructureControls(props: {
 					end)
 				end,
 			})
+			order += 1
+			children.SupportSection = e(Components.Section, { Text = "Viaduct supports", LayoutOrder = order })
 			order += 1
 			children.Pillars = e(Components.Checkbox, {
 				Label = "Auto-place piers by downward raycast",
@@ -203,12 +291,56 @@ local function StructureControls(props: {
 			})
 			order += 1
 			if structure.AutoPillars then
+				children.PillarLayout = e(Components.Row, { LayoutOrder = order }, {
+					Label = e(Components.Label, { Text = "Layout", Width = 72, LayoutOrder = 1 }),
+					Field = e(Components.Dropdown, {
+						Options = {
+							{ Id = "Single", Text = "Single centre pillar" },
+							{ Id = "Twin", Text = "Twin pillars + cap beam" },
+						},
+						SelectedId = structure.PillarLayout,
+						Grow = true,
+						LayoutOrder = 2,
+						OnSelected = function(id: string)
+							change(function(copy)
+								copy.PillarLayout = if id == "Twin" then "Twin" else "Single"
+							end)
+						end,
+					}),
+				})
+				order += 1
 				local fields = {
 					{ Key = "PillarSpacingM", Label = "Spacing (m)", Value = structure.PillarSpacingM, Min = 0.5 },
-					{ Key = "PillarWidthM", Label = "Width (m)", Value = structure.PillarWidthM, Min = 0.1 },
-					{ Key = "PillarDepthM", Label = "Depth (m)", Value = structure.PillarDepthM, Min = 0.1 },
+					{ Key = "PillarWidthM", Label = "Pillar width (m)", Value = structure.PillarWidthM, Min = 0.1 },
+					{ Key = "PillarDepthM", Label = "Pillar depth (m)", Value = structure.PillarDepthM, Min = 0.1 },
 					{ Key = "MaxPillarHeightM", Label = "Max drop (m)", Value = structure.MaxPillarHeightM, Min = 0.5 },
 				}
+				if structure.PillarLayout == "Twin" then
+					table.insert(fields, {
+						Key = "PillarSeparationM",
+						Label = "Pillar centres (m)",
+						Value = structure.PillarSeparationM,
+						Min = 0.1,
+					})
+					table.insert(fields, {
+						Key = "CapBeamWidthM",
+						Label = "Cap width (m)",
+						Value = structure.CapBeamWidthM,
+						Min = 0.1,
+					})
+					table.insert(fields, {
+						Key = "CapBeamHeightM",
+						Label = "Cap height (m)",
+						Value = structure.CapBeamHeightM,
+						Min = 0.1,
+					})
+					table.insert(fields, {
+						Key = "CapBeamDepthM",
+						Label = "Cap depth (m)",
+						Value = structure.CapBeamDepthM,
+						Min = 0.1,
+					})
+				end
 				for _, field in fields do
 					children[field.Key] = e(Components.Row, { LayoutOrder = order }, {
 						Label = e(Components.Label, { Text = field.Label, LayoutOrder = 1 }),
@@ -228,6 +360,11 @@ local function StructureControls(props: {
 				end
 			end
 		elseif kind == "Tunnel" and advancedOpen then
+			children.TunnelGeometrySection = e(Components.Section, {
+				Text = "Tunnel geometry",
+				LayoutOrder = order,
+			})
+			order += 1
 			children.TunnelClearance = e(Components.Row, { LayoutOrder = order }, {
 				Label = e(Components.Label, { Text = "Wall clearance (m)", LayoutOrder = 1 }),
 				Field = e(Components.NumberField, {
