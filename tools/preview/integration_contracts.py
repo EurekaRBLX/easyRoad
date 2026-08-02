@@ -3,8 +3,9 @@
 
 These do not execute Luau. They protect the exact contracts that previously
 made a feature look shipped while remaining unreachable in Studio: queryable
-junction geometry, placement-time structure controls/rendering, dedicated
-asset management, procedural viaduct/tunnel fallbacks, and the Software dock.
+junction geometry, placement-time structure controls/rendering, lateral road
+snap references, dedicated asset management, procedural viaduct/tunnel
+fallbacks, and the Software dock.
 """
 
 from pathlib import Path
@@ -103,10 +104,22 @@ def main():
     require(session, "StructureBuilder.Render(model, curve, structure, settings)", "placed roads do not render structures", problems)
     require(
         build_bar,
-        'children.Structure = props.ToolMode ~= "Roundabout" and e(StructureControls',
+        'children.Structure = props.ToolMode ~= "Roundabout"',
         "Road Tools does not expose structure controls",
         problems,
     )
+    require(
+        build_bar,
+        "and e(StructureControls, {",
+        "Road Tools structure controls are not mounted",
+        problems,
+    )
+    require(settings, 'export type SnapReference = "Centre" | "LeftRoadwayEdge" | "RightRoadwayEdge"', "snap-reference setting is missing", problems)
+    require(build_bar, '{ Id = "LeftRoadwayEdge", Text = "Left roadway edge" }', "Road Tools has no left-edge snap option", problems)
+    require(build_bar, '{ Id = "RightRoadwayEdge", Text = "Right roadway edge" }', "Road Tools has no right-edge snap option", problems)
+    require(session, "TopologyPosition: Vector3", "lateral snaps do not preserve a centreline topology anchor", problems)
+    require(session, "connectAtSplit(snapMatch.Road, snapMatch.Station", "mid-span lateral snaps do not split at the captured centreline station", problems)
+    require(junction, "dx * dx + dz * dz > 0.25 * 0.25", "offset snap connections can still be mistaken for seamless pass-throughs", problems)
     require(structure, "placeProceduralTunnel(generated, road, curve, data, settings)", "no-asset tunnel fallback is missing", problems)
     require(structure, "placeProceduralViaduct(generated, road, curve, data, settings)", "no-asset viaduct fallback is missing", problems)
     require(structure, 'string.format("DeckSlab_%04d"', "procedural viaduct has no structural slab", problems)
@@ -176,7 +189,7 @@ def main():
         for problem in problems:
             print("FAILED:", problem)
         return 1
-    print("integration contracts passed: multinode junctions, assets, procedural structures, parallel roadways, marking boundaries, highway presets, Software dock")
+    print("integration contracts passed: multinode junctions, assets, procedural structures, snap references, parallel roadways, marking boundaries, highway presets, Software dock")
     return 0
 
 

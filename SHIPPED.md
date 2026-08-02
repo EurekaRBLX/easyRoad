@@ -4,6 +4,28 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Selectable centre/left-edge/right-edge road snapping
+
+Road Tools now shows a persistent **Snap point** dropdown whenever **Snap to
+existing road** is enabled. It offers Road centreline, Left roadway edge, and
+Right roadway edge. Roadway edges come from the first/last paved-roadway
+components rather than the profile's outer extent, and their world positions
+use the target curve's banked frame.
+
+The magnetic position is no longer also assumed to be the topology anchor.
+Each clicked snap stores the target road identity, original centreline station
+or endpoint, centreline topology position, shifted visible position, and
+tangent. Post-commit endpoint connections therefore reuse the exact road end,
+while mid-span connections split at the exact original centreline station even
+when the chosen edge lies outside the normal snap radius. A two-road junction
+is only classified as a seamless pass-through when both actual centreline ends
+coincide with its node; matching tangents on a laterally offset connection no
+longer suppress the junction surface.
+
+Widening/narrowing roads remain endpoint-only snap targets because their
+mid-span split is intentionally unsupported; the two endpoint references use
+their exact ProfileStart/ProfileEnd widths.
+
 ## Exact roundabout mouth-sector clipping
 
 The live Studio comparison confirmed why the Python render looked cleaner even

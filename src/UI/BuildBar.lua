@@ -235,6 +235,24 @@ local function BuildBar(props: {
 		end,
 		LayoutOrder = 6,
 	})
+	children.SnapReference = props.Settings.SnapToRoad
+		and e(Components.Row, { LayoutOrder = 7 }, {
+			Label = e(Components.Label, { Text = "Snap point", LayoutOrder = 1, Width = 76 }),
+			Dropdown = e(Components.Dropdown, {
+				Options = {
+					{ Id = "Centre", Text = "Road centreline" },
+					{ Id = "LeftRoadwayEdge", Text = "Left roadway edge" },
+					{ Id = "RightRoadwayEdge", Text = "Right roadway edge" },
+				},
+				SelectedId = props.Settings.SnapReference,
+				OnSelected = function(id: string)
+					props.Settings.SnapReference = id :: Settings.SnapReference
+					props.OnSettingsChanged()
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		})
 	children.SnapToGridToggle = e(Components.Checkbox, {
 		Label = "Snap to grid",
 		Checked = props.Settings.SnapToGrid,
@@ -242,9 +260,9 @@ local function BuildBar(props: {
 			props.Settings.SnapToGrid = checked
 			props.OnSettingsChanged()
 		end,
-		LayoutOrder = 7,
+		LayoutOrder = 8,
 	})
-	children.Transition = e(Components.Row, { LayoutOrder = 8 }, {
+	children.Transition = e(Components.Row, { LayoutOrder = 9 }, {
 		Label = e(Components.Label, { Text = "Widen to", LayoutOrder = 1, Width = 60 }),
 		Dropdown = e(Components.Dropdown, {
 			Options = endProfileOptions,
@@ -263,11 +281,11 @@ local function BuildBar(props: {
 			props.Settings.SuperelevationMode = if checked then "Auto" else "Off"
 			props.OnSettingsChanged()
 		end,
-		LayoutOrder = 9,
+		LayoutOrder = 10,
 	})
 	local speedShown, speedMin, speedMax = Units.SpeedField(props.Settings, props.Settings.DesignSpeedKph, 10, 200)
 	children.Speed = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 10 }, {
+		and e(Components.Row, { LayoutOrder = 11 }, {
 			Label = e(Components.Label, {
 				Text = "Speed (" .. Units.SpeedSuffix(props.Settings) .. ")",
 				LayoutOrder = 1,
@@ -293,7 +311,7 @@ local function BuildBar(props: {
 	local runoffShown, runoffMin, runoffMax =
 		Units.LengthField(props.Settings, props.Settings.SuperelevationRunoffM, 2, 30)
 	children.BankTransition = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 11 }, {
+		and e(Components.Row, { LayoutOrder = 12 }, {
 			Label = e(Components.Label, {
 				Text = "Transition (" .. Units.LengthSuffix(props.Settings) .. ")",
 				LayoutOrder = 1,
@@ -311,7 +329,7 @@ local function BuildBar(props: {
 				LayoutOrder = 2,
 			}),
 		})
-	children.Elevation = e(Components.Row, { LayoutOrder = 12 }, {
+	children.Elevation = e(Components.Row, { LayoutOrder = 13 }, {
 		Label = e(Components.Label, { Text = "Elevation", LayoutOrder = 1, Width = 64 }),
 		Down = e(Components.Button, {
 			Text = "",
@@ -346,7 +364,7 @@ local function BuildBar(props: {
 	-- CS2-style step adjustment: how far each R/F press or arrow click
 	-- moves the elevation, editable right next to the elevation control
 	-- instead of buried in a separate settings dock.
-	children.ElevationStep = e(Components.Row, { LayoutOrder = 13 }, {
+	children.ElevationStep = e(Components.Row, { LayoutOrder = 14 }, {
 		Label = e(Components.Label, { Text = "Step", Dim = true, LayoutOrder = 1, Width = 64 }),
 		Field = e(Components.NumberField, {
 			Value = props.Settings.ElevationStepStuds,
@@ -367,24 +385,26 @@ local function BuildBar(props: {
 			keyHint(props.Settings.Keybinds.ElevationDown)
 		),
 		Dim = true,
-		LayoutOrder = 14,
+		LayoutOrder = 15,
 	})
 	-- Keep the mode visible directly below the tool picker. This is the main
 	-- placement workflow, so hiding it below every snapping/banking/elevation
 	-- option would recreate the discoverability failure of the old inspector-
 	-- only implementation. Roundabouts do not use RoadInstance structures.
-	children.Structure = props.ToolMode ~= "Roundabout" and e(StructureControls, {
-		Structure = props.Structure,
-		Assets = props.StructureAssets,
-		Status = props.StructureStatus,
-		OnChange = props.SetStructure,
-		LayoutOrder = 3,
-	})
-	children.Parallel = props.ToolMode ~= "Roundabout" and e(ParallelControls, {
-		Config = props.Parallel,
-		OnChange = props.SetParallel,
-		LayoutOrder = 4,
-	})
+	children.Structure = props.ToolMode ~= "Roundabout"
+		and e(StructureControls, {
+			Structure = props.Structure,
+			Assets = props.StructureAssets,
+			Status = props.StructureStatus,
+			OnChange = props.SetStructure,
+			LayoutOrder = 3,
+		})
+	children.Parallel = props.ToolMode ~= "Roundabout"
+		and e(ParallelControls, {
+			Config = props.Parallel,
+			OnChange = props.SetParallel,
+			LayoutOrder = 4,
+		})
 	children.Hint = e("TextLabel", {
 		Text = props.Hint,
 		TextColor3 = Theme.DIM,
@@ -395,13 +415,13 @@ local function BuildBar(props: {
 		TextSize = Theme.TEXT_SIZE,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = true,
-		LayoutOrder = 16,
+		LayoutOrder = 17,
 	})
 	children.Stop = e(Components.Button, {
 		Text = "Stop Building",
 		Danger = true,
 		OnClick = props.OnStop,
-		LayoutOrder = 17,
+		LayoutOrder = 18,
 	})
 
 	local scrollProps = Components.ScrollBar()

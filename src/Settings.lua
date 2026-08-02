@@ -16,6 +16,7 @@ local SPEED_UNITS = { "Kmh", "Mph" }
 local LENGTH_UNITS = { "Meters", "Feet" }
 
 export type SuperelevationMode = "Auto" | "Manual" | "Off"
+export type SnapReference = "Centre" | "LeftRoadwayEdge" | "RightRoadwayEdge"
 
 -- Which English variant to use for user-facing terminology that differs
 -- between them (Kerb/Curb, Pavement/Sidewalk, ...) - see Locale.lua. Purely
@@ -66,6 +67,10 @@ export type EasyRoadSettings = {
 	-- for a road that's deliberately meant to run free of the existing
 	-- network (an overpass with no at-grade connection, etc).
 	SnapToRoad: boolean,
+	-- Lateral reference on an existing road used by magnetic endpoint and
+	-- mid-span snapping. Left/right follow that road's stored start -> end
+	-- profile orientation; topology still connects to its centreline station.
+	SnapReference: SnapReference,
 	-- Deflect roundabout entries: each mouth's entry arm merges closer in to the
 	-- mouth than its exit arm peels off, so traffic joining the ring is turned
 	-- harder than traffic leaving (see RoundaboutBuilder). Off = a symmetric pair.
@@ -135,6 +140,9 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		GridSizeStuds = raw.GridSizeStuds or 4,
 		SnapToGrid = if raw.SnapToGrid == nil then false else raw.SnapToGrid,
 		SnapToRoad = if raw.SnapToRoad == nil then true else raw.SnapToRoad,
+		SnapReference = if raw.SnapReference == "LeftRoadwayEdge" or raw.SnapReference == "RightRoadwayEdge"
+			then raw.SnapReference
+			else "Centre",
 		RoundaboutEntryCurve = if raw.RoundaboutEntryCurve == nil then true else raw.RoundaboutEntryCurve,
 		ElevationStepStuds = raw.ElevationStepStuds or 1,
 		LastElevationStuds = raw.LastElevationStuds or 0,
@@ -197,6 +205,7 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		GridSizeStuds = settings.GridSizeStuds,
 		SnapToGrid = settings.SnapToGrid,
 		SnapToRoad = settings.SnapToRoad,
+		SnapReference = settings.SnapReference,
 		RoundaboutEntryCurve = settings.RoundaboutEntryCurve,
 		ElevationStepStuds = settings.ElevationStepStuds,
 		LastElevationStuds = settings.LastElevationStuds,

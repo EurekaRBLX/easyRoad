@@ -253,6 +253,35 @@ local function isSmoothPassThrough(roads: { Model }, junctionId: string): boolea
 	if #roads ~= 2 then
 		return false
 	end
+	local junctionModel = JunctionInstance.FindById(junctionId)
+	local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
+	if not junctionData then
+		return false
+	end
+	-- Matching tangents alone are not enough: a road placed with a lateral
+	-- snap reference can be parallel to the existing road while its centreline
+	-- endpoint sits on that road's edge. Treating that as a seamless through
+	-- road would suppress the junction pad and leave the offset endpoints
+	-- disconnected visually. A true pass-through has both centreline endpoints
+	-- at the node itself.
+	for _, road in roads do
+		local data = RoadInstance.Read(road)
+		if not data then
+			return false
+		end
+		local endpoint = if data.StartJunctionId == junctionId
+			then data.Curve:PosAt(0)
+			elseif data.EndJunctionId == junctionId then data.Curve:PosAt(data.Curve.Length)
+			else nil
+		if not endpoint then
+			return false
+		end
+		local dx = endpoint.X - junctionData.Position.X
+		local dz = endpoint.Z - junctionData.Position.Z
+		if dx * dx + dz * dz > 0.25 * 0.25 then
+			return false
+		end
+	end
 	local profileA = profileAtJunctionEnd(roads[1], junctionId)
 	local profileB = profileAtJunctionEnd(roads[2], junctionId)
 	if not profileA or not profileB or profileA.Id ~= profileB.Id then
@@ -511,7 +540,8 @@ function JunctionBuilder.GetLayout(junctionId: string, settings: Settings.EasyRo
 			SpanRad: number,
 			RadiusM: number,
 		}
-	} = {}
+	} =
+		{}
 	local approaches: { { Id: string, Angle: number, Cw: EdgePoint, Ccw: EdgePoint } } = {}
 	local function angleDelta(a: number, b: number): number
 		return (a - b + math.pi) % (2 * math.pi) - math.pi

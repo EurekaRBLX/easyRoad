@@ -56,6 +56,28 @@ a real parameter of a different function in the same file.
 
 ## Current state
 
+### Selectable roadway snap reference - built, needs live confirmation
+
+Road Tools exposes **Snap point** whenever road snapping is enabled: Road
+centreline, Left roadway edge, or Right roadway edge. The persistent
+`Settings.SnapReference` default is Centre. Left/right are the target road's
+stored start-to-end profile orientation and use the actual roadway limits (so
+outer pavements/medians are not mistaken for carriageway).
+
+`createRoadSession` stores a `SnapMatch` for every magnetic click. Its visible
+position may be laterally shifted in the target road's banked frame, but its
+Road/Station/RoadEnd and centreline topology position remain separate. Commit
+uses that identity directly: mid-span snaps split the target at the original
+centreline station and endpoint snaps connect to the original road end. This
+avoids proximity rediscovery silently missing an edge farther than the snap
+radius from centre. `JunctionBuilder.isSmoothPassThrough` also requires both
+centreline endpoints to coincide with the node, so a laterally offset road
+cannot incorrectly suppress the required junction pad. Live-check all three
+choices on a banked curve and a wide divided road. Widening/narrowing roads
+remain endpoint-only snap targets because `RoadSplit.CanSplit` deliberately
+rejects their mid-span split; their start and end references use ProfileStart
+and ProfileEnd respectively.
+
 ### Exact-straight road surfaces — built, needs live performance confirmation
 
 `RoadBuilder` now proves a whole curve is monotonic and exactly collinear from

@@ -42,8 +42,9 @@ To rebuild `dist/` yourself without Rojo: `python3 tools/build_rbxmx.py`.
    * Starting a road near the end of an existing one snaps to it and locks
      the tangent for a smooth continuation (and after each placement the
      tool chains from the road you just placed).
-   * Finishing near an existing road shows a blue **SNAPPED** marker and
-     magnetically previews on its centreline.
+   * Finishing near an existing road shows a blue **SNAPPED** marker. In Road
+     Tools, **Snap point** chooses its centreline, left roadway edge, or right
+     roadway edge; the choice is remembered between sessions.
    * Drawing completely across another road shows a green **X INTERSECTION**
      marker and splits both roads into one real junction when placed. Red
      markers explain crossings that cannot safely be split; roads at a

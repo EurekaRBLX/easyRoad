@@ -39,6 +39,7 @@ local JunctionInstance = require("./JunctionInstance")
 local RegionStyles = require("./RegionStyles")
 local Settings = require("./Settings")
 local Keybinds = require("./Keybinds")
+local Superelevation = require("./Geometry/Superelevation")
 
 -- "Roundabout" is a single-click placement (centre point only, no curve) -
 -- drops a standalone ring straight from Road Tools instead of requiring an
@@ -107,6 +108,22 @@ type PreparedCrossing = {
 	JunctionModel: Model,
 }
 
+-- A magnetic placement point and the centreline identity it belongs to are
+-- deliberately separate. Left/right roadway-edge snapping moves the visible
+-- endpoint laterally, but a split or junction must still be made at the
+-- target road's real centreline station.
+type SnapMatch = {
+	Kind: "RoadEndpoint" | "RoadMidSpan" | "Junction" | "Roundabout",
+	Position: Vector3,
+	TopologyPosition: Vector3,
+	Tangent: Vector3?,
+	Road: Model?,
+	RoadEnd: ("Start" | "End")?,
+	Station: number?,
+	Junction: Model?,
+	Ring: Model?,
+}
+
 -- Continues from an exact existing point/tangent (e.g. "Place More" on an
 -- already-placed road) instead of starting a fresh placement from scratch -
 -- the same state the session is already in right after committing a road.
@@ -130,6 +147,7 @@ local function createRoadSession(
 	local endProfile: RoadProfile.RoadProfile? = nil
 
 	local points: { Vector3 } = if seed then { seed.Position } else {}
+	local pointSnapMatches: { [number]: SnapMatch } = {}
 	local lockedTangent: Vector3? = if seed then seed.Tangent else nil
 	local hoverPos: Vector3? = nil
 	-- The raw ground point (pre grid-snap, pre elevation) from the last
@@ -337,37 +355,107 @@ local function createRoadSession(
 		return nil
 	end
 
-	local function findEndpointSnap(pos: Vector3): (Vector3?, Vector3?)
+	local function roadwayEdgeOffsetsM(profile: RoadProfile.RoadProfile): (number, number)
+		local offsets = RoadProfile.ComponentOffsetsM(profile)
+		if #offsets == 0 then
+			return 0, 0
+		end
+		local firstRoadway: number? = nil
+		local lastRoadway: number? = nil
+		for index, component in profile.Components do
+			if RoadProfile.IsRoadway(component.Kind) then
+				firstRoadway = firstRoadway or index
+				lastRoadway = index
+			end
+		end
+		if not firstRoadway or not lastRoadway then
+			return offsets[1].Left, offsets[#offsets].Right
+		end
+		return offsets[firstRoadway].Left, offsets[lastRoadway].Right
+	end
+
+	-- Returns the visible magnetic point for one centreline station. Profile
+	-- offsets use the road's own stored start -> end orientation, matching the
+	-- Road Editor's left-to-right component order. The banked frame keeps an
+	-- edge snap on the actual elevated deck instead of floating beside it.
+	local function roadSnapPosition(data: RoadInstance.RoadData, station: number): Vector3
+		local centre = data.Curve:PosAt(station)
+		if settings.SnapReference == "Centre" then
+			return centre
+		end
+		local profile = if data.ProfileEnd and station >= data.Curve.Length - 1e-4
+			then data.ProfileEnd :: RoadProfile.RoadProfile
+			else data.ProfileStart
+		local leftM, rightM = roadwayEdgeOffsetsM(profile)
+		local offsetM = if settings.SnapReference == "LeftRoadwayEdge" then leftM else rightM
+		-- RoadBuilder tapers every segment's bank to zero at both endpoints so
+		-- chained roads meet without a height step. Apply the same runoff envelope
+		-- here; using the raw curvature roll put an edge snap above/below the real
+		-- deck at a curved endpoint. RoadBuilder additionally smooths sampled roll
+		-- noise, but this continuous envelope preserves the exact endpoint contract
+		-- and the intended bank through the body of the road.
+		local roll = Superelevation.RollAt(data.Curve:CurvatureAt(station), settings, getStyle())
+		local runoffStuds = math.min(settings.SuperelevationRunoffM * settings.MetersToStuds, data.Curve.Length * 0.3)
+		if runoffStuds > 1e-3 then
+			local taper = math.min(1, station / runoffStuds, (data.Curve.Length - station) / runoffStuds)
+			roll *= math.max(taper, 0)
+		end
+		local frame = data.Curve:FrameAt(station, roll)
+		return (frame * CFrame.new(offsetM * settings.MetersToStuds, 0, 0)).Position
+	end
+
+	local function findEndpointSnap(pos: Vector3): SnapMatch?
 		if not settings.SnapToRoad then
-			return nil, nil
+			return nil
 		end
 		local bestDistance = settings.SnapRadiusStuds
-		local bestPos: Vector3? = nil
-		local bestTangent: Vector3? = nil
+		local best: SnapMatch? = nil
 		local folder = getRoadsFolder(false)
 		if folder then
 			for _, child in folder:GetChildren() do
 				if child:GetAttribute("RW_Road") ~= true then
 					continue
 				end
-				local startPos = child:GetAttribute("RW_StartPos") :: Vector3?
-				local endPos = child:GetAttribute("RW_EndPos") :: Vector3?
-				local startTan = child:GetAttribute("RW_StartTan") :: Vector3?
-				local endTan = child:GetAttribute("RW_EndTan") :: Vector3?
-				if endPos and endTan then
+				local road = child :: Model
+				local data = RoadInstance.Read(road)
+				if not data then
+					continue
+				end
+				local endStation = data.Curve.Length
+				local endTopologyPos = data.Curve:PosAt(endStation)
+				local endPos = roadSnapPosition(data, endStation)
+				local endTan = data.Curve:TangentAt(endStation)
+				do
 					local d = (endPos - pos).Magnitude
 					if isAtGrade(endPos, pos) and d < bestDistance then
 						bestDistance = d
-						bestPos = endPos
-						bestTangent = endTan -- Outgoing continuation direction
+						best = {
+							Kind = "RoadEndpoint",
+							Position = endPos,
+							TopologyPosition = endTopologyPos,
+							Tangent = endTan, -- Outgoing continuation direction
+							Road = road,
+							RoadEnd = "End",
+							Station = endStation,
+						}
 					end
 				end
-				if startPos and startTan then
+				do
+					local startTopologyPos = data.Curve:PosAt(0)
+					local startPos = roadSnapPosition(data, 0)
+					local startTan = data.Curve:TangentAt(0)
 					local d = (startPos - pos).Magnitude
 					if isAtGrade(startPos, pos) and d < bestDistance then
 						bestDistance = d
-						bestPos = startPos
-						bestTangent = -startTan -- Continue backwards out of the start
+						best = {
+							Kind = "RoadEndpoint",
+							Position = startPos,
+							TopologyPosition = startTopologyPos,
+							Tangent = -startTan, -- Continue backwards out of the start
+							Road = road,
+							RoadEnd = "Start",
+							Station = 0,
+						}
 					end
 				end
 			end
@@ -383,13 +471,18 @@ local function createRoadSession(
 		-- junction with more than one road already meeting there, so this
 		-- leaves the tangent unlocked (nil) - the placement tools already
 		-- treat a nil tangent as "no guide point saved, free to aim."
-		if not bestPos then
+		if not best then
 			local junctionModel = findJunctionNear(pos)
 			if junctionModel then
 				local junctionData = JunctionInstance.Read(junctionModel)
 				if junctionData then
-					bestPos = junctionData.Position
-					bestTangent = nil
+					best = {
+						Kind = "Junction",
+						Position = junctionData.Position,
+						TopologyPosition = junctionData.Position,
+						Tangent = nil,
+						Junction = junctionModel,
+					}
 				end
 			end
 		end
@@ -397,17 +490,22 @@ local function createRoadSession(
 		-- RW_OuterRadius and are not RW_Road, so the loop above never sees
 		-- them). Attach point is on the outer pavement edge; outward tangent
 		-- lets the tool chain a new spoke away from the ring.
-		if not bestPos then
-			local _ring, attachPos, outward = RoundaboutBuilder.FindNear(pos, settings.SnapRadiusStuds)
+		if not best then
+			local ring, attachPos, outward = RoundaboutBuilder.FindNear(pos, settings.SnapRadiusStuds)
 			if attachPos and outward then
 				-- Attach on the ring's own deck height (center.Y stamped at
 				-- create time), not ground+elevation - stacking on the ring
 				-- was the old bug; snapping TO the ring should meet it flush.
-				bestPos = attachPos
-				bestTangent = outward
+				best = {
+					Kind = "Roundabout",
+					Position = attachPos,
+					TopologyPosition = attachPos,
+					Tangent = outward,
+					Ring = ring,
+				}
 			end
 		end
-		return bestPos, bestTangent
+		return best
 	end
 
 	-- Finds an existing road (other than `exclude`) whose start or end lies
@@ -526,16 +624,15 @@ local function createRoadSession(
 	-- above), so a new road drawn crossing an existing one mid-span can
 	-- still connect to it instead of silently overlapping with no
 	-- relationship at all.
-	local function findMidSpanMatch(pos: Vector3, exclude: Model?): (Model?, number?)
+	local function findMidSpanMatch(pos: Vector3, exclude: Model?): SnapMatch?
 		if not settings.SnapToRoad then
-			return nil, nil
+			return nil
 		end
 		local folder = getRoadsFolder(false)
 		if not folder then
-			return nil, nil
+			return nil
 		end
-		local best: Model? = nil
-		local bestStation: number? = nil
+		local best: SnapMatch? = nil
 		local bestDistance = math.huge
 		for _, child in folder:GetChildren() do
 			if (exclude and child == exclude) or child:GetAttribute("RW_Road") ~= true then
@@ -549,29 +646,60 @@ local function createRoadSession(
 				continue
 			end
 			local station = data.Curve:ClosestS(pos)
-			local closest = data.Curve:PosAt(station)
-			local distance = (closest - pos).Magnitude
-			local tolerance = RoadProfile.TotalWidthM(data.ProfileStart) / 2 * settings.MetersToStuds
-				+ settings.SnapRadiusStuds
-			if isAtGrade(closest, pos) and distance < tolerance and distance < bestDistance then
+			-- ClosestS searches the centreline. On a tight curve the closest
+			-- point of an offset roadway edge can be at a slightly different
+			-- station, so refine against the actual selected lateral reference.
+			if settings.SnapReference ~= "Centre" then
+				local window = math.max(data.Curve.Length / 40, settings.SnapRadiusStuds * 2)
+				for _ = 1, 8 do
+					local lo = math.max(0, station - window)
+					local hi = math.min(data.Curve.Length, station + window)
+					local localBestStation = station
+					local localBestDistance = (roadSnapPosition(data, station) - pos).Magnitude
+					for sample = 0, 8 do
+						local candidate = lo + (hi - lo) * sample / 8
+						local candidateDistance = (roadSnapPosition(data, candidate) - pos).Magnitude
+						if candidateDistance < localBestDistance then
+							localBestDistance = candidateDistance
+							localBestStation = candidate
+						end
+					end
+					station = localBestStation
+					window /= 2
+				end
+			end
+			local topologyPosition = data.Curve:PosAt(station)
+			local snapPosition = roadSnapPosition(data, station)
+			local distance = (snapPosition - pos).Magnitude
+			local tolerance = if settings.SnapReference == "Centre"
+				then RoadProfile.TotalWidthM(data.ProfileStart) / 2 * settings.MetersToStuds + settings.SnapRadiusStuds
+				else settings.SnapRadiusStuds
+			if isAtGrade(snapPosition, pos) and distance < tolerance and distance < bestDistance then
 				bestDistance = distance
-				best = child :: Model
-				bestStation = station
+				best = {
+					Kind = "RoadMidSpan",
+					Position = snapPosition,
+					TopologyPosition = topologyPosition,
+					Tangent = nil,
+					Road = child :: Model,
+					Station = station,
+				}
 			end
 		end
-		return best, bestStation
+		return best
 	end
 
 	-- Splits `road` at `station` and links `model`'s given end to the fresh
 	-- junction created there - the mid-span counterpart of connectAt above.
-	local function connectAtSplit(road: Model, station: number, model: Model, modelEnd: "Start" | "End")
+	local function connectAtSplit(road: Model, station: number, model: Model, modelEnd: "Start" | "End"): boolean
 		local _, _, junctionId = RoadSplit.SplitAt(road, station, getStyle(), settings)
 		if not junctionId then
-			return
+			return false
 		end
 		stampEndJunction(model, modelEnd, junctionId)
 		JunctionBuilder.TrimApproaches(junctionId, getStyle(), settings)
 		JunctionBuilder.Rebuild(junctionId, getStyle(), settings)
+		return true
 	end
 
 	-- Finds real interior curve/curve crossings for the pending road. Unlike
@@ -592,8 +720,7 @@ local function createRoadSession(
 		local maximumVerticalSeparation = math.max(MIN_AT_GRADE_SEPARATION_STUDS, settings.RoadThicknessStuds * 2)
 		local newRoadBlockReason = if endProfile ~= nil
 			then "Widening/narrowing roads cannot be split at a crossing yet"
-			elseif #newCurve.Segments > 1
-			then "Curved parallel roadways cannot be split at a crossing yet"
+			elseif #newCurve.Segments > 1 then "Curved parallel roadways cannot be split at a crossing yet"
 			else nil
 		local candidates: { CrossingCandidate } = {}
 		for _, child in folder:GetChildren() do
@@ -704,27 +831,24 @@ local function createRoadSession(
 	-- only snapped the first point; a final click near a road was connected
 	-- after commit without the preview ever moving onto the centreline, so
 	-- it felt like snapping had not happened even when metadata linked.
-	local function placementPointFromGround(ground: Vector3): (Vector3, Vector3?, boolean)
+	local function placementPointFromGround(ground: Vector3): (Vector3, Vector3?, boolean, SnapMatch?)
 		local unsnapped = applyGridSnap(ground) + Vector3.new(0, elevation, 0)
 		local isStart = #points == 0
 		local isEnd = #points == clicksNeeded() - 1
 		if not isStart and not isEnd then
-			return unsnapped, nil, false
+			return unsnapped, nil, false, nil
 		end
-		local snapPos, snapTangent = findEndpointSnap(unsnapped)
-		if snapPos then
-			return snapPos, if isStart then snapTangent else nil, true
+		local endpointMatch = findEndpointSnap(unsnapped)
+		if endpointMatch then
+			return endpointMatch.Position, if isStart then endpointMatch.Tangent else nil, true, endpointMatch
 		end
 		if isEnd then
-			local road, station = findMidSpanMatch(unsnapped, nil)
-			if road and station then
-				local data = RoadInstance.Read(road)
-				if data then
-					return data.Curve:PosAt(station), nil, true
-				end
+			local midSpanMatch = findMidSpanMatch(unsnapped, nil)
+			if midSpanMatch then
+				return midSpanMatch.Position, nil, true, midSpanMatch
 			end
 		end
-		return unsnapped, nil, false
+		return unsnapped, nil, false, nil
 	end
 
 	-- Recomputes hoverPos from the last known ground point using whatever
@@ -761,14 +885,14 @@ local function createRoadSession(
 		changeSignal:Fire()
 	end
 
-	local function pickPoint(): (Vector3?, Vector3?)
+	local function pickPoint(): (Vector3?, Vector3?, SnapMatch?)
 		local ground = raycastGround()
 		if not ground then
-			return nil, nil
+			return nil, nil, nil
 		end
-		local position, tangent, snapped = placementPointFromGround(ground)
+		local position, tangent, snapped, snapMatch = placementPointFromGround(ground)
 		hoverSnapPos = if snapped then position else nil
-		return position, tangent
+		return position, tangent, snapMatch
 	end
 
 	-- Curve construction -----------------------------------------------------------
@@ -1000,6 +1124,8 @@ local function createRoadSession(
 	-- Commit ---------------------------------------------------------------------------
 
 	local function commitRoad(segment: CurveSegment.Segment)
+		local startSnapMatch = pointSnapMatches[1]
+		local endSnapMatch = pointSnapMatches[#points]
 		local corridorCurve = PolyCurve.new({ segment })
 		local placements = parallelPlacements(segment)
 		local primaryPlacement = placements[1]
@@ -1113,7 +1239,36 @@ local function createRoadSession(
 		-- whole connection silently died without ever reaching the junction
 		-- fallback. That was the real reason "can't add a new road to an
 		-- intersection" survived the previous fix.
-		local function connectEnd(targetModel: Model, pos: Vector3, whichEnd: "Start" | "End")
+		local function connectEnd(targetModel: Model, pos: Vector3, whichEnd: "Start" | "End", snapMatch: SnapMatch?)
+			-- A lateral snap can be farther than SnapRadiusStuds from the target
+			-- centreline, so proximity rediscovery is not reliable. Use the exact
+			-- target captured on click and connect at its true centreline station.
+			if snapMatch then
+				if
+					snapMatch.Kind == "RoadEndpoint"
+					and snapMatch.Road
+					and snapMatch.Road.Parent
+					and snapMatch.RoadEnd
+				then
+					connectAt(snapMatch.TopologyPosition, targetModel, whichEnd, snapMatch.Road, snapMatch.RoadEnd)
+					return
+				elseif
+					snapMatch.Kind == "RoadMidSpan"
+					and snapMatch.Road
+					and snapMatch.Road.Parent
+					and snapMatch.Station
+				then
+					if connectAtSplit(snapMatch.Road, snapMatch.Station, targetModel, whichEnd) then
+						return
+					end
+				elseif snapMatch.Kind == "Junction" and snapMatch.Junction and snapMatch.Junction.Parent then
+					connectAt(snapMatch.TopologyPosition, targetModel, whichEnd, nil, nil, snapMatch.Junction)
+					return
+				elseif snapMatch.Kind == "Roundabout" and snapMatch.Ring and snapMatch.Ring.Parent then
+					RoundaboutBuilder.ConnectRoad(snapMatch.Ring, targetModel, getStyle(), settings)
+					return
+				end
+			end
 			local otherModel, otherEnd = findConnectableEndpoint(pos, targetModel)
 			if otherModel then
 				connectAt(pos, targetModel, whichEnd, otherModel, otherEnd)
@@ -1131,16 +1286,16 @@ local function createRoadSession(
 				RoundaboutBuilder.ConnectRoad(ring, targetModel, getStyle(), settings)
 				return
 			end
-			local midRoad, midStation = findMidSpanMatch(pos, targetModel)
-			if midRoad and midStation then
-				connectAtSplit(midRoad, midStation, targetModel, whichEnd)
+			local midSpanMatch = findMidSpanMatch(pos, targetModel)
+			if midSpanMatch and midSpanMatch.Road and midSpanMatch.Station then
+				connectAtSplit(midSpanMatch.Road, midSpanMatch.Station, targetModel, whichEnd)
 			end
 		end
 
 		local startPos = curve:PosAt(0)
 		local endPos = curve:PosAt(curve.Length)
-		connectEnd(placedPieces[1], startPos, "Start")
-		connectEnd(placedPieces[#placedPieces], endPos, "End")
+		connectEnd(placedPieces[1], startPos, "Start", startSnapMatch)
+		connectEnd(placedPieces[#placedPieces], endPos, "End", endSnapMatch)
 
 		-- Endpoint connections above may change the width of a crossing's
 		-- neighbouring approach. Trim and rebuild only after every road and
@@ -1191,6 +1346,7 @@ local function createRoadSession(
 			endProfile = nil
 		end
 		points = { corridorCurve:PosAt(corridorCurve.Length) }
+		pointSnapMatches = {}
 		lockedTangent = corridorCurve:TangentAt(corridorCurve.Length)
 		hoverSnapPos = nil
 		destroyCrossingMarkers()
@@ -1240,7 +1396,7 @@ local function createRoadSession(
 			commitRoundabout(applyGridSnap(ground) + Vector3.new(0, elevation, 0))
 			return
 		end
-		local point, snapTangent = pickPoint()
+		local point, snapTangent, snapMatch = pickPoint()
 		if not point then
 			return
 		end
@@ -1248,6 +1404,9 @@ local function createRoadSession(
 			lockedTangent = snapTangent
 		end
 		table.insert(points, point)
+		if snapMatch then
+			pointSnapMatches[#points] = snapMatch
+		end
 		hoverSnapPos = nil
 		updateMarkers()
 
@@ -1258,6 +1417,7 @@ local function createRoadSession(
 			else
 				-- Degenerate (double click in place): drop the last point
 				table.remove(points)
+				pointSnapMatches[#points + 1] = nil
 			end
 		end
 		previewDirty = true
@@ -1266,6 +1426,7 @@ local function createRoadSession(
 
 	local function cancelPlacement()
 		points = {}
+		pointSnapMatches = {}
 		lockedTangent = nil
 		hoverSnapPos = nil
 		updateMarkers()
@@ -1344,6 +1505,8 @@ local function createRoadSession(
 			-- since their meaning differs between tools.
 			if #points > 1 then
 				points = { points[1] }
+				local firstSnapMatch = pointSnapMatches[1]
+				pointSnapMatches = if firstSnapMatch then { firstSnapMatch } else {}
 			end
 			updateMarkers()
 			previewDirty = true
