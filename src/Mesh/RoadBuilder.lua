@@ -617,7 +617,8 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				while bandEnd + 1 <= componentCount do
 					local nextIndex = bandEnd + 1
 					local nextKind = componentsStart[nextIndex].Kind
-					if excludedComponents[nextIndex]
+					if
+						excludedComponents[nextIndex]
 						or nextKind ~= "Drive"
 						or (MATERIAL_BY_KIND[nextKind] or Enum.Material.Asphalt) ~= material
 						or colorForKind(nextKind, style) ~= color
@@ -707,7 +708,10 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				part:SetAttribute("RW_ComponentEndIndex", componentEnd)
 				part:SetAttribute("RW_StationStartStuds", s0)
 				part:SetAttribute("RW_StationEndStuds", s1)
-				part:SetAttribute("RW_SurfaceCoalesced", optimizedStraight and (componentEnd > c or nominalLength > settings.MaxSegmentLengthStuds))
+				part:SetAttribute(
+					"RW_SurfaceCoalesced",
+					optimizedStraight and (componentEnd > c or nominalLength > settings.MaxSegmentLengthStuds)
+				)
 				return part
 			end
 

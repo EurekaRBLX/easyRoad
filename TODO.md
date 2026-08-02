@@ -13,6 +13,9 @@ straight phase (2048-stud longitudinal Parts plus identical adjacent Drive-lane
 surface merging) is shipped; mixed straight/curve sub-runs, Studio benchmarks,
 and the P1 incremental/preview/structure work remain open there.
 
+Cross-platform StyLua parsing/formatting is configured and is no longer a
+tooling blocker; a real Luau scope/type checker remains open infrastructure.
+
 ## Next major system - intersection controls, crossings, and signals
 
 The geometry can create and trim ordinary intersections, but it does not yet

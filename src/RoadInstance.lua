@@ -237,12 +237,8 @@ local function structureFromModel(model: Model): StructureData?
 		PillarSpacingM = if typeof(decoded.PillarSpacingM) == "number"
 			then math.max(decoded.PillarSpacingM, 0.1)
 			else 18,
-		PillarWidthM = if typeof(decoded.PillarWidthM) == "number"
-			then math.max(decoded.PillarWidthM, 0.1)
-			else 1.8,
-		PillarDepthM = if typeof(decoded.PillarDepthM) == "number"
-			then math.max(decoded.PillarDepthM, 0.1)
-			else 1.8,
+		PillarWidthM = if typeof(decoded.PillarWidthM) == "number" then math.max(decoded.PillarWidthM, 0.1) else 1.8,
+		PillarDepthM = if typeof(decoded.PillarDepthM) == "number" then math.max(decoded.PillarDepthM, 0.1) else 1.8,
 		MaxPillarHeightM = if typeof(decoded.MaxPillarHeightM) == "number"
 			then math.max(decoded.MaxPillarHeightM, 0.1)
 			else 200,
@@ -250,18 +246,12 @@ local function structureFromModel(model: Model): StructureData?
 		PillarSeparationM = if typeof(decoded.PillarSeparationM) == "number"
 			then math.max(decoded.PillarSeparationM, 0.1)
 			else 6,
-		CapBeamWidthM = if typeof(decoded.CapBeamWidthM) == "number"
-			then math.max(decoded.CapBeamWidthM, 0.1)
-			else 9,
+		CapBeamWidthM = if typeof(decoded.CapBeamWidthM) == "number" then math.max(decoded.CapBeamWidthM, 0.1) else 9,
 		CapBeamHeightM = if typeof(decoded.CapBeamHeightM) == "number"
 			then math.max(decoded.CapBeamHeightM, 0.1)
 			else 1,
-		CapBeamDepthM = if typeof(decoded.CapBeamDepthM) == "number"
-			then math.max(decoded.CapBeamDepthM, 0.1)
-			else 2.2,
-		ConcreteColorHex = if typeof(decoded.ConcreteColorHex) == "string"
-			then decoded.ConcreteColorHex
-			else "#696B70",
+		CapBeamDepthM = if typeof(decoded.CapBeamDepthM) == "number" then math.max(decoded.CapBeamDepthM, 0.1) else 2.2,
+		ConcreteColorHex = if typeof(decoded.ConcreteColorHex) == "string" then decoded.ConcreteColorHex else "#696B70",
 		BaseMaterial = StructureMaterials.Sanitize(decoded.BaseMaterial),
 		ViaductWallColorHex = if typeof(decoded.ViaductWallColorHex) == "string"
 			then decoded.ViaductWallColorHex

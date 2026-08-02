@@ -12,9 +12,11 @@ history, and `KNOWN_ISSUES.md` confirmed bugs.
 - Work directly on `main`. Rebuild `dist/EasyRoad.rbxmx` with
   `python3 tools/build_rbxmx.py` **in the same commit** as any `src/` change —
   the user installs that file, so a stale dist means they test old code.
-- `stylua src/<file>` then `stylua --check` before committing. The repo is not
-  globally stylua-clean under the installed version; only keep touched files
-  clean. (`src/Mesh/FillTriangle.lua` has a pre-existing diff — leave it.)
+- `stylua --verify src/<file>` then `stylua --check src/<file>` before
+  committing. `.stylua.toml` pins Luau/tabs/LF and `.gitattributes` keeps those
+  bytes consistent on native Windows, WSL, and Linux. The repo is not globally
+  stylua-clean under the installed version; only keep touched files clean.
+  (`src/Mesh/FillTriangle.lua` has a pre-existing diff — leave it.)
 - Commit trailer, exactly:
   `Co-Authored-By: Gameson <79436209+gamesonrblx@users.noreply.github.com>`
   No `Claude-Session:` trailer, no model identifier anywhere in commits, PRs,

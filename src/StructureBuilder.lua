@@ -341,12 +341,8 @@ local function placePiers(
 	local capDepth = math.max(data.CapBeamDepthM * scale, depth)
 	local capWidth = math.max(data.CapBeamWidthM * scale, separation + width)
 	local baseThickness = centralBaseThickness(scale)
-	local interfaceOverlap = safeInterfaceOverlap(
-		data.InterfaceOverlapM,
-		scale,
-		settings.RoadThicknessStuds,
-		baseThickness
-	)
+	local interfaceOverlap =
+		safeInterfaceOverlap(data.InterfaceOverlapM, scale, settings.RoadThicknessStuds, baseThickness)
 	local concreteColor = StructureBuilder.ColorFromHex(data.ConcreteColorHex)
 	local baseMaterial = StructureMaterials.Resolve(data.BaseMaterial)
 	local folder = Instance.new("Folder")
@@ -371,12 +367,7 @@ local function placePiers(
 		local frame = curve:FrameAt(station)
 		local top = curve:PosAt(station)
 			+ frame.UpVector
-				* (
-					data.ModuleOffsetM * scale
-					- settings.RoadThicknessStuds
-					+ interfaceOverlap
-					- baseThickness
-				)
+				* (data.ModuleOffsetM * scale - settings.RoadThicknessStuds + interfaceOverlap - baseThickness)
 		local supportFrame = flatFrameAt(top, frame.LookVector)
 		local columnTopY = top.Y - (if twin then capHeight else 0)
 		local lateralOffsets = if twin then { -separation / 2, separation / 2 } else { 0 }
@@ -502,12 +493,8 @@ local function placeProceduralViaduct(
 	local edgeAllowance = 0.45 * scale
 	local baseThickness = centralBaseThickness(scale)
 	local fasciaDepth = viaductFasciaDepth(scale)
-	local interfaceOverlap = safeInterfaceOverlap(
-		data.InterfaceOverlapM,
-		scale,
-		settings.RoadThicknessStuds,
-		baseThickness
-	)
+	local interfaceOverlap =
+		safeInterfaceOverlap(data.InterfaceOverlapM, scale, settings.RoadThicknessStuds, baseThickness)
 	local barrierThickness = math.max(0.35 * scale, 0.8)
 	local barrierHeight = math.max(1.2 * scale, 2.5)
 	local barrierCenter = roadWidth / 2 + parapetGap + barrierThickness / 2
@@ -515,10 +502,7 @@ local function placeProceduralViaduct(
 	local deckWidth = deckHalfWidth * 2
 	local offset = data.ModuleOffsetM * scale
 	local step = math.max(settings.MaxSegmentLengthStuds, 4)
-	local segmentCount = math.min(
-		math.floor(MAX_PROCEDURAL_PARTS / 3),
-		math.max(1, math.ceil(curve.Length / step))
-	)
+	local segmentCount = math.min(math.floor(MAX_PROCEDURAL_PARTS / 3), math.max(1, math.ceil(curve.Length / step)))
 	local folder = Instance.new("Folder")
 	folder.Name = "ProceduralViaduct"
 	folder:SetAttribute("RW_ProceduralViaduct", true)
@@ -557,12 +541,7 @@ local function placeProceduralViaduct(
 			makeStructurePart(
 				string.format("Parapet_%s_%04d", if side < 0 then "Left" else "Right", index),
 				Vector3.new(barrierThickness, fullBarrierHeight, depth),
-				frame
-					* CFrame.new(
-						side * barrierCenter,
-						barrierY,
-						0
-					),
+				frame * CFrame.new(side * barrierCenter, barrierY, 0),
 				wallColor,
 				wallMaterial,
 				folder
@@ -600,12 +579,8 @@ local function placeProceduralTunnel(
 	local sideClearance = data.TunnelWallClearanceM * scale
 	local thickness = math.max(0.35 * scale, 0.5)
 	local baseThickness = centralBaseThickness(scale)
-	local interfaceOverlap = safeInterfaceOverlap(
-		data.InterfaceOverlapM,
-		scale,
-		settings.RoadThicknessStuds,
-		baseThickness
-	)
+	local interfaceOverlap =
+		safeInterfaceOverlap(data.InterfaceOverlapM, scale, settings.RoadThicknessStuds, baseThickness)
 	local innerHalfWidth = roadWidth / 2 + sideClearance
 	local outerWidth = innerHalfWidth * 2 + thickness * 2
 	local wallHeight = math.max(6 * scale, innerHalfWidth * 0.72)
@@ -613,10 +588,8 @@ local function placeProceduralTunnel(
 	local offset = data.ModuleOffsetM * scale
 	local step = math.max(settings.MaxSegmentLengthStuds, 4)
 	local partsPerSegment = TUNNEL_ARCH_SEGMENTS + 3
-	local segmentCount = math.min(
-		math.floor(MAX_PROCEDURAL_PARTS / partsPerSegment),
-		math.max(1, math.ceil(curve.Length / step))
-	)
+	local segmentCount =
+		math.min(math.floor(MAX_PROCEDURAL_PARTS / partsPerSegment), math.max(1, math.ceil(curve.Length / step)))
 	local folder = Instance.new("Folder")
 	folder.Name = "ProceduralTunnel"
 	folder:SetAttribute("RW_ProceduralTunnel", true)
@@ -678,9 +651,7 @@ local function placeProceduralTunnel(
 			makeStructurePart(
 				string.format("Vault_%02d_%04d", archIndex, index),
 				Vector3.new(panelWidth, thickness, depth),
-				frame
-					* CFrame.new((x0 + x1) / 2, (y0 + y1) / 2, 0)
-					* CFrame.Angles(0, 0, panelAngle),
+				frame * CFrame.new((x0 + x1) / 2, (y0 + y1) / 2, 0) * CFrame.Angles(0, 0, panelAngle),
 				roofColor,
 				roofMaterial,
 				folder
@@ -691,12 +662,7 @@ local function placeProceduralTunnel(
 	return partCount
 end
 
-local function restyleElevatedMedian(
-	road: Model,
-	enabled: boolean,
-	baseColor: Color3,
-	baseMaterial: Enum.Material
-)
+local function restyleElevatedMedian(road: Model, enabled: boolean, baseColor: Color3, baseMaterial: Enum.Material)
 	for _, descendant in road:GetDescendants() do
 		if not descendant:IsA("BasePart") or descendant.Name ~= "Median" then
 			continue

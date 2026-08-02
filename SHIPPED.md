@@ -4,6 +4,16 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Cross-platform StyLua formatting gate
+
+The repository now carries `.stylua.toml` with Luau syntax, tabs, and LF line
+endings plus matching Lua/Luau rules in `.gitattributes`. A plain
+`stylua --check <touched files>` therefore evaluates the same source bytes on
+native Windows, WSL, and Linux CI instead of producing platform-only CRLF
+drift. The seven source files from the structure/straight-optimization round
+were formatted with `stylua --verify`, which reparses the output and confirms
+its AST matches the input. Rebuilt `dist/EasyRoad.rbxmx` afterward.
+
 ## Independent structure finishes and twin-pillar viaduct bents
 
 Procedural structures no longer share one hard-coded concrete appearance.
