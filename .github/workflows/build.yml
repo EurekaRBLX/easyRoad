@@ -3,31 +3,59 @@ name: Build plugin
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
+# Explicit token scopes (repo default is read-only).
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  validate-and-build:
+    name: Validate + build plugin
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Validate road and structure geometry
-        run: python3 tools/preview/validate.py
+        run: python tools/preview/validate.py
+
+      # Pure-Python builder (no Rojo binary). Produces Studio-loadable .rbxmx.
+      - name: Build EasyRoad.rbxmx
+        run: python tools/build_rbxmx.py dist/EasyRoad.rbxmx
 
       - name: Install Rojo
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download v7.6.1 --repo rojo-rbx/rojo --pattern "*linux*"
-          unzip -o rojo-*linux*.zip
+          set -euo pipefail
+          gh release download v7.6.1 --repo rojo-rbx/rojo --pattern "*linux-x86_64.zip" --output rojo.zip \
+            || gh release download v7.6.1 --repo rojo-rbx/rojo --pattern "*linux*" --output rojo.zip
+          unzip -o rojo.zip
           chmod +x rojo
+          ./rojo --version
 
       - name: Build EasyRoad.rbxm
         run: ./rojo build default.project.json -o EasyRoad.rbxm
 
-      - name: Upload plugin artifact
+      - name: Upload plugin artifacts
         uses: actions/upload-artifact@v4
         with:
           name: EasyRoad
-          path: EasyRoad.rbxm
+          path: |
+            EasyRoad.rbxm
+            dist/EasyRoad.rbxmx
           if-no-files-found: error
