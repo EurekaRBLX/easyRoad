@@ -586,9 +586,25 @@ local function RegionalPreferenceGui(props: {
 				}),
 			},
 		}),
-		TunnelClearance = e(LabeledRow, {
-			Label = "Tunnel wall clearance (m)",
+		ParapetHeight = e(LabeledRow, {
+			Label = "Viaduct parapet height (m)",
 			LayoutOrder = 47,
+			children = {
+				Field = e(Components.NumberField, {
+					Value = settings.ViaductParapetHeightM,
+					Min = 0.2,
+					Max = 5,
+					OnChanged = function(value: number)
+						settings.ViaductParapetHeightM = value
+						props.OnSettingsChanged()
+					end,
+					LayoutOrder = 2,
+				}),
+			},
+		}),
+		TunnelClearance = e(LabeledRow, {
+			Label = "Tunnel side clearance (m)",
+			LayoutOrder = 48,
 			children = {
 				Field = e(Components.NumberField, {
 					Value = settings.TunnelWallClearanceM,
@@ -602,10 +618,26 @@ local function RegionalPreferenceGui(props: {
 				}),
 			},
 		}),
+		TunnelVerticalClearance = e(LabeledRow, {
+			Label = "Tunnel vertical clearance (m)",
+			LayoutOrder = 49,
+			children = {
+				Field = e(Components.NumberField, {
+					Value = settings.TunnelVerticalClearanceM,
+					Min = 2,
+					Max = 12,
+					OnChanged = function(value: number)
+						settings.TunnelVerticalClearanceM = value
+						props.OnSettingsChanged()
+					end,
+					LayoutOrder = 2,
+				}),
+			},
+		}),
 		ElevatedMedian = e(Components.Checkbox, {
 			Label = "Match structural base on viaduct medians",
 			Checked = settings.ElevatedMedianConcrete,
-			LayoutOrder = 48,
+			LayoutOrder = 50,
 			OnToggled = function(checked: boolean)
 				settings.ElevatedMedianConcrete = checked
 				props.OnSettingsChanged()
@@ -613,7 +645,7 @@ local function RegionalPreferenceGui(props: {
 		}),
 		ParallelGap = e(LabeledRow, {
 			Label = "Parallel roadway gap (m)",
-			LayoutOrder = 49,
+			LayoutOrder = 51,
 			children = {
 				Field = e(Components.NumberField, {
 					Value = settings.ParallelRoadwayGapM,

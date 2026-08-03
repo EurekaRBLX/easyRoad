@@ -62,7 +62,9 @@ export type StructureData = {
 	TunnelRoofMaterial: StructureMaterials.MaterialName,
 	InterfaceOverlapM: number,
 	ViaductParapetGapM: number,
+	ViaductParapetHeightM: number,
 	TunnelWallClearanceM: number,
+	TunnelVerticalClearanceM: number,
 	ConcreteMedian: boolean,
 }
 
@@ -274,9 +276,15 @@ local function structureFromModel(model: Model): StructureData?
 		ViaductParapetGapM = if typeof(decoded.ViaductParapetGapM) == "number"
 			then math.max(decoded.ViaductParapetGapM, 0)
 			else 0,
+		ViaductParapetHeightM = if typeof(decoded.ViaductParapetHeightM) == "number"
+			then math.max(decoded.ViaductParapetHeightM, 0.2)
+			else 1.2,
 		TunnelWallClearanceM = if typeof(decoded.TunnelWallClearanceM) == "number"
 			then math.max(decoded.TunnelWallClearanceM, 0)
 			else 0.75,
+		TunnelVerticalClearanceM = if typeof(decoded.TunnelVerticalClearanceM) == "number"
+			then math.max(decoded.TunnelVerticalClearanceM, 2)
+			else 6,
 		ConcreteMedian = if typeof(decoded.ConcreteMedian) == "boolean" then decoded.ConcreteMedian else true,
 	}
 end

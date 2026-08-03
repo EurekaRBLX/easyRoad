@@ -194,16 +194,16 @@ def safe_interface_overlap(requested_m, scale, road_thickness, base_thickness):
 
 
 def viaduct_section(road_width, scale=3.571, road_thickness=1.0,
-                    interface_overlap_m=0.2, parapet_gap_m=0.0):
+                    interface_overlap_m=0.2, parapet_gap_m=0.0,
+                    parapet_height_m=1.2):
     """Port of the visibly exposed deck and downward parapet/fascia."""
-    edge_allowance = 0.45*scale
     exposed_base_depth = central_base_thickness(scale)
     fascia_depth = max(0.55*scale, 1.5)
     barrier_thickness = max(0.35*scale, 0.8)
-    barrier_height = max(1.2*scale, 2.5)
+    barrier_height = max(parapet_height_m*scale, 0.2*scale)
     barrier_center = (road_width/2 + parapet_gap_m*scale
                       + STRUCTURE_EDGE_CLEARANCE_STUDS + barrier_thickness/2)
-    deck_half = max(road_width/2+edge_allowance, barrier_center+barrier_thickness/2)
+    deck_half = barrier_center-barrier_thickness/2
     interface_overlap = safe_interface_overlap(
         interface_overlap_m, scale, road_thickness, exposed_base_depth)
     base_thickness = exposed_base_depth+interface_overlap
@@ -220,6 +220,7 @@ def viaduct_section(road_width, scale=3.571, road_thickness=1.0,
         "barrier_height": barrier_height,
         "barrier_bottom": base_top-fascia_depth,
         "barrier_inner": barrier_center-barrier_thickness/2,
+        "barrier_outer": barrier_center+barrier_thickness/2,
     }
 
 
@@ -241,26 +242,27 @@ def twin_support_section(scale=3.571, pillar_width_m=1.8,
 
 
 def tunnel_section(road_width, scale=3.571, road_thickness=1.0,
-                   interface_overlap_m=0.2, wall_clearance_m=0.75):
+                   interface_overlap_m=0.2, wall_clearance_m=0.75,
+                   vertical_clearance_m=6.0):
     """Port of the thin base, bottom-extended walls, and elliptical vault."""
     side_clearance = wall_clearance_m*scale
     thickness = max(0.35*scale, 0.5)
     base_thickness = central_base_thickness(scale)
     inner_half = road_width/2 + side_clearance
-    wall_height = max(6*scale, inner_half*0.72)
     roof_rise = max(2.5*scale, inner_half*0.22)
     interface_overlap = safe_interface_overlap(
         interface_overlap_m, scale, road_thickness, base_thickness)
     floor_top = -road_thickness+interface_overlap
     wall_bottom = floor_top-thickness
-    wall_top = floor_top+wall_height
+    wall_top = max(vertical_clearance_m*scale, 2*scale)
+    wall_height = wall_top-wall_bottom
     panels = []
     for index in range(TUNNEL_ARCH_SEGMENTS):
         theta0 = math.pi*index/TUNNEL_ARCH_SEGMENTS
         theta1 = math.pi*(index+1)/TUNNEL_ARCH_SEGMENTS
         panels.append((
-            (-inner_half*math.cos(theta0), floor_top+wall_height+roof_rise*math.sin(theta0)),
-            (-inner_half*math.cos(theta1), floor_top+wall_height+roof_rise*math.sin(theta1)),
+            (-inner_half*math.cos(theta0), wall_top+roof_rise*math.sin(theta0)),
+            (-inner_half*math.cos(theta1), wall_top+roof_rise*math.sin(theta1)),
         ))
     return {
         "inner_half": inner_half,
@@ -323,12 +325,29 @@ def curved_viaduct_errors(centerline_radius=20.0, road_half_width=8.0,
     return errors
 
 
+def banked_structure_errors(road_roll_deg=6.0, structure_roll_deg=6.0,
+                            road_half_width=43.0):
+    """Cross-section parity for a road and its generated shell.
+
+    A midpoint structure frame that ignores road roll diverges by several
+    studs at a wide carriageway edge. Viaduct and tunnel parts must use the
+    same banked frame so their local clearances remain unchanged.
+    """
+    mismatch = math.radians(structure_roll_deg-road_roll_deg)
+    edge_divergence = abs(road_half_width*math.sin(mismatch))
+    if edge_divergence > 1e-6:
+        return [f"structure bank diverges from road by {edge_divergence:.3f} studs"]
+    return []
+
+
 def procedural_errors():
     errors = []
     road_width = 86.0
     viaduct = viaduct_section(road_width)
     if viaduct["deck_width"] <= road_width:
         errors.append("viaduct slab does not extend beyond the road")
+    if viaduct["deck_width"]/2 > viaduct["barrier_inner"]+1e-9:
+        errors.append("viaduct slab overshoots and blocks the sidewall")
     if viaduct["barrier_height"] <= 0 or viaduct["slab_bottom"] >= viaduct["slab_top"]:
         errors.append("invalid viaduct cross-section")
     if viaduct["slab_top"] > -STRUCTURE_SURFACE_CLEARANCE_STUDS+1e-9:
@@ -342,6 +361,7 @@ def procedural_errors():
     if abs(viaduct["barrier_inner"]-(road_width/2+STRUCTURE_EDGE_CLEARANCE_STUDS)) > 1e-9:
         errors.append("default viaduct parapet lacks the structural edge clearance")
     errors.extend(curved_viaduct_errors())
+    errors.extend(banked_structure_errors())
     twin = twin_support_section()
     left, right = twin["pillar_centres"]
     if abs((right-left)-twin["separation"]) > 1e-9:
@@ -367,6 +387,8 @@ def procedural_errors():
         errors.append("tunnel vault has no crown rise")
     if tunnel["floor_top"] > -STRUCTURE_SURFACE_CLEARANCE_STUDS+1e-9:
         errors.append("tunnel base can cover the road surface")
+    if abs(tunnel["wall_top"]-6.0*3.571) > 1e-9:
+        errors.append("tunnel vertical clearance is not applied above the road datum")
     if tunnel["base_thickness"] >= tunnel["thickness"]:
         errors.append("tunnel central base was not shortened")
     if tunnel["wall_bottom"] >= tunnel["base_bottom"]:
@@ -538,44 +560,59 @@ def render(path):
     base_height_px = viaduct_cross["base_thickness"]*support_scale
     road_surface_y = slab_top_y+viaduct_cross["slab_top"]*support_scale
     road_bottom_y = road_surface_y+1.0*support_scale
-    canvas.fill_poly([
+    bank_angle = math.radians(-6.0)
+
+    def bank_viaduct(points):
+        transformed = []
+        for x, y in points:
+            dx, dy = x-twin_center_x, y-road_surface_y
+            transformed.append((
+                twin_center_x+dx*math.cos(bank_angle)-dy*math.sin(bank_angle),
+                road_surface_y+dx*math.sin(bank_angle)+dy*math.cos(bank_angle),
+            ))
+        return transformed
+
+    canvas.fill_poly(bank_viaduct([
         (twin_center_x-deck_half_px, slab_top_y),
         (twin_center_x+deck_half_px, slab_top_y),
         (twin_center_x+deck_half_px, slab_top_y+base_height_px),
         (twin_center_x-deck_half_px, slab_top_y+base_height_px),
-    ], BASE_FINISH)
-    canvas.fill_poly([
+    ]), BASE_FINISH)
+    canvas.fill_poly(bank_viaduct([
         (twin_center_x-road_half_px, road_surface_y),
         (twin_center_x+road_half_px, road_surface_y),
         (twin_center_x+road_half_px, road_bottom_y),
         (twin_center_x-road_half_px, road_bottom_y),
-    ], (48, 53, 60))
+    ]), (48, 53, 60))
     barrier_width_px = viaduct_cross["barrier_thickness"]*support_scale
     barrier_top_y = road_surface_y-viaduct_cross["barrier_height"]*support_scale
     barrier_bottom_y = road_surface_y-viaduct_cross["barrier_bottom"]*support_scale
     for sign in (-1, 1):
         inner_x = twin_center_x+sign*(road_half_px+STRUCTURE_EDGE_CLEARANCE_STUDS*support_scale)
         x0 = inner_x-barrier_width_px if sign < 0 else inner_x
-        canvas.fill_poly([
+        canvas.fill_poly(bank_viaduct([
             (x0, barrier_top_y), (x0+barrier_width_px, barrier_top_y),
             (x0+barrier_width_px, barrier_bottom_y), (x0, barrier_bottom_y),
-        ], VIADUCT_WALL_FINISH)
+        ]), VIADUCT_WALL_FINISH)
     cap_width_px = twin["cap_width"]*support_scale
     cap_height_px = twin["cap_height"]*support_scale
     cap_top = slab_top_y+base_height_px
-    canvas.fill_poly([
+    canvas.fill_poly(bank_viaduct([
         (twin_center_x-cap_width_px/2, cap_top),
         (twin_center_x+cap_width_px/2, cap_top),
         (twin_center_x+cap_width_px/2, cap_top+cap_height_px),
         (twin_center_x-cap_width_px/2, cap_top+cap_height_px),
-    ], BASE_FINISH)
+    ]), BASE_FINISH)
     ground_y = 730
     pillar_width_px = twin["pillar_width"]*support_scale
     for centre in twin["pillar_centres"]:
-        x = twin_center_x+centre*support_scale
+        x, column_top = bank_viaduct([(
+            twin_center_x+centre*support_scale,
+            cap_top+cap_height_px,
+        )])[0]
         canvas.fill_poly([
-            (x-pillar_width_px/2, cap_top+cap_height_px),
-            (x+pillar_width_px/2, cap_top+cap_height_px),
+            (x-pillar_width_px/2, column_top),
+            (x+pillar_width_px/2, column_top),
             (x+pillar_width_px/2, ground_y),
             (x-pillar_width_px/2, ground_y),
         ], BASE_FINISH)
@@ -589,6 +626,18 @@ def render(path):
     section_scale = 4.35
     center_x = 865
     floor_y = 708
+    tunnel_bank_angle = math.radians(-6.0)
+
+    def bank_tunnel(points):
+        transformed = []
+        pivot_y = floor_y-5
+        for x, y in points:
+            dx, dy = x-center_x, y-pivot_y
+            transformed.append((
+                center_x+dx*math.cos(tunnel_bank_angle)-dy*math.sin(tunnel_bank_angle),
+                pivot_y+dx*math.sin(tunnel_bank_angle)+dy*math.cos(tunnel_bank_angle),
+            ))
+        return transformed
 
     def section_point(point):
         x, y = point
@@ -596,34 +645,37 @@ def render(path):
 
     outer_half = tunnel["inner_half"]+tunnel["thickness"]
     base_bottom = floor_y+tunnel["base_thickness"]*section_scale
-    canvas.fill_poly([
+    canvas.fill_poly(bank_tunnel([
         section_point((-outer_half, tunnel["floor_top"])),
         section_point((outer_half, tunnel["floor_top"])),
         (center_x+outer_half*section_scale, base_bottom),
         (center_x-outer_half*section_scale, base_bottom),
-    ], BASE_FINISH)
+    ]), BASE_FINISH)
     wall_top_y = tunnel["wall_top"]
     for side_sign in (-1, 1):
         inner_x = side_sign*tunnel["inner_half"]
         outer_x = side_sign*outer_half
-        canvas.fill_poly([
+        canvas.fill_poly(bank_tunnel([
             section_point((inner_x, tunnel["wall_bottom"])),
             section_point((outer_x, tunnel["wall_bottom"])),
             section_point((outer_x, wall_top_y)),
             section_point((inner_x, wall_top_y)),
-        ], TUNNEL_WALL_FINISH)
+        ]), TUNNEL_WALL_FINISH)
     for panel in tunnel["panels"]:
-        canvas.line(section_point(panel[0]), section_point(panel[1]), TUNNEL_ROOF_FINISH,
+        segment = bank_tunnel([section_point(panel[0]), section_point(panel[1])])
+        canvas.line(segment[0], segment[1], TUNNEL_ROOF_FINISH,
                     max(3, round(tunnel["thickness"]*section_scale)))
 
     # Road slab and lane markings remain visibly inside the generated shell.
     road_left = center_x-road_width*section_scale/2
     road_right = center_x+road_width*section_scale/2
-    canvas.fill_poly([(road_left, floor_y-5), (road_right, floor_y-5),
-                      (road_right, floor_y), (road_left, floor_y)], (48, 53, 60))
+    canvas.fill_poly(bank_tunnel([(road_left, floor_y-5), (road_right, floor_y-5),
+                                  (road_right, floor_y), (road_left, floor_y)]),
+                     (48, 53, 60))
     for fraction in (-0.25, 0.0, 0.25):
         x = center_x+road_width*section_scale*fraction
-        canvas.line((x, floor_y-7), (x, floor_y-4), (225, 230, 235), 2)
+        marking = bank_tunnel([(x, floor_y-7), (x, floor_y-4)])
+        canvas.line(marking[0], marking[1], (225, 230, 235), 2)
 
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     canvas.save(path)

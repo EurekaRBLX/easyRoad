@@ -97,7 +97,9 @@ export type EasyRoadSettings = {
 	TunnelRoofMaterial: StructureMaterials.MaterialName,
 	StructureInterfaceOverlapM: number,
 	ViaductParapetGapM: number,
+	ViaductParapetHeightM: number,
 	TunnelWallClearanceM: number,
+	TunnelVerticalClearanceM: number,
 	ElevatedMedianConcrete: boolean,
 	ParallelRoadwayGapM: number,
 
@@ -174,9 +176,15 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 		ViaductParapetGapM = if typeof(raw.ViaductParapetGapM) == "number"
 			then math.max(raw.ViaductParapetGapM, 0)
 			else 0,
+		ViaductParapetHeightM = if typeof(raw.ViaductParapetHeightM) == "number"
+			then math.max(raw.ViaductParapetHeightM, 0.2)
+			else 1.2,
 		TunnelWallClearanceM = if typeof(raw.TunnelWallClearanceM) == "number"
 			then math.max(raw.TunnelWallClearanceM, 0)
 			else 0.75,
+		TunnelVerticalClearanceM = if typeof(raw.TunnelVerticalClearanceM) == "number"
+			then math.max(raw.TunnelVerticalClearanceM, 2)
+			else 6,
 		ElevatedMedianConcrete = if raw.ElevatedMedianConcrete == nil then true else raw.ElevatedMedianConcrete,
 		ParallelRoadwayGapM = if typeof(raw.ParallelRoadwayGapM) == "number"
 			then math.max(raw.ParallelRoadwayGapM, 0)
@@ -222,7 +230,9 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		TunnelRoofMaterial = settings.TunnelRoofMaterial,
 		StructureInterfaceOverlapM = settings.StructureInterfaceOverlapM,
 		ViaductParapetGapM = settings.ViaductParapetGapM,
+		ViaductParapetHeightM = settings.ViaductParapetHeightM,
 		TunnelWallClearanceM = settings.TunnelWallClearanceM,
+		TunnelVerticalClearanceM = settings.TunnelVerticalClearanceM,
 		ElevatedMedianConcrete = settings.ElevatedMedianConcrete,
 		ParallelRoadwayGapM = settings.ParallelRoadwayGapM,
 		Keybinds = settings.Keybinds,

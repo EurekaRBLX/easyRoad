@@ -6,6 +6,8 @@
 local Workspace = game:GetService("Workspace")
 
 local PolyCurve = require("./Geometry/PolyCurve")
+local Superelevation = require("./Geometry/Superelevation")
+local createRegionLibrary = require("./RegionLibrary")
 local RoadInstance = require("./RoadInstance")
 local RoadProfile = require("./RoadProfile")
 local Settings = require("./Settings")
@@ -69,7 +71,9 @@ function StructureBuilder.DefaultData(settings: Settings.EasyRoadSettings?): Roa
 		TunnelRoofMaterial = if settings then settings.TunnelRoofMaterial else "Concrete",
 		InterfaceOverlapM = if settings then settings.StructureInterfaceOverlapM else 0.2,
 		ViaductParapetGapM = if settings then settings.ViaductParapetGapM else 0,
+		ViaductParapetHeightM = if settings then settings.ViaductParapetHeightM else 1.2,
 		TunnelWallClearanceM = if settings then settings.TunnelWallClearanceM else 0.75,
+		TunnelVerticalClearanceM = if settings then settings.TunnelVerticalClearanceM else 6,
 		ConcreteMedian = if settings then settings.ElevatedMedianConcrete else true,
 	}
 end
@@ -99,7 +103,9 @@ function StructureBuilder.CloneData(data: RoadInstance.StructureData): RoadInsta
 		TunnelRoofMaterial = data.TunnelRoofMaterial,
 		InterfaceOverlapM = data.InterfaceOverlapM,
 		ViaductParapetGapM = data.ViaductParapetGapM,
+		ViaductParapetHeightM = data.ViaductParapetHeightM,
 		TunnelWallClearanceM = data.TunnelWallClearanceM,
+		TunnelVerticalClearanceM = data.TunnelVerticalClearanceM,
 		ConcreteMedian = data.ConcreteMedian,
 	}
 end
@@ -138,6 +144,23 @@ local function safeLookAt(position: Vector3, target: Vector3, preferredUp: Vecto
 		up = if math.abs(Vector3.yAxis:Dot(forward)) < 0.98 then Vector3.yAxis else Vector3.xAxis
 	end
 	return CFrame.lookAt(position, position + forward, up)
+end
+
+-- Structural geometry shares the road's local bank instead of following an
+-- unrolled centreline beneath it. The runoff envelope matches RoadBuilder's
+-- endpoint contract, so a viaduct/tunnel returns to zero roll wherever the
+-- road does and chained pieces still meet flush.
+local function makeBankedFrameAt(curve: PolyCurve.PolyCurve, settings: Settings.EasyRoadSettings): (number) -> CFrame
+	local style = createRegionLibrary(settings.UserRegions).Get(settings.RegionId)
+	local runoff = math.min(settings.SuperelevationRunoffM * settings.MetersToStuds, curve.Length * 0.3)
+	return function(station: number): CFrame
+		local roll = Superelevation.RollAt(curve:CurvatureAt(station), settings, style)
+		if runoff > 1e-3 then
+			local taper = math.min(1, station / runoff, (curve.Length - station) / runoff)
+			roll *= math.max(taper, 0)
+		end
+		return curve:FrameAt(station, roll)
+	end
 end
 
 -- Finds the next station whose straight chord from `startStation` matches the
@@ -230,7 +253,8 @@ local function placeModules(
 	parent: Model,
 	curve: PolyCurve.PolyCurve,
 	template: Model,
-	offsetStuds: number
+	offsetStuds: number,
+	settings: Settings.EasyRoadSettings
 ): (number, string?)
 	local startSocket = StructureAssets.FindSocket(template, "EasyRoadStart")
 	local endSocket = StructureAssets.FindSocket(template, "EasyRoadEnd")
@@ -249,11 +273,12 @@ local function placeModules(
 	local modules = Instance.new("Folder")
 	modules.Name = "Modules"
 	modules.Parent = parent
+	local bankedFrameAt = makeBankedFrameAt(curve, settings)
 
 	for index, range in ranges do
 		local s0, s1 = range[1], range[2]
 		local p0, p1 = curve:PosAt(s0), curve:PosAt(s1)
-		local middleFrame = curve:FrameAt((s0 + s1) / 2)
+		local middleFrame = bankedFrameAt((s0 + s1) / 2)
 		local targetFrame = safeLookAt(p0, p1, middleFrame.UpVector)
 		targetFrame = targetFrame + middleFrame.UpVector * offsetStuds
 		local clone = template:Clone()
@@ -329,20 +354,21 @@ end
 -- The small overlap closes rectangular joints without a multi-stud overhang.
 local function offsetSegmentFrame(
 	curve: PolyCurve.PolyCurve,
+	bankedFrameAt: (number) -> CFrame,
 	s0: number,
 	s1: number,
 	lateralOffset: number,
 	verticalOffset: number
 ): (CFrame, number)
-	local startFrame = curve:FrameAt(s0)
-	local endFrame = curve:FrameAt(s1)
+	local startFrame = bankedFrameAt(s0)
+	local endFrame = bankedFrameAt(s1)
 	local startPosition = curve:PosAt(s0)
 		+ startFrame.RightVector * lateralOffset
 		+ startFrame.UpVector * verticalOffset
 	local endPosition = curve:PosAt(s1) + endFrame.RightVector * lateralOffset + endFrame.UpVector * verticalOffset
 	local preferredUp = startFrame.UpVector + endFrame.UpVector
 	if preferredUp.Magnitude < 1e-6 then
-		preferredUp = curve:FrameAt((s0 + s1) / 2).UpVector
+		preferredUp = bankedFrameAt((s0 + s1) / 2).UpVector
 	end
 	local frame = safeLookAt((startPosition + endPosition) / 2, endPosition, preferredUp)
 	return frame, (endPosition - startPosition).Magnitude + PROCEDURAL_AXIAL_OVERLAP_STUDS
@@ -380,6 +406,7 @@ local function placePiers(
 	local folder = Instance.new("Folder")
 	folder.Name = "Piers"
 	folder.Parent = parent
+	local bankedFrameAt = makeBankedFrameAt(curve, settings)
 
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
@@ -396,7 +423,7 @@ local function placePiers(
 	local count = 0
 	for index = 1, targetCount do
 		local station = curve.Length * index / (targetCount + 1)
-		local frame = curve:FrameAt(station)
+		local frame = bankedFrameAt(station)
 		local top = curve:PosAt(station)
 			+ frame.UpVector
 				* (data.ModuleOffsetM * scale - settings.RoadThicknessStuds + interfaceOverlap - baseThickness)
@@ -522,19 +549,20 @@ local function placeProceduralViaduct(
 	local wallColor = StructureBuilder.ColorFromHex(data.ViaductWallColorHex)
 	local wallMaterial = StructureMaterials.Resolve(data.ViaductWallMaterial)
 	local parapetGap = data.ViaductParapetGapM * scale
-	local edgeAllowance = 0.45 * scale
 	local exposedBaseDepth = centralBaseThickness(scale)
 	local fasciaDepth = viaductFasciaDepth(scale)
 	local interfaceOverlap =
 		safeInterfaceOverlap(data.InterfaceOverlapM, scale, settings.RoadThicknessStuds, exposedBaseDepth)
 	local baseThickness = exposedBaseDepth + interfaceOverlap
 	local barrierThickness = math.max(0.35 * scale, 0.8)
-	local barrierHeight = math.max(1.2 * scale, 2.5)
+	local barrierHeight = math.max(data.ViaductParapetHeightM * scale, 0.2 * scale)
 	-- Even a configured zero gap means tangent contact, not overlap. Keep a
 	-- hairline structural clearance so rectangular joints on a tight bend stay
 	-- wholly outside the generated road envelope.
 	local barrierCenter = roadWidth / 2 + parapetGap + STRUCTURE_EDGE_CLEARANCE_STUDS + barrierThickness / 2
-	local deckHalfWidth = math.max(roadWidth / 2 + edgeAllowance, barrierCenter + barrierThickness / 2)
+	-- The slab meets the parapet's inner face. Extending it through to the outer
+	-- face hides the downward fascia and can visibly protrude beyond it.
+	local deckHalfWidth = barrierCenter - barrierThickness / 2
 	local deckWidth = deckHalfWidth * 2
 	local offset = data.ModuleOffsetM * scale
 	local step = math.max(settings.MaxSegmentLengthStuds, 4)
@@ -543,6 +571,7 @@ local function placeProceduralViaduct(
 	folder.Name = "ProceduralViaduct"
 	folder:SetAttribute("RW_ProceduralViaduct", true)
 	folder.Parent = parent
+	local bankedFrameAt = makeBankedFrameAt(curve, settings)
 
 	local partCount = 0
 	for index = 1, segmentCount do
@@ -555,7 +584,7 @@ local function placeProceduralViaduct(
 			continue
 		end
 		local middle = (p0 + p1) * 0.5
-		local roadFrame = curve:FrameAt((s0 + s1) * 0.5)
+		local roadFrame = bankedFrameAt((s0 + s1) * 0.5)
 		local frame = safeLookAt(middle, middle + (p1 - p0), roadFrame.UpVector)
 		frame = frame + roadFrame.UpVector * offset
 		local depth = proceduralDepth(curve, s0, s1, deckHalfWidth)
@@ -575,7 +604,7 @@ local function placeProceduralViaduct(
 		)
 		for _, side in { -1, 1 } do
 			local barrierFrame, barrierDepth =
-				offsetSegmentFrame(curve, s0, s1, side * barrierCenter, offset + barrierY)
+				offsetSegmentFrame(curve, bankedFrameAt, s0, s1, side * barrierCenter, offset + barrierY)
 			makeStructurePart(
 				string.format("Parapet_%s_%04d", if side < 0 then "Left" else "Right", index),
 				Vector3.new(barrierThickness, fullBarrierHeight, barrierDepth),
@@ -621,7 +650,7 @@ local function placeProceduralTunnel(
 		safeInterfaceOverlap(data.InterfaceOverlapM, scale, settings.RoadThicknessStuds, baseThickness)
 	local innerHalfWidth = roadWidth / 2 + sideClearance
 	local outerWidth = innerHalfWidth * 2 + thickness * 2
-	local wallHeight = math.max(6 * scale, innerHalfWidth * 0.72)
+	local wallTop = math.max(data.TunnelVerticalClearanceM * scale, 2 * scale)
 	local roofRise = math.max(2.5 * scale, innerHalfWidth * 0.22)
 	local offset = data.ModuleOffsetM * scale
 	local step = math.max(settings.MaxSegmentLengthStuds, 4)
@@ -632,6 +661,7 @@ local function placeProceduralTunnel(
 	folder.Name = "ProceduralTunnel"
 	folder:SetAttribute("RW_ProceduralTunnel", true)
 	folder.Parent = parent
+	local bankedFrameAt = makeBankedFrameAt(curve, settings)
 
 	local partCount = 0
 	for index = 1, segmentCount do
@@ -644,14 +674,14 @@ local function placeProceduralTunnel(
 			continue
 		end
 		local middle = (p0 + p1) * 0.5
-		local roadFrame = curve:FrameAt((s0 + s1) * 0.5)
+		local roadFrame = bankedFrameAt((s0 + s1) * 0.5)
 		local frame = safeLookAt(middle, middle + (p1 - p0), roadFrame.UpVector)
 		frame = frame + roadFrame.UpVector * offset
 		local depth = proceduralDepth(curve, s0, s1, outerWidth / 2)
 		local floorTop = -settings.RoadThicknessStuds + interfaceOverlap
 		local wallBottom = floorTop - thickness
-		local fullWallHeight = wallHeight + thickness
-		local wallY = (floorTop + wallHeight + wallBottom) / 2
+		local fullWallHeight = wallTop - wallBottom
+		local wallY = (wallTop + wallBottom) / 2
 
 		makeStructurePart(
 			string.format("Base_%04d", index),
@@ -681,9 +711,9 @@ local function placeProceduralTunnel(
 			local theta0 = math.pi * (archIndex - 1) / TUNNEL_ARCH_SEGMENTS
 			local theta1 = math.pi * archIndex / TUNNEL_ARCH_SEGMENTS
 			local x0 = -innerHalfWidth * math.cos(theta0)
-			local y0 = floorTop + wallHeight + roofRise * math.sin(theta0)
+			local y0 = wallTop + roofRise * math.sin(theta0)
 			local x1 = -innerHalfWidth * math.cos(theta1)
-			local y1 = floorTop + wallHeight + roofRise * math.sin(theta1)
+			local y1 = wallTop + roofRise * math.sin(theta1)
 			local panelWidth = math.sqrt((x1 - x0) ^ 2 + (y1 - y0) ^ 2) + 0.08
 			local panelAngle = math.atan2(y1 - y0, x1 - x0)
 			makeStructurePart(
@@ -752,7 +782,7 @@ function StructureBuilder.Render(
 			generated:Destroy()
 			return false, "The selected asset belongs to the " .. tostring(assetKind) .. " library."
 		end
-		local count, err = placeModules(generated, curve, asset, data.ModuleOffsetM * settings.MetersToStuds)
+		local count, err = placeModules(generated, curve, asset, data.ModuleOffsetM * settings.MetersToStuds, settings)
 		if err then
 			generated:Destroy()
 			return false, err

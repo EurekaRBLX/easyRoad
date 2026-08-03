@@ -38,9 +38,26 @@ def main():
     if not any("buried inside" in error for error in errors):
         failures.append("buried viaduct deck was not detected")
 
+    def oversized_viaduct(*args, **kwargs):
+        section = real_viaduct_section(*args, **kwargs)
+        section["deck_width"] = section["barrier_outer"] * 2
+        return section
+
+    preview.viaduct_section = oversized_viaduct
+    try:
+        errors = preview.procedural_errors()
+    finally:
+        preview.viaduct_section = real_viaduct_section
+    if not any("overshoots" in error for error in errors):
+        failures.append("sidewall-blocking viaduct deck was not detected")
+
     errors = preview.curved_viaduct_errors(clearance=-0.5)
     if not any("clips the curved road envelope" in error for error in errors):
         failures.append("inward viaduct parapet was not detected")
+
+    errors = preview.banked_structure_errors(structure_roll_deg=0)
+    if not any("bank diverges" in error for error in errors):
+        failures.append("unbanked structure under a superelevated road was not detected")
 
     if failures:
         for failure in failures:
@@ -48,7 +65,7 @@ def main():
         return 1
     print(
         "structure break-tests passed: missing tail, floating pier, buried deck, "
-        "and inward parapet all detected"
+        "sidewall-blocking deck, inward parapet, and unbanked shell all detected"
     )
     return 0
 

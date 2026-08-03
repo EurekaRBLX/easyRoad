@@ -266,6 +266,22 @@ local function StructureControls(props: {
 				}),
 			})
 			order += 1
+			children.ParapetHeight = e(Components.Row, { LayoutOrder = order }, {
+				Label = e(Components.Label, { Text = "Parapet height (m)", LayoutOrder = 1 }),
+				Field = e(Components.NumberField, {
+					Value = structure.ViaductParapetHeightM,
+					Min = 0.2,
+					Max = 5,
+					Width = 62,
+					LayoutOrder = 2,
+					OnChanged = function(value: number)
+						change(function(copy)
+							copy.ViaductParapetHeightM = value
+						end)
+					end,
+				}),
+			})
+			order += 1
 			children.ConcreteMedian = e(Components.Checkbox, {
 				Label = "Match structural base on elevated medians",
 				Checked = structure.ConcreteMedian,
@@ -366,7 +382,7 @@ local function StructureControls(props: {
 			})
 			order += 1
 			children.TunnelClearance = e(Components.Row, { LayoutOrder = order }, {
-				Label = e(Components.Label, { Text = "Wall clearance (m)", LayoutOrder = 1 }),
+				Label = e(Components.Label, { Text = "Side clearance (m)", LayoutOrder = 1 }),
 				Field = e(Components.NumberField, {
 					Value = structure.TunnelWallClearanceM,
 					Min = 0,
@@ -375,6 +391,22 @@ local function StructureControls(props: {
 					OnChanged = function(value: number)
 						change(function(copy)
 							copy.TunnelWallClearanceM = value
+						end)
+					end,
+				}),
+			})
+			order += 1
+			children.TunnelVerticalClearance = e(Components.Row, { LayoutOrder = order }, {
+				Label = e(Components.Label, { Text = "Vertical clearance (m)", LayoutOrder = 1 }),
+				Field = e(Components.NumberField, {
+					Value = structure.TunnelVerticalClearanceM,
+					Min = 2,
+					Max = 12,
+					Width = 62,
+					LayoutOrder = 2,
+					OnChanged = function(value: number)
+						change(function(copy)
+							copy.TunnelVerticalClearanceM = value
 						end)
 					end,
 				}),
