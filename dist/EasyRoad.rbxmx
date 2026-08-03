@@ -7502,6 +7502,14 @@ end
 -- deflection is on), so a single half-angle either under-opens one side or
 -- over-opens the other. `Ahead` extends in the +angle direction, `Behind` in -.
 export type MouthSector = { Angle: number, Ahead: number, Behind: number }
+type ConvexFootprint = { Vector3 }
+type BoundedFootprint = {
+	Polygon: ConvexFootprint,
+	MinX: number,
+	MaxX: number,
+	MinZ: number,
+	MaxZ: number,
+}
 
 -- Minimum kerb that must survive between two adjacent entries, and the most
 -- any single entry may open. Without these, wide (multi-lane) entries produce
@@ -7522,16 +7530,8 @@ local SECTOR_INSET_RAD = math.rad(3)
 -- overlap can delete ring sidewalk the taper has not reached yet. The strict
 -- component sweep closes the final outer-band crescent at eight degrees.
 -- Keep this shoulder-specific: ordinary mouths retain the tighter opening,
--- while solo mouths have their own rule below.
+-- while solo mouths use exact roadway-footprint subtraction below.
 local SHOULDER_SECTOR_INSET_RAD = math.rad(8)
--- A solo tangent arm has no splitter-side sibling pavement to cover the outer
--- corner of its opening. The component-level reference sweep needs seven
--- degrees of pavement overlap on the old wide tangent. A width-fit solo flare
--- can be narrower than twice that, so cap the overlap to a share of the actual
--- sweep instead of allowing the opening to collapse to zero. Edge paint still
--- uses the exact, uninset merge ray.
-local SOLO_SECTOR_INSET_RAD = math.rad(7)
-local SOLO_SECTOR_OVERLAP_SHARE = 0.3
 
 -- Shrink sectors until each leaves MIN_KERB_GAP_RAD of kerb to its angular
 -- neighbours. Each sector may claim at most half of the gap on either side
@@ -7582,6 +7582,257 @@ local function partTopPolygon(part: BasePart): { Vector3 }
 		(part.CFrame * CFrame.new(half.X, half.Y, half.Z)).Position,
 		(part.CFrame * CFrame.new(-half.X, half.Y, half.Z)).Position,
 	}
+end
+
+local POLYGON_AREA_EPSILON = 1e-7
+
+local function signedAreaXZ(polygon: ConvexFootprint): number
+	local area = 0
+	local previous = polygon[#polygon]
+	for _, current in polygon do
+		area += previous.X * current.Z - current.X * previous.Z
+		previous = current
+	end
+	return area / 2
+end
+
+local function polygonBoundsXZ(polygon: ConvexFootprint): (number, number, number, number)
+	local minX, maxX = math.huge, -math.huge
+	local minZ, maxZ = math.huge, -math.huge
+	for _, point in polygon do
+		minX = math.min(minX, point.X)
+		maxX = math.max(maxX, point.X)
+		minZ = math.min(minZ, point.Z)
+		maxZ = math.max(maxZ, point.Z)
+	end
+	return minX, maxX, minZ, maxZ
+end
+
+local function clipConvexHalfPlane(
+	polygon: ConvexFootprint,
+	a: Vector3,
+	b: Vector3,
+	orientation: number,
+	keepInside: boolean
+): ConvexFootprint
+	if #polygon == 0 then
+		return {}
+	end
+	local edgeX, edgeZ = b.X - a.X, b.Z - a.Z
+	local function side(point: Vector3): number
+		return orientation * (edgeX * (point.Z - a.Z) - edgeZ * (point.X - a.X))
+	end
+	local function accepted(value: number): boolean
+		return if keepInside then value &gt;= -1e-9 else value &lt;= 1e-9
+	end
+
+	local clipped: ConvexFootprint = {}
+	local previous = polygon[#polygon]
+	local previousSide = side(previous)
+	local previousAccepted = accepted(previousSide)
+	for _, current in polygon do
+		local currentSide = side(current)
+		local currentAccepted = accepted(currentSide)
+		if currentAccepted ~= previousAccepted then
+			local denominator = previousSide - currentSide
+			if math.abs(denominator) &gt; 1e-12 then
+				table.insert(clipped, previous:Lerp(current, previousSide / denominator))
+			end
+		end
+		if currentAccepted then
+			table.insert(clipped, current)
+		end
+		previous = current
+		previousSide = currentSide
+		previousAccepted = currentAccepted
+	end
+	return clipped
+end
+
+-- Convex fragments covering `subject` minus `cutter`. The carried `inside`
+-- polygon is the intersection accumulated so far; each rejected half-plane is
+-- one disjoint convex survivor. If no intersection survives every cutter edge,
+-- the tentative fragments are discarded and the subject is returned unchanged.
+local function subtractConvexFootprint(
+	subject: ConvexFootprint,
+	cutter: ConvexFootprint
+): ({ ConvexFootprint }, boolean)
+	if
+		#subject &lt; 3
+		or #cutter &lt; 3
+		or math.abs(signedAreaXZ(subject)) &lt;= POLYGON_AREA_EPSILON
+		or math.abs(signedAreaXZ(cutter)) &lt;= POLYGON_AREA_EPSILON
+	then
+		return { subject }, false
+	end
+	local orientation = if signedAreaXZ(cutter) &gt;= 0 then 1 else -1
+	local inside = table.clone(subject)
+	local outsideFragments: { ConvexFootprint } = {}
+	for i, a in cutter do
+		if #inside &lt; 3 then
+			break
+		end
+		local b = cutter[if i &lt; #cutter then i + 1 else 1]
+		local outside = clipConvexHalfPlane(inside, a, b, orientation, false)
+		if #outside &gt;= 3 and math.abs(signedAreaXZ(outside)) &gt; POLYGON_AREA_EPSILON then
+			table.insert(outsideFragments, outside)
+		end
+		inside = clipConvexHalfPlane(inside, a, b, orientation, true)
+	end
+	if #inside &lt; 3 or math.abs(signedAreaXZ(inside)) &lt;= POLYGON_AREA_EPSILON then
+		return { subject }, false
+	end
+	return outsideFragments, true
+end
+
+local POLYGON_POINT_EPSILON = 1e-5
+
+local function pointsNearXZ(a: Vector3, b: Vector3): boolean
+	local dx, dz = a.X - b.X, a.Z - b.Z
+	return dx * dx + dz * dz &lt;= POLYGON_POINT_EPSILON * POLYGON_POINT_EPSILON
+end
+
+local function crossXZ(a: Vector3, b: Vector3, c: Vector3): number
+	return (b.X - a.X) * (c.Z - b.Z) - (b.Z - a.Z) * (c.X - b.X)
+end
+
+local function cleanConvexBoundary(polygon: ConvexFootprint): ConvexFootprint
+	local cleaned: ConvexFootprint = {}
+	for _, point in polygon do
+		if #cleaned == 0 or not pointsNearXZ(cleaned[#cleaned], point) then
+			table.insert(cleaned, point)
+		end
+	end
+	if #cleaned &gt; 1 and pointsNearXZ(cleaned[1], cleaned[#cleaned]) then
+		table.remove(cleaned)
+	end
+
+	local changed = true
+	while changed and #cleaned &gt; 3 do
+		changed = false
+		for i, point in cleaned do
+			local previous = cleaned[if i &gt; 1 then i - 1 else #cleaned]
+			local nextOne = cleaned[if i &lt; #cleaned then i + 1 else 1]
+			local abX, abZ = point.X - previous.X, point.Z - previous.Z
+			local bcX, bcZ = nextOne.X - point.X, nextOne.Z - point.Z
+			local abLength = math.sqrt(abX * abX + abZ * abZ)
+			local bcLength = math.sqrt(bcX * bcX + bcZ * bcZ)
+			local collinear = math.abs(crossXZ(previous, point, nextOne))
+				&lt;= POLYGON_POINT_EPSILON * (abLength + bcLength)
+			local continuesForward = abX * bcX + abZ * bcZ &gt;= -(POLYGON_POINT_EPSILON ^ 2)
+			if collinear and continuesForward then
+				table.remove(cleaned, i)
+				changed = true
+				break
+			end
+		end
+	end
+	return cleaned
+end
+
+local function isConvexBoundary(polygon: ConvexFootprint): boolean
+	if #polygon &lt; 3 then
+		return false
+	end
+	local area = signedAreaXZ(polygon)
+	if math.abs(area) &lt;= POLYGON_AREA_EPSILON then
+		return false
+	end
+	local orientation = if area &gt;= 0 then 1 else -1
+	for i, point in polygon do
+		local previous = polygon[if i &gt; 1 then i - 1 else #polygon]
+		local nextOne = polygon[if i &lt; #polygon then i + 1 else 1]
+		local previousLength = distanceXZ(previous, point)
+		local nextLength = distanceXZ(point, nextOne)
+		if orientation * crossXZ(previous, point, nextOne) &lt; -POLYGON_POINT_EPSILON * (previousLength + nextLength) then
+			return false
+		end
+	end
+	return true
+end
+
+-- Merge only across one complete edge traversed in opposite directions. A
+-- convex union with conserved area cannot bridge a concavity or two disjoint
+-- curb returns; uncertain/partial-edge cases simply stay as separate polygons.
+local function tryMergeConvexFootprints(a: ConvexFootprint, b: ConvexFootprint): ConvexFootprint?
+	local areaA, areaB = signedAreaXZ(a), signedAreaXZ(b)
+	if areaA * areaB &lt;= 0 then
+		return nil
+	end
+	local edgeA, edgeB: number? = nil, nil
+	for i, a0 in a do
+		local a1 = a[if i &lt; #a then i + 1 else 1]
+		for j, b0 in b do
+			local b1 = b[if j &lt; #b then j + 1 else 1]
+			if pointsNearXZ(a0, b1) and pointsNearXZ(a1, b0) then
+				edgeA, edgeB = i, j
+				break
+			end
+		end
+		if edgeA then
+			break
+		end
+	end
+	if not edgeA or not edgeB then
+		return nil
+	end
+
+	local merged: ConvexFootprint = {}
+	local aIndex = if edgeA &lt; #a then edgeA + 1 else 1
+	while true do
+		table.insert(merged, a[aIndex])
+		if aIndex == edgeA then
+			break
+		end
+		aIndex = if aIndex &lt; #a then aIndex + 1 else 1
+	end
+	local bSharedEnd = if edgeB &lt; #b then edgeB + 1 else 1
+	local bIndex = if bSharedEnd &lt; #b then bSharedEnd + 1 else 1
+	while bIndex ~= edgeB do
+		table.insert(merged, b[bIndex])
+		bIndex = if bIndex &lt; #b then bIndex + 1 else 1
+	end
+	merged = cleanConvexBoundary(merged)
+	if not isConvexBoundary(merged) then
+		return nil
+	end
+	local expectedArea = math.abs(areaA) + math.abs(areaB)
+	local mergedArea = math.abs(signedAreaXZ(merged))
+	local areaTolerance = math.max(POLYGON_AREA_EPSILON * 10, expectedArea * 1e-7)
+	if math.abs(mergedArea - expectedArea) &gt; areaTolerance then
+		return nil
+	end
+	return merged
+end
+
+local function coalesceConvexFootprints(polygons: { ConvexFootprint }): { ConvexFootprint }
+	local coalesced: { ConvexFootprint } = {}
+	for _, polygon in polygons do
+		local cleaned = cleanConvexBoundary(polygon)
+		if #cleaned &gt;= 3 and math.abs(signedAreaXZ(cleaned)) &gt; POLYGON_AREA_EPSILON then
+			table.insert(coalesced, cleaned)
+		end
+	end
+
+	local mergedOne = true
+	while mergedOne do
+		mergedOne = false
+		for i = 1, #coalesced - 1 do
+			for j = i + 1, #coalesced do
+				local merged = tryMergeConvexFootprints(coalesced[i], coalesced[j])
+				if merged then
+					coalesced[i] = merged
+					table.remove(coalesced, j)
+					mergedOne = true
+					break
+				end
+			end
+			if mergedOne then
+				break
+			end
+		end
+	end
+	return coalesced
 end
 
 local function angularFootprintHalfSpan(part: BasePart, center: Vector3, centerAngle: number): number
@@ -7639,7 +7890,7 @@ local function clipToAngularSide(
 	return clipped
 end
 
-local function replaceWithClippedPolygon(part: BasePart, polygon: { Vector3 })
+local function replaceWithClippedPolygons(part: BasePart, polygons: { ConvexFootprint })
 	local parent = part.Parent
 	if not parent then
 		return
@@ -7657,10 +7908,93 @@ local function replaceWithClippedPolygon(part: BasePart, polygon: { Vector3 })
 	local function makePart(): Part
 		return template:Clone() :: Part
 	end
-	for i = 2, #polygon - 1 do
-		FillTriangle(polygon[1], polygon[i], polygon[i + 1], depth, down, makePart, parent)
+	for _, polygon in polygons do
+		for i = 2, #polygon - 1 do
+			FillTriangle(polygon[1], polygon[i], polygon[i + 1], depth, down, makePart, parent)
+		end
 	end
 	template:Destroy()
+end
+
+local function replaceWithClippedPolygon(part: BasePart, polygon: ConvexFootprint)
+	replaceWithClippedPolygons(part, { polygon })
+end
+
+-- Remove only the top-plane overlap between the ring's original Sidewalk
+-- strips and solo one-way roadway footprints. A polar sector cannot describe a
+-- curved finite-width arm: making it wide enough to clear the inboard edge also
+-- deletes 3-5 stud curb-return crescents beside the outboard edge. Sequential
+-- convex subtraction keeps those returns and removes no concrete that is not
+-- actually over Drive/Shoulder geometry.
+local function openRingSidewalkByFootprints(parts: { BasePart }, cutters: { ConvexFootprint })
+	if #cutters == 0 then
+		return
+	end
+	local ringMinX, ringMaxX = math.huge, -math.huge
+	local ringMinZ, ringMaxZ = math.huge, -math.huge
+	local hasRingPart = false
+	for _, part in parts do
+		if part.Parent then
+			local minX, maxX, minZ, maxZ = polygonBoundsXZ(partTopPolygon(part))
+			ringMinX = math.min(ringMinX, minX)
+			ringMaxX = math.max(ringMaxX, maxX)
+			ringMinZ = math.min(ringMinZ, minZ)
+			ringMaxZ = math.max(ringMaxZ, maxZ)
+			hasRingPart = true
+		end
+	end
+	if not hasRingPart then
+		return
+	end
+
+	local boundedCutters: { BoundedFootprint } = {}
+	for _, cutter in cutters do
+		if #cutter &gt;= 3 and math.abs(signedAreaXZ(cutter)) &gt; POLYGON_AREA_EPSILON then
+			local minX, maxX, minZ, maxZ = polygonBoundsXZ(cutter)
+			if maxX &gt;= ringMinX and minX &lt;= ringMaxX and maxZ &gt;= ringMinZ and minZ &lt;= ringMaxZ then
+				table.insert(boundedCutters, {
+					Polygon = cutter,
+					MinX = minX,
+					MaxX = maxX,
+					MinZ = minZ,
+					MaxZ = maxZ,
+				})
+			end
+		end
+	end
+
+	for _, part in parts do
+		if not part.Parent then
+			continue
+		end
+		local fragments: { ConvexFootprint } = { partTopPolygon(part) }
+		local touched = false
+		for _, cutter in boundedCutters do
+			local nextFragments: { ConvexFootprint } = {}
+			for _, fragment in fragments do
+				local minX, maxX, minZ, maxZ = polygonBoundsXZ(fragment)
+				if maxX &lt; cutter.MinX or minX &gt; cutter.MaxX or maxZ &lt; cutter.MinZ or minZ &gt; cutter.MaxZ then
+					table.insert(nextFragments, fragment)
+				else
+					local survivors, subtracted = subtractConvexFootprint(fragment, cutter.Polygon)
+					if subtracted then
+						touched = true
+					end
+					for _, survivor in survivors do
+						table.insert(nextFragments, survivor)
+					end
+				end
+			end
+			fragments = nextFragments
+			if #fragments == 0 then
+				break
+			end
+		end
+		if touched then
+			fragments = coalesceConvexFootprints(fragments)
+			replaceWithClippedPolygons(part, fragments)
+		end
+	end
 end
 
 -- Delete ring pavement/kerb Parts wholly inside an entry sector and clip a Part
@@ -8478,8 +8812,10 @@ local function buildArm(
 	center: Vector3,
 	ringKerbRadiusStuds: number,
 	style: RegionStyles.RegionStyle,
-	settings: Settings.EasyRoadSettings
-): Model
+	settings: Settings.EasyRoadSettings,
+	collectRoadwayFootprints: boolean
+): (Model, { ConvexFootprint })
+	local roadwayFootprints: { ConvexFootprint } = {}
 	local sidewalkIndices: { number } = {}
 	local needsSurfaceTaper = arm.CutShoulderM &gt; 1e-6
 	for i, component in arm.Profile.Components do
@@ -8538,6 +8874,27 @@ local function buildArm(
 		MarkingDashStartsAtZero = true,
 	}
 	local model = RoadBuilder.Build(options)
+	local stations = RoadBuilder.StationsFor(options)
+
+	if collectRoadwayFootprints then
+		-- RoadBuilder's flat arm core is emitted as midpoint-aligned rectangles
+		-- with curvature-dependent length padding. Cutting against ideal station
+		-- quads misses those real corner protrusions (and can cut bare crescents on
+		-- the opposite side), so use the generated block footprints themselves.
+		-- Bay is roadway too; custom profiles must not leave its mouth kerbed off.
+		local roadwayPartNames: { [string]: boolean } = {
+			Drive = true,
+			Shoulder = true,
+			Bike = true,
+			Parking = true,
+			Bay = true,
+		}
+		for _, descendant in model:GetDescendants() do
+			if descendant:IsA("BasePart") and roadwayPartNames[descendant.Name] then
+				table.insert(roadwayFootprints, partTopPolygon(descendant))
+			end
+		end
+	end
 
 	if needsSurfaceTaper then
 		local scale = settings.MetersToStuds
@@ -8545,7 +8902,6 @@ local function buildArm(
 		local roadDepth = settings.RoadThicknessStuds
 		local pavementDepth = roadDepth + curbHeight
 		local offsets = RoadProfile.ComponentOffsetsM(arm.Profile)
-		local stations = RoadBuilder.StationsFor(options)
 		local length = curve.Length
 
 		local function makeSurfacePart(name: string, material: Enum.Material, color: Color3): Part
@@ -8606,6 +8962,15 @@ local function buildArm(
 					surfacePoints(s1)
 				local down = -curve:FrameAt((s0 + s1) / 2).UpVector
 				if math.max(shoulderWidth0, shoulderWidth1) * scale &gt;= 0.02 then
+					if collectRoadwayFootprints then
+						-- These surfaces are FillTriangle wedges, so their BasePart
+						-- bounding boxes are not their plan-view footprint. The source
+						-- quad is exact and convex on RoadBuilder's adaptive station grid.
+						table.insert(
+							roadwayFootprints,
+							{ shoulderInner0, shoulderOuter0, shoulderOuter1, shoulderInner1 }
+						)
+					end
 					FillTriangle(
 						shoulderInner0,
 						shoulderOuter0,
@@ -8657,7 +9022,6 @@ local function buildArm(
 			local curbHeight = style.CurbHeightM * scale
 			local pavementDepth = settings.RoadThicknessStuds + curbHeight
 			local offsets = RoadProfile.ComponentOffsetsM(arm.Profile)
-			local stations = RoadBuilder.StationsFor(options)
 			-- With one interval the cut cap is also the ring cap. Keep its overlap
 			-- rather than opening a hole at the mouth.
 			if #stations &lt; 3 then
@@ -8726,7 +9090,7 @@ local function buildArm(
 			descendant.CFrame = descendant.CFrame - Vector3.new(0, ARM_SINK_STUDS, 0)
 		end
 	end
-	return model
+	return model, roadwayFootprints
 end
 
 -- Raised splitter island in the gore between an entry and its exit, bounded by
@@ -9155,48 +9519,45 @@ local function splitBudgetFor(plans: { MouthPlan }, index: number): number
 	return math.max(MIN_SPLIT_RAD, nearest / 2 - MIN_KERB_GAP_RAD / 2)
 end
 
--- Angle at which an arm's outboard roadway edge has fully crossed the ring's
--- outer pavement radius.  Solo one-way mouths use this to open only the band
--- the single arm actually covers.  The Python reference has always carried
--- this calculation; the Luau call survived a refactor without its helper,
--- making every valid one-way mouth fail at runtime.
+-- Angle at which either roadway edge has crossed a target ring radius. Solo
+-- one-way mouths use both crossings: their complete carriageway, rather than a
+-- centre-to-outboard approximation, owns the opening through each ring band.
 --
 -- Sample to find the first bracket, then bisect it.  Returning the first sample
 -- outside the radius (the old Python-only approximation) leaves a visible
 -- several-tenths-of-a-stud step at wide/shallow joins.
 local BAND_EXIT_SAMPLES = 96
-local function bandExitAngle(
+local function bandEdgeExitAngle(
 	curve: PolyCurve.PolyCurve,
-	arm: ArmProfile,
+	signedOffsetStuds: number,
 	fromStation: number,
 	away: number,
 	center: Vector3,
-	outerRadiusStuds: number,
-	flow: number
+	targetRadiusStuds: number
 ): number
 	local length = curve.Length
-	local function outerEdgeAt(station: number): Vector3
+	local function edgeAt(station: number): Vector3
 		local position = curve:PosAt(station)
 		local tangent = flatUnit(curve:TangentAt(station))
-		return position + rightOf(tangent) * (-arm.OuterOffsetStuds * flow)
+		return position + rightOf(tangent) * signedOffsetStuds
 	end
 	local function radiusAt(station: number): number
-		return distanceXZ(outerEdgeAt(station), center)
+		return distanceXZ(edgeAt(station), center)
 	end
 	local station = math.clamp(fromStation, 0, length)
 	local step = if length &gt; 1e-6 then length / BAND_EXIT_SAMPLES else 0
-	if step &gt; 0 and radiusAt(station) &lt;= outerRadiusStuds then
+	if step &gt; 0 and radiusAt(station) &lt;= targetRadiusStuds then
 		for _ = 1, BAND_EXIT_SAMPLES do
 			local nextStation = math.clamp(station + away * step, 0, length)
 			if math.abs(nextStation - station) &lt; 1e-9 then
 				break
 			end
-			if radiusAt(nextStation) &gt; outerRadiusStuds then
+			if radiusAt(nextStation) &gt; targetRadiusStuds then
 				local inside = station
 				local outside = nextStation
 				for _ = 1, 24 do
 					local mid = (inside + outside) / 2
-					if radiusAt(mid) &gt; outerRadiusStuds then
+					if radiusAt(mid) &gt; targetRadiusStuds then
 						outside = mid
 					else
 						inside = mid
@@ -9208,7 +9569,7 @@ local function bandExitAngle(
 			station = nextStation
 		end
 	end
-	local edge = outerEdgeAt(station)
+	local edge = edgeAt(station)
 	return math.atan2(edge.Z - center.Z, edge.X - center.X)
 end
 
@@ -9240,8 +9601,9 @@ local function resolveSplits(
 	return split, entrySplit, plan.Angle + flow * entrySplit, plan.Angle - flow * split
 end
 
--- One mouth: entry arm, exit arm, splitter island. Returns the angular sector
--- the mouth occupies so the caller can open the ring's own pavement over it.
+-- One mouth: entry arm, exit arm, splitter island. Paired mouths return an
+-- angular pavement sector; solo mouths return nil plus exact roadway cutters.
+-- Edge paint remains angular for both because its handoff is a radial ring line.
 local function buildMouth(
 	ring: Model,
 	plan: MouthPlan,
@@ -9249,9 +9611,12 @@ local function buildMouth(
 	splitBudgetRad: number,
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings
-): (MouthSector, MouthSector, ExitTrace?)
+): (MouthSector?, MouthSector, ExitTrace?, { ConvexFootprint })
 	-- Which way traffic circulates, matching circleSegments' own sign.
 	local flow = if style.DriveOnLeft then 1 else -1
+	local soloMouth = not (plan.Entry and plan.Exit)
+	local collectSoloRoadway = soloMouth and ringSidewalkWidthM(style) &gt; 1e-6
+	local soloRoadwayCutters: { ConvexFootprint } = {}
 	local dir = plan.Direction
 	local side = rightOf(dir)
 
@@ -9273,7 +9638,7 @@ local function buildMouth(
 				ARM_HANDLE
 			),
 		})
-		buildArm(
+		local armModel, roadwayCutters = buildArm(
 			entryCurve :: PolyCurve.PolyCurve,
 			entry.Profile,
 			entry.CutPavementM,
@@ -9281,9 +9646,13 @@ local function buildMouth(
 			center,
 			entryRingKerbRadius,
 			style,
-			settings
-		).Parent =
-			ring
+			settings,
+			collectSoloRoadway
+		)
+		armModel.Parent = ring
+		for _, cutter in roadwayCutters do
+			table.insert(soloRoadwayCutters, cutter)
+		end
 		ringKerbRadius = entryRingKerbRadius
 	end
 
@@ -9299,7 +9668,7 @@ local function buildMouth(
 				ARM_HANDLE
 			),
 		})
-		buildArm(
+		local armModel, roadwayCutters = buildArm(
 			exitCurve :: PolyCurve.PolyCurve,
 			exit.Profile,
 			exit.CutPavementM,
@@ -9307,9 +9676,13 @@ local function buildMouth(
 			center,
 			exitRingKerbRadius,
 			style,
-			settings
-		).Parent =
-			ring
+			settings,
+			collectSoloRoadway
+		)
+		armModel.Parent = ring
+		for _, cutter in roadwayCutters do
+			table.insert(soloRoadwayCutters, cutter)
+		end
 		ringKerbRadius = exitRingKerbRadius
 	end
 
@@ -9333,34 +9706,32 @@ local function buildMouth(
 
 	-- With BOTH arms the sector spans the mouth: the arms bound it and the
 	-- splitter island fills the middle, so opening from the mouth centre out to
-	-- each arm is covered throughout. With only ONE arm there is no island and
-	-- nothing holds the middle, so the opening shrinks to the arm itself -
-	-- centred where it merges, one arm-width wide. Opening the full sector there
-	-- strips the kerb off ground the single arm never reaches.
+	-- each arm is covered throughout. With only ONE arm there is no island, so
+	-- edge paint is opened exactly between that arm's two roadway-edge crossings.
+	-- Raised pavement is not represented by a polar sector at all: the caller
+	-- subtracts the analytical roadway footprints gathered above, preserving the
+	-- curb-return concrete beside the curved arm.
 	if not (entry and exit) then
 		local only = (entry or exit) :: MouthArm
 		local onlyCurve = (entryCurve or exitCurve) :: PolyCurve.PolyCurve
-		local mergeAngle = if entry then entryAngle else exitAngle
-		local outerRadius = ringKerbRadius + ringSidewalkWidthM(style) * settings.MetersToStuds
-		local edgeAngle = bandExitAngle(
-			onlyCurve,
-			only.Profile,
-			if entry then onlyCurve.Length else 0,
-			if entry then -1 else 1,
-			center,
-			outerRadius,
-			flow
-		)
-		local sweep = angleDelta(mergeAngle, edgeAngle)
-		local soloInset = math.min(SOLO_SECTOR_INSET_RAD, math.abs(sweep) * SOLO_SECTOR_OVERLAP_SHARE)
-		local half = math.max(0, math.abs(sweep) / 2 - soloInset)
-		local edgeHalf = math.max(0, math.abs(sweep) / 2)
+		local fromStation = if entry then onlyCurve.Length else 0
+		local away = if entry then -1 else 1
+		local outboardOffsetStuds = -only.Profile.OuterOffsetStuds * flow
+		local inboardOffsetStuds = only.Profile.InnerOffsetStuds * flow
+		local function sectorAtRadius(targetRadiusStuds: number): MouthSector
+			local outboardAngle =
+				bandEdgeExitAngle(onlyCurve, outboardOffsetStuds, fromStation, away, center, targetRadiusStuds)
+			local inboardAngle =
+				bandEdgeExitAngle(onlyCurve, inboardOffsetStuds, fromStation, away, center, targetRadiusStuds)
+			local sweep = angleDelta(inboardAngle, outboardAngle)
+			local half = math.abs(sweep) / 2
+			return { Angle = outboardAngle + sweep / 2, Ahead = half, Behind = half }
+		end
+		local edgeLineRadius = ringKerbRadius - style.MarkingWidthM * 1.5 * settings.MetersToStuds
 		local soloTrace: ExitTrace? = if exit and exitCurve
 			then { Curve = exitCurve :: PolyCurve.PolyCurve, Arm = exit.Profile }
 			else nil
-		return { Angle = edgeAngle + sweep / 2, Ahead = half, Behind = half },
-			{ Angle = edgeAngle + sweep / 2, Ahead = edgeHalf, Behind = edgeHalf },
-			soloTrace
+		return nil, sectorAtRadius(edgeLineRadius), soloTrace, soloRoadwayCutters
 	end
 	-- Open exactly as far as each arm actually reaches, inset so the opening can
 	-- never outrun them.
@@ -9381,7 +9752,8 @@ local function buildMouth(
 	}
 	return pavementSector,
 		edgeMarkingSector,
-		{ Curve = exitCurve :: PolyCurve.PolyCurve, Arm = (exit :: MouthArm).Profile }
+		{ Curve = exitCurve :: PolyCurve.PolyCurve, Arm = (exit :: MouthArm).Profile },
+		soloRoadwayCutters
 end
 
 -- COMFORTABLE ring radius: one that gives every leg room for its two arms, a
@@ -9888,12 +10260,19 @@ function RoundaboutBuilder.CreateAtJunction(
 	local mouthSectors: { MouthSector } = {}
 	local edgeMarkingSectors: { MouthSector } = {}
 	local exitTraces: { ExitTrace } = {}
+	local soloRoadwayCutters: { ConvexFootprint } = {}
 	for i, plan in plans do
-		local sector, edgeSector, trace = buildMouth(ring, plan, center, splitBudgetFor(plans, i), ringStyle, settings)
-		table.insert(mouthSectors, sector)
+		local sector, edgeSector, trace, roadwayCutters =
+			buildMouth(ring, plan, center, splitBudgetFor(plans, i), ringStyle, settings)
+		if sector then
+			table.insert(mouthSectors, sector)
+		end
 		table.insert(edgeMarkingSectors, edgeSector)
 		if trace then
 			table.insert(exitTraces, trace)
+		end
+		for _, cutter in roadwayCutters do
+			table.insert(soloRoadwayCutters, cutter)
 		end
 	end
 
@@ -9907,6 +10286,12 @@ function RoundaboutBuilder.CreateAtJunction(
 	-- pushes the edge line inside the bound, and it survives as a white line
 	-- painted straight across the mouth.
 	local edgeLineInset = ringStyle.MarkingWidthM * 1.5 * scale
+	-- Solo curved arms are not polar sectors. Subtract their actual roadway
+	-- triangles first, while `ringSidewalk` still contains the original block
+	-- footprints; this keeps both curb returns without leaving concrete over the
+	-- live carriageway. Inter-mouth kerb separation keeps these fragments clear
+	-- of the paired angular openings applied immediately afterward.
+	openRingSidewalkByFootprints(ringSidewalk, soloRoadwayCutters)
 	openRingPavement(ringSidewalk, center, mouthSectors, 0)
 	-- Edge paint has a different physical hand-off from raised pavement. Open
 	-- it to the full merge angles so the preserved arm edge line reaches the

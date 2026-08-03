@@ -47,16 +47,9 @@ SECTOR_INSET_RAD = math.radians(3)
 # ray than an ordinary arm's full-width pavement, so the normal three-degree
 # ownership overlap can delete ring sidewalk the taper has not reached yet.
 # The strict component sweep closes the last outer-band crescent at eight
-# degrees.  Keep this shoulder-specific: ordinary mouths still use the tighter
-# three-degree opening, while solo mouths have their own seven-degree rule.
+# degrees. Keep this shoulder-specific: solo mouths are clipped against their
+# actual emitted roadway footprints below rather than an angular inset.
 SHOULDER_SECTOR_INSET_RAD = math.radians(8)
-# A single tangent arm has no splitter/apron blanket under its pavement edge.
-# Keep a little more ring sidewalk than paired mouths so rigid arm quads overlap
-# the ownership ray instead of exposing one-sample outer-band spikes. Width-fit
-# solo flares can be narrower than twice seven degrees, so the actual inset is
-# capped to a share of their measured sweep below.
-SOLO_SECTOR_INSET_RAD = math.radians(7)
-SOLO_SECTOR_OVERLAP_SHARE = 0.3
 ARM_HANDLE = 0.30
 ENTRY_SPLIT_SCALE = 0.8
 GORE_SAMPLES = 18
@@ -496,6 +489,135 @@ def _convex_intersection(subject, clip, tolerance=1e-9):
     return out
 
 
+def _clip_convex_half_plane(poly, a, b, orientation, keep_inside,
+                            tolerance=1e-9):
+    """Clip a convex polygon to one side of one oriented clip edge."""
+    if not poly:
+        return []
+
+    def side(point):
+        return orientation * ((b[0] - a[0]) * (point[1] - a[1])
+                              - (b[1] - a[1]) * (point[0] - a[0]))
+
+    def accepted(value):
+        return value >= -tolerance if keep_inside else value <= tolerance
+
+    out = []
+    previous = poly[-1]
+    previous_side = side(previous)
+    previous_inside = accepted(previous_side)
+    for current in poly:
+        current_side = side(current)
+        current_inside = accepted(current_side)
+        if current_inside != previous_inside:
+            denominator = previous_side - current_side
+            if abs(denominator) > 1e-12:
+                t = previous_side / denominator
+                out.append((
+                    previous[0] + (current[0] - previous[0]) * t,
+                    previous[1] + (current[1] - previous[1]) * t,
+                ))
+        if current_inside:
+            out.append(current)
+        previous = current
+        previous_side = current_side
+        previous_inside = current_inside
+    return out
+
+
+def _convex_difference(subject, clip, tolerance=1e-9):
+    """Convex fragments covering ``subject`` minus convex ``clip`` exactly."""
+    if len(subject) < 3 or len(clip) < 3:
+        return [list(subject)]
+    orientation = 1 if _signed_area(clip) >= 0 else -1
+    inside = list(subject)
+    outside_fragments = []
+    for a, b in zip(clip, clip[1:] + clip[:1]):
+        if len(inside) < 3:
+            break
+        outside = _clip_convex_half_plane(
+            inside, a, b, orientation, False, tolerance
+        )
+        if len(outside) >= 3 and abs(_signed_area(outside)) > tolerance:
+            outside_fragments.append(outside)
+        inside = _clip_convex_half_plane(
+            inside, a, b, orientation, True, tolerance
+        )
+    # If no intersection survived all clip edges, nothing was subtracted.
+    if len(inside) < 3 or abs(_signed_area(inside)) <= tolerance:
+        return [list(subject)]
+    return outside_fragments
+
+
+def open_parts_by_footprints(parts, cutters, selected, area_tolerance=1e-7):
+    """Subtract actual rigid roadway footprints from selected ring Parts.
+
+    Angular sectors are a useful candidate envelope but cannot describe a
+    curved arm through a finite-width annulus: deleting the whole sector opens
+    bare crescents beside the carriageway. Footprint subtraction removes raised
+    ring Sidewalk only where a real Drive/Shoulder Part owns the same pixels.
+    Ring/arm pavement may still overlap outside that live roadway, which is the
+    intentionally bounded curb-return overlap.
+    """
+    if not cutters or not any(selected(part) for part in parts):
+        return list(parts), 0, 0
+
+    cutter_data = []
+    for cutter in cutters:
+        xs = [point[0] for point in cutter.poly]
+        ys = [point[1] for point in cutter.poly]
+        cutter_data.append((min(xs), max(xs), min(ys), max(ys), cutter.poly))
+
+    kept = []
+    removed = clipped = 0
+    for part in parts:
+        if not selected(part):
+            kept.append(part)
+            continue
+        fragments = [list(part.poly)]
+        touched = False
+        for cminx, cmaxx, cminy, cmaxy, cutter_poly in cutter_data:
+            next_fragments = []
+            for fragment in fragments:
+                xs = [point[0] for point in fragment]
+                ys = [point[1] for point in fragment]
+                if (max(xs) < cminx or min(xs) > cmaxx
+                        or max(ys) < cminy or min(ys) > cmaxy):
+                    next_fragments.append(fragment)
+                    continue
+                overlap = _convex_intersection(fragment, cutter_poly)
+                if len(overlap) < 3 or abs(_signed_area(overlap)) <= area_tolerance:
+                    next_fragments.append(fragment)
+                    continue
+                touched = True
+                next_fragments.extend(
+                    _convex_difference(fragment, cutter_poly, area_tolerance)
+                )
+            fragments = next_fragments
+            if not fragments:
+                break
+        if not touched:
+            kept.append(part)
+            continue
+        if not fragments:
+            removed += 1
+            continue
+        clipped += 1
+        for fragment_poly in fragments:
+            fragment_center = (
+                sum(point[0] for point in fragment_poly) / len(fragment_poly),
+                sum(point[1] for point in fragment_poly) / len(fragment_poly),
+            )
+            fragment = Part(
+                part.name, fragment_poly, part.color, fragment_center, part.y
+            )
+            fragment.marking_offset_m = part.marking_offset_m
+            fragment.from_station = part.from_station
+            fragment.to_station = part.to_station
+            kept.append(fragment)
+    return kept, removed, clipped
+
+
 def open_angular_parts(parts, center, sectors, selected, clamp=True):
     """Delete/clip selected Part footprints inside angular ownership sectors."""
     sectors = clamp_sectors(sectors) if clamp else list(sectors)
@@ -824,36 +946,98 @@ def outboard_arm_edge_line_offsets_m(components, drive_on_left):
     return source, offs[last][1] - inset
 
 
-def band_exit_angle(curve, arm, from_station, away, center, outer_radius, flow):
-    """Exact first crossing of an arm's outboard edge over the outer band."""
-    def outer_edge(station):
+def band_edge_crossing(curve, offset_studs, from_station, away, center,
+                       ownership_radius):
+    """First exact crossing of one arm edge through a ring ownership radius.
+
+    ``offset_studs`` is in the arm curve's own right-vector frame. Both the
+    traffic-outboard and traffic-inboard roadway edges use this same search;
+    a solo mouth is the angular span BETWEEN their crossings, not the old span
+    between the arm centreline's merge ray and one outboard crossing.
+    """
+    def edge_at(station):
         position, right, _ = curve.frame(max(0.0, min(curve.length, station)))
-        return (position[0] - right[0] * arm["outer"] * flow,
-                position[1] - right[1] * arm["outer"] * flow)
+        return (position[0] + right[0] * offset_studs,
+                position[1] + right[1] * offset_studs)
 
     def radius_at(station):
-        return math.dist(outer_edge(station), center)
+        return math.dist(edge_at(station), center)
 
     station = max(0.0, min(curve.length, from_station))
+    start_radius = radius_at(station)
+    if start_radius > ownership_radius + 1e-7:
+        return None
+    if abs(start_radius - ownership_radius) <= 1e-7:
+        point = edge_at(station)
+        return dict(
+            station=station,
+            point=point,
+            angle=math.atan2(point[1] - center[1], point[0] - center[0]),
+        )
+
     step = curve.length / BAND_EXIT_SAMPLES if curve.length > 1e-9 else 0.0
-    if step > 0 and radius_at(station) <= outer_radius:
-        for _ in range(BAND_EXIT_SAMPLES):
-            next_station = max(0.0, min(curve.length, station + away * step))
-            if abs(next_station - station) < 1e-9:
-                break
-            if radius_at(next_station) > outer_radius:
-                inside, outside = station, next_station
-                for _ in range(24):
-                    mid = (inside + outside) / 2
-                    if radius_at(mid) > outer_radius:
-                        outside = mid
-                    else:
-                        inside = mid
-                station = (inside + outside) / 2
-                break
-            station = next_station
-    point = outer_edge(station)
-    return math.atan2(point[1] - center[1], point[0] - center[0])
+    if step <= 0:
+        return None
+    inside = station
+    for _ in range(BAND_EXIT_SAMPLES):
+        outside = max(0.0, min(curve.length, inside + away * step))
+        if abs(outside - inside) < 1e-9:
+            break
+        if radius_at(outside) >= ownership_radius:
+            for _ in range(24):
+                mid = (inside + outside) / 2
+                if radius_at(mid) >= ownership_radius:
+                    outside = mid
+                else:
+                    inside = mid
+            station = (inside + outside) / 2
+            point = edge_at(station)
+            return dict(
+                station=station,
+                point=point,
+                angle=math.atan2(point[1] - center[1], point[0] - center[0]),
+            )
+        inside = outside
+    return None
+
+
+def sector_between_crossings(crossings, terminal_angle=None):
+    """Small angular sector containing both edge hits and the ring terminal."""
+    if not crossings.get("outer") or not crossings.get("inner"):
+        return None
+    anchor = (
+        terminal_angle
+        if terminal_angle is not None
+        else crossings["outer"]["angle"]
+    )
+    deltas = [
+        0.0,
+        angle_delta(crossings["outer"]["angle"], anchor),
+        angle_delta(crossings["inner"]["angle"], anchor),
+    ]
+    low, high = min(deltas), max(deltas)
+    half = (high - low) / 2
+    return (
+        anchor + (low + high) / 2,
+        half,
+        half,
+    )
+
+
+def solo_opening_sector(curve, arm, from_station, away, center,
+                        ownership_radius, flow, terminal_angle=None):
+    """Full solo carriageway span at one circular ownership boundary."""
+    crossings = {
+        "outer": band_edge_crossing(
+            curve, -arm["outer"] * flow, from_station, away,
+            center, ownership_radius,
+        ),
+        "inner": band_edge_crossing(
+            curve, arm["inner"] * flow, from_station, away,
+            center, ownership_radius,
+        ),
+    }
+    return sector_between_crossings(crossings, terminal_angle), crossings
 
 
 def solo_split_angle(arm, split_budget):
@@ -1292,7 +1476,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     ring_sidewalk = [p for p in ring_parts if p.name == "Sidewalk"]
     ring_markings = [p for p in ring_parts if p.name == "Marking"]
 
-    pavement_sectors, edge_marking_sectors = [], []
+    pavement_sectors, solo_pavement_sectors, edge_marking_sectors = [], [], []
     arm_parts, gore_tris, apron_tris = [], [], []
     exit_traces = []          # (curve, arm) per exit, for the turbo peel
     exit_markings = []        # per exit arm, that arm's OWN lane lines
@@ -1355,6 +1539,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
             split = esplit = solo_split
         ea, xa = a + flow*esplit, a - flow*split
         entry = exit_ = None
+        entry_emitted = exit_emitted = None
         if entry_arm:
             p0 = (cut[0]+r[0]*entry_arm["lat"], cut[1]+r[1]*entry_arm["lat"])
             p1 = (math.cos(ea)*entry_arm["merge"], math.sin(ea)*entry_arm["merge"])
@@ -1369,6 +1554,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                                     arm_marking_bounds,
                                     edge_offsets[0], edge_offsets[1]),
                 edge_offsets)
+            entry_emitted = emitted
             for record in arm_marking_bounds[first_record:]:
                 record["parts"] = [p for p in emitted
                                    if p.marking_offset_m is not None
@@ -1391,6 +1577,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                                     arm_marking_bounds,
                                     edge_offsets[0], edge_offsets[1]),
                 edge_offsets)
+            exit_emitted = emitted
             for record in arm_marking_bounds[first_record:]:
                 record["parts"] = [p for p in emitted
                                    if p.marking_offset_m is not None
@@ -1412,6 +1599,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
 
         if solo:
             only = entry_arm or exit_arm
+            only_emitted = entry_emitted or exit_emitted or []
             merge_angle = ea if entry_arm else xa
             solo_mouths.append(dict(
                 source_angle=a,
@@ -1422,6 +1610,10 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 merge=(math.cos(merge_angle) * only["merge"],
                        math.sin(merge_angle) * only["merge"]),
                 arm=only,
+                roadway_parts=[
+                    part for part in only_emitted
+                    if is_roadway((part.name, 0.0))
+                ],
                 role="entry" if entry_arm else "exit",
             ))
 
@@ -1548,24 +1740,71 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
         if not (entry and exit_):
             only = entry_arm or exit_arm
             only_curve = entry or exit_
-            merge_angle = ea if entry else xa
-            outer_radius = ring_kerb + (SW_M*SCALE if sidewalk else 0.0)
             st = only_curve.length if entry else 0.0
             away = -1 if entry else 1
-            edge_angle = band_exit_angle(
-                only_curve, only, st, away, center, outer_radius, flow)
-            sweep = angle_delta(merge_angle, edge_angle)
-            center_angle = edge_angle + sweep/2
-            solo_inset = min(
-                SOLO_SECTOR_INSET_RAD,
-                abs(sweep) * SOLO_SECTOR_OVERLAP_SHARE,
+            merge_angle = ea if entry else xa
+            pavement_sector, pavement_crossings = solo_opening_sector(
+                only_curve,
+                only,
+                st,
+                away,
+                center,
+                outerR,
+                flow,
+                merge_angle,
             )
-            pavement_half = max(0, abs(sweep)/2 - solo_inset)
-            edge_half = abs(sweep)/2
-            solo_mouths[-1]["pavement_half"] = pavement_half
-            solo_mouths[-1]["opening_sweep"] = abs(sweep)
-            pavement_sectors.append((center_angle, pavement_half, pavement_half))
-            edge_marking_sectors.append((center_angle, edge_half, edge_half))
+            # roundaboutMarkingLines places the ring's outer edge-line centre
+            # 1.5 marking widths INBOARD of the kerb. At that radius the arm's
+            # outboard roadway edge is already outside the circle at its ring
+            # terminal, so the first ownership boundary is the terminal cap
+            # ray itself; the second is where the INBOARD roadway edge exits
+            # the edge-line circle farther along the arm.
+            marking_ownership_radius = (
+                ring_kerb - MARKING_W_M * 1.5 * SCALE
+            )
+            marking_inner = band_edge_crossing(
+                only_curve,
+                only["inner"] * flow,
+                st,
+                away,
+                center,
+                marking_ownership_radius,
+            )
+            marking_cap = dict(
+                station=st,
+                point=(
+                    center[0] + math.cos(merge_angle) * marking_ownership_radius,
+                    center[1] + math.sin(merge_angle) * marking_ownership_radius,
+                ),
+                angle=merge_angle,
+            )
+            marking_crossings = {"outer": marking_cap, "inner": marking_inner}
+            marking_sector = sector_between_crossings(
+                marking_crossings, merge_angle
+            )
+            # A missing crossing is a real geometry failure, recorded below so
+            # check_solo_merges reports it. Keep a zero sector here only so the
+            # rest of the diagnostic scene can still render.
+            if pavement_sector is None:
+                pavement_sector = (ea if entry else xa, 0.0, 0.0)
+            if marking_sector is None:
+                marking_sector = (ea if entry else xa, 0.0, 0.0)
+            solo_mouths[-1].update(dict(
+                curve=only_curve,
+                ring_station=st,
+                away=away,
+                flow=flow,
+                pavement_sector=pavement_sector,
+                pavement_crossings=pavement_crossings,
+                pavement_ownership_radius=outerR,
+                marking_sector=marking_sector,
+                marking_crossings=marking_crossings,
+                marking_ownership_radius=marking_ownership_radius,
+                pavement_half=pavement_sector[1],
+                opening_sweep=pavement_sector[1] + pavement_sector[2],
+            ))
+            solo_pavement_sectors.append(pavement_sector)
+            edge_marking_sectors.append(marking_sector)
         else:
             has_tapered_shoulder = any(
                 sum(arm["cut_shoulders"]) > 1e-6
@@ -1604,6 +1843,17 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
         lambda part: part in ring_sidewalk,
         clamp=False,
     )
+    # A solo curved arm does not fill a whole polar sector at every radius.
+    # Remove raised ring pavement by the actual emitted roadway footprints so
+    # the complete drive span opens without creating bare crescents beside it.
+    for mouth in solo_mouths:
+        kept, solo_removed, solo_clipped = open_parts_by_footprints(
+            kept,
+            mouth.get("roadway_parts", []),
+            lambda part: part.name == "Sidewalk",
+        )
+        removed += solo_removed
+        clipped += solo_clipped
     kept, edge_removed, edge_clipped = open_angular_parts(
         kept,
         center,
@@ -1662,6 +1912,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 island_r=island_r, island=island, legs=leg_info,
                 sectors=pavement_cl,
                 pavement_sectors=pavement_cl,
+                solo_pavement_sectors=solo_pavement_sectors,
                 edge_marking_sectors=edge_raw,
                 outerR=outerR, ring_kerb=ring_kerb, cutR=cutR, center=center,
                 n_ring=len(ring_parts), n_arms=len(arm_parts), removed=removed,
@@ -2050,6 +2301,61 @@ def cluster_gaps(holes, pitch, hairline):
     return real, thin
 
 
+def check_solo_sidewalk_clearance(scene, station_samples=32,
+                                  lateral_samples=64):
+    """No retained ring Sidewalk may cover a solo arm's live roadway.
+
+    Sampling only one polar ray is the defect that let the old narrow slit
+    pass. This walks cross-sections of the actual arm from its ring terminal to
+    the farther of the two outer-band edge crossings, then probes the complete
+    interval between the traffic-outboard and traffic-inboard roadway edges.
+    Only samples physically inside the ring's raised outer band are relevant.
+    """
+    faults = []
+    ring_sidewalk = scene.get("outer_ring_sidewalk", [])
+    for index, mouth in enumerate(scene.get("solo_mouths", []), 1):
+        crossings = mouth.get("pavement_crossings", {})
+        outer = crossings.get("outer")
+        inner = crossings.get("inner")
+        if not outer or not inner:
+            faults.append(f"mouth {index} has no full-carriageway sidewalk crossing")
+            continue
+        curve = mouth["curve"]
+        arm = mouth["arm"]
+        ring_station = mouth["ring_station"]
+        away = mouth["away"]
+        flow = mouth["flow"]
+        reach = max(
+            abs(outer["station"] - ring_station),
+            abs(inner["station"] - ring_station),
+        )
+        outer_offset = -arm["outer"] * flow
+        inner_offset = arm["inner"] * flow
+        low_offset, high_offset = sorted((outer_offset, inner_offset))
+        covered = []
+        for station_index in range(station_samples + 1):
+            station = ring_station + away * reach * station_index / station_samples
+            position, right, _ = curve.frame(station)
+            for lateral_index in range(1, lateral_samples):
+                alpha = lateral_index / lateral_samples
+                offset = low_offset + (high_offset - low_offset) * alpha
+                point = (
+                    position[0] + right[0] * offset,
+                    position[1] + right[1] * offset,
+                )
+                radius = math.dist(point, scene["center"])
+                if radius < scene["ring_kerb"] - 1e-6 or radius > scene["outerR"] + 1e-6:
+                    continue
+                if any(point_in(part.poly, point) for part in ring_sidewalk):
+                    covered.append((station, offset, point))
+        if covered:
+            faults.append(
+                f"mouth {index} retains ring Sidewalk over "
+                f"{len(covered)} sampled drive-span points"
+            )
+    return faults
+
+
 def check_solo_merges(scene, tolerance=1e-8):
     """Solo arms must use the width-fit flare rather than a paired mouth ray."""
     faults = []
@@ -2069,6 +2375,28 @@ def check_solo_merges(scene, tolerance=1e-8):
             faults.append(
                 f"mouth {index} ring-sidewalk opening collapsed across the one-way road"
             )
+        pavement_crossings = mouth.get("pavement_crossings", {})
+        marking_crossings = mouth.get("marking_crossings", {})
+        for label, crossings, sector in (
+            ("sidewalk", pavement_crossings, mouth.get("pavement_sector")),
+            ("edge marking", marking_crossings, mouth.get("marking_sector")),
+        ):
+            outer = crossings.get("outer")
+            inner = crossings.get("inner")
+            if not outer or not inner or not sector:
+                faults.append(f"mouth {index} has no complete {label} opening")
+                continue
+            expected_sector = sector_between_crossings(
+                crossings, mouth["merge_angle"]
+            )
+            expected_sweep = expected_sector[1] + expected_sector[2]
+            actual_sweep = sector[1] + sector[2]
+            if abs(actual_sweep - expected_sweep) > tolerance:
+                faults.append(
+                    f"mouth {index} {label} opens {math.degrees(actual_sweep):.2f} degrees "
+                    f"instead of full edge span {math.degrees(expected_sweep):.2f} degrees"
+                )
+    faults.extend(check_solo_sidewalk_clearance(scene))
     return faults
 
 
@@ -2179,6 +2507,16 @@ def one_way(lanes, into_ring, dol, lane=LANE_M, pav=SW_M):
     return [("Sidewalk", pav)] + [("Drive", lane, d)] * lanes + [("Sidewalk", pav)]
 
 
+def one_way_bay(lanes, into_ring, dol, lane=LANE_M, bay=2.8, pav=SW_M):
+    """One-way carriageway with an undirected outboard lay-by/bus bay."""
+    direction = 1 if into_ring else -1
+    drives = [("Drive", lane, direction)] * lanes
+    bay_component = ("Bay", bay, 0)
+    roadway = ([bay_component] + drives
+               if into_ring == dol else drives + [bay_component])
+    return [("Sidewalk", pav)] + roadway + [("Sidewalk", pav)]
+
+
 def highway(lanes_each_way, dol, lane=LANE_M, shoulder=SHOULDER_M, median=MEDIAN_M):
     """Mirrors builtin_highway: a hard shoulder OUTBOARD of the lanes each way.
 
@@ -2282,6 +2620,20 @@ def CASE_TABLE(dol_default=True):
             (90, one_way_highway(1, True, True)),
             (210, one_way_highway(3, False, True)),
             (330, two_way(2, 2, True)),
+        ]),
+        # Regression for custom one-way cross-sections containing Bay. Bay is
+        # roadway in RoadProfile and must therefore cut the raised ring
+        # sidewalk across the whole solo mouth. Exercise both traffic hands
+        # and both entry/exit flow directions.
+        "solo_bay": case(80, 2, True, [
+            (90, one_way_bay(2, True, True, bay=2.8)),
+            (210, one_way_bay(2, False, True, bay=3.2)),
+            (330, two_way(2, 2, True)),
+        ]),
+        "solo_bay_us": case(80, 2, False, [
+            (90, one_way_bay(2, True, False, bay=2.8)),
+            (210, one_way_bay(2, False, False, bay=3.2)),
+            (330, two_way(2, 2, False)),
         ]),
     }
 

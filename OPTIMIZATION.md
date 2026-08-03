@@ -106,6 +106,24 @@ closing the wider measurement program.
 - Merge collinear solid marking spans with identical width/colour; preserve dash
   cadence and regional phase for dashed lines.
 
+## P1 — roundabout mouth clipping
+
+Solo one-way mouths now subtract the emitted roadway footprint from the ring
+sidewalk so curb returns remain exact. This is deliberately correctness-first:
+wide/highway mouths can fragment a small number of ring strips into hundreds
+of triangles before `FillTriangle` converts them to Wedge Parts.
+
+- Keep the shipped safe coalescer (shared full edge, convex union, conserved
+  area) and benchmark its pair-search cost on wide and closely spaced mouths.
+- Investigate an indexed shared-edge lookup instead of repeated all-pairs
+  survivor scans.
+- Investigate a lower-Part representation for the same exact clipped surface
+  (for example a purpose-built mesh), with the current convex fragments as the
+  authoritative fallback. It must not bridge disjoint curb returns or restore
+  raised pavement over Drive, Shoulder, Bike, Parking, or Bay surfaces.
+- Add Studio baselines for generated Part count and rebuild time on solo,
+  one-way-highway, mixed-hand test fixtures, and custom Bay profiles.
+
 ## Candidates to investigate
 
 These need profiling before implementation:
