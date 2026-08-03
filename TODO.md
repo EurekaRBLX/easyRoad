@@ -46,6 +46,42 @@ below rather than inventing a second indexing scheme.
    EasyLight to open or rebuild a junction, and unknown EasyLight attributes
    must survive an EasyRoad rebuild.
 
+### Traffic-hand and regional-marking prerequisites
+
+The current roundabout geometry already derives circulation direction,
+entry/exit ownership, roadside placement, and Turbo peel direction from
+`RegionStyle.DriveOnLeft`. Preserve that role-based foundation: future code
+must ask for traffic-inboard/outboard and entry/exit, never assume that raw
+world-left/world-right has one fixed meaning. Before the control-marking work
+above is considered region-compatible:
+
+1. **Contract-protect signed LHT/RHT behaviour.** Add geometrically reflected
+   fixture pairs with identical topology for both traffic hands. Assert signed
+   Turbo angular travel, entry/exit ownership, and outboard-side selection --
+   not only whether a peel eventually lands on an exit line. Negative tests
+   must catch independently flipped Turbo `travel`, mouth `flow`, and outboard
+   selection. Exercise junctions attached at both the start and end of a road;
+   the Python preview currently models only the far-end branch.
+2. **Make roundabout marking grammar regional data.** The current Turbo peel
+   uses one fixed white 4 m mark / 2 m gap pattern. Move Turbo dash/gap, line
+   type, width, colour, peel/setback rules, and future stop/give-way/crossing
+   defaults into the region or a dedicated `RoundaboutMarkingStandard`. Keep
+   per-roundabout overrides without losing the regional default.
+3. **Resolve traffic hand once.** `Settings.DriveSideOverride` is serialized
+   but currently has no runtime consumer. Either wire an explicit
+   Region/Left/Right resolver into every builder and preview, or remove and
+   migrate the dead setting; do not allow settings and `DriveOnLeft` to
+   disagree silently.
+4. **Respect the global marking switch.** Turbo peels must obey
+   `settings.AutoMarkings`, just like RoadBuilder's ordinary markings, and the
+   preview needs an AutoMarkings-off regression.
+5. **Persist entry-side control geometry.** Add a stable approach/entry trace
+   keyed by the existing road-end approach ID. Stop/give-way lines,
+   pedestrian/cycle crossings, Commonwealth zig-zags, arrows, and later signal
+   sockets should all consume that same hand-aware trace. Turbo destination
+   guidance should eventually map entry lanes to circulating lanes and exit
+   approach IDs rather than remain decorative geometry only.
+
 Before UI work, document the serialized junction-control schema and the public
 socket/attribute contract EasyLight can depend on. Then render stop/crossing
 markings in the Python junction preview and add break-tests for approach-side
