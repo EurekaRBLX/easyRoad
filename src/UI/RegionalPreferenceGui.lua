@@ -28,6 +28,7 @@ end
 
 local function LabeledRow(props: {
 	Label: string,
+	LabelWidth: number?,
 	LayoutOrder: number,
 	children: { [string]: any },
 })
@@ -38,7 +39,7 @@ local function LabeledRow(props: {
 			-- The Regional Preference dock is commonly kept narrow beside the
 			-- viewport. Give labels enough room to remain readable while leaving
 			-- the growing field column over half of a typical 450 px content width.
-			Width = 184,
+			Width = props.LabelWidth or 184,
 		}),
 	}
 	for key, child in props.children do
@@ -67,6 +68,7 @@ local function FinishDefaults(props: {
 		Header = e(Components.Section, { Text = props.Label, LayoutOrder = 1 }),
 		Material = e(LabeledRow, {
 			Label = "Material",
+			LabelWidth = 120,
 			LayoutOrder = 2,
 			children = {
 				Dropdown = e(Components.Dropdown, {
@@ -189,6 +191,7 @@ local function RegionalPreferenceGui(props: {
 		}),
 		Region = e(LabeledRow, {
 			Label = "Region",
+			LabelWidth = 120,
 			LayoutOrder = 2,
 			children = {
 				Dropdown = e(Components.Dropdown, {
@@ -262,6 +265,7 @@ local function RegionalPreferenceGui(props: {
 		}),
 		Language = e(LabeledRow, {
 			Label = "Terminology",
+			LabelWidth = 120,
 			LayoutOrder = 7,
 			children = {
 				Dropdown = e(Components.Dropdown, {
@@ -284,6 +288,7 @@ local function RegionalPreferenceGui(props: {
 		-- switching these never changes the geometry that gets built.
 		SpeedUnit = e(LabeledRow, {
 			Label = "Speed units",
+			LabelWidth = 120,
 			LayoutOrder = 8,
 			children = {
 				Dropdown = e(Components.Dropdown, {
@@ -303,6 +308,7 @@ local function RegionalPreferenceGui(props: {
 		}),
 		LengthUnit = e(LabeledRow, {
 			Label = "Length units",
+			LabelWidth = 120,
 			LayoutOrder = 9,
 			children = {
 				Dropdown = e(Components.Dropdown, {
@@ -327,6 +333,7 @@ local function RegionalPreferenceGui(props: {
 		}),
 		BankMode = e(LabeledRow, {
 			Label = "Mode",
+			LabelWidth = 120,
 			LayoutOrder = 11,
 			children = {
 				Dropdown = e(Components.Dropdown, {
@@ -381,7 +388,8 @@ local function RegionalPreferenceGui(props: {
 		-- runoff taper applies to both - only hidden when banking is Off
 		-- entirely and there's nothing to transition.
 		TransitionLength = settings.SuperelevationMode ~= "Off" and e(LabeledRow, {
-			Label = "Bank transition (" .. Units.LengthSuffix(settings) .. ")",
+			Label = "Transition (" .. Units.LengthSuffix(settings) .. ")",
+			LabelWidth = 120,
 			LayoutOrder = 14,
 			children = {
 				Slider = e(Components.Slider, {
