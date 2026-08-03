@@ -414,8 +414,11 @@ def main():
     require(structure_controls, 'Label = "Pillar width (m)"', "Road Tools does not expose pillar width clearly", problems)
     require(structure_controls, 'Text = "Parapet height (m)"', "Road Tools does not expose viaduct parapet height", problems)
     require(structure_controls, 'Text = "Vertical clearance (m)"', "Road Tools does not expose tunnel height clearance", problems)
-    require(regional_preferences, 'Label = "Viaduct parapet height (m)"', "Regional Preference lacks the viaduct parapet-height default", problems)
-    require(regional_preferences, 'Label = "Tunnel vertical clearance (m)"', "Regional Preference lacks the tunnel height-clearance default", problems)
+    require(regional_preferences, "Width = 184", "Regional Preference still reserves too little width for setting labels", problems)
+    reject(regional_preferences, 'Text = "Auto (from speed + curvature)"', "Regional Preference banking mode still overflows its dropdown", problems)
+    require(regional_preferences, 'Label = "Viaduct wall height (m)"', "Regional Preference lacks a compact viaduct wall-height label", problems)
+    require(regional_preferences, 'Label = "Tunnel height (m)"', "Regional Preference lacks a compact tunnel height-clearance label", problems)
+    require(regional_preferences, 'Label = "Concrete viaduct medians"', "Regional Preference viaduct-median copy still overflows the dock", problems)
     require(structure_materials, "Enum.Material.Concrete", "procedural material catalogue is missing", problems)
     require(settings, "ParallelRoadwayGapM", "settings do not persist the parallel roadway gap", problems)
 

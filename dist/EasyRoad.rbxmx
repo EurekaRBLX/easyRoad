@@ -20709,7 +20709,10 @@ local function LabeledRow(props: {
 		Label = e(Components.Label, {
 			Text = props.Label,
 			LayoutOrder = 1,
-			Width = 120,
+			-- The Regional Preference dock is commonly kept narrow beside the
+			-- viewport. Give labels enough room to remain readable while leaving
+			-- the growing field column over half of a typical 450 px content width.
+			Width = 184,
 		}),
 	}
 	for key, child in props.children do
@@ -20825,9 +20828,9 @@ local function RegionalPreferenceGui(props: {
 	end
 
 	local superelevationOptions: { Components.DropdownOption } = {
-		{ Id = "Auto", Text = "Auto (from speed + curvature)" },
-		{ Id = "Manual", Text = "Manual angle" },
-		{ Id = "Off", Text = "Off (flat roads)" },
+		{ Id = "Auto", Text = "Auto (speed + curve)" },
+		{ Id = "Manual", Text = "Manual" },
+		{ Id = "Off", Text = "Off" },
 	}
 
 	local scrollProps = Components.ScrollBar()
@@ -21052,7 +21055,7 @@ local function RegionalPreferenceGui(props: {
 		-- runoff taper applies to both - only hidden when banking is Off
 		-- entirely and there's nothing to transition.
 		TransitionLength = settings.SuperelevationMode ~= "Off" and e(LabeledRow, {
-			Label = "Transition length (" .. Units.LengthSuffix(settings) .. ")",
+			Label = "Bank transition (" .. Units.LengthSuffix(settings) .. ")",
 			LayoutOrder = 14,
 			children = {
 				Slider = e(Components.Slider, {
@@ -21245,7 +21248,7 @@ local function RegionalPreferenceGui(props: {
 			},
 		}),
 		ParapetGap = e(LabeledRow, {
-			Label = "Viaduct parapet gap (m)",
+			Label = "Viaduct wall gap (m)",
 			LayoutOrder = 46,
 			children = {
 				Field = e(Components.NumberField, {
@@ -21261,7 +21264,7 @@ local function RegionalPreferenceGui(props: {
 			},
 		}),
 		ParapetHeight = e(LabeledRow, {
-			Label = "Viaduct parapet height (m)",
+			Label = "Viaduct wall height (m)",
 			LayoutOrder = 47,
 			children = {
 				Field = e(Components.NumberField, {
@@ -21277,7 +21280,7 @@ local function RegionalPreferenceGui(props: {
 			},
 		}),
 		TunnelClearance = e(LabeledRow, {
-			Label = "Tunnel side clearance (m)",
+			Label = "Tunnel side gap (m)",
 			LayoutOrder = 48,
 			children = {
 				Field = e(Components.NumberField, {
@@ -21293,7 +21296,7 @@ local function RegionalPreferenceGui(props: {
 			},
 		}),
 		TunnelVerticalClearance = e(LabeledRow, {
-			Label = "Tunnel vertical clearance (m)",
+			Label = "Tunnel height (m)",
 			LayoutOrder = 49,
 			children = {
 				Field = e(Components.NumberField, {
@@ -21309,7 +21312,7 @@ local function RegionalPreferenceGui(props: {
 			},
 		}),
 		ElevatedMedian = e(Components.Checkbox, {
-			Label = "Match structural base on viaduct medians",
+			Label = "Concrete viaduct medians",
 			Checked = settings.ElevatedMedianConcrete,
 			LayoutOrder = 50,
 			OnToggled = function(checked: boolean)
@@ -21318,7 +21321,7 @@ local function RegionalPreferenceGui(props: {
 			end,
 		}),
 		ParallelGap = e(LabeledRow, {
-			Label = "Parallel roadway gap (m)",
+			Label = "Parallel road gap (m)",
 			LayoutOrder = 51,
 			children = {
 				Field = e(Components.NumberField, {
