@@ -342,7 +342,7 @@ local function createRoadSession(
 		end
 		for _, junctionModel in JunctionInstance.GetAll() do
 			local junctionData = JunctionInstance.Read(junctionModel)
-			if junctionData then
+			if junctionData and junctionData.Kind ~= "Roundabout" then
 				local padRadius = JunctionBuilder.PadRadiusStuds(junctionData.Id, settings) or 0
 				if
 					isAtGrade(junctionData.Position, pos)
@@ -1265,7 +1265,12 @@ local function createRoadSession(
 					connectAt(snapMatch.TopologyPosition, targetModel, whichEnd, nil, nil, snapMatch.Junction)
 					return
 				elseif snapMatch.Kind == "Roundabout" and snapMatch.Ring and snapMatch.Ring.Parent then
-					RoundaboutBuilder.ConnectRoad(snapMatch.Ring, targetModel, getStyle(), settings)
+					local connected, message =
+						RoundaboutBuilder.ConnectRoad(snapMatch.Ring, targetModel, getStyle(), settings)
+					if not connected then
+						structureStatus = message or "Could not connect the road to the roundabout."
+						warn("[EasyRoad] " .. structureStatus)
+					end
 					return
 				end
 			end
@@ -1283,7 +1288,11 @@ local function createRoadSession(
 			-- with RoadBuilder curve feeders for every nearby road including this one).
 			local ring = RoundaboutBuilder.FindNear(pos, settings.SnapRadiusStuds)
 			if ring then
-				RoundaboutBuilder.ConnectRoad(ring, targetModel, getStyle(), settings)
+				local connected, message = RoundaboutBuilder.ConnectRoad(ring, targetModel, getStyle(), settings)
+				if not connected then
+					structureStatus = message or "Could not connect the road to the roundabout."
+					warn("[EasyRoad] " .. structureStatus)
+				end
 				return
 			end
 			local midSpanMatch = findMidSpanMatch(pos, targetModel)
@@ -1364,7 +1373,7 @@ local function createRoadSession(
 		-- Place, then auto-connect any roads already near the drop point (so a
 		-- roundabout dropped onto existing roads wires them up with feeders
 		-- instead of leaving a bare ring). No nearby roads -> just the ring.
-		RoundaboutBuilder.Place(
+		local _, message = RoundaboutBuilder.Place(
 			center,
 			roundaboutRadiusStuds,
 			roundaboutLaneCount,
@@ -1372,6 +1381,10 @@ local function createRoadSession(
 			getStyle(),
 			settings
 		)
+		if message then
+			structureStatus = message
+			warn("[EasyRoad] " .. message)
+		end
 		if recording then
 			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
 		end

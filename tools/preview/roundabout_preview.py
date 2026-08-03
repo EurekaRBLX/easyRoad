@@ -845,7 +845,7 @@ def arm_marking_bounder(curve, center, ring_kerb, cut_at_start, records):
 
 
 def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=True,
-          island=True, markings="Continuous"):
+          island=True, markings="Continuous", lane_width_m=LANE_M):
     """legs is a list of (degrees, approach component list).
 
     `grow` mirrors the plugin, and the plugin no longer grows: the requested
@@ -856,10 +856,13 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     """
     assert markings in ("Continuous", "SolidLanes", "Turbo"), markings
     if grow:
-        ring_r = max(ring_r, suggested_radius_studs(legs, ring_lanes, LANE_M, drive_on_left))
+        ring_r = max(
+            ring_r,
+            suggested_radius_studs(legs, ring_lanes, lane_width_m, drive_on_left),
+        )
     flow = 1 if drive_on_left else -1
     center = (0.0, 0.0)
-    rc = ring_components(ring_lanes, LANE_M, drive_on_left, sidewalk)
+    rc = ring_components(ring_lanes, lane_width_m, drive_on_left, sidewalk)
     outerR = ring_r + sum(c[1] for c in rc)/2*SCALE
     ring_kerb = outerR - (SW_M*SCALE if sidewalk else 0.0)
     ro = offsets_m(rc)
@@ -1178,7 +1181,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
         if p.name in ("Sidewalk", "Marking") and math.dist(p.center, center) >= min_radius
     ]
     spiral, spiral_spans = (
-        turbo_spiral(center, ring_r, island_r, ring_lanes, LANE_M, drive_on_left,
+        turbo_spiral(center, ring_r, island_r, ring_lanes, lane_width_m, drive_on_left,
                      exit_traces)
         if markings == "Turbo" else ([], []))
     parts += spiral
@@ -1188,7 +1191,8 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 arm_marking_bounds=arm_marking_bounds,
                 shoulder_tapers=shoulder_tapers,
                 outer_ring_parts=outer_ring_parts,
-                ring_r=ring_r, ring_lanes=ring_lanes, drive_on_left=drive_on_left,
+                ring_r=ring_r, ring_lanes=ring_lanes, lane_width_m=lane_width_m,
+                drive_on_left=drive_on_left,
                 island_r=island_r, island=island, legs=leg_info,
                 sectors=cl,
                 outerR=outerR, ring_kerb=ring_kerb, cutR=cutR, center=center,

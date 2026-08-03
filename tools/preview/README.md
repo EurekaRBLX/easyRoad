@@ -25,6 +25,7 @@ trap as an invariant nobody re-reads.
 |---|---|
 | `preview_core.py` | The shared emission port: curve + cross-section to the rigid boxes RoadBuilder emits, one per (component, station interval). Geometry, `build_stations`, `emit_road`, `Part`, `point_in`, colours, region constants. Scenario-agnostic. |
 | `roundabout_preview.py` | Ring, arms, mouths, splitter islands, turbo markings, and the scans that only mean anything on a roundabout. |
+| `roundabout_editor_preview.py` | Before/after bird's-eye editor showcase for a connected UK roundabout. Reuses `roundabout_preview.py` directly so adjustable radius, lane count/width, appearance toggles, mouths, and markings are rendered by the canonical component pipeline. |
 | `road_preview.py` | An ordinary road on its own - straights, arcs down to R=30, an S-curve, avenues, motorways. Bare ground inside the road, edge sawtooth, broken edge lines. |
 | `straight_optimization_preview.py` | Exact-straight 2048-stud splitting, explicit stretch breakpoints, conservative Drive-only lateral merging, source-range metadata contracts, and a before/after surface-Part render. |
 | `structure_preview.py` | Rigid imported-module socket stepping, procedural viaduct elevation, single/twin pier and cap geometry, independent finish channels, and arched tunnel cross-section; check-only or one combined PNG. |
@@ -81,6 +82,8 @@ cd tools/preview
 python3 roundabout_preview.py             # uk4 uk3 us4
 python3 roundabout_preview.py uk5mini     # a named case
 python3 roundabout_preview.py --no-render # scan only
+python3 roundabout_editor_preview.py --check
+python3 roundabout_editor_preview.py --out out/roundabout-editor
 python3 road_preview.py --render          # every road case, with PNGs
 python3 turbo_check.py                    # turbo peel + its break-tests
 python3 road_break_tests.py               # road scans + their break-tests

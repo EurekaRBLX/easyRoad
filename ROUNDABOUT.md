@@ -55,6 +55,39 @@ deleted on the assumption the arms and splitter island replace it.** Anything
 that shortens or skips the island leaves bare ground. That single coupling
 caused the worst defect of this session (§4.1).
 
+### 2.1 Persistent editor and topology
+
+New connected roundabouts retain their original `Junction` Model as a hidden
+controller with `RW_JunctionKind = "Roundabout"`; it is no longer deleted after
+the first build. The visible ring mirrors that controller's id and editable
+radius/lane/appearance fields. Connected road ends keep the same junction id,
+stable road id, and stable endpoint-port ids.
+
+Selecting the ring or any generated arm opens `RoundaboutPanel`. Each edit is
+one ChangeHistory recording and calls `RoundaboutBuilder.Rebuild`, which reads
+only `JunctionInstance.ConnectedRoads(controllerId)`. Ordinary edits never run a
+proximity scan, so enlarging a ring cannot annex a nearby unrelated road. The
+selected ring Model is rebuilt in place so Selection and third-party non-`RW_`
+attributes survive.
+
+Each one-segment approach retains its untrimmed `RoadSource`. Radius changes can
+therefore shorten or lengthen the controller-side end without compounding an
+old trim, while preserving the remote junction, road/port identity, raw custom
+attributes, structures, and bus stops. Transition profiles, bays, and
+marking/kerb stretches are rejected before mutation until source-window slicing
+is implemented; the panel reports the blocking approach rather than moving it.
+**Convert to junction** restores those source ends and regenerates the ordinary
+multinode pad. Centre movement is intentionally not exposed because moving a
+connected topology owner safely is a separate operation.
+
+Legacy standalone rings remain editable. A legacy ring with generated arms but
+no controller is read-only because its already-shortened source approaches
+cannot be reconstructed safely; recreate that junction once to opt in.
+`tools/preview/roundabout_editor_preview.py` renders a before/after bird's-eye
+view through the canonical `roundabout_preview` component pipeline and checks
+radius, lane count/width, appearance toggles, mouths, seams, and marking
+ownership.
+
 ---
 
 ## 3. Settled decisions — do not re-litigate blind
@@ -426,14 +459,12 @@ is the one failure mode this repo cannot afford again.
 
 ## 5. Open problems
 
-### 5.1 Roads passing *beside* the roundabout still are not connected
-Detection is fixed; **handling is not.** `ConnectRoad` calls `ringSideIsStart`,
-which picks whichever *end* of the road is nearer the centre, and skips the road
-entirely when that is unreadable. A road that passes beside or through the
-roundabout has both ends far away, so choosing an end is meaningless — it needs
-**splitting at the nearest point**, the way `RoadSplit.SplitMany` already does
-for X intersections. Until then a detected-but-unsplittable road does nothing,
-which reads exactly like a detection failure.
+### 5.1 ~~Roads passing beside/through the roundabout are not connected~~ — FIXED
+Initial placement and explicit connection find the nearest
+station on a passing road and use `RoadSplit.SplitAtJunction` when that station
+is safely interior. The two resulting pieces retain their outer approach-port
+ids and share the roundabout controller at the cut. Normal editor rebuilds do
+not repeat detection or splitting; they use the controller's exact topology.
 
 ### 5.2 ~~Small radius requests are silently inflated~~ — FIXED
 The requested radius is now **built as asked**. `MinimumRadiusStuds` is advice,

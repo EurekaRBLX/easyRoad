@@ -113,7 +113,12 @@ local function createJunctionEditSession(
 		handlesFolder = folder
 
 		-- Centre node (draggable) — CivilArc-style primary control.
-		local center = makeHandlePart(CENTER_HANDLE_NAME, Vector3.new(2.2, 2.2, 2.2), Color3.fromRGB(255, 200, 40), Enum.PartType.Ball)
+		local center = makeHandlePart(
+			CENTER_HANDLE_NAME,
+			Vector3.new(2.2, 2.2, 2.2),
+			Color3.fromRGB(255, 200, 40),
+			Enum.PartType.Ball
+		)
 		center.CFrame = CFrame.new(layout.Center + Vector3.new(0, 1.2, 0))
 		center.Parent = folder
 
@@ -126,10 +131,20 @@ local function createJunctionEditSession(
 				local bar = makeHandlePart(MOUTH_PREFIX .. i, Vector3.new(0.25, 0.25, len), Color3.fromRGB(255, 70, 70))
 				bar.CFrame = CFrame.lookAt(mid + Vector3.new(0, 0.4, 0), right + Vector3.new(0, 0.4, 0))
 				bar.Parent = folder
-				local dotL = makeHandlePart(MOUTH_PREFIX .. i .. "_L", Vector3.new(0.7, 0.7, 0.7), Color3.fromRGB(255, 255, 255), Enum.PartType.Ball)
+				local dotL = makeHandlePart(
+					MOUTH_PREFIX .. i .. "_L",
+					Vector3.new(0.7, 0.7, 0.7),
+					Color3.fromRGB(255, 255, 255),
+					Enum.PartType.Ball
+				)
 				dotL.CFrame = CFrame.new(left + Vector3.new(0, 0.5, 0))
 				dotL.Parent = folder
-				local dotR = makeHandlePart(MOUTH_PREFIX .. i .. "_R", Vector3.new(0.7, 0.7, 0.7), Color3.fromRGB(255, 255, 255), Enum.PartType.Ball)
+				local dotR = makeHandlePart(
+					MOUTH_PREFIX .. i .. "_R",
+					Vector3.new(0.7, 0.7, 0.7),
+					Color3.fromRGB(255, 255, 255),
+					Enum.PartType.Ball
+				)
 				dotR.CFrame = CFrame.new(right + Vector3.new(0, 0.5, 0))
 				dotR.Parent = folder
 			end
@@ -168,11 +183,21 @@ local function createJunctionEditSession(
 			local current: Instance? = instance
 			while current do
 				if JunctionInstance.IsJunction(current) then
-					junction = current :: Model
+					local candidate = current :: Model
+					local data = JunctionInstance.Read(candidate)
+					-- Converted roundabouts retain a Junction controller for exact
+					-- approach topology, but that controller belongs to the dedicated
+					-- roundabout editor and must never mount ordinary corner handles.
+					if data and data.Kind ~= "Roundabout" then
+						junction = candidate
+					end
 					break
 				end
 				-- Also treat our handles as selecting the junction.
-				if current.Name == HANDLES_FOLDER_NAME or (current.Parent and current.Parent.Name == HANDLES_FOLDER_NAME) then
+				if
+					current.Name == HANDLES_FOLDER_NAME
+					or (current.Parent and current.Parent.Name == HANDLES_FOLDER_NAME)
+				then
 					junction = selectedJunction
 					break
 				end
@@ -224,6 +249,15 @@ local function createJunctionEditSession(
 	end
 
 	table.insert(connections, Selection.SelectionChanged:Connect(loadSelection))
+
+	-- Undo/redo can change a retained controller between Intersection and
+	-- Roundabout without changing Studio selection. Re-read its kind after the
+	-- history operation so ordinary corner handles never remain on a ring.
+	local function refreshAfterHistory()
+		task.defer(loadSelection)
+	end
+	table.insert(connections, ChangeHistoryService.OnUndo:Connect(refreshAfterHistory))
+	table.insert(connections, ChangeHistoryService.OnRedo:Connect(refreshAfterHistory))
 
 	table.insert(
 		connections,

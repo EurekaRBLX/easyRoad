@@ -70,6 +70,12 @@ To rebuild `dist/` yourself without Rojo: `python3 tools/build_rbxmx.py`.
    one stable approach port per connected road and one cyan handle per curb
    corner. Keep **Link all corner radii** enabled for one shared value, or turn
    it off, click a cyan handle, and set that corner's turn radius independently.
+9. **Edit a roundabout**: select the circulating ring or any generated arm.
+   The roundabout panel edits radius, circulating lane count, lane width,
+   markings, pavement, and centre island, with minimum/suggested-radius advice.
+   Connected rings can be converted back to an ordinary junction. Older
+   connected rings remain read-only because their deleted source approaches
+   cannot be reconstructed safely; recreate that junction once to opt in.
 
 The Highways category includes one-way 1, 2, 3, 4, and 5-lane presets with an
 inner and outer shoulder, intended for the parallel-carriageway workflow.
@@ -122,6 +128,9 @@ src/
   createRoadSession.lua    Interactive placement: clicks, snapping, preview, undo
   RoadSplit.lua            Splits one road at one or more shared junction nodes
   JunctionInstance.lua     Junction owner plus serialized multinode controls
+  RoundaboutInstance.lua   Selectable ring metadata linked to its controller
+  RoundaboutEditSession.lua Selection, undo, rebuild, and conversion lifecycle
+  RoadSource.lua           Durable untrimmed one-segment road source metadata
   StructureAssets.lua      Imports game-owned custom bridge/tunnel Models
   StructureBuilder.lua     Tiles modules; builds viaducts, tunnels, and piers
   Geometry/
@@ -135,6 +144,7 @@ src/
     Markings.lua           Cross-section boundaries -> marking line layout
     RoadBuilder.lua        Curve + profile + style -> Model of parts
     JunctionBuilder.lua    Stable approach/corner nodes, trims, pad, and curb returns
+    RoundaboutBuilder.lua  Ring/arms plus persistent rebuild and conversion
   UI/
     Theme.lua              Colors and metrics
     Components.lua         Button / dropdown / number field / checkbox / rows

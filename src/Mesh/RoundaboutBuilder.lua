@@ -20,12 +20,16 @@ local FillTriangle = require("./FillTriangle")
 local RoadBuilder = require("./RoadBuilder")
 local Markings = require("./Markings")
 local RoadInstance = require("../RoadInstance")
+local RoadSource = require("../RoadSource")
+local RoundaboutInstance = require("../RoundaboutInstance")
 local RoadProfile = require("../RoadProfile")
 local RoadSplit = require("../RoadSplit")
 local JunctionInstance = require("../JunctionInstance")
+local BusStops = require("../BusStops")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
 local StructureBuilder = require("../StructureBuilder")
+local JunctionBuilder = require("./JunctionBuilder")
 
 local RoundaboutBuilder = {}
 
@@ -396,7 +400,8 @@ local function stampRingMeta(
 	radiusStuds: number,
 	outerRadiusStuds: number,
 	laneCount: number,
-	laneWidthM: number
+	laneWidthM: number,
+	junctionId: string?
 )
 	model:SetAttribute("RW_Roundabout", true)
 	model:SetAttribute("RW_Center", center)
@@ -404,6 +409,101 @@ local function stampRingMeta(
 	model:SetAttribute("RW_OuterRadius", outerRadiusStuds)
 	model:SetAttribute("RW_LaneCount", laneCount)
 	model:SetAttribute("RW_LaneWidthM", laneWidthM)
+	model:SetAttribute("RW_JunctionId", junctionId)
+	model:SetAttribute("RW_LegacyConnected", false)
+end
+
+local function stampRingOverrides(model: Model, markings: string?, sidewalk: boolean?, island: boolean?)
+	model:SetAttribute("RW_RoundaboutMarkings", markings)
+	model:SetAttribute("RW_RoundaboutSidewalk", sidewalk)
+	model:SetAttribute("RW_RoundaboutIsland", island)
+end
+
+local function styleWithRoundaboutOverrides(
+	style: RegionStyles.RegionStyle,
+	markings: string?,
+	sidewalk: boolean?,
+	island: boolean?
+): RegionStyles.RegionStyle
+	if markings == nil and sidewalk == nil and island == nil then
+		return style
+	end
+	local result = table.clone(style)
+	if markings ~= nil then
+		result.RoundaboutMarkings = markings :: RegionStyles.RoundaboutMarkingStyle
+	end
+	if sidewalk ~= nil then
+		result.RoundaboutSidewalk = sidewalk
+	end
+	if island ~= nil then
+		result.RoundaboutIsland = island
+	end
+	return result
+end
+
+local GENERATED_GEOMETRY_NAME = "GeneratedGeometry"
+
+local LEGACY_GENERATED_NAMES: { [string]: boolean } = {
+	Drive = true,
+	Sidewalk = true,
+	Median = true,
+	Shoulder = true,
+	Bike = true,
+	Parking = true,
+	Bay = true,
+	Marking = true,
+	Island = true,
+	RoundaboutArm = true,
+}
+
+local function packGeneratedGeometry(model: Model, assumeAllGenerated: boolean?): Folder
+	for _, child in model:GetChildren() do
+		if
+			child:IsA("Folder")
+			and child.Name == GENERATED_GEOMETRY_NAME
+			and child:GetAttribute("RW_RoundaboutGenerated") == true
+		then
+			return child :: Folder
+		end
+	end
+	local folder = Instance.new("Folder")
+	folder.Name = GENERATED_GEOMETRY_NAME
+	folder:SetAttribute("RW_RoundaboutGenerated", true)
+	for _, child in model:GetChildren() do
+		if
+			assumeAllGenerated
+			or child:GetAttribute("RW_RoundaboutGeneratedChild") == true
+			or LEGACY_GENERATED_NAMES[child.Name] == true
+		then
+			child:SetAttribute("RW_RoundaboutGeneratedChild", true)
+			child.Parent = folder
+		end
+	end
+	folder.Parent = model
+	return folder
+end
+
+-- Replace only generated state.  The Model itself is the Studio selection
+-- target, so destroying it during an editor Apply would close the inspector
+-- and break undo/redo selection continuity. User/plugin children placed beside
+-- GeneratedGeometry, custom naming, and non-EasyRoad attributes survive.
+local function replaceRoundaboutInPlace(target: Model, built: Model): Model
+	local targetName = target.Name
+	local oldGeometry = packGeneratedGeometry(target, false)
+	oldGeometry:Destroy()
+	local newGeometry = packGeneratedGeometry(built, true)
+	for name in target:GetAttributes() do
+		if string.sub(name, 1, 3) == "RW_" then
+			target:SetAttribute(name, nil)
+		end
+	end
+	for name, value in built:GetAttributes() do
+		target:SetAttribute(name, value)
+	end
+	newGeometry.Parent = target
+	target.Name = targetName
+	built:Destroy()
+	return target
 end
 
 function RoundaboutBuilder.Create(
@@ -436,8 +536,9 @@ function RoundaboutBuilder.Create(
 	model:SetAttribute("RW_Road", nil)
 	model.Name = "Roundabout"
 	local halfW = RoadProfile.TotalWidthM(profile) / 2 * settings.MetersToStuds
-	stampRingMeta(model, center, radiusStuds, radiusStuds + halfW, laneCount, laneWidthM)
+	stampRingMeta(model, center, radiusStuds, radiusStuds + halfW, laneCount, laneWidthM, nil)
 	buildIsland(model, center, radiusStuds, profile, style, settings, curve, RoadBuilder.StationsFor(ringOptions))
+	packGeneratedGeometry(model, true)
 	model.Parent = getRoundaboutsFolder()
 	return model
 end
@@ -615,19 +716,163 @@ local function edgePointsAt(
 	}
 end
 
-local function transplantRoad(road: Model, rebuilt: Model, startJ: string?, endJ: string?)
-	road:ClearAllChildren()
-	for name in road:GetAttributes() do
-		road:SetAttribute(name, nil)
+local function nearestSourceStation(curve: PolyCurve.PolyCurve, point: Vector3): number
+	local length = curve.Length
+	if length <= 1e-6 then
+		return 0
 	end
+	local samples = math.clamp(math.ceil(length / 4), 16, 256)
+	local bestStation = 0
+	local bestDistance = math.huge
+	for i = 0, samples do
+		local station = length * i / samples
+		local distance = (curve:PosAt(station) - point).Magnitude
+		if distance < bestDistance then
+			bestDistance = distance
+			bestStation = station
+		end
+	end
+	local step = length / samples
+	local low = math.max(0, bestStation - step)
+	local high = math.min(length, bestStation + step)
+	for _ = 1, 28 do
+		local a = low + (high - low) / 3
+		local b = high - (high - low) / 3
+		if (curve:PosAt(a) - point).Magnitude < (curve:PosAt(b) - point).Magnitude then
+			high = b
+		else
+			low = a
+		end
+	end
+	local station = (low + high) / 2
+	-- Exact source endpoints are common and must remain exact.  Without this
+	-- snap, repeated source->subcurve->source nearest-point searches can shave a
+	-- few floating-point microns from the untouched far end on every edit.
+	if station < 1e-3 then
+		return 0
+	elseif length - station < 1e-3 then
+		return length
+	end
+	return station
+end
+
+local function markingStretchesForSourceWindow(
+	stretches: { Markings.MarkingStretch },
+	featureOffset: number,
+	windowStart: number,
+	windowEnd: number
+): { Markings.MarkingStretch }?
+	local result: { Markings.MarkingStretch } = {}
+	for _, stretch in stretches do
+		local from = math.max(featureOffset + stretch.FromStationStuds, windowStart)
+		local to = math.min(featureOffset + stretch.ToStationStuds, windowEnd)
+		if to > from then
+			table.insert(result, {
+				ComponentIndices = stretch.ComponentIndices,
+				FromStationStuds = from - windowStart,
+				ToStationStuds = to - windowStart,
+				Line = stretch.Line,
+				DashLengthM = stretch.DashLengthM,
+				DashGapM = stretch.DashGapM,
+			})
+		end
+	end
+	return if #result > 0 then result else nil
+end
+
+local function kerbStretchesForSourceWindow(
+	stretches: { Markings.KerbStretch },
+	featureOffset: number,
+	windowStart: number,
+	windowEnd: number
+): { Markings.KerbStretch }?
+	local result: { Markings.KerbStretch } = {}
+	for _, stretch in stretches do
+		local from = math.max(featureOffset + stretch.FromStationStuds, windowStart)
+		local to = math.min(featureOffset + stretch.ToStationStuds, windowEnd)
+		if to > from then
+			table.insert(result, {
+				EdgeIndex = stretch.EdgeIndex,
+				FromStationStuds = from - windowStart,
+				ToStationStuds = to - windowStart,
+				Restriction = stretch.Restriction,
+			})
+		end
+	end
+	return if #result > 0 then result else nil
+end
+
+-- Rebuild one rendered road from a window of its immutable source segment.
+-- Feature attributes remain byte-for-byte on the owner Model; local copies are
+-- remapped only for rendering.  The companion offset records which source
+-- station their existing numbers are relative to, so repeated radius edits do
+-- not move a bay/stretch or progressively shorten the road.
+local function rebuildRoadFromSource(
+	road: Model,
+	data: RoadInstance.RoadData,
+	source: CurveSegment.Segment,
+	windowStart: number,
+	windowEnd: number,
+	currentSourceStart: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): RoadInstance.RoadData?
+	if windowEnd - windowStart < 1e-3 then
+		return nil
+	end
+	local segment = CurveSegment.Sub(source, windowStart, windowEnd)
+	local curve = PolyCurve.new({ segment })
+	local storedFeatureOffset = road:GetAttribute("RW_FeatureSourceOffsetStuds")
+	local featureOffset = if typeof(storedFeatureOffset) == "number" then storedFeatureOffset else currentSourceStart
+	local markingStretches =
+		markingStretchesForSourceWindow(data.MarkingStretches, featureOffset, windowStart, windowEnd)
+	local kerbStretches = kerbStretchesForSourceWindow(data.KerbStretches, featureOffset, windowStart, windowEnd)
+	local options = {
+		Curve = curve,
+		ProfileStart = data.ProfileStart,
+		ProfileEnd = data.ProfileEnd,
+		Style = style,
+		Settings = settings,
+		Preview = false,
+		MarkingStretches = markingStretches,
+		KerbStretches = kerbStretches,
+	}
+	local visualBay = if data.Bay then table.clone(data.Bay) else nil
+	if visualBay then
+		visualBay.StationStuds = featureOffset + visualBay.StationStuds - windowStart
+	end
+	local rebuilt = if visualBay then RoadBuilder.BuildWithBay(options, visualBay) else RoadBuilder.Build(options)
+
+	road:ClearAllChildren()
 	for name, value in rebuilt:GetAttributes() do
-		road:SetAttribute(name, value)
+		-- RoadBuilder creates fresh identities.  The existing owner and its two
+		-- approach ports are stable topology keys and must never be replaced.
+		-- Localized feature attrs belong only to the renderer; retaining the owner
+		-- values and their source offset prevents cumulative shifts and clipping.
+		if
+			name ~= "RW_RoadId"
+			and name ~= "RW_StartPortId"
+			and name ~= "RW_EndPortId"
+			and name ~= "RW_BayJson"
+			and name ~= "RW_MarkingStretchesJson"
+			and name ~= "RW_KerbStretchesJson"
+		then
+			road:SetAttribute(name, value)
+		end
 	end
 	for _, child in rebuilt:GetChildren() do
 		child.Parent = road
 	end
 	rebuilt:Destroy()
-	RoadInstance.StampJunctions(road, startJ, endJ)
+
+	RoadInstance.StampModel(road, curve, data.ProfileStart, data.ProfileEnd)
+	RoadInstance.StampJunctions(road, data.StartJunctionId, data.EndJunctionId)
+	RoadSource.WriteSegment(road, source)
+	local hasStoredFeatures = data.Bay ~= nil or #data.MarkingStretches > 0 or #data.KerbStretches > 0
+	road:SetAttribute("RW_FeatureSourceOffsetStuds", if hasStoredFeatures then featureOffset else windowStart)
+	StructureBuilder.Render(road, curve, data.Structure or StructureBuilder.DefaultData(settings), settings)
+	BusStops.Render(road)
+	return RoadInstance.Read(road)
 end
 
 local function maxProfileRadiusAt(
@@ -684,43 +929,35 @@ local function trimSpoke(
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings
 ): SpokeCutEdges?
-	if not RoadSplit.CanSplit(road) then
-		return nil
-	end
 	local data = RoadInstance.Read(road)
 	if not data or #data.Curve.Segments ~= 1 then
 		return nil
 	end
 	local scale = settings.MetersToStuds
-	local curve = data.Curve
-	local fromStation = if atStart then 0 else curve.Length
-	local towardStation = if atStart then curve.Length else 0
-	local crossing =
-		findProfileRingCrossing(curve, data.ProfileStart, fromStation, towardStation, center, targetRadiusStuds, scale)
+	local source = RoadSource.ReadSegment(road) or data.Curve.Segments[1]
+	local sourceCurve = PolyCurve.new({ source })
+	local currentSourceStart = nearestSourceStation(sourceCurve, data.Curve:PosAt(0))
+	local currentSourceEnd = nearestSourceStation(sourceCurve, data.Curve:PosAt(data.Curve.Length))
+	local profile = if atStart then data.ProfileStart else (data.ProfileEnd or data.ProfileStart)
+	local crossing = findProfileRingCrossing(
+		sourceCurve,
+		profile,
+		if atStart then 0 else sourceCurve.Length,
+		if atStart then sourceCurve.Length else 0,
+		center,
+		targetRadiusStuds,
+		scale
+	)
 	if not crossing then
 		return nil
 	end
-	local segment = curve.Segments[1]
-	local outerSegment = if atStart
-		then CurveSegment.Sub(segment, crossing, curve.Length)
-		else CurveSegment.Sub(segment, 0, crossing)
-	local rebuilt = RoadBuilder.Build({
-		Curve = PolyCurve.new({ outerSegment }),
-		ProfileStart = data.ProfileStart,
-		Style = style,
-		Settings = settings,
-		Preview = false,
-	})
-	local farJunctionId = if atStart then data.EndJunctionId else data.StartJunctionId
-	if atStart then
-		transplantRoad(road, rebuilt, nil, farJunctionId)
-	else
-		transplantRoad(road, rebuilt, farJunctionId, nil)
+	local windowStart = if atStart then crossing else currentSourceStart
+	local windowEnd = if atStart then currentSourceEnd else crossing
+	if windowEnd - windowStart < 2 then
+		return nil
 	end
-	local outerCurve = PolyCurve.new({ outerSegment })
-	RoadInstance.StampStructure(road, data.Structure)
-	StructureBuilder.Render(road, outerCurve, data.Structure or StructureBuilder.DefaultData(settings), settings)
-	local newData = RoadInstance.Read(road)
+	local newData =
+		rebuildRoadFromSource(road, data, source, windowStart, windowEnd, currentSourceStart, style, settings)
 	if not newData then
 		return nil
 	end
@@ -2514,22 +2751,224 @@ function RoundaboutBuilder.SuggestedRadiusStuds(
 	return math.ceil(target * SUGGESTED_RADIUS_HEADROOM / SUGGESTED_RADIUS_STEP_STUDS) * SUGGESTED_RADIUS_STEP_STUDS
 end
 
+type ApproachPreflight = {
+	Road: Model,
+	Data: RoadInstance.RoadData,
+	Source: CurveSegment.Segment,
+	CurrentSourceStart: number,
+	WindowStart: number,
+	WindowEnd: number,
+	Plan: MouthPlan,
+}
+
+local function editableApproachBlockReason(data: RoadInstance.RoadData): string?
+	if data.ProfileEnd ~= nil then
+		return "uses a widening/narrowing transition, which editable roundabout trimming does not yet slice safely"
+	elseif data.Bay ~= nil then
+		return "has a bus bay, which editable roundabout trimming does not yet remap safely"
+	elseif #data.MarkingStretches > 0 or #data.KerbStretches > 0 then
+		return "has marking or kerb stretches, which must be baked or cleared before roundabout conversion"
+	end
+	return nil
+end
+
+local function prospectiveApproachError(
+	source: CurveSegment.Segment,
+	currentCurve: PolyCurve.PolyCurve,
+	spokeProfile: RoadProfile.RoadProfile,
+	linkedAtStart: boolean,
+	center: Vector3,
+	trimTarget: number,
+	ringKerbRadius: number,
+	laneWidthM: number,
+	ringStyle: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): string?
+	local sourceCurve = PolyCurve.new({ source })
+	local currentSourceStart = nearestSourceStation(sourceCurve, currentCurve:PosAt(0))
+	local currentSourceEnd = nearestSourceStation(sourceCurve, currentCurve:PosAt(currentCurve.Length))
+	local crossing = findProfileRingCrossing(
+		sourceCurve,
+		spokeProfile,
+		if linkedAtStart then 0 else sourceCurve.Length,
+		if linkedAtStart then sourceCurve.Length else 0,
+		center,
+		trimTarget,
+		settings.MetersToStuds
+	)
+	if not crossing then
+		return "does not reach the requested roundabout trim radius"
+	end
+	local windowStart = if linkedAtStart then crossing else currentSourceStart
+	local windowEnd = if linkedAtStart then currentSourceEnd else crossing
+	if windowEnd - windowStart < 2 then
+		return "would leave less than 2 studs of usable road"
+	end
+	local proposedCurve = PolyCurve.new({ CurveSegment.Sub(source, windowStart, windowEnd) })
+	local cutStation = if linkedAtStart then 0 else proposedCurve.Length
+	local tangent = proposedCurve:TangentAt(cutStation)
+	local inward = if linkedAtStart then -tangent else tangent
+	inward = Vector3.new(inward.X, 0, inward.Z)
+	if inward.Magnitude < 1e-6 then
+		return "has no valid inward direction at the controller"
+	end
+	inward = inward.Unit
+	local edges = edgePointsAt(proposedCurve, spokeProfile, cutStation, inward, settings.MetersToStuds)
+	if not edges then
+		return "has no valid carriageway edge at the trim point"
+	end
+	local plan = planMouth(
+		proposedCurve:PosAt(cutStation),
+		edges.Inward,
+		spokeProfile,
+		linkedAtStart,
+		center,
+		ringKerbRadius,
+		laneWidthM,
+		ringStyle,
+		settings
+	)
+	return if plan then nil else "cannot form a valid entry/exit mouth"
+end
+
+-- RoadInstance.Read lazily migrates stable road/port identities.  Preflight
+-- must leave a failing approach byte-for-byte as it found it, including older
+-- roads that have not gone through that migration yet.  Successful apply will
+-- stamp the identities normally when rebuildRoadFromSource replaces geometry.
+local function readRoadForPreflight(road: Model): RoadInstance.RoadData?
+	local roadId = road:GetAttribute("RW_RoadId")
+	local startPortId = road:GetAttribute("RW_StartPortId")
+	local endPortId = road:GetAttribute("RW_EndPortId")
+	local restoreRoadId = typeof(roadId) ~= "string"
+	local restoreStartPortId = typeof(startPortId) ~= "string"
+	local restoreEndPortId = typeof(endPortId) ~= "string"
+	local data = RoadInstance.Read(road)
+	if restoreRoadId then
+		road:SetAttribute("RW_RoadId", roadId)
+	end
+	if restoreStartPortId then
+		road:SetAttribute("RW_StartPortId", startPortId)
+	end
+	if restoreEndPortId then
+		road:SetAttribute("RW_EndPortId", endPortId)
+	end
+	return data
+end
+
+-- Validate the complete exact topology before CreateAtJunction touches the
+-- controller, selected ring, or any connected road.  A previously unreadable
+-- approach was silently skipped, yielding a successful rebuild with a missing
+-- mouth; editor Apply must instead be all-or-nothing at this boundary.
+local function preflightApproaches(
+	junctionId: string,
+	center: Vector3,
+	ringKerbRadius: number,
+	trimTarget: number,
+	laneWidthM: number,
+	ringStyle: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): ({ ApproachPreflight }?, string?)
+	local prepared: { ApproachPreflight } = {}
+	for index, road in JunctionInstance.ConnectedRoads(junctionId) do
+		local label = string.format("approach %d (%s)", index, road.Name)
+		local data = readRoadForPreflight(road)
+		if not data then
+			return nil, label .. " is missing editable road data."
+		end
+		local blockedReason = editableApproachBlockReason(data)
+		if blockedReason then
+			return nil, label .. " " .. blockedReason .. "."
+		end
+		if #data.Curve.Segments ~= 1 then
+			return nil, label .. " must have exactly one source segment."
+		end
+		local linkedAtStart = data.StartJunctionId == junctionId
+		local linkedAtEnd = data.EndJunctionId == junctionId
+		if linkedAtStart == linkedAtEnd then
+			return nil, label .. " is not linked to exactly one controller end."
+		end
+
+		local source = RoadSource.ReadSegment(road) or data.Curve.Segments[1]
+		local sourceCurve = PolyCurve.new({ source })
+		local currentSourceStart = nearestSourceStation(sourceCurve, data.Curve:PosAt(0))
+		local currentSourceEnd = nearestSourceStation(sourceCurve, data.Curve:PosAt(data.Curve.Length))
+		local spokeProfile = if linkedAtStart then data.ProfileStart else (data.ProfileEnd or data.ProfileStart)
+		local crossing = findProfileRingCrossing(
+			sourceCurve,
+			spokeProfile,
+			if linkedAtStart then 0 else sourceCurve.Length,
+			if linkedAtStart then sourceCurve.Length else 0,
+			center,
+			trimTarget,
+			settings.MetersToStuds
+		)
+		if not crossing then
+			return nil, label .. " does not reach the requested roundabout trim radius."
+		end
+		local windowStart = if linkedAtStart then crossing else currentSourceStart
+		local windowEnd = if linkedAtStart then currentSourceEnd else crossing
+		if windowEnd - windowStart < 2 then
+			return nil, label .. " would leave less than 2 studs of usable road."
+		end
+
+		local proposedCurve = PolyCurve.new({ CurveSegment.Sub(source, windowStart, windowEnd) })
+		local cutStation = if linkedAtStart then 0 else proposedCurve.Length
+		local tangent = proposedCurve:TangentAt(cutStation)
+		local inward = if linkedAtStart then -tangent else tangent
+		inward = Vector3.new(inward.X, 0, inward.Z)
+		if inward.Magnitude < 1e-6 then
+			return nil, label .. " has no valid inward direction at the controller."
+		end
+		inward = inward.Unit
+		local edges = edgePointsAt(proposedCurve, spokeProfile, cutStation, inward, settings.MetersToStuds)
+		if not edges then
+			return nil, label .. " has no valid carriageway edge at the trim point."
+		end
+		local plan = planMouth(
+			proposedCurve:PosAt(cutStation),
+			edges.Inward,
+			spokeProfile,
+			linkedAtStart,
+			center,
+			ringKerbRadius,
+			laneWidthM,
+			ringStyle,
+			settings
+		)
+		if not plan then
+			return nil, label .. " cannot form a valid entry/exit mouth."
+		end
+		table.insert(prepared, {
+			Road = road,
+			Data = data,
+			Source = source,
+			CurrentSourceStart = currentSourceStart,
+			WindowStart = windowStart,
+			WindowEnd = windowEnd,
+			Plan = plan,
+		})
+	end
+	return prepared, nil
+end
+
 function RoundaboutBuilder.CreateAtJunction(
 	junctionId: string,
 	radiusStuds: number,
 	laneCount: number,
 	laneWidthM: number,
 	style: RegionStyles.RegionStyle,
-	settings: Settings.EasyRoadSettings
-): Model?
+	settings: Settings.EasyRoadSettings,
+	requestedData: RoundaboutInstance.RoundaboutData?
+): (Model?, string?)
 	local junctionModel = JunctionInstance.FindById(junctionId)
 	if not junctionModel then
-		return nil
+		return nil, "The roundabout junction controller no longer exists."
 	end
 	local junctionData = JunctionInstance.Read(junctionModel)
 	if not junctionData then
-		return nil
+		return nil, "The roundabout junction controller is unreadable."
 	end
+	local existingRing = RoundaboutInstance.FindByJunctionId(junctionId)
 	local center = junctionData.Position
 	local scale = settings.MetersToStuds
 
@@ -2549,32 +2988,14 @@ function RoundaboutBuilder.CreateAtJunction(
 	-- exit run up against each other and the splitter pinches - but that
 	-- degrades gradually and visibly, which the user can judge for themselves.
 
-	local stale = junctionModel:FindFirstChild("Geometry")
-	if stale then
-		stale:Destroy()
-	end
-
 	-- Per-roundabout marking override, falling back to the region's default.
 	-- Applied by cloning the style rather than threading another argument
 	-- through every builder that touches it - `ringComponents` already reads
 	-- the style, so this is the narrowest place to inject it.
-	local ringStyle = style
-	if
-		junctionData.RoundaboutMarkings ~= nil
-		or junctionData.RoundaboutSidewalk ~= nil
-		or junctionData.RoundaboutIsland ~= nil
-	then
-		ringStyle = table.clone(style)
-		if junctionData.RoundaboutMarkings ~= nil then
-			ringStyle.RoundaboutMarkings = junctionData.RoundaboutMarkings :: RegionStyles.RoundaboutMarkingStyle
-		end
-		if junctionData.RoundaboutSidewalk ~= nil then
-			ringStyle.RoundaboutSidewalk = junctionData.RoundaboutSidewalk
-		end
-		if junctionData.RoundaboutIsland ~= nil then
-			ringStyle.RoundaboutIsland = junctionData.RoundaboutIsland
-		end
-	end
+	local requestedMarkings = if requestedData then requestedData.Markings else junctionData.RoundaboutMarkings
+	local requestedSidewalk = if requestedData then requestedData.Sidewalk else junctionData.RoundaboutSidewalk
+	local requestedIsland = if requestedData then requestedData.Island else junctionData.RoundaboutIsland
+	local ringStyle = styleWithRoundaboutOverrides(style, requestedMarkings, requestedSidewalk, requestedIsland)
 
 	local components = ringComponents(laneCount, laneWidthM, ringStyle)
 	local profile: RoadProfile.RoadProfile = {
@@ -2586,6 +3007,25 @@ function RoundaboutBuilder.CreateAtJunction(
 	}
 	local halfWidthStuds = RoadProfile.TotalWidthM(profile) / 2 * scale
 	local outerRadiusStuds = radiusStuds + halfWidthStuds
+	local ringKerbRadius = outerRadiusStuds - ringSidewalkWidthM(ringStyle) * scale
+	local trimTarget = outerRadiusStuds + armRunStuds(outerRadiusStuds)
+	local approaches, preflightError =
+		preflightApproaches(junctionId, center, ringKerbRadius, trimTarget, laneWidthM, ringStyle, settings)
+	if not approaches then
+		return nil, "Roundabout rebuild blocked: " .. (preflightError or "approach preflight failed.")
+	end
+
+	-- Mutation starts only after every exact connected approach has passed the
+	-- source-window, edge and mouth checks above.
+	JunctionInstance.SetKind(junctionModel, "Roundabout")
+	JunctionInstance.SetRoundaboutGeometry(junctionModel, radiusStuds, laneCount, laneWidthM)
+	JunctionInstance.SetRoundaboutMarkings(junctionModel, requestedMarkings)
+	JunctionInstance.SetRoundaboutSidewalk(junctionModel, requestedSidewalk)
+	JunctionInstance.SetRoundaboutIsland(junctionModel, requestedIsland)
+	local stale = junctionModel:FindFirstChild("Geometry")
+	if stale then
+		stale:Destroy()
+	end
 
 	-- ONE continuous ring — never slice (knotted arcs).
 	local ringCurve = PolyCurve.new(circleSegments(center, radiusStuds, style.DriveOnLeft))
@@ -2601,7 +3041,8 @@ function RoundaboutBuilder.CreateAtJunction(
 	local ring = RoadBuilder.Build(ringOptions)
 	ring:SetAttribute("RW_Road", nil)
 	ring.Name = "Roundabout"
-	stampRingMeta(ring, center, radiusStuds, outerRadiusStuds, laneCount, laneWidthM)
+	stampRingMeta(ring, center, radiusStuds, outerRadiusStuds, laneCount, laneWidthM, junctionId)
+	stampRingOverrides(ring, requestedMarkings, requestedSidewalk, requestedIsland)
 
 	-- The ring's OWN outer pavement, captured before any arm parts are parented
 	-- in. It is built as one unbroken circle, so without this it runs a
@@ -2627,49 +3068,25 @@ function RoundaboutBuilder.CreateAtJunction(
 		RoadBuilder.StationsFor(ringOptions)
 	)
 
-	local ringKerbRadius = outerRadiusStuds - ringSidewalkWidthM(ringStyle) * scale
-
-	-- Cut every approach back past the outer pavement so its entry/exit pair has
-	-- the room to split apart and swing round onto the rim.
-	local trimTarget = outerRadiusStuds + armRunStuds(outerRadiusStuds)
-
-	-- Trim and PLAN every leg before building any of them: how far a mouth may
-	-- split depends on where its neighbours actually landed, which isn't known
-	-- until they have all been measured.
+	-- Apply the already-proved source windows.  The plans were computed from the
+	-- same proposed subcurves, so no road can disappear from this second phase.
 	local plans: { MouthPlan } = {}
-	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
-		local data = RoadInstance.Read(road)
-		if not data then
-			continue
-		end
-		local atStart = data.StartJunctionId == junctionId
-		if not atStart and data.EndJunctionId ~= junctionId then
-			continue
-		end
-		local edges = trimSpoke(road, atStart, center, trimTarget, style, settings)
-		if not edges then
-			continue
-		end
-		local trimmed = RoadInstance.Read(road)
-		if not trimmed then
-			continue
-		end
-		local cutStation = if atStart then 0 else trimmed.Curve.Length
-		local spokeProfile = if atStart then trimmed.ProfileStart else (trimmed.ProfileEnd or trimmed.ProfileStart)
-		local plan = planMouth(
-			trimmed.Curve:PosAt(cutStation),
-			edges.Inward,
-			spokeProfile,
-			atStart,
-			center,
-			ringKerbRadius,
-			laneWidthM,
-			ringStyle,
+	for _, approach in approaches do
+		local rebuilt = rebuildRoadFromSource(
+			approach.Road,
+			approach.Data,
+			approach.Source,
+			approach.WindowStart,
+			approach.WindowEnd,
+			approach.CurrentSourceStart,
+			style,
 			settings
 		)
-		if plan then
-			table.insert(plans, plan)
+		if not rebuilt then
+			ring:Destroy()
+			return nil, "Roundabout rebuild failed while applying a preflighted approach."
 		end
+		table.insert(plans, approach.Plan)
 	end
 
 	local mouthSectors: { MouthSector } = {}
@@ -2702,8 +3119,11 @@ function RoundaboutBuilder.CreateAtJunction(
 		buildTurboMarkings(ring, center, radiusStuds, profile, laneCount, laneWidthM, ringStyle, settings, exitTraces)
 	end
 
+	packGeneratedGeometry(ring, true)
 	ring.Parent = getRoundaboutsFolder()
-	JunctionInstance.Delete(junctionModel)
+	if existingRing and existingRing ~= ring then
+		return replaceRoundaboutInPlace(existingRing, ring)
+	end
 	return ring
 end
 
@@ -2939,99 +3359,538 @@ local function collectNearbyRoads(center: Vector3, maxDist: number, minDist: num
 	return out
 end
 
+local function syncControllerFromRing(controller: Model, data: RoundaboutInstance.RoundaboutData)
+	JunctionInstance.SetKind(controller, "Roundabout")
+	JunctionInstance.SetRoundaboutGeometry(controller, data.RadiusStuds, data.LaneCount, data.LaneWidthM)
+	JunctionInstance.SetRoundaboutMarkings(controller, data.Markings)
+	JunctionInstance.SetRoundaboutSidewalk(controller, data.Sidewalk)
+	JunctionInstance.SetRoundaboutIsland(controller, data.Island)
+end
+
+type AttachPlan = {
+	Road: Model,
+	Data: RoadInstance.RoadData,
+	SplitStation: number?,
+	AtStart: boolean?,
+}
+
+local function attachRoadsToController(
+	roads: { Model },
+	ringData: RoundaboutInstance.RoundaboutData,
+	junctionId: string,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings,
+	requestedRoad: Model?
+): ({ Model }?, string?)
+	-- Passing roads are explicitly split only in connect/adopt flows.  A normal
+	-- editor rebuild starts from JunctionInstance.ConnectedRoads and never calls
+	-- this helper, so changing a radius cannot silently absorb a nearby road.
+	-- Validate every candidate first: an unsplittable interior road must never
+	-- fall through and attach an arbitrary far endpoint.
+	local plans: { AttachPlan } = {}
+	local requestedPlanned = requestedRoad == nil
+	local center = ringData.Center
+	local outerRadiusStuds = ringData.OuterRadiusStuds
+	local ringStyle = styleWithRoundaboutOverrides(style, ringData.Markings, ringData.Sidewalk, ringData.Island)
+	local ringKerbRadius = outerRadiusStuds - ringSidewalkWidthM(ringStyle) * settings.MetersToStuds
+	local trimTarget = outerRadiusStuds + armRunStuds(outerRadiusStuds)
+	for index, road in roads do
+		local data = RoadInstance.Read(road)
+		if not data then
+			return nil, string.format("Nearby road %d (%s) is missing editable road data.", index, road.Name)
+		end
+		local blockedReason = editableApproachBlockReason(data)
+		if blockedReason then
+			return nil, string.format("Nearby road %d (%s) %s.", index, road.Name, blockedReason)
+		end
+		if #data.Curve.Segments ~= 1 then
+			return nil, string.format("Nearby road %d (%s) must have exactly one curve segment.", index, road.Name)
+		end
+		local length = data.Curve.Length
+		local station = nearestStation(data.Curve, center)
+		local margin = math.min(length / 3, armRunStuds(outerRadiusStuds))
+		if station > margin and station < length - margin then
+			if data.StartJunctionId ~= nil or data.EndJunctionId ~= nil then
+				return nil,
+					string.format(
+						"Nearby road %d (%s) crosses the roundabout interior but is already connected to another junction.",
+						index,
+						road.Name
+					)
+			end
+			if not RoadSplit.CanSplitAt(road, station) then
+				return nil,
+					string.format(
+						"Nearby road %d (%s) crosses the roundabout interior but cannot be split: %s.",
+						index,
+						road.Name,
+						RoadSplit.SplitBlockReason(road) or "the cut is too close to an endpoint"
+					)
+			end
+			local originalSegment = data.Curve.Segments[1]
+			local firstSource = CurveSegment.Sub(originalSegment, 0, station)
+			local secondSource = CurveSegment.Sub(originalSegment, station, length)
+			local firstError = prospectiveApproachError(
+				firstSource,
+				PolyCurve.new({ firstSource }),
+				data.ProfileStart,
+				false,
+				center,
+				trimTarget,
+				ringKerbRadius,
+				ringData.LaneWidthM,
+				ringStyle,
+				settings
+			)
+			local secondError = prospectiveApproachError(
+				secondSource,
+				PolyCurve.new({ secondSource }),
+				data.ProfileStart,
+				true,
+				center,
+				trimTarget,
+				ringKerbRadius,
+				ringData.LaneWidthM,
+				ringStyle,
+				settings
+			)
+			if firstError or secondError then
+				return nil,
+					string.format(
+						"Nearby road %d (%s) cannot be split into valid roundabout approaches: %s.",
+						index,
+						road.Name,
+						firstError or secondError
+					)
+			end
+			table.insert(plans, { Road = road, Data = data, SplitStation = station })
+		else
+			local atStart = ringSideIsStart(road, center)
+			if atStart == nil then
+				return nil, string.format("Nearby road %d (%s) has no usable endpoint.", index, road.Name)
+			end
+			local occupied = if atStart then data.StartJunctionId else data.EndJunctionId
+			if occupied ~= nil and occupied ~= junctionId then
+				return nil,
+					string.format("Nearby road %d (%s) is already connected to another junction.", index, road.Name)
+			end
+			local source = RoadSource.ReadSegment(road) or data.Curve.Segments[1]
+			local approachError = prospectiveApproachError(
+				source,
+				data.Curve,
+				if atStart then data.ProfileStart else (data.ProfileEnd or data.ProfileStart),
+				atStart,
+				center,
+				trimTarget,
+				ringKerbRadius,
+				ringData.LaneWidthM,
+				ringStyle,
+				settings
+			)
+			if approachError then
+				return nil, string.format("Nearby road %d (%s) %s.", index, road.Name, approachError)
+			end
+			table.insert(plans, { Road = road, Data = data, AtStart = atStart })
+		end
+		if road == requestedRoad then
+			requestedPlanned = true
+		end
+	end
+	if not requestedPlanned then
+		return nil, "The road requested for roundabout snapping was not attachable."
+	end
+
+	local approaches: { Model } = {}
+	for _, plan in plans do
+		if plan.SplitStation then
+			local first, second = RoadSplit.SplitAtJunction(plan.Road, plan.SplitStation, junctionId, style, settings)
+			if not first or not second then
+				return approaches, "A preflighted passing road could not be split. Undo this placement and try again."
+			end
+			table.insert(approaches, first)
+			table.insert(approaches, second)
+		else
+			if not RoadSource.ReadSegment(plan.Road) then
+				RoadSource.WriteSegment(plan.Road, plan.Data.Curve.Segments[1])
+			end
+			local atStart = plan.AtStart == true
+			if atStart then
+				RoadInstance.StampJunctions(plan.Road, junctionId, plan.Data.EndJunctionId)
+			else
+				RoadInstance.StampJunctions(plan.Road, plan.Data.StartJunctionId, junctionId)
+			end
+			table.insert(approaches, plan.Road)
+		end
+	end
+	return approaches, nil
+end
+
+type RestorePreflight = {
+	Road: Model,
+	Data: RoadInstance.RoadData,
+	Source: CurveSegment.Segment,
+	AtStart: boolean,
+	CurrentSourceStart: number,
+	WindowStart: number,
+	WindowEnd: number,
+}
+
+local function preflightControllerRestore(road: Model, junctionId: string, index: number): (RestorePreflight?, string?)
+	local label = string.format("connected road %d (%s)", index, road.Name)
+	local data = readRoadForPreflight(road)
+	if not data or #data.Curve.Segments ~= 1 then
+		return nil, label .. " is missing readable one-segment source data."
+	end
+	local blockedReason = editableApproachBlockReason(data)
+	if blockedReason then
+		return nil, label .. " " .. blockedReason .. ". Clear that feature before converting the roundabout."
+	end
+	local linkedAtStart = data.StartJunctionId == junctionId
+	local linkedAtEnd = data.EndJunctionId == junctionId
+	if linkedAtStart == linkedAtEnd then
+		return nil, label .. " is not linked to exactly one controller end."
+	end
+	local source = RoadSource.ReadSegment(road) or data.Curve.Segments[1]
+	local sourceCurve = PolyCurve.new({ source })
+	local currentSourceStart = nearestSourceStation(sourceCurve, data.Curve:PosAt(0))
+	local currentSourceEnd = nearestSourceStation(sourceCurve, data.Curve:PosAt(data.Curve.Length))
+	local windowStart = if linkedAtStart then 0 else currentSourceStart
+	local windowEnd = if linkedAtStart then currentSourceEnd else sourceCurve.Length
+	if windowEnd - windowStart < 2 then
+		return nil, label .. " would leave less than 2 studs after restoring the controller end."
+	end
+	return {
+		Road = road,
+		Data = data,
+		Source = source,
+		AtStart = linkedAtStart,
+		CurrentSourceStart = currentSourceStart,
+		WindowStart = windowStart,
+		WindowEnd = windowEnd,
+	},
+		nil
+end
+
+local function applyControllerRestore(
+	prepared: RestorePreflight,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+)
+	local restored = rebuildRoadFromSource(
+		prepared.Road,
+		prepared.Data,
+		prepared.Source,
+		prepared.WindowStart,
+		prepared.WindowEnd,
+		prepared.CurrentSourceStart,
+		style,
+		settings
+	)
+	assert(restored ~= nil, "preflighted controller-end restore unexpectedly failed")
+end
+
+local function unlinkRestoredControllerEnd(prepared: RestorePreflight): Model
+	local restoredData = RoadInstance.Read(prepared.Road)
+	assert(restoredData ~= nil, "restored single approach became unreadable")
+	if prepared.AtStart then
+		RoadInstance.StampJunctions(prepared.Road, nil, restoredData.EndJunctionId)
+	else
+		RoadInstance.StampJunctions(prepared.Road, restoredData.StartJunctionId, nil)
+	end
+	return prepared.Road
+end
+
+-- Explorer deletion removes the ring independently of the editor conversion
+-- command.  Main calls this hook only for the one-road branch: restore the
+-- source window, unlink precisely the controller-facing end, and remove the
+-- now-orphan controller.  The ring is deliberately not destroyed here.
+function RoundaboutBuilder.PrepareForRingRemoval(
+	ring: Model,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): (Model?, string?)
+	local data = RoundaboutInstance.Read(ring)
+	if not data or not data.JunctionId then
+		return nil, nil
+	end
+	local controller = JunctionInstance.FindById(data.JunctionId)
+	if not controller then
+		return nil, "This roundabout's junction controller is missing."
+	end
+	local roads = JunctionInstance.ConnectedRoads(data.JunctionId)
+	if #roads ~= 1 then
+		return nil, nil
+	end
+	local restore, preflightError = preflightControllerRestore(roads[1], data.JunctionId, 1)
+	if not restore then
+		return nil, "Ring removal cleanup blocked: " .. (preflightError or "road restore preflight failed.")
+	end
+	applyControllerRestore(restore, style, settings)
+	local restoredRoad = unlinkRestoredControllerEnd(restore)
+	controller:Destroy()
+	return restoredRoad, "Single approach restored; orphaned roundabout controller removed."
+end
+
+function RoundaboutBuilder.Rebuild(
+	model: Model,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): (Model?, string?)
+	local ring = RoundaboutInstance.FindRoundabout(model)
+	local data = if ring then RoundaboutInstance.Read(ring) else nil
+	if not ring or not data then
+		return nil, "Select an editable EasyRoad roundabout."
+	end
+
+	if data.JunctionId then
+		local controller = JunctionInstance.FindById(data.JunctionId)
+		if not controller then
+			return nil, "This roundabout's junction controller is missing."
+		end
+		local rebuilt, message = RoundaboutBuilder.CreateAtJunction(
+			data.JunctionId,
+			data.RadiusStuds,
+			data.LaneCount,
+			data.LaneWidthM,
+			style,
+			settings,
+			data
+		)
+		return if rebuilt then rebuilt else nil, if rebuilt then nil else (message or "Roundabout rebuild failed.")
+	end
+
+	if data.LegacyConnected then
+		return nil, "This connected legacy roundabout is read-only; recreate its junction once to use the editor."
+	end
+
+	local ringStyle = styleWithRoundaboutOverrides(style, data.Markings, data.Sidewalk, data.Island)
+	local built =
+		RoundaboutBuilder.Create(data.Center, data.RadiusStuds, data.LaneCount, data.LaneWidthM, ringStyle, settings)
+	stampRingOverrides(built, data.Markings, data.Sidewalk, data.Island)
+	return replaceRoundaboutInPlace(ring, built), nil
+end
+
+function RoundaboutBuilder.AdoptLegacy(
+	model: Model,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): (Model?, string?)
+	local ring = RoundaboutInstance.FindRoundabout(model)
+	local data = if ring then RoundaboutInstance.Read(ring) else nil
+	if not ring or not data then
+		return nil, "Select an editable EasyRoad roundabout."
+	end
+	if data.JunctionId then
+		return RoundaboutBuilder.Rebuild(ring, style, settings)
+	end
+	if not data.LegacyConnected then
+		return nil, "This roundabout has no legacy connections to adopt."
+	end
+
+	-- Old connected rings contain already-shortened feeder geometry but no
+	-- recoverable untrimmed road sources. Proximity adoption would make edits
+	-- look successful while conversion/radius shrink could never restore those
+	-- approaches. Keep them explicitly read-only instead of guessing topology.
+	return nil,
+		"Legacy connected roundabouts are read-only because their original approach sources cannot be recovered safely. Recreate the junction once to use the editor."
+end
+
+function RoundaboutBuilder.ConvertToJunction(
+	model: Model,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings
+): (Model?, string?)
+	local ring = RoundaboutInstance.FindRoundabout(model)
+	local data = if ring then RoundaboutInstance.Read(ring) else nil
+	if not ring or not data then
+		return nil, "Select an editable EasyRoad roundabout."
+	end
+	if not data.JunctionId then
+		if data.LegacyConnected then
+			return nil,
+				"This legacy roundabout cannot be converted because its original approach sources are unavailable."
+		end
+		ring:Destroy()
+		return nil, "Standalone roundabout removed."
+	end
+
+	local controller = JunctionInstance.FindById(data.JunctionId)
+	if not controller then
+		return nil, "This roundabout's junction controller is missing."
+	end
+	local roads = JunctionInstance.ConnectedRoads(data.JunctionId)
+	local prepared: { RestorePreflight } = {}
+	for index, road in roads do
+		local restore, preflightError = preflightControllerRestore(road, data.JunctionId, index)
+		if not restore then
+			return nil, "Junction conversion blocked: " .. (preflightError or "road restore preflight failed.")
+		end
+		table.insert(prepared, restore)
+	end
+	-- No restore starts until the complete exact topology has passed above.
+	for _, restore in prepared do
+		applyControllerRestore(restore, style, settings)
+	end
+
+	if #prepared == 0 then
+		ring:Destroy()
+		controller:Destroy()
+		return nil, "Empty roundabout and controller removed."
+	elseif #prepared == 1 then
+		local only = prepared[1]
+		local restoredRoad = unlinkRestoredControllerEnd(only)
+		ring:Destroy()
+		controller:Destroy()
+		return restoredRoad, "Single approach restored; orphaned roundabout controller removed."
+	end
+	JunctionInstance.SetKind(controller, "Intersection")
+	ring:Destroy()
+	JunctionBuilder.TrimApproaches(data.JunctionId, style, settings)
+	JunctionBuilder.Rebuild(data.JunctionId, style, settings)
+	return controller, nil
+end
+
 function RoundaboutBuilder.ConnectRoad(
 	ring: Model,
 	road: Model,
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings
-): Model?
-	local center = ring:GetAttribute("RW_Center") :: Vector3?
-	local radiusStuds = ring:GetAttribute("RW_RingRadius") :: number?
-	local outerR = ring:GetAttribute("RW_OuterRadius") :: number?
-	local laneCount = ring:GetAttribute("RW_LaneCount") :: number?
-	local laneWidthM = ring:GetAttribute("RW_LaneWidthM") :: number?
-	if not center or not radiusStuds or not outerR or not laneCount or not laneWidthM then
-		return nil
+): (Model?, string?)
+	local ringData = RoundaboutInstance.Read(ring)
+	if not ringData then
+		return nil, "The selected roundabout is unreadable."
 	end
-	local roads = collectNearbyRoads(
-		center,
-		outerR + armRunStuds(outerR) + settings.SnapRadiusStuds + 8,
-		math.max(1, radiusStuds * 0.25)
-	)
-	local has = false
-	for _, r in roads do
-		if r == road then
-			has = true
-			break
-		end
+	if ringData.LegacyConnected then
+		return nil,
+			"Legacy connected roundabouts are read-only because their original approach sources cannot be recovered safely. Recreate the junction once to use snapping."
 	end
-	if not has then
-		table.insert(roads, road)
-	end
-	if #roads < 1 then
-		return nil
-	end
-	local junctionModel = JunctionInstance.Create(center)
-	local junctionData = JunctionInstance.Read(junctionModel)
-	if not junctionData then
-		JunctionInstance.Delete(junctionModel)
-		return nil
-	end
-	local jid = junctionData.Id
 
-	-- A road that merely PASSES the roundabout has to be CUT at it, not
-	-- connected by an end.
-	--
-	-- `ringSideIsStart` picks whichever end is nearer the centre, which is
-	-- meaningless when both ends are far away - and `collectNearbyRoads` now
-	-- finds those roads, since it measures the true nearest approach rather
-	-- than the endpoints. So detection stopped dropping them and this step
-	-- silently did instead, which read to the user as the same bug.
-	--
-	-- Cut at the station of closest approach and let the two pieces come back
-	-- as ordinary approaches, exactly the way an X intersection is built.
-	-- `SplitAtJunction` stamps both pieces with this junction at the cut.
-	local passing: { Model } = {}
-	for _, r in roads do
-		local data = RoadInstance.Read(r)
-		if not data then
-			continue
+	local controller: Model?
+	local roads: { Model }
+	local createdController = false
+	if ringData.JunctionId then
+		controller = JunctionInstance.FindById(ringData.JunctionId)
+		if not controller then
+			return nil, "The roundabout's topology controller is missing."
 		end
-		local length = data.Curve.Length
-		local station = nearestStation(data.Curve, center)
-		-- Interior means: the closest point is not simply one of the ends. The
-		-- margin is the arm run, so a road that stops just short of the ring is
-		-- still treated as ending at it rather than being cut into a stub.
-		local margin = math.min(length / 3, armRunStuds(outerR))
-		if station > margin and station < length - margin and RoadSplit.CanSplitAt(r, station) then
-			local first, second = RoadSplit.SplitAtJunction(r, station, jid, style, settings)
-			if first and second then
-				table.insert(passing, first)
-				table.insert(passing, second)
-				continue
+		local requestedData = RoadInstance.Read(road)
+		if
+			requestedData
+			and (
+				requestedData.StartJunctionId == ringData.JunctionId
+				or requestedData.EndJunctionId == ringData.JunctionId
+			)
+		then
+			return ring, nil
+		end
+		-- An established roundabout has exact topology.  Connecting one newly
+		-- snapped road must not absorb every unrelated road in its radius.
+		roads = { road }
+	else
+		controller = JunctionInstance.Create(ringData.Center)
+		createdController = true
+		local collected = collectNearbyRoads(
+			ringData.Center,
+			ringData.OuterRadiusStuds + armRunStuds(ringData.OuterRadiusStuds) + settings.SnapRadiusStuds + 8,
+			math.max(1, ringData.RadiusStuds * 0.25)
+		)
+		local hasRequested = false
+		for _, candidate in collected do
+			if candidate == road then
+				hasRequested = true
+				break
 			end
 		end
-		table.insert(passing, r)
+		if not hasRequested then
+			table.insert(collected, road)
+		end
+		roads = collected
 	end
-	roads = passing
 
-	for _, r in roads do
-		local atStart = ringSideIsStart(r, center)
-		if atStart == nil then
-			continue
+	local controllerData = JunctionInstance.Read(controller :: Model)
+	if not controllerData then
+		if createdController then
+			(controller :: Model):Destroy()
 		end
-		local data = RoadInstance.Read(r)
-		if not data then
-			continue
-		end
-		if atStart then
-			RoadInstance.StampJunctions(r, jid, data.EndJunctionId)
-		else
-			RoadInstance.StampJunctions(r, data.StartJunctionId, jid)
+		return nil, "Could not read the roundabout topology controller."
+	end
+	if ringData.JunctionId then
+		local ringStyle = styleWithRoundaboutOverrides(style, ringData.Markings, ringData.Sidewalk, ringData.Island)
+		local ringKerbRadius = ringData.OuterRadiusStuds - ringSidewalkWidthM(ringStyle) * settings.MetersToStuds
+		local trimTarget = ringData.OuterRadiusStuds + armRunStuds(ringData.OuterRadiusStuds)
+		local existingApproaches, existingError = preflightApproaches(
+			controllerData.Id,
+			ringData.Center,
+			ringKerbRadius,
+			trimTarget,
+			ringData.LaneWidthM,
+			ringStyle,
+			settings
+		)
+		if not existingApproaches then
+			return nil,
+				"Connect blocked until the existing roundabout approaches are repaired: "
+					.. (existingError or "approach preflight failed.")
 		end
 	end
-	ring:Destroy()
-	return RoundaboutBuilder.CreateAtJunction(jid, radiusStuds, laneCount, laneWidthM, style, settings)
+	local approaches, attachError = attachRoadsToController(roads, ringData, controllerData.Id, style, settings, road)
+	if not approaches or attachError then
+		if approaches then
+			for _, approach in approaches do
+				local data = RoadInstance.Read(approach)
+				if data then
+					RoadInstance.StampJunctions(
+						approach,
+						if data.StartJunctionId == controllerData.Id then nil else data.StartJunctionId,
+						if data.EndJunctionId == controllerData.Id then nil else data.EndJunctionId
+					)
+				end
+			end
+		end
+		if createdController then
+			(controller :: Model):Destroy()
+		end
+		return nil, attachError or "No road approach could be attached to this roundabout."
+	end
+
+	local previousJunctionId = ring:GetAttribute("RW_JunctionId")
+	local previousLegacy = ring:GetAttribute("RW_LegacyConnected")
+	syncControllerFromRing(controller :: Model, ringData)
+	ring:SetAttribute("RW_JunctionId", controllerData.Id)
+	ring:SetAttribute("RW_LegacyConnected", false)
+	local ok, rebuilt, rebuildMessage = pcall(function()
+		return RoundaboutBuilder.CreateAtJunction(
+			controllerData.Id,
+			ringData.RadiusStuds,
+			ringData.LaneCount,
+			ringData.LaneWidthM,
+			style,
+			settings
+		)
+	end)
+	if ok and rebuilt then
+		return rebuilt, nil
+	end
+
+	-- Normal CreateAtJunction rejection is mutation-free. Detach only the
+	-- approaches introduced by this connect transaction and restore the ring's
+	-- prior ownership metadata; split pieces remain safe independent roads.
+	for _, approach in approaches do
+		local data = RoadInstance.Read(approach)
+		if data then
+			RoadInstance.StampJunctions(
+				approach,
+				if data.StartJunctionId == controllerData.Id then nil else data.StartJunctionId,
+				if data.EndJunctionId == controllerData.Id then nil else data.EndJunctionId
+			)
+		end
+	end
+	ring:SetAttribute("RW_JunctionId", previousJunctionId)
+	ring:SetAttribute("RW_LegacyConnected", previousLegacy)
+	if createdController then
+		(controller :: Model):Destroy()
+	end
+	return nil, tostring(if ok then rebuildMessage else rebuilt)
 end
 
 -- Place a roundabout at `center` AND wire up any roads already sitting near it.
@@ -3049,11 +3908,11 @@ function RoundaboutBuilder.Place(
 	laneWidthM: number,
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings
-): Model
+): (Model, string?)
 	local ring = RoundaboutBuilder.Create(center, radiusStuds, laneCount, laneWidthM, style, settings)
 	local outerR = ring:GetAttribute("RW_OuterRadius") :: number?
 	if not outerR then
-		return ring
+		return ring, "Roundabout placed, but its outer radius metadata was unavailable for auto-connect."
 	end
 	local nearby = collectNearbyRoads(
 		center,
@@ -3061,9 +3920,13 @@ function RoundaboutBuilder.Place(
 		math.max(1, radiusStuds * 0.25)
 	)
 	if #nearby == 0 then
-		return ring
+		return ring, nil
 	end
-	return RoundaboutBuilder.ConnectRoad(ring, nearby[1], style, settings) or ring
+	local connected, message = RoundaboutBuilder.ConnectRoad(ring, nearby[1], style, settings)
+	if connected then
+		return connected, nil
+	end
+	return ring, "Roundabout placed standalone; nearby roads were not changed. " .. (message or "Auto-connect failed.")
 end
 
 return RoundaboutBuilder

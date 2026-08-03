@@ -895,27 +895,28 @@ any road drawn to cross it afterwards won't auto-connect.
   committing. Same gap exists for the ordinary junction fillet/corner
   geometry itself (no preview while approach roads are still being
   placed) - requested explicitly for both.
-- **No way to edit a roundabout's own form after creating it.** Radius/
-  lane-count/lane-width are one-shot inputs at creation time
-  (`RoundaboutBuilder.CreateAtJunction`) - requested explicitly. Blocked
-  on the same "not wired into the data model" gap below (nothing to
-  select/re-open), so likely needs solving together rather than
-  separately.
-- **The ring still isn't wired into the junction/road data model.** Not
-  stamped `RW_Road` (so `RoadEditSession`'s selection UI and the mid-span
-  split scan ignore it - neither is built to handle a closed
-  multi-segment curve), no `Start`/`EndJunctionId` link. There is
-  currently no in-plugin way to select, edit, or delete a placed ring -
-  delete it via the Explorer. A trimmed spoke's new ring-side end is
-  likewise left unconnected.
+- **~~No way to edit a roundabout's own form after creating it~~ — SHIPPED.**
+  Selecting a ring/arm opens a dedicated React-Lua editor for radius,
+  lane-count, lane-width, markings, pavement, and island, with undoable
+  in-place rebuild, delete/convert actions, and radius advice.
+- **~~The ring isn't wired into the junction/road data model~~ — FIXED for new
+  builds.** The ring intentionally remains a closed non-`RW_Road` owner, while
+  a retained `Kind = Roundabout` junction controller owns exact road-end
+  topology. Legacy connected rings remain read-only because their original
+  source approaches are unrecoverable; an ordinary rebuild never annexes roads
+  by proximity.
+- **Source-window slicing for advanced approach data.** Editable roundabout
+  conversion currently rejects widening/narrowing transitions, bus bays, and
+  marking/kerb stretches before mutation. Implement source-space profile
+  interpolation plus durable feature partitioning before allowing these road
+  types to be trimmed or split around a ring.
 - **Winding direction (which way traffic circulates for `DriveOnLeft`)
   is reasoned through, not verified live.** Flip
   `RoundaboutBuilder`'s `circleSegments` ternary if it reads backwards
   once tested in Studio.
-- **No median/central island component**, no turbo lane-guidance
-  markings, no spiral (true turbo) geometry - multi-lane concentric is
-  now possible (lane count is configurable), but nothing beyond a flat
-  multi-lane ring.
+- **~~No central island or true Turbo guidance~~ — SHIPPED.** The centre island
+  is independently toggleable and Turbo adds preview-matched spiral exit
+  guidance above the retained concentric divider.
 
 **Phase 3 - lane connector + traffic light API (v0, data-model only, no
 UI).** `JunctionLanes.lua`'s `ComputeConnections` is a real, live

@@ -17,6 +17,13 @@ local HttpService = game:GetService("HttpService")
 export type JunctionData = {
 	Id: string,
 	Position: Vector3,
+	-- A Junction controller remains authoritative after conversion to a
+	-- roundabout. Older controllers have no kind attribute and are ordinary
+	-- intersections by definition.
+	Kind: "Intersection" | "Roundabout",
+	RoundaboutRadiusStuds: number?,
+	RoundaboutLaneCount: number?,
+	RoundaboutLaneWidthM: number?,
 	-- Optional user overrides (node controller). nil = builder defaults.
 	FilletRadiusM: number?,
 	-- Per-roundabout override of the region's default circulating-lane marking
@@ -74,7 +81,8 @@ function JunctionInstance.FindNear(position: Vector3, radiusStuds: number): Mode
 	local bestDistance = radiusStuds
 	for _, child in folder:GetChildren() do
 		if JunctionInstance.IsJunction(child) then
-			local pos = child:GetAttribute("RW_Position") :: Vector3?
+			local data = JunctionInstance.Read(child :: Model)
+			local pos = if data and data.Kind ~= "Roundabout" then data.Position else nil
 			if pos then
 				local d = (pos - position).Magnitude
 				if d < bestDistance then
@@ -109,6 +117,7 @@ function JunctionInstance.Create(position: Vector3): Model
 	model:SetAttribute("RW_Junction", true)
 	model:SetAttribute("RW_JunctionId", HttpService:GenerateGUID(false))
 	model:SetAttribute("RW_Position", position)
+	model:SetAttribute("RW_JunctionKind", "Intersection")
 	model:SetAttribute("RW_MultiNodeVersion", 2)
 	model:SetAttribute("RW_LinkedCornerRadii", true)
 	model.Parent = getJunctionsFolder(true)
@@ -119,6 +128,29 @@ end
 -- deliberately not coupled (see the JunctionData field note).
 local ROUNDABOUT_MARKING_STYLES = { "Continuous", "SolidLanes", "Turbo" }
 
+local function finiteNumber(value: any): number?
+	if typeof(value) == "number" and value == value and value > -math.huge and value < math.huge then
+		return value
+	end
+	return nil
+end
+
+local function positiveNumber(value: any): number?
+	local number = finiteNumber(value)
+	if number and number > 0 then
+		return number
+	end
+	return nil
+end
+
+local function positiveInteger(value: any): number?
+	local number = positiveNumber(value)
+	if number and number == math.floor(number) then
+		return number
+	end
+	return nil
+end
+
 function JunctionInstance.Read(model: Model): JunctionData?
 	local id = model:GetAttribute("RW_JunctionId")
 	local position = model:GetAttribute("RW_Position")
@@ -127,6 +159,10 @@ function JunctionInstance.Read(model: Model): JunctionData?
 	end
 	local fillet = model:GetAttribute("RW_FilletRadiusM")
 	local margin = model:GetAttribute("RW_PadMarginStuds")
+	local kind = model:GetAttribute("RW_JunctionKind")
+	local roundaboutRadius = model:GetAttribute("RW_RoundaboutRadiusStuds")
+	local roundaboutLaneCount = model:GetAttribute("RW_RoundaboutLaneCount")
+	local roundaboutLaneWidth = model:GetAttribute("RW_RoundaboutLaneWidthM")
 	local markings = model:GetAttribute("RW_RoundaboutMarkings")
 	local ringWalk = model:GetAttribute("RW_RoundaboutSidewalk")
 	local ringIsland = model:GetAttribute("RW_RoundaboutIsland")
@@ -137,8 +173,9 @@ function JunctionInstance.Read(model: Model): JunctionData?
 		local ok, decoded = pcall(HttpService.JSONDecode, HttpService, rawCornerRadii)
 		if ok and typeof(decoded) == "table" then
 			for cornerId, radius in decoded do
-				if typeof(cornerId) == "string" and typeof(radius) == "number" then
-					cornerRadii[cornerId] = math.clamp(radius, 0.5, 40)
+				local validRadius = finiteNumber(radius)
+				if typeof(cornerId) == "string" and validRadius then
+					cornerRadii[cornerId] = math.clamp(validRadius, 0.5, 40)
 				end
 			end
 		end
@@ -146,8 +183,12 @@ function JunctionInstance.Read(model: Model): JunctionData?
 	return {
 		Id = id,
 		Position = position,
-		FilletRadiusM = if typeof(fillet) == "number" then fillet else nil,
-		PadMarginStuds = if typeof(margin) == "number" then margin else nil,
+		Kind = if kind == "Roundabout" then "Roundabout" else "Intersection",
+		RoundaboutRadiusStuds = positiveNumber(roundaboutRadius),
+		RoundaboutLaneCount = positiveInteger(roundaboutLaneCount),
+		RoundaboutLaneWidthM = positiveNumber(roundaboutLaneWidth),
+		FilletRadiusM = finiteNumber(fillet),
+		PadMarginStuds = finiteNumber(margin),
 		RoundaboutMarkings = if typeof(markings) == "string" and table.find(ROUNDABOUT_MARKING_STYLES, markings)
 			then markings
 			else nil,
@@ -160,6 +201,25 @@ end
 
 function JunctionInstance.SetPosition(model: Model, position: Vector3)
 	model:SetAttribute("RW_Position", position)
+end
+
+function JunctionInstance.SetKind(model: Model, kind: "Intersection" | "Roundabout")
+	assert(kind == "Intersection" or kind == "Roundabout", "invalid junction kind")
+	model:SetAttribute("RW_JunctionKind", kind)
+end
+
+function JunctionInstance.SetRoundaboutGeometry(
+	model: Model,
+	radiusStuds: number,
+	laneCount: number,
+	laneWidthM: number
+)
+	assert(positiveNumber(radiusStuds) ~= nil, "roundabout radius must be a finite positive number")
+	assert(positiveInteger(laneCount) ~= nil, "roundabout lane count must be a finite positive integer")
+	assert(positiveNumber(laneWidthM) ~= nil, "roundabout lane width must be a finite positive number")
+	model:SetAttribute("RW_RoundaboutRadiusStuds", radiusStuds)
+	model:SetAttribute("RW_RoundaboutLaneCount", laneCount)
+	model:SetAttribute("RW_RoundaboutLaneWidthM", laneWidthM)
 end
 
 function JunctionInstance.SetFilletRadiusM(model: Model, radiusM: number?)

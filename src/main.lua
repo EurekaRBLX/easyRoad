@@ -35,7 +35,9 @@ local createRegionLibrary = require("./RegionLibrary")
 local createRoadSession = require("./createRoadSession")
 local createRoadEditSession = require("./RoadEditSession")
 local createJunctionEditSession = require("./JunctionEditSession")
+local createRoundaboutEditSession = require("./RoundaboutEditSession")
 local JunctionInstance = require("./JunctionInstance")
+local RoundaboutInstance = require("./RoundaboutInstance")
 local JunctionBuilder = require("./Mesh/JunctionBuilder")
 local RoundaboutBuilder = require("./Mesh/RoundaboutBuilder")
 local RoadDesigner = require("./UI/RoadDesigner")
@@ -55,6 +57,7 @@ local MarkingStretchListPanel = require("./UI/MarkingStretchListPanel")
 local MarkingSelectionModePod = require("./UI/MarkingSelectionModePod")
 local KerbStretchPanel = require("./UI/KerbStretchPanel")
 local JunctionPanel = require("./UI/JunctionPanel")
+local RoundaboutPanel = require("./UI/RoundaboutPanel")
 
 -- RoadDesigner reserves 190 px for the lane strip. At 360 px total the two
 -- upper cards received only 162 px, less than the library's own 170 px list
@@ -86,6 +89,7 @@ return function(
 	local assetManagerOpen = false
 	local assetManagerSelectedId: string? = nil
 	local assetManagerStatus: string? = nil
+	local junctionRoundaboutStatus: string? = nil
 
 	-- Shared with the session so HUD clicks don't also place road points
 	local uiState: createRoadSession.UiState = { Hovered = false }
@@ -131,6 +135,15 @@ return function(
 	-- to coordinate with each other.
 	local junctionEditSession = createJunctionEditSession(getStyle, settings)
 	local junctionEditSessionChangedCn = junctionEditSession.ChangeSignal:Connect(function()
+		junctionRoundaboutStatus = nil
+		updateUI()
+	end)
+
+	-- Generated roundabouts are selectable owner Models in their own right.
+	-- Their hidden Junction controller keeps exact road-end topology, while this
+	-- session owns the visible ring's editor lifecycle and undo transactions.
+	local roundaboutEditSession = createRoundaboutEditSession(getStyle, settings)
+	local roundaboutEditSessionChangedCn = roundaboutEditSession.ChangeSignal:Connect(function()
 		updateUI()
 	end)
 
@@ -143,30 +156,130 @@ return function(
 	-- whatever's left connected, or removes the junction outright if this
 	-- was its last road.
 	local roadRemovingCn = workspace.DescendantRemoving:Connect(function(instance)
+		-- A direct Explorer delete of a connected ring becomes an ordinary
+		-- junction. In-place editor rebuilds destroy a temporary ring too, but in
+		-- that case the stable selected owner still exists for the same controller
+		-- and this branch deliberately does nothing.
+		if instance:GetAttribute("RW_Roundabout") == true then
+			local junctionId = instance:GetAttribute("RW_JunctionId")
+			if typeof(junctionId) == "string" then
+				local otherRing = false
+				local folder = workspace:FindFirstChild("Roundabouts")
+				if folder then
+					for _, candidate in folder:GetChildren() do
+						if
+							candidate ~= instance
+							and candidate:GetAttribute("RW_Roundabout") == true
+							and candidate:GetAttribute("RW_JunctionId") == junctionId
+						then
+							otherRing = true
+							break
+						end
+					end
+				end
+				local controller = JunctionInstance.FindById(junctionId)
+				local controllerData = if controller then JunctionInstance.Read(controller) else nil
+				local connectedRoads = JunctionInstance.ConnectedRoads(junctionId)
+				-- A replacement build has another owner already. Conversion sets the
+				-- kind first. Last-road cleanup has no connected roads. Only a direct
+				-- Explorer delete reaches the conversion below.
+				if
+					not otherRing
+					and controller
+					and controllerData
+					and controllerData.Kind == "Roundabout"
+					and #connectedRoads == 1
+				then
+					local restored, message =
+						RoundaboutBuilder.PrepareForRingRemoval(instance :: Model, getStyle(), settings)
+					if not restored then
+						-- DescendantRemoving cannot cancel the user's delete. If source
+						-- restoration is impossible, prefer a visibly shortened standalone
+						-- road over a hidden Roundabout controller with no selectable ring.
+						local road = connectedRoads[1]
+						local roadData = RoadInstance.Read(road)
+						if roadData then
+							RoadInstance.StampJunctions(
+								road,
+								if roadData.StartJunctionId == junctionId then nil else roadData.StartJunctionId,
+								if roadData.EndJunctionId == junctionId then nil else roadData.EndJunctionId
+							)
+						end
+						controller:Destroy()
+						warn(
+							"[EasyRoad] One-approach ring removal could not restore the road source: "
+								.. tostring(message)
+								.. " The road was safely detached at its current length; use Undo to recover the deleted ring."
+						)
+					end
+				elseif
+					not otherRing
+					and controller
+					and controllerData
+					and controllerData.Kind == "Roundabout"
+					and #connectedRoads > 1
+				then
+					JunctionInstance.SetKind(controller, "Intersection")
+					JunctionBuilder.TrimApproaches(junctionId, getStyle(), settings)
+					JunctionBuilder.Rebuild(junctionId, getStyle(), settings)
+				end
+			end
+			task.defer(updateUI)
+			return
+		end
+
 		if instance:GetAttribute("RW_Road") ~= true then
 			return
 		end
 		local startId = instance:GetAttribute("RW_StartJunctionId")
 		local endId = instance:GetAttribute("RW_EndJunctionId")
-		for _, id in { startId, endId } do
-			if typeof(id) ~= "string" then
+		-- DescendantRemoving fires while this Model is still queryable. Detach
+		-- its topology first, then rebuild synchronously inside Studio's Delete
+		-- history operation so Undo restores the road, controller and ring as one
+		-- coherent state rather than restoring only the road a frame later.
+		if typeof(startId) == "string" then
+			instance:SetAttribute("RW_StartJunctionId", nil)
+		end
+		if typeof(endId) == "string" then
+			instance:SetAttribute("RW_EndJunctionId", nil)
+		end
+		local seen: { [string]: boolean } = {}
+		for _, value in { startId, endId } do
+			if typeof(value) ~= "string" or seen[value] then
 				continue
 			end
-			local remaining = 0
-			for _, road in JunctionInstance.ConnectedRoads(id) do
-				if road ~= instance then
-					remaining += 1
-				end
+			seen[value] = true
+			local junctionId = value
+			local junctionModel = JunctionInstance.FindById(junctionId)
+			local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
+			if not junctionModel or not junctionData then
+				continue
 			end
+			local remaining = #JunctionInstance.ConnectedRoads(junctionId)
 			if remaining == 0 then
-				local junctionModel = JunctionInstance.FindById(id)
-				if junctionModel then
-					JunctionInstance.Delete(junctionModel)
+				local ring = RoundaboutInstance.FindByJunctionId(junctionId)
+				if ring then
+					ring:Destroy()
+				end
+				JunctionInstance.Delete(junctionModel)
+			elseif junctionData.Kind == "Roundabout" then
+				local ring = RoundaboutInstance.FindByJunctionId(junctionId)
+				if ring then
+					local ok, rebuilt, message = pcall(function()
+						return RoundaboutBuilder.Rebuild(ring, getStyle(), settings)
+					end)
+					if not ok or not rebuilt then
+						warn(
+							"[EasyRoad] Roundabout rebuild after road deletion failed: "
+								.. tostring(if ok then message else rebuilt)
+						)
+					end
 				end
 			else
-				JunctionBuilder.Rebuild(id, getStyle(), settings)
+				JunctionBuilder.Rebuild(junctionId, getStyle(), settings)
 			end
 		end
+		task.defer(updateUI)
 	end)
 
 	local function persist()
@@ -856,6 +969,35 @@ return function(
 				Position = UDim2.new(0, 12, 1, -16),
 				Size = UDim2.new(1, -24, 0, ROAD_DESIGNER_HEIGHT),
 			}
+		elseif roundaboutEditSession.GetSelectedRoundabout() then
+			bottomContent = React.createElement(RoundaboutPanel, {
+				ConnectedRoadCount = roundaboutEditSession.GetConnectedRoadCount(),
+				LegacyConnected = roundaboutEditSession.IsLegacyConnected(),
+				RadiusStuds = roundaboutEditSession.GetRadiusStuds(),
+				LaneCount = roundaboutEditSession.GetLaneCount(),
+				LaneWidthM = roundaboutEditSession.GetLaneWidthM(),
+				Markings = roundaboutEditSession.GetMarkings(),
+				Sidewalk = roundaboutEditSession.GetSidewalk(),
+				Island = roundaboutEditSession.GetIsland(),
+				MinimumRadiusStuds = roundaboutEditSession.GetMinimumRadiusStuds(),
+				SuggestedRadiusStuds = roundaboutEditSession.GetSuggestedRadiusStuds(),
+				Status = roundaboutEditSession.GetStatus(),
+				OnRadiusChanged = roundaboutEditSession.SetRadiusStuds,
+				OnLaneCountChanged = roundaboutEditSession.SetLaneCount,
+				OnLaneWidthChanged = roundaboutEditSession.SetLaneWidthM,
+				OnMarkingsChanged = roundaboutEditSession.SetMarkings,
+				OnSidewalkChanged = roundaboutEditSession.SetSidewalk,
+				OnIslandChanged = roundaboutEditSession.SetIsland,
+				OnRebuild = roundaboutEditSession.RebuildSelected,
+				OnPrintGeometry = roundaboutEditSession.PrintGeometry,
+				OnConvertToJunction = roundaboutEditSession.ConvertToJunction,
+				OnDelete = roundaboutEditSession.DeleteRoundabout,
+			})
+			bottomFrameProps = {
+				AnchorPoint = Vector2.new(0, 1),
+				Position = UDim2.new(0, 12, 1, -40),
+				Size = UDim2.new(0, 320, 0, 470),
+			}
 		elseif junctionEditSession.GetSelectedJunction() then
 			-- Both radius figures depend on the approaches meeting here AND on the
 			-- ring's own lane settings, which live in the panel - so this is a
@@ -916,6 +1058,7 @@ return function(
 				OnSelectedCornerRadiusChanged = junctionEditSession.SetSelectedCornerRadiusM,
 				OnRebuild = junctionEditSession.RebuildSelected,
 				OnDelete = junctionEditSession.DeleteJunction,
+				RoundaboutStatus = junctionRoundaboutStatus,
 				GetRoundaboutRadii = getRoundaboutRadii,
 				OnDumpRoundabout = function(radiusStuds: number, laneCount: number, laneWidthM: number)
 					local junctionModel = junctionEditSession.GetSelectedJunction()
@@ -947,6 +1090,7 @@ return function(
 						return
 					end
 					local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Make roundabout")
+					local previousData = JunctionInstance.Read(junctionModel)
 					-- Stamped BEFORE reading the junction back, because
 					-- CreateAtJunction reads the override off the junction data.
 					JunctionInstance.SetRoundaboutMarkings(junctionModel, markings)
@@ -959,16 +1103,43 @@ return function(
 						end
 						return
 					end
-					RoundaboutBuilder.CreateAtJunction(
-						junctionData.Id,
-						radiusStuds,
-						laneCount,
-						laneWidthM,
-						getStyle(),
-						settings
-					)
+					local success, built, buildMessage = pcall(function(): (Model?, string?)
+						return RoundaboutBuilder.CreateAtJunction(
+							junctionData.Id,
+							radiusStuds,
+							laneCount,
+							laneWidthM,
+							getStyle(),
+							settings
+						)
+					end)
+					local ring = if success then built else nil
+					if ring then
+						junctionRoundaboutStatus = nil
+						Selection:Set({ ring })
+					else
+						-- A failed build must not strand a hidden roundabout controller
+						-- or partially trimmed approaches. Restore the ordinary junction
+						-- from its preserved source curves and surface the real error.
+						JunctionInstance.SetKind(junctionModel, "Intersection")
+						if previousData then
+							JunctionInstance.SetRoundaboutMarkings(junctionModel, previousData.RoundaboutMarkings)
+							JunctionInstance.SetRoundaboutSidewalk(junctionModel, previousData.RoundaboutSidewalk)
+							JunctionInstance.SetRoundaboutIsland(junctionModel, previousData.RoundaboutIsland)
+						end
+						JunctionBuilder.TrimApproaches(junctionData.Id, getStyle(), settings)
+						JunctionBuilder.Rebuild(junctionData.Id, getStyle(), settings)
+						junctionRoundaboutStatus = if success
+							then (buildMessage or "Roundabout creation was rejected.")
+							else ("Roundabout creation failed: " .. tostring(built))
+						warn("[EasyRoad] " .. tostring(junctionRoundaboutStatus))
+						updateUI()
+					end
 					if recording then
-						ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+						ChangeHistoryService:FinishRecording(
+							recording,
+							if ring then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
+						)
 					end
 				end,
 			})
@@ -1478,6 +1649,8 @@ return function(
 		editSessionChangedCn:Disconnect()
 		junctionEditSession.Destroy()
 		junctionEditSessionChangedCn:Disconnect()
+		roundaboutEditSession.Destroy()
+		roundaboutEditSessionChangedCn:Disconnect()
 		roadRemovingCn:Disconnect()
 		persist()
 		clickedCn:Disconnect()

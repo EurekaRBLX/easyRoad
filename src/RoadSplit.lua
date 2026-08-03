@@ -6,13 +6,11 @@
 -- JunctionBuilder.lua for the node/pad half of the junction feature).
 --
 -- v1 deliberately refuses to split a road that has a widen/narrow
--- transition (ProfileEnd set) or a bus bay - correctly remapping either
+-- transition (ProfileEnd set), a bus bay, or source-window features - correctly remapping either
 -- across an arbitrary cut point (interpolating the exact profile at the
 -- split station, or deciding which piece keeps the bay) is real geometry
--- work, not attempted here. It also drops MarkingStretches/KerbStretches
--- rather than remapping their station ranges into each piece's own local
--- coordinate space - the same class of complexity already flagged for
--- marking stretches surviving a structural profile edit (see TODO.md).
+-- work, not attempted here. Such roads are rejected with a visible reason;
+-- they are never split while silently dropping marking/kerb ranges or stops.
 
 local CurveSegment = require("./Geometry/CurveSegment")
 local PolyCurve = require("./Geometry/PolyCurve")
@@ -22,6 +20,8 @@ local JunctionInstance = require("./JunctionInstance")
 local RegionStyles = require("./RegionStyles")
 local Settings = require("./Settings")
 local StructureBuilder = require("./StructureBuilder")
+local BusStops = require("./BusStops")
+local RoadSource = require("./RoadSource")
 
 local RoadSplit = {}
 
@@ -36,6 +36,30 @@ function RoadSplit.MinimumPieceLengthStuds(): number
 	return MIN_PIECE_LENGTH_STUDS
 end
 
+local function hasActiveSourceWindow(road: Model, data: RoadInstance.RoadData): boolean
+	local source = RoadSource.ReadSegment(road)
+	if not source then
+		return false
+	end
+	local sourceCurve = PolyCurve.new({ source })
+	return math.abs(sourceCurve.Length - data.Curve.Length) > 1e-3
+		or (sourceCurve:PosAt(0) - data.Curve:PosAt(0)).Magnitude > 1e-3
+		or (sourceCurve:PosAt(sourceCurve.Length) - data.Curve:PosAt(data.Curve.Length)).Magnitude > 1e-3
+end
+
+local function connectedToRoundabout(data: RoadInstance.RoadData): boolean
+	for _, junctionId in { data.StartJunctionId, data.EndJunctionId } do
+		if junctionId then
+			local controller = JunctionInstance.FindById(junctionId)
+			local controllerData = if controller then JunctionInstance.Read(controller) else nil
+			if controllerData and controllerData.Kind == "Roundabout" then
+				return true
+			end
+		end
+	end
+	return false
+end
+
 -- True if `road` is a plain, unmodified segment RoadSplit can safely cut -
 -- no transition, no bay (see this file's header for why those are refused).
 function RoadSplit.CanSplit(road: Model): boolean
@@ -43,7 +67,14 @@ function RoadSplit.CanSplit(road: Model): boolean
 	if not data then
 		return false
 	end
-	return data.ProfileEnd == nil and data.Bay == nil and #data.Curve.Segments == 1
+	return data.ProfileEnd == nil
+		and data.Bay == nil
+		and #data.MarkingStretches == 0
+		and #data.KerbStretches == 0
+		and #BusStops.Get(road) == 0
+		and not hasActiveSourceWindow(road, data)
+		and not connectedToRoundabout(data)
+		and #data.Curve.Segments == 1
 end
 
 -- Human-readable reason used by the placement preview when a crossing is
@@ -57,6 +88,14 @@ function RoadSplit.SplitBlockReason(road: Model): string?
 		return "Widening/narrowing roads cannot be split yet"
 	elseif data.Bay ~= nil then
 		return "Roads with bus bays cannot be split yet"
+	elseif #data.MarkingStretches > 0 or #data.KerbStretches > 0 then
+		return "Roads with marking or kerb stretches cannot be split yet"
+	elseif #BusStops.Get(road) > 0 then
+		return "Roads with bus stops cannot be split yet"
+	elseif hasActiveSourceWindow(road, data) then
+		return "Roads currently trimmed by a junction or roundabout cannot be split yet"
+	elseif connectedToRoundabout(data) then
+		return "Roundabout approaches cannot be split while connected"
 	elseif #data.Curve.Segments ~= 1 then
 		return "Multi-segment roads cannot be split yet"
 	end
@@ -128,6 +167,15 @@ function RoadSplit.SplitMany(
 	end
 
 	local segment = data.Curve.Segments[1]
+	local customAttributes: { [string]: any } = {}
+	for name, value in road:GetAttributes() do
+		-- EasyRoad owns every RW_ attribute; copying any of those across would
+		-- overwrite the freshly built piece's curve endpoints, tangents, profile,
+		-- topology ids, or source window. Preserve user/plugin attributes only.
+		if string.sub(name, 1, 3) ~= "RW_" then
+			customAttributes[name] = value
+		end
+	end
 	local stations: { number } = table.create(#sorted + 2)
 	table.insert(stations, 0)
 	for _, cut in sorted do
@@ -148,6 +196,10 @@ function RoadSplit.SplitMany(
 			Settings = settings,
 			Preview = false,
 		})
+		piece.Name = road.Name
+		for name, value in customAttributes do
+			piece:SetAttribute(name, value)
+		end
 		local startJunctionId = if index == 1 then data.StartJunctionId else sorted[index - 1].JunctionId
 		local endJunctionId = if index > #sorted then data.EndJunctionId else sorted[index].JunctionId
 		RoadInstance.StampJunctions(piece, startJunctionId, endJunctionId)
@@ -157,6 +209,8 @@ function RoadSplit.SplitMany(
 			if index > #sorted then data.EndPortId else nil
 		)
 		RoadInstance.StampStructure(piece, data.Structure)
+		RoadSource.WriteSegment(piece, pieceSegment)
+		piece:SetAttribute("RW_FeatureSourceOffsetStuds", 0)
 		StructureBuilder.Render(piece, pieceCurve, data.Structure or StructureBuilder.DefaultData(settings), settings)
 		table.insert(pieces, piece)
 	end

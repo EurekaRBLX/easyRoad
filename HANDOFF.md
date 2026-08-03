@@ -151,6 +151,19 @@ deterministic layer gap above the retained concentric divider. Run
 `tools/preview/roundabout_parity_contract.py`: it covers entry/exit bounds,
 mouth fragments, Turbo layer ownership, both traffic hands, and five break-tests.
 
+Roundabouts are now selectable and editable after creation. A connected ring
+retains a `Kind = Roundabout` Junction controller; its road ends keep that
+controller id, while the ring remains the stable visible Selection owner.
+`RoundaboutEditSession` + `RoundaboutPanel` edit geometry/appearance and rebuild
+the ring in place. Rebuild uses exact `ConnectedRoads`, never proximity. Source
+curves let the controller-side trim grow/shrink without replacing road/port ids
+or raw road attributes. Connected rings can convert back to ordinary multinode
+junctions. Old connected rings remain read-only because their original road
+sources cannot be recovered safely; recreate them once to opt into the editor.
+
+Run `tools/preview/roundabout_editor_preview.py --check`, or pass `--out` for
+before/after bird's-eye PNGs generated through the existing roundabout pipeline.
+
 ### Nothing has been confirmed in Studio
 Every result in these docs is headless. The user's screenshots are the
 authority, and they have repeatedly shown defects the tooling passed.

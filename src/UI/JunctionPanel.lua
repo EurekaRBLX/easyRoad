@@ -26,6 +26,7 @@ local function JunctionPanel(
 		LinkedCornerRadii: boolean,
 		SelectedCornerLabel: string?,
 		SelectedCornerRadiusM: number?,
+		RoundaboutStatus: string?,
 		OnFilletRadiusChanged: (value: number) -> (),
 		OnPadMarginChanged: (value: number) -> (),
 		OnLinkedCornerRadiiChanged: (linked: boolean) -> (),
@@ -298,6 +299,17 @@ local function JunctionPanel(
 			Dim = true,
 			LayoutOrder = 29,
 		})
+		if props.RoundaboutStatus then
+			children.RoundaboutStatus = e(Components.Label, {
+				Text = props.RoundaboutStatus,
+				TextColor3 = Theme.ACCENT,
+				TextWrapped = true,
+				AutomaticSize = Enum.AutomaticSize.Y,
+				Size = UDim2.new(1, 0, 0, 0),
+				BackgroundTransparency = 1,
+				LayoutOrder = 30,
+			})
+		end
 	end
 
 	local scrollProps = Components.ScrollBar()

@@ -68,8 +68,8 @@
 --    layer degrades to less decoration on top of an intact base pad.
 --
 -- Still missing (TODO.md): stop lines/crosswalks/lane guidance through the
--- pad, and approach trimming for roads with a transition or bay
--- (RoadSplit's CanSplit guard - those roads still overlap the old way).
+-- pad. One-segment transitions and bay roads keep their source-relative
+-- features while trimming; genuinely multi-segment roads remain unsliced.
 
 local CurveSegment = require("../Geometry/CurveSegment")
 local Fillet = require("../Geometry/Fillet")
@@ -78,11 +78,13 @@ local RoadProfile = require("../RoadProfile")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
 local RoadInstance = require("../RoadInstance")
-local RoadSplit = require("../RoadSplit")
+local RoadSource = require("../RoadSource")
 local JunctionInstance = require("../JunctionInstance")
 local RoadBuilder = require("./RoadBuilder")
+local Markings = require("./Markings")
 local FillTriangle = require("./FillTriangle")
 local StructureBuilder = require("../StructureBuilder")
+local BusStops = require("../BusStops")
 
 local JunctionBuilder = {}
 
@@ -332,33 +334,81 @@ local function findPadCrossing(
 	return (lo + hi) / 2
 end
 
--- Untrimmed source curve for a road (preserved across setback changes so
--- TrimApproaches can shorten OR lengthen when pad margin changes).
-local function readSourceSegment(road: Model): CurveSegment.Segment?
-	local kind = road:GetAttribute("RW_SourceKind")
-	local p0 = road:GetAttribute("RW_SourceP0")
-	local p1 = road:GetAttribute("RW_SourceP1")
-	if typeof(kind) ~= "string" or typeof(p0) ~= "Vector3" or typeof(p1) ~= "Vector3" then
-		return nil
+local function nearestSourceStation(curve: PolyCurve.PolyCurve, point: Vector3): number
+	local length = curve.Length
+	if length <= 1e-6 then
+		return 0
 	end
-	local p2 = road:GetAttribute("RW_SourceP2")
-	local p3 = road:GetAttribute("RW_SourceP3")
-	if kind == "Line" then
-		return CurveSegment.Line(p0, p1)
-	elseif kind == "Quadratic" and typeof(p2) == "Vector3" then
-		return CurveSegment.Quadratic(p0, p1, p2)
-	elseif kind == "Cubic" and typeof(p2) == "Vector3" and typeof(p3) == "Vector3" then
-		return CurveSegment.Cubic(p0, p1, p2, p3)
+	local samples = math.clamp(math.ceil(length / 4), 16, 256)
+	local bestStation = 0
+	local bestDistance = math.huge
+	for index = 0, samples do
+		local station = length * index / samples
+		local distance = (curve:PosAt(station) - point).Magnitude
+		if distance < bestDistance then
+			bestDistance = distance
+			bestStation = station
+		end
 	end
-	return nil
+	local step = length / samples
+	local low = math.max(0, bestStation - step)
+	local high = math.min(length, bestStation + step)
+	for _ = 1, 28 do
+		local a = low + (high - low) / 3
+		local b = high - (high - low) / 3
+		if (curve:PosAt(a) - point).Magnitude < (curve:PosAt(b) - point).Magnitude then
+			high = b
+		else
+			low = a
+		end
+	end
+	return (low + high) / 2
 end
 
-local function writeSourceSegment(road: Model, segment: CurveSegment.Segment)
-	road:SetAttribute("RW_SourceKind", segment.Kind)
-	road:SetAttribute("RW_SourceP0", segment.P0)
-	road:SetAttribute("RW_SourceP1", segment.P1)
-	road:SetAttribute("RW_SourceP2", segment.P2)
-	road:SetAttribute("RW_SourceP3", segment.P3)
+local function markingStretchesForSourceWindow(
+	stretches: { Markings.MarkingStretch },
+	featureOffset: number,
+	windowStart: number,
+	windowEnd: number
+): { Markings.MarkingStretch }?
+	local result: { Markings.MarkingStretch } = {}
+	for _, stretch in stretches do
+		local from = math.max(featureOffset + stretch.FromStationStuds, windowStart)
+		local to = math.min(featureOffset + stretch.ToStationStuds, windowEnd)
+		if to > from then
+			table.insert(result, {
+				ComponentIndices = stretch.ComponentIndices,
+				FromStationStuds = from - windowStart,
+				ToStationStuds = to - windowStart,
+				Line = stretch.Line,
+				DashLengthM = stretch.DashLengthM,
+				DashGapM = stretch.DashGapM,
+			})
+		end
+	end
+	return if #result > 0 then result else nil
+end
+
+local function kerbStretchesForSourceWindow(
+	stretches: { Markings.KerbStretch },
+	featureOffset: number,
+	windowStart: number,
+	windowEnd: number
+): { Markings.KerbStretch }?
+	local result: { Markings.KerbStretch } = {}
+	for _, stretch in stretches do
+		local from = math.max(featureOffset + stretch.FromStationStuds, windowStart)
+		local to = math.min(featureOffset + stretch.ToStationStuds, windowEnd)
+		if to > from then
+			table.insert(result, {
+				EdgeIndex = stretch.EdgeIndex,
+				FromStationStuds = from - windowStart,
+				ToStationStuds = to - windowStart,
+				Restriction = stretch.Restriction,
+			})
+		end
+	end
+	return if #result > 0 then result else nil
 end
 
 -- Cuts `road` back at every active junction it references. Handling both
@@ -366,14 +416,11 @@ end
 -- more than one existing road: trimming one end and then the other in two
 -- independent passes would otherwise restore the first end from the source.
 local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settings: Settings.EasyRoadSettings)
-	if not RoadSplit.CanSplit(road) then
-		return
-	end
 	local data = RoadInstance.Read(road)
 	if not data or #data.Curve.Segments ~= 1 or (not data.StartJunctionId and not data.EndJunctionId) then
 		return
 	end
-	local source = readSourceSegment(road)
+	local source = RoadSource.ReadSegment(road)
 	if not source then
 		source = data.Curve.Segments[1]
 	end
@@ -381,6 +428,30 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 	local startStation = 0
 	local endStation = sourceCurve.Length
 	local trimmed = false
+
+	-- A roundabout owns the setback at its end of the road. When the other end
+	-- is rebuilt as an ordinary junction, preserve the roundabout-side endpoint
+	-- instead of restoring that side from the untrimmed source segment.
+	local function preserveRoundaboutEndpoint(junctionId: string?, atStart: boolean)
+		if not junctionId then
+			return
+		end
+		local junctionModel = JunctionInstance.FindById(junctionId)
+		local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
+		if not junctionData or junctionData.Kind ~= "Roundabout" then
+			return
+		end
+		local currentStation =
+			nearestSourceStation(sourceCurve, data.Curve:PosAt(if atStart then 0 else data.Curve.Length))
+		if atStart then
+			startStation = currentStation
+		else
+			endStation = currentStation
+		end
+	end
+
+	preserveRoundaboutEndpoint(data.StartJunctionId, true)
+	preserveRoundaboutEndpoint(data.EndJunctionId, false)
 
 	local function trimStationFor(junctionId: string, atStart: boolean): number?
 		local junctionModel = JunctionInstance.FindById(junctionId)
@@ -423,33 +494,60 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 		return
 	end
 	local outerSegment = CurveSegment.Sub(source, startStation, endStation)
-	local rebuilt = RoadBuilder.Build({
-		Curve = PolyCurve.new({ outerSegment }),
+	local outerCurve = PolyCurve.new({ outerSegment })
+	local storedFeatureOffset = road:GetAttribute("RW_FeatureSourceOffsetStuds")
+	local currentSourceStart = nearestSourceStation(sourceCurve, data.Curve:PosAt(0))
+	local featureOffset = if typeof(storedFeatureOffset) == "number" then storedFeatureOffset else currentSourceStart
+	local options = {
+		Curve = outerCurve,
 		ProfileStart = data.ProfileStart,
+		ProfileEnd = data.ProfileEnd,
 		Style = style,
 		Settings = settings,
 		Preview = false,
-	})
-	road:ClearAllChildren()
-	for name in road:GetAttributes() do
-		road:SetAttribute(name, nil)
+		MarkingStretches = markingStretchesForSourceWindow(
+			data.MarkingStretches,
+			featureOffset,
+			startStation,
+			endStation
+		),
+		KerbStretches = kerbStretchesForSourceWindow(data.KerbStretches, featureOffset, startStation, endStation),
+	}
+	local visualBay = if data.Bay then table.clone(data.Bay) else nil
+	if visualBay then
+		visualBay.StationStuds = featureOffset + visualBay.StationStuds - startStation
 	end
+	local rebuilt = if visualBay then RoadBuilder.BuildWithBay(options, visualBay) else RoadBuilder.Build(options)
+	road:ClearAllChildren()
 	for name, value in rebuilt:GetAttributes() do
-		road:SetAttribute(name, value)
+		-- The owner Model, road id, and endpoint port ids are stable topology
+		-- keys. Feature attributes remain in their durable source coordinate
+		-- space too; the rebuilt Model's localized copies are renderer inputs,
+		-- not owner metadata. Keep every unknown/custom attribute while replacing
+		-- only geometry metadata generated from the new source window.
+		if
+			name ~= "RW_RoadId"
+			and name ~= "RW_StartPortId"
+			and name ~= "RW_EndPortId"
+			and name ~= "RW_BayJson"
+			and name ~= "RW_MarkingStretchesJson"
+			and name ~= "RW_KerbStretchesJson"
+		then
+			road:SetAttribute(name, value)
+		end
 	end
 	for _, child in rebuilt:GetChildren() do
 		child.Parent = road
 	end
 	rebuilt:Destroy()
-	writeSourceSegment(road, source)
+	RoadInstance.StampModel(road, outerCurve, data.ProfileStart, data.ProfileEnd)
+	RoadSource.WriteSegment(road, source)
+	local hasStoredFeatures = data.Bay ~= nil or #data.MarkingStretches > 0 or #data.KerbStretches > 0
+	road:SetAttribute("RW_FeatureSourceOffsetStuds", if hasStoredFeatures then featureOffset else startStation)
 	RoadInstance.StampJunctions(road, data.StartJunctionId, data.EndJunctionId)
 	RoadInstance.StampStructure(road, data.Structure)
-	StructureBuilder.Render(
-		road,
-		PolyCurve.new({ outerSegment }),
-		data.Structure or StructureBuilder.DefaultData(settings),
-		settings
-	)
+	StructureBuilder.Render(road, outerCurve, data.Structure or StructureBuilder.DefaultData(settings), settings)
+	BusStops.Render(road)
 end
 
 -- The radius (studs, from the junction centre) of this junction's pad -
@@ -460,6 +558,11 @@ end
 -- rather than just a fixed snap radius around the centre point, which for
 -- a wide avenue's junction is far smaller than the pad itself.
 function JunctionBuilder.PadRadiusStuds(junctionId: string, settings: Settings.EasyRoadSettings): number?
+	local junctionModel = JunctionInstance.FindById(junctionId)
+	if junctionModel and junctionModel:GetAttribute("RW_JunctionKind") == "Roundabout" then
+		return nil
+	end
+	local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
 	local roads = JunctionInstance.ConnectedRoads(junctionId)
 	if #roads == 0 then
 		return nil
@@ -476,12 +579,8 @@ function JunctionBuilder.PadRadiusStuds(junctionId: string, settings: Settings.E
 		return nil
 	end
 	local margin = PAD_MARGIN_STUDS
-	local junctionModel = JunctionInstance.FindById(junctionId)
-	if junctionModel then
-		local data = JunctionInstance.Read(junctionModel)
-		if data and data.PadMarginStuds then
-			margin = math.clamp(data.PadMarginStuds, 1, 40)
-		end
+	if junctionData and junctionData.PadMarginStuds then
+		margin = math.clamp(junctionData.PadMarginStuds, 1, 40)
 	end
 	return maxHalfWidthStuds + margin
 end
@@ -523,7 +622,7 @@ function JunctionBuilder.GetLayout(junctionId: string, settings: Settings.EasyRo
 		return nil
 	end
 	local junctionData = JunctionInstance.Read(junctionModel)
-	if not junctionData then
+	if not junctionData or junctionData.Kind == "Roundabout" then
 		return nil
 	end
 	local center = junctionData.Position
@@ -621,7 +720,7 @@ function JunctionBuilder.TrimApproaches(
 		return
 	end
 	local junctionData = JunctionInstance.Read(junctionModel)
-	if not junctionData then
+	if not junctionData or junctionData.Kind == "Roundabout" then
 		return
 	end
 	local roads = JunctionInstance.ConnectedRoads(junctionId)
@@ -1117,9 +1216,13 @@ function JunctionBuilder.Rebuild(
 	if not junctionModel then
 		return
 	end
+	local junctionData = JunctionInstance.Read(junctionModel)
 	local geometry = junctionModel:FindFirstChild("Geometry")
 	if geometry then
 		geometry:Destroy()
+	end
+	if not junctionData or junctionData.Kind == "Roundabout" then
+		return
 	end
 
 	local roads = JunctionInstance.ConnectedRoads(junctionId)
@@ -1132,10 +1235,6 @@ function JunctionBuilder.Rebuild(
 		return
 	end
 
-	local junctionData = JunctionInstance.Read(junctionModel)
-	if not junctionData then
-		return
-	end
 	local center = junctionData.Position
 	local thickness = settings.RoadThicknessStuds
 	-- Sidewalk fill needs to sit at the same raised height RoadBuilder gives

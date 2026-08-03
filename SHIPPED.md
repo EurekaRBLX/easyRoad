@@ -4,6 +4,32 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Persistent selectable roundabout editor
+
+Selecting a generated roundabout ring or arm now opens a dedicated React-Lua
+editor for radius, circulating lane count, lane width, Continuous/Solid/Turbo
+markings, pavement, and centre island. Every edit is one Studio undo recording;
+the visible ring Model is rebuilt in place so Selection and non-EasyRoad custom
+attributes survive. The panel also exposes geometry diagnostics, standalone
+deletion, and connected conversion back to an ordinary junction.
+
+Connected builds now retain their original Junction as a
+`Kind = "Roundabout"` topology controller. Road ends keep stable controller,
+road, and port ids. Rebuilds use only that controller's exact connected-road
+set; proximity discovery is restricted to initial placement/connection. Legacy
+connected rings remain read-only because their original road sources are not
+recoverable. Approach trims derive from a durable source segment and preserve
+the untouched far end, raw/custom attributes, structures, bus stops, and
+source-relative coordinates. Transition profiles, bays, and marking/kerb
+stretches are rejected before mutation until safe source slicing exists.
+Removing an approach rebuilds
+the remaining ring; removing the last deletes its controller; deleting a
+connected ring directly restores an ordinary junction.
+
+`roundabout_editor_preview.py` adds a before/after UK bird's-eye contract using
+the canonical roundabout component renderer, including editable lane width,
+appearance toggles, mouths, seams, and marking ownership.
+
 ## Selectable centre/left-edge/right-edge road snapping
 
 Road Tools now shows a persistent **Snap point** dropdown whenever **Snap to
