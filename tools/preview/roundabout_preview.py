@@ -40,6 +40,18 @@ MIN_KERB_GAP_RAD = math.radians(8)
 SECTOR_MARGIN_RAD = math.radians(3)
 MAX_SECTOR_HALF_RAD = math.radians(60)
 SECTOR_INSET_RAD = math.radians(3)
+# A paired highway mouth replaces its terminal hard shoulders with tapered
+# shoulder/kerb wedges.  Their rigid outer facets sit farther inside the merge
+# ray than an ordinary arm's full-width pavement, so the normal three-degree
+# ownership overlap can delete ring sidewalk the taper has not reached yet.
+# The strict component sweep closes the last outer-band crescent at eight
+# degrees.  Keep this shoulder-specific: ordinary mouths still use the tighter
+# three-degree opening, while solo mouths have their own seven-degree rule.
+SHOULDER_SECTOR_INSET_RAD = math.radians(8)
+# A single tangent arm has no splitter/apron blanket under its pavement edge.
+# Keep a little more ring sidewalk than paired mouths so rigid arm quads overlap
+# the ownership ray instead of exposing one-sample outer-band spikes.
+SOLO_SECTOR_INSET_RAD = math.radians(7)
 ARM_HANDLE = 0.30
 ENTRY_SPLIT_SCALE = 0.8
 GORE_SAMPLES = 18
@@ -63,6 +75,7 @@ ROADBUILDER_MARKING_ALT_STUDS = 0.004
 MARKING_LAYER_GAP_STUDS = 0.005
 TURBO_MARKING_LIFT = MARKING_LIFT + ROADBUILDER_MARKING_ALT_STUDS + MARKING_LAYER_GAP_STUDS
 ARM_MARKING_CLIP_SAMPLES = 96
+BAND_EXIT_SAMPLES = 96
 
 
 def split_approach_lanes(components, inbound_sign, style_pav=SW_M):
@@ -94,13 +107,22 @@ def split_approach_lanes(components, inbound_sign, style_pav=SW_M):
             add(groups[1], i)
         elif d == -inbound_sign:
             add(groups[-1], i)
-    for i, c in enumerate(components):
-        if not is_roadway(c) or direction_of(c) != 0:
-            continue
-        for g in groups.values():
-            if g["idx"] and (abs(offs[i][1]-g["left"]) < 1e-6 or abs(offs[i][0]-g["right"]) < 1e-6):
-                add(g, i)
-                break
+    # Grow through contiguous undirected reserve until stable. A single pass
+    # misses the outer member of `[Shoulder, Shoulder, Drive]` when components
+    # are visited left-to-right: only the inner shoulder is adjacent on pass 1.
+    remaining = {i for i, c in enumerate(components)
+                 if is_roadway(c) and direction_of(c) == 0}
+    changed = True
+    while changed:
+        changed = False
+        for i in list(remaining):
+            for g in groups.values():
+                if g["idx"] and (abs(offs[i][1]-g["left"]) < 1e-6
+                                 or abs(offs[i][0]-g["right"]) < 1e-6):
+                    add(g, i)
+                    remaining.remove(i)
+                    changed = True
+                    break
     for g in groups.values():
         for i in sorted(g["idx"]):
             c = components[i]
@@ -124,22 +146,52 @@ def arm_from_group(group, drive_on_left, solo=False, mirrored=False, ring_pav=SW
     lanes = list(reversed(group["lanes"])) if mirrored else list(group["lanes"])
     # The hard shoulder remains in the profile at zero width so the marking
     # port sees Drive/Shoulder and emits a solid separator. Its real paved width
-    # is returned separately and emit_arm tapers that surface to zero.
-    outboard_shoulder = set()
-    cut_shoulder = 0.0
-    indices = range(len(lanes)) if drive_on_left else range(len(lanes) - 1, -1, -1)
-    for i in indices:
-        if lanes[i][0] != "Shoulder":
-            break
-        outboard_shoulder.add(i)
-        cut_shoulder += lanes[i][1]
-    comps = [(kind, 0.0 if i in outboard_shoulder else w, 1 if directional else 0)
-             for i, (kind, w, directional) in enumerate(lanes)]
+    # is returned separately and emit_arm tapers that surface to zero. A solo
+    # one-way highway has open ground on BOTH sides rather than a sibling arm,
+    # so both terminal shoulder runs taper; a paired mouth still tapers only its
+    # traffic-outboard shoulder and leaves unusual internal reserve untouched.
+    tapered_shoulders = set()
+
+    def consume(indices):
+        width = 0.0
+        for i in indices:
+            if lanes[i][0] != "Shoulder":
+                break
+            tapered_shoulders.add(i)
+            width += lanes[i][1]
+        return width
+
+    if solo:
+        cut_left = consume(range(len(lanes)))
+        cut_right = consume(range(len(lanes) - 1, -1, -1))
+    elif drive_on_left:
+        cut_left, cut_right = consume(range(len(lanes))), 0.0
+    else:
+        cut_left, cut_right = 0.0, consume(range(len(lanes) - 1, -1, -1))
+    comps = []
+    previous_tapered = False
+    for i, (kind, width, directional) in enumerate(lanes):
+        tapered = i in tapered_shoulders
+        # A run of hard-shoulder modules is one physical reserve and needs one
+        # semantic Drive/Shoulder boundary, not a stack of zero-width markers.
+        if tapered and previous_tapered:
+            continue
+        comps.append((kind, 0.0 if tapered else width,
+                      1 if directional else 0))
+        previous_tapered = tapered
     # This is the RING-side width. emit_arm replaces the physical Sidewalk
     # part while coordinating it with the shoulder taper outside the lanes.
     if solo:
-        comps.insert(0, ("Sidewalk", ring_pav))
-        comps.append(("Sidewalk", ring_pav))
+        # There is no sibling arm or splitter, but the inboard side still opens
+        # directly onto circulating asphalt. Keep a zero-width semantic
+        # Sidewalk there so emit_arm can taper any SOURCE pavement away; only
+        # the traffic-outboard pavement continues/grows to ring width.
+        if drive_on_left:
+            comps.insert(0, ("Sidewalk", ring_pav))
+            comps.append(("Sidewalk", 0.0))
+        else:
+            comps.insert(0, ("Sidewalk", 0.0))
+            comps.append(("Sidewalk", ring_pav))
     elif drive_on_left:
         comps.insert(0, ("Sidewalk", ring_pav))
     else:
@@ -147,11 +199,45 @@ def arm_from_group(group, drive_on_left, solo=False, mirrored=False, ring_pav=SW
     lm, rm = roadway_edges_m(comps)
     outer = (-lm if drive_on_left else rm) * SCALE
     inner = (rm if drive_on_left else -lm) * SCALE
-    return comps, outer, inner, (lm + rm) / 2, cut_shoulder
+    core_shift = (cut_left - cut_right) / 2
+    return comps, outer, inner, (lm + rm) / 2, (cut_left, cut_right), core_shift
 
 
-def emit_arm(curve, components, cut_pavement_m, cut_shoulder_m, cut_at_start,
-             drive_on_left, marking_bounds=None):
+def retarget_edge_line(parts, curve, cut_at_start, source_offset_m, ring_offset_m):
+    """Shift only the preserved outboard line to its ring-end inset."""
+    if source_offset_m is None or ring_offset_m is None:
+        return
+    marking_half = MARKING_W_M * SCALE / 2
+    for part in parts:
+        if (part.name != "Marking" or part.marking_offset_m is None
+                or abs(part.marking_offset_m - source_offset_m) > 1e-6):
+            continue
+        a, b = part.from_station, part.to_station
+        if a is None or b is None:
+            continue
+
+        def point_at(station):
+            # RoadBuilder interpolates OffsetStartM -> OffsetEndM along the
+            # marking span.  Entry curves end at the ring; exit curves start
+            # there, so the same source/ring pair has opposite station order.
+            alpha = station / curve.length if cut_at_start else 1.0 - station / curve.length
+            offset_m = source_offset_m + (ring_offset_m - source_offset_m) * alpha
+            position, right, _ = curve.frame(station)
+            return (position[0] + right[0] * offset_m * SCALE,
+                    position[1] + right[1] * offset_m * SCALE)
+
+        p0, p1 = point_at(a), point_at(b)
+        length = math.dist(p0, p1)
+        if length <= 1e-6:
+            continue
+        forward = unit((p1[0] - p0[0], p1[1] - p0[1]))
+        center = ((p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2)
+        part.poly = rect(center, right_of(forward), forward, marking_half, length / 2)
+        part.center = center
+
+
+def emit_arm(curve, components, cut_pavement_m, cut_shoulders_m, cut_at_start,
+             drive_on_left, marking_bounds=None, edge_line_offsets_m=None):
     """Emit fixed travel lanes with shoulder and pavement outside them.
 
     The Shoulder component is deliberately zero-width in `components`: it keeps
@@ -161,10 +247,25 @@ def emit_arm(curve, components, cut_pavement_m, cut_shoulder_m, cut_at_start,
     the ring-side width.
     """
     sidewalk_indices = [i for i, c in enumerate(components) if c[0] == "Sidewalk"]
-    needs_taper = cut_shoulder_m > 1e-6 or any(
+    cut_left_shoulder_m, cut_right_shoulder_m = cut_shoulders_m
+    needs_taper = (cut_left_shoulder_m + cut_right_shoulder_m > 1e-6) or any(
         abs(components[i][1] - cut_pavement_m) > 1e-6 for i in sidewalk_indices)
     emitted = emit_road(curve, components, -ARM_SINK,
                         marking_bounds=marking_bounds)
+    # Luau sinks only the arm surfaces. Markings have explicit ring ownership
+    # and remain on the normal paint plane so the outboard edge line can meet
+    # both the source road and ring without a vertical step.
+    for part in emitted:
+        if part.name == "Marking":
+            part.y += ARM_SINK
+    if edge_line_offsets_m is not None:
+        retarget_edge_line(
+            emitted,
+            curve,
+            cut_at_start,
+            edge_line_offsets_m[0],
+            edge_line_offsets_m[1],
+        )
     offs = offsets_m(components)
     max_offset = sum(c[1] for c in components) / 2 * SCALE
     stations = build_stations(curve, MAX_SEGMENT_LENGTH, CHORD_TOLERANCE, max_offset)
@@ -196,10 +297,10 @@ def emit_arm(curve, components, cut_pavement_m, cut_shoulder_m, cut_at_start,
                 emitted.remove(victim)
                 emitted.append(Part("Sidewalk", poly, SIDEWALK_C, center,
                                     -ARM_SINK + 0.125 * SCALE))
-        return emitted, []
+        return emitted, {"left": [], "right": []}
 
     parts = [p for p in emitted if p.name != "Sidewalk"]
-    shoulder_parts = []
+    shoulder_parts = {"left": [], "right": []}
 
     def ring_alpha(station):
         t = station / curve.length if cut_at_start else 1.0 - station / curve.length
@@ -212,8 +313,9 @@ def emit_arm(curve, components, cut_pavement_m, cut_shoulder_m, cut_at_start,
         outward = -1.0 if left_side else 1.0
         inner_m = edge[1] if left_side else edge[0]
         ring_pavement_m = components[index][1]
-        arm_outward = -1.0 if drive_on_left else 1.0
-        side_shoulder_m = cut_shoulder_m if outward == arm_outward else 0.0
+        side = "left" if left_side else "right"
+        side_shoulder_m = (cut_left_shoulder_m if left_side
+                           else cut_right_shoulder_m)
 
         def surface_points(station):
             alpha = ring_alpha(station)
@@ -240,7 +342,7 @@ def emit_arm(curve, components, cut_pavement_m, cut_shoulder_m, cut_at_start,
                 center = (sum(p[0] for p in poly) / 4, sum(p[1] for p in poly) / 4)
                 part = Part("Shoulder", poly, KIND_C["Shoulder"], center, -ARM_SINK)
                 parts.append(part)
-                shoulder_parts.append(part)
+                shoulder_parts[side].append(part)
             if max(pav_w0, pav_w1) * SCALE >= 0.02:
                 poly = [pav_in0, pav_out0, pav_out1, pav_in1]
                 center = (sum(p[0] for p in poly) / 4, sum(p[1] for p in poly) / 4)
@@ -389,6 +491,81 @@ def _convex_intersection(subject, clip, tolerance=1e-9):
     return out
 
 
+def open_angular_parts(parts, center, sectors, selected, clamp=True):
+    """Delete/clip selected Part footprints inside angular ownership sectors."""
+    sectors = clamp_sectors(sectors) if clamp else list(sectors)
+    kept, removed, clipped = [], 0, 0
+    for part in parts:
+        if not selected(part):
+            kept.append(part)
+            continue
+        angle = math.atan2(part.center[1] - center[1], part.center[0] - center[0])
+        angular_half = angular_half_span(part, center, angle)
+        handled = False
+        for sector_angle, ahead, behind in sectors:
+            delta = angle_delta(angle, sector_angle)
+            fully_inside = (delta + angular_half <= ahead
+                            and -delta + angular_half <= behind)
+            if fully_inside:
+                removed += 1
+                handled = True
+                break
+            if delta <= ahead + angular_half and -delta <= behind + angular_half:
+                # Pick the boundary the FOOTPRINT crosses, not the side its
+                # centre happens to sit on.  A long tangential strip can have
+                # its centre inside the sector while its ahead corner already
+                # crosses the ahead ray; `delta > ahead` chose the opposite ray
+                # for precisely that case and left the visible corner behind.
+                ahead_overflow = delta + angular_half - ahead
+                behind_overflow = -delta + angular_half - behind
+                ahead_side = ahead_overflow >= behind_overflow
+                boundary_angle = sector_angle + (ahead if ahead_side else -behind)
+                outside = clip_to_angular_side(
+                    part.poly, center, boundary_angle, 1 if ahead_side else -1)
+                if len(outside) >= 3:
+                    clipped_center = (sum(point[0] for point in outside) / len(outside),
+                                      sum(point[1] for point in outside) / len(outside))
+                    fragment = Part(part.name, outside, part.color, clipped_center, part.y)
+                    fragment.marking_offset_m = part.marking_offset_m
+                    fragment.from_station = part.from_station
+                    fragment.to_station = part.to_station
+                    kept.append(fragment)
+                    clipped += 1
+                else:
+                    removed += 1
+                handled = True
+                break
+        if not handled:
+            kept.append(part)
+    return kept, removed, clipped
+
+
+def check_ring_openings(scene):
+    """Raised pavement and edge paint own different mouth hand-offs."""
+    faults = []
+    sidewalk_intrusions = ring_boundary_intrusions(
+        scene.get("outer_ring_sidewalk", []),
+        scene["center"],
+        scene.get("pavement_sectors", scene.get("sectors", [])),
+    )
+    if sidewalk_intrusions:
+        faults.append(
+            f"{len(sidewalk_intrusions)} sidewalk boundary vertices remain "
+            "inside pavement mouth ownership"
+        )
+    marking_intrusions = ring_boundary_intrusions(
+        scene.get("outer_ring_markings", []),
+        scene["center"],
+        scene.get("edge_marking_sectors", scene.get("sectors", [])),
+    )
+    if marking_intrusions:
+        faults.append(
+            f"{len(marking_intrusions)} outer edge-line vertices remain "
+            "inside full-angle marking ownership"
+        )
+    return faults
+
+
 def _overlap_area(a, b):
     overlap = _convex_intersection(a, b)
     return abs(_signed_area(overlap)) if len(overlap) >= 3 else 0.0
@@ -398,8 +575,9 @@ def check_visual_ownership(scene, area_tolerance=1e-5, height_tolerance=1e-6):
     """3D ownership invariants hidden by the Python painter.
 
     The raster resolves overlap by paint order, while Roblox needs distinct top
-    planes. Turbo deliberately retains the concentric divider and adds the
-    peel, but coincident pieces must not have coplanar top faces.
+    planes. Turbo replaces the concentric divider over its peel arc; where it
+    hands onto the exit arm, any remaining overlap must still have deterministic
+    vertical ownership.
     """
     faults = []
     markings = [part for part in scene["parts"] if part.name == "Marking"]
@@ -412,7 +590,7 @@ def check_visual_ownership(scene, area_tolerance=1e-5, height_tolerance=1e-6):
                     continue
                 if abs(peel.y - ordinary.y) <= height_tolerance:
                     faults.append(
-                        "Turbo peel and concentric divider have coplanar top faces"
+                        "Turbo peel and ordinary marking have coplanar top faces"
                     )
                     return faults
     return faults
@@ -447,6 +625,61 @@ def check_arm_marking_bounds(scene, station_tolerance=1e-5, radius_tolerance=0.0
             if min(math.dist(vertex, scene["center"]) for vertex in part.poly) < ring_kerb - radius_tolerance:
                 faults.append(f"arm line {index}: marking footprint intrudes into ring ownership")
                 break
+    return faults
+
+
+def _point_segment_distance(point, a, b):
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length2 = dx * dx + dy * dy
+    if length2 <= 1e-12:
+        return math.dist(point, a)
+    t = max(0.0, min(1.0,
+                     ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / length2))
+    return math.dist(point, (a[0] + dx * t, a[1] + dy * t))
+
+
+def check_outboard_edge_handoffs(scene, station_tolerance=1e-5,
+                                  footprint_tolerance=0.03):
+    """Every arm keeps one outer line to its exact physical merge station."""
+    faults = []
+    records = [record for record in scene.get("arm_marking_bounds", [])
+               if record.get("preserved")]
+    expected = len(scene.get("arm_kinds", []))
+    if len(records) != expected:
+        faults.append(
+            f"preserved {len(records)} outboard edge lines for {expected} arms"
+        )
+    marking_half = MARKING_W_M * SCALE / 2
+    for index, record in enumerate(records):
+        curve = record["curve"]
+        terminal = curve.length if record["cut_at_start"] else 0.0
+        parts = record.get("parts", [])
+        if not parts:
+            faults.append(f"arm edge {index}: preserved line emitted no parts")
+            continue
+        if record["cut_at_start"]:
+            reaches = max(part.to_station for part in parts) >= terminal - station_tolerance
+        else:
+            reaches = min(part.from_station for part in parts) <= terminal + station_tolerance
+        if not reaches:
+            faults.append(f"arm edge {index}: line stops before its merge station")
+            continue
+
+        position, right, _ = curve.frame(terminal)
+        ring_offset = record.get("ring_offset_m")
+        if ring_offset is None:
+            ring_offset = record["offset_m"]
+        merge = (position[0] + right[0] * ring_offset * SCALE,
+                 position[1] + right[1] * ring_offset * SCALE)
+        distance = min(
+            _point_segment_distance(merge, a, b)
+            for part in parts
+            for a, b in zip(part.poly, part.poly[1:] + part.poly[:1])
+        )
+        if distance > marking_half + footprint_tolerance:
+            faults.append(
+                f"arm edge {index}: geometry misses its ring handoff by {distance:.3f} studs"
+            )
     return faults
 
 
@@ -512,7 +745,7 @@ def suggested_radius_studs(legs, lane_count, lane_w, dol):
         for group, travels_inward in ((inbound, True), (outbound, False)):
             if not group:
                 continue
-            comps, outer, _inner, _centre, _shoulder = arm_from_group(
+            comps, outer, _inner, _centre, _shoulders, _core_shift = arm_from_group(
                 group, dol, solo, not travels_inward)
             width = sum(c[1] for c in comps) * SCALE
             total += width
@@ -527,6 +760,9 @@ def suggested_radius_studs(legs, lane_count, lane_w, dol):
 
 # Angular step of one spiral span - see RoundaboutBuilder.TURBO_ARC_STEP_RAD.
 TURBO_ARC_STEP_RAD = math.radians(2)
+# Match the hard lower sampling bound in RoundaboutBuilder so extreme edited
+# radii cannot make the exit-arm phase unbounded.
+TURBO_MIN_SAMPLE_SPACING_STUDS = 0.5
 # Fraction of each arc over which the boundary makes its outward move. It holds
 # a constant radius for the rest - see RoundaboutBuilder.
 TURBO_FLING_FRACTION = 0.35
@@ -542,6 +778,79 @@ TURBO_PEEL_INTO_M = 9.0
 TURBO_PEEL_MAX_SHARE = 0.5
 
 
+def arm_drive_boundaries(arm, drive_on_left):
+    """Actual Drive/Drive offsets, ordered from the arm's outside inward."""
+    comps = arm["comps"]
+    offs = offsets_m(comps)
+    boundaries = [offs[i][1] * SCALE for i in range(len(comps) - 1)
+                  if comps[i][0] == "Drive" and comps[i + 1][0] == "Drive"]
+    outer_local = -arm["outer"] if drive_on_left else arm["outer"]
+    return sorted(boundaries, key=lambda value: abs(value - outer_local))
+
+
+def outboard_arm_edge_line_offsets_m(components, drive_on_left):
+    """Source/ring offsets of the line that hands onto the ring edge.
+
+    Ordinary arms use the inset roadway-edge line.  A highway arm carries its
+    outboard hard shoulder to the ring as a zero-width semantic component;
+    roundabout marking rules suppress the duplicate inset line and emit the
+    Drive/Shoulder separator exactly at that zero-width boundary instead.  That
+    separator starts at the true shoulder boundary but shifts to the normal
+    inset at the ring, so it meets the ring edge line instead of ending one
+    marking inset radially away from it.
+    """
+    offs = offsets_m(components)
+    roadway = [i for i, component in enumerate(components) if is_roadway(component)]
+    if not roadway:
+        return None, None
+    first, last = roadway[0], roadway[-1]
+    inset = MARKING_W_M * 1.5
+    if drive_on_left:
+        component = components[first]
+        covered = (component[0] == "Shoulder" and component[1] <= 1e-6
+                   and first + 1 < len(components)
+                   and components[first + 1][0] == "Drive")
+        source = offs[first][1] if covered else offs[first][0] + inset
+        return source, offs[first][0] + inset
+    component = components[last]
+    covered = (component[0] == "Shoulder" and component[1] <= 1e-6
+               and last > 0 and components[last - 1][0] == "Drive")
+    source = offs[last - 1][1] if covered else offs[last][1] - inset
+    return source, offs[last][1] - inset
+
+
+def band_exit_angle(curve, arm, from_station, away, center, outer_radius, flow):
+    """Exact first crossing of an arm's outboard edge over the outer band."""
+    def outer_edge(station):
+        position, right, _ = curve.frame(max(0.0, min(curve.length, station)))
+        return (position[0] - right[0] * arm["outer"] * flow,
+                position[1] - right[1] * arm["outer"] * flow)
+
+    def radius_at(station):
+        return math.dist(outer_edge(station), center)
+
+    station = max(0.0, min(curve.length, from_station))
+    step = curve.length / BAND_EXIT_SAMPLES if curve.length > 1e-9 else 0.0
+    if step > 0 and radius_at(station) <= outer_radius:
+        for _ in range(BAND_EXIT_SAMPLES):
+            next_station = max(0.0, min(curve.length, station + away * step))
+            if abs(next_station - station) < 1e-9:
+                break
+            if radius_at(next_station) > outer_radius:
+                inside, outside = station, next_station
+                for _ in range(24):
+                    mid = (inside + outside) / 2
+                    if radius_at(mid) > outer_radius:
+                        outside = mid
+                    else:
+                        inside = mid
+                station = (inside + outside) / 2
+                break
+            station = next_station
+    point = outer_edge(station)
+    return math.atan2(point[1] - center[1], point[0] - center[0])
+
+
 def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, exits):
     """Port of RoundaboutBuilder.buildTurboMarkings.
 
@@ -552,7 +861,7 @@ def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, exits):
     """
     lanes = max(1, int(lanes))
     if lanes < 2 or not exits:
-        return [], []
+        return [], [], []
     lane_studs = lane_m * SCALE
     travel = 1 if drive_on_left else -1
     mw = MARKING_W_M * SCALE
@@ -560,7 +869,7 @@ def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, exits):
     angles = [math.atan2(c.pos(0.0)[1] - center[1], c.pos(0.0)[0] - center[0])
               for c, _ in exits]
 
-    out, spans = [], []
+    out, spans, replacements = [], [], []
     for i, (curve, arm) in enumerate(exits):
         room = 2 * math.pi
         for j, other in enumerate(angles):
@@ -570,27 +879,39 @@ def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, exits):
         if sweep <= 1e-6:
             continue
         into = min(TURBO_PEEL_INTO_M * SCALE, curve.length * 0.9)
-        # Which sign points outward is MEASURED, not assumed - see
-        # RoundaboutBuilder; this has been got wrong twice by reasoning.
-        b, br, _ = curve.frame(0.0)
-        plus = math.hypot(b[0] + br[0]*arm["outer"] - center[0], b[1] + br[1]*arm["outer"] - center[1])
-        minus = math.hypot(b[0] - br[0]*arm["outer"] - center[0], b[1] - br[1]*arm["outer"] - center[1])
-        outer_sign = 1 if plus >= minus else -1
-        # The exit arm may be narrower than the ring - see RoundaboutBuilder.
-        arm_lanes = max(1, int((arm["outer"] + arm["inner"]) / lane_studs + 0.5))
+        target_offsets = arm_drive_boundaries(arm, drive_on_left)
         for k in range(1, lanes):
-            if lanes - k > arm_lanes - 1:
+            target_index = lanes - k
+            if target_index > len(target_offsets):
                 continue
-            a0 = angles[i] - travel * sweep
+            off = target_offsets[target_index - 1]
             r0 = island_r + k * lane_studs
-            off = outer_sign * (arm["outer"] - (lanes - k) * lane_studs)
-            # TWO PHASES, not one blended curve - see RoundaboutBuilder.
+            # A tiny requested ring can place an internal divider at or behind
+            # the centre. It has no meaningful polar arc, and using that radius
+            # as a spatial step denominator explodes into millions of samples.
+            if r0 <= max(mw, 1e-3):
+                continue
+            base, base_right, _ = curve.frame(0.0)
+            target = (base[0] + base_right[0] * off,
+                      base[1] + base_right[1] * off)
+            target_angle = math.atan2(target[1] - center[1], target[0] - center[0])
+            target_radius = math.dist(target, center)
+            a0 = target_angle - travel * sweep
+            # Polar ease to the exit's real boundary radius, then follow that
+            # boundary down the arm. This is what keeps edited ring lane widths
+            # continuous with unequal/custom approach widths.
             arc_n = max(4, math.ceil(sweep / TURBO_ARC_STEP_RAD))
             pts = []
             for j in range(arc_n + 1):
-                ang = a0 + travel * sweep * (j / arc_n)
-                pts.append((center[0] + math.cos(ang) * r0, center[1] + math.sin(ang) * r0))
-            arm_n = max(4, math.ceil(into / max(1e-6, TURBO_ARC_STEP_RAD * r0)))
+                t = j / arc_n
+                eased = t * t * (3 - 2 * t)
+                radius = r0 + (target_radius - r0) * eased
+                ang = a0 + travel * sweep * t
+                pts.append((center[0] + math.cos(ang) * radius,
+                            center[1] + math.sin(ang) * radius))
+            arm_step = max(TURBO_MIN_SAMPLE_SPACING_STUDS,
+                           TURBO_ARC_STEP_RAD * r0)
+            arm_n = max(4, math.ceil(into / arm_step))
             for j in range(1, arm_n + 1):
                 ap, ar, _ = curve.frame(into * j / arm_n)
                 pts.append((ap[0] + ar[0] * off, ap[1] + ar[1] * off))
@@ -609,6 +930,7 @@ def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, exits):
                                 pts[m][1] + (pts[m + 1][1] - pts[m][1]) * f)
                 return pts[-1]
 
+            emitted = False
             d = total - dash
             while d >= 0:
                 q0, q1 = at_len(d), at_len(d + dash)
@@ -618,6 +940,7 @@ def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, exits):
                     mid = ((q0[0] + q1[0]) / 2, (q0[1] + q1[1]) / 2)
                     out.append(Part("Marking", rect(mid, right_of(fwd), fwd, mw / 2, length / 2),
                                     MARK_C, mid, TURBO_MARKING_LIFT))
+                    emitted = True
                     # Tagged with the exit it belongs to. check_turbo needs to
                     # ask about ONE peel's far end against ONE arm's lines;
                     # asked over the whole scene at once the question answers
@@ -629,7 +952,18 @@ def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, exits):
                                   math.atan2(q1[1] - center[1], q1[0] - center[0]),
                                   math.hypot(q1[0] - center[0], q1[1] - center[1])))
                 d -= dash + gap
-    return out, spans
+            if emitted:
+                replacements.append({
+                    "divider_radius": r0,
+                    "sector_angle": a0 + travel * sweep / 2,
+                    "sector_half": sweep / 2,
+                    "exit_index": i,
+                    "divider_index": k,
+                    "target_offset_m": off,
+                    "target_point": target,
+                    "landing_point": pts[-1],
+                })
+    return out, spans, replacements
 
 
 def check_turbo(scene):
@@ -650,7 +984,7 @@ def check_turbo(scene):
         return faults
     lanes, spiral = scene["ring_lanes"], scene["spiral"]
     inner = scene["island_r"]
-    lane_studs = LANE_M * SCALE
+    lane_studs = scene["lane_width_m"] * SCALE
     if lanes < 2:
         if spiral:
             faults.append(f"peel emitted on a {lanes}-lane ring; should fall back")
@@ -658,16 +992,51 @@ def check_turbo(scene):
     if not spiral:
         faults.append("Turbo selected but no peel emitted")
         return faults
+    if not scene.get("turbo_replacements"):
+        faults.append("Turbo emitted peels but did not replace their concentric divider arcs")
     cx, cy = scene["center"]
-    radii = [math.hypot(p.center[0] - cx, p.center[1] - cy) for p in spiral]
+    replacements = scene.get("turbo_replacements", [])
+    replacement_by_key = {
+        (replacement["exit_index"], replacement["divider_index"]): replacement
+        for replacement in replacements
+    }
 
-    # On SOME ring divider - not necessarily the innermost. A ring wider than
-    # its exits emits no peel for the boundaries the arms cannot receive, so
-    # pinning this to inner + one lane failed a correctly-built 3-lane ring.
-    k_at_start = (min(radii) - inner) / lane_studs
-    if abs(k_at_start - round(k_at_start)) > 0.35 or not (1 <= round(k_at_start) <= lanes - 1):
-        faults.append(f"peel starts at r={min(radii):.1f}, which is {k_at_start:.2f} "
-                      f"lanes off the island - not on any ring divider")
+    # Every arm receives only dividers for which it has a real Drive/Drive
+    # boundary, ordered outside-in.  This is deliberately independent of the
+    # edited ring lane width; deriving the arm count from ringLaneWidth is the
+    # bug that made Turbo disappear after changing that editor value.
+    expected = {}
+    for n, (_curve, arm) in enumerate(scene.get("exit_traces", [])):
+        boundaries = arm_drive_boundaries(arm, scene["drive_on_left"])
+        for k in range(1, lanes):
+            target_index = lanes - k
+            if target_index <= len(boundaries):
+                expected[(n, k)] = boundaries[target_index - 1]
+    missing = sorted(set(expected) - set(replacement_by_key))
+    extra = sorted(set(replacement_by_key) - set(expected))
+    if missing:
+        faults.append(f"missing Turbo replacements for actual exit boundaries {missing}")
+    if extra:
+        faults.append(f"Turbo emitted replacements with no exit boundary {extra}")
+    for key, offset_m in expected.items():
+        replacement = replacement_by_key.get(key)
+        if replacement and abs(replacement["target_offset_m"] - offset_m) > 1e-6:
+            faults.append(
+                f"exit {key[0]} divider {key[1]} targets {replacement['target_offset_m']:.3f} m; "
+                f"actual arm boundary is {offset_m:.3f} m"
+            )
+
+    # Replacement metadata is also the base-divider ownership contract.  Each
+    # peel must begin on a real ring divider even if its edited-width handoff
+    # subsequently moves inward or outward.
+    for replacement in replacements:
+        k_at_start = (replacement["divider_radius"] - inner) / lane_studs
+        if (abs(k_at_start - round(k_at_start)) > 1e-6
+                or not (1 <= round(k_at_start) <= lanes - 1)):
+            faults.append(
+                f"peel replacement starts {k_at_start:.3f} lanes off the island, "
+                "not on a ring divider"
+            )
 
     # Landing: each peel's FAR END, against the lane lines of the exit it was
     # built for, and nothing else.
@@ -685,30 +1054,31 @@ def check_turbo(scene):
     # Third rule in this file invalidated by a design change it was not re-read
     # against - see ROUNDABOUT.md 3.8.
     reach = (TURBO_DASH_M + TURBO_GAP_M) * SCALE
-    # Greatest radius is the far end: the peel's radius is monotonic by
-    # construction (ring arc at constant radius, then out along the arm), and
-    # the rule below this one fails the case where it is not. Keyed per
-    # (exit, divider) so a ring handing three of its four boundaries over
-    # correctly cannot cover for the fourth.
+    # Dashes are emitted from the far end back toward the ring, so the first
+    # span's q1 is the physical landing even when an edited lane width makes the
+    # peel move INWARD. Choosing the greatest radius silently picked the start
+    # of those valid peels and is why the old validation missed the editor bug.
     ends: dict = {}
     for n, k, a0, r0, a1, r1 in scene["spiral_spans"]:
-        for a, r in ((a0, r0), (a1, r1)):
-            if (n, k) not in ends or r > ends[(n, k)][1]:
-                ends[(n, k)] = (a, r)
+        ends.setdefault((n, k), (a1, r1))
     for (n, k), (a, r) in sorted(ends.items()):
+        tip = (cx + math.cos(a) * r, cy + math.sin(a) * r)
+        replacement = replacement_by_key.get((n, k))
+        if replacement:
+            miss = math.dist(tip, replacement["landing_point"])
+            if miss > 0.05:
+                faults.append(
+                    f"exit {n} divider {k}: emitted peel misses its edited-width "
+                    f"landing by {miss:.2f} studs"
+                )
         arm_marks = scene["exit_markings"][n] if n < len(scene["exit_markings"]) else []
         if not arm_marks:
             continue
-        tip = (cx + math.cos(a) * r, cy + math.sin(a) * r)
         near = min(math.dist(tip, q.center) for q in arm_marks)
         if near > reach:
             faults.append(f"exit {n} divider {k}: the peel ends {near:.1f} studs from that "
                           f"arm's own lane lines (allow {reach:.1f}) - it hands over to nothing")
 
-    for _, _, _, r0, _, r1 in scene["spiral_spans"]:
-        if r1 < r0 - 0.5:
-            faults.append("peel moves inward along its own length")
-            break
     return faults
 
 
@@ -725,28 +1095,30 @@ def check_arm_kinds(scene):
     for n, arm in enumerate(scene["arm_kinds"]):
         want = sorted((k, round(w, 4)) for k, w, _ in arm["source"] if k != "Shoulder")
         got = sorted((c[0], round(c[1], 4)) for c in arm["comps"]
-                     if c[0] != "Sidewalk" and (c[0] != "Shoulder" or c[1] > 1e-6))
+                     if c[0] not in ("Sidewalk", "Shoulder"))
         if want != got:
             faults.append(f"arm {n} ({arm['role']}): running surface was {want}, arm built {got}")
             continue
         source_shoulder = sum(w for k, w, _ in arm["source"] if k == "Shoulder")
-        if abs(source_shoulder - arm["cut_shoulder"]) > 1e-6:
-            faults.append(f"arm {n} ({arm['role']}): source shoulder is {source_shoulder:.2f} m, "
-                          f"taper received {arm['cut_shoulder']:.2f} m")
+        cut_left, cut_right = arm["cut_shoulders"]
         roadway = [c for c in arm["comps"] if c[0] != "Sidewalk"]
         shoulders = [i for i, c in enumerate(roadway) if c[0] == "Shoulder"]
+        remaining = sum(c[1] for c in roadway if c[0] == "Shoulder")
+        expected_remaining = source_shoulder - cut_left - cut_right
+        if abs(remaining - expected_remaining) > 1e-6:
+            faults.append(
+                f"arm {n} ({arm['role']}): source shoulder reserve is "
+                f"{source_shoulder:.2f} m, tapers consume {cut_left:.2f}+"
+                f"{cut_right:.2f} m but {remaining:.2f} m remains"
+            )
         if source_shoulder <= 1e-6:
             continue
-        if not shoulders or any(roadway[i][1] > 1e-6 for i in shoulders):
-            faults.append(f"arm {n} ({arm['role']}): shoulder is not zero-width at the ring")
-            continue
-        # Outboard = the side the pavement/kerb is on, which armProfileFor puts
-        # at index 0 for left-hand drive and last for right-hand.
-        outboard_end = 0 if scene["drive_on_left"] else len(roadway) - 1
-        if outboard_end not in shoulders:
-            faults.append(f"arm {n} ({arm['role']}): shoulder sits at index {shoulders} of "
-                          f"{len(roadway)} roadway strips, not at the outboard end "
-                          f"({outboard_end}) - it is on the gore side, against the splitter")
+        if cut_left > 1e-6 and (not roadway or roadway[0][0] != "Shoulder"
+                               or roadway[0][1] > 1e-6):
+            faults.append(f"arm {n} ({arm['role']}): left shoulder is not zero-width at the ring")
+        if cut_right > 1e-6 and (not roadway or roadway[-1][0] != "Shoulder"
+                                or roadway[-1][1] > 1e-6):
+            faults.append(f"arm {n} ({arm['role']}): right shoulder is not zero-width at the ring")
     return faults
 
 
@@ -754,40 +1126,54 @@ def check_shoulder_tapers(scene):
     """Measure the emitted shoulder polygons at both ends of every highway arm."""
     faults = []
     for n, taper in enumerate(scene["shoulder_tapers"]):
-        pieces = taper["parts"]
-        expected = taper["cut_shoulder"] * SCALE
-        if expected <= 1e-6:
-            if pieces:
-                faults.append(f"arm {n}: emitted shoulder geometry with no source shoulder")
-            continue
-        if not pieces:
-            faults.append(f"arm {n}: {expected:.2f}-stud source shoulder emitted no taper")
-            continue
-        first, last = pieces[0], pieces[-1]
-        if taper["cut_at_start"]:
-            cut_width = math.dist(first.poly[0], first.poly[1])
-            ring_width = math.dist(last.poly[2], last.poly[3])
-        else:
-            ring_width = math.dist(first.poly[0], first.poly[1])
-            cut_width = math.dist(last.poly[2], last.poly[3])
-        if abs(cut_width - expected) > 0.05:
-            faults.append(f"arm {n}: shoulder is {cut_width:.2f} studs at cut, expected {expected:.2f}")
-        if ring_width > 0.05:
-            faults.append(f"arm {n}: shoulder still {ring_width:.2f} studs wide at ring merge")
+        for side, expected_m in zip(("left", "right"), taper["cut_shoulders"]):
+            pieces = taper["parts"][side]
+            expected = expected_m * SCALE
+            if expected <= 1e-6:
+                if pieces:
+                    faults.append(
+                        f"arm {n} {side}: emitted shoulder geometry with no source shoulder"
+                    )
+                continue
+            if not pieces:
+                faults.append(
+                    f"arm {n} {side}: {expected:.2f}-stud source shoulder emitted no taper"
+                )
+                continue
+            first, last = pieces[0], pieces[-1]
+            if taper["cut_at_start"]:
+                cut_width = math.dist(first.poly[0], first.poly[1])
+                ring_width = math.dist(last.poly[2], last.poly[3])
+            else:
+                ring_width = math.dist(first.poly[0], first.poly[1])
+                cut_width = math.dist(last.poly[2], last.poly[3])
+            if abs(cut_width - expected) > 0.05:
+                faults.append(
+                    f"arm {n} {side}: shoulder is {cut_width:.2f} studs at cut, "
+                    f"expected {expected:.2f}"
+                )
+            if ring_width > 0.05:
+                faults.append(
+                    f"arm {n} {side}: shoulder still {ring_width:.2f} studs wide at ring merge"
+                )
     return faults
 
 
 def shoulder_taper_widths(taper):
-    """Return emitted (cut, ring) widths in studs, or None without geometry."""
-    pieces = taper["parts"]
-    if not pieces:
-        return None
-    first, last = pieces[0], pieces[-1]
-    if taper["cut_at_start"]:
-        return (math.dist(first.poly[0], first.poly[1]),
-                math.dist(last.poly[2], last.poly[3]))
-    return (math.dist(last.poly[2], last.poly[3]),
-            math.dist(first.poly[0], first.poly[1]))
+    """Return emitted (cut, ring) widths for every tapered side."""
+    widths = []
+    for side, expected_m in zip(("left", "right"), taper["cut_shoulders"]):
+        pieces = taper["parts"][side]
+        if expected_m <= 1e-6 or not pieces:
+            continue
+        first, last = pieces[0], pieces[-1]
+        if taper["cut_at_start"]:
+            widths.append((math.dist(first.poly[0], first.poly[1]),
+                           math.dist(last.poly[2], last.poly[3])))
+        else:
+            widths.append((math.dist(last.poly[2], last.poly[3]),
+                           math.dist(first.poly[0], first.poly[1])))
+    return widths
 
 
 def arm_marking_ring_crossing(curve, offset_m, center, ring_kerb, cut_at_start):
@@ -826,9 +1212,18 @@ def arm_marking_ring_crossing(curve, offset_m, center, ring_kerb, cut_at_start):
     return crossing, clip_radius
 
 
-def arm_marking_bounder(curve, center, ring_kerb, cut_at_start, records):
+def arm_marking_bounder(curve, center, ring_kerb, cut_at_start, records,
+                        preserve_offset_m=None, preserve_ring_offset_m=None):
     """Return an emit_road callback mirroring clipArmMarkingLinesAtRing."""
     def bounds(offset_m):
+        if (preserve_offset_m is not None
+                and abs(offset_m - preserve_offset_m) < 1e-6):
+            records.append(dict(curve=curve, offset_m=offset_m,
+                                cut_at_start=cut_at_start, crossing=None,
+                                clip_radius=None, lo=0.0, hi=curve.length,
+                                preserved=True,
+                                ring_offset_m=preserve_ring_offset_m))
+            return 0.0, curve.length
         crossing, clip_radius = arm_marking_ring_crossing(
             curve, offset_m, center, ring_kerb, cut_at_start)
         lo, hi = 0.0, curve.length
@@ -839,7 +1234,8 @@ def arm_marking_bounder(curve, center, ring_kerb, cut_at_start, records):
                 lo = crossing
         records.append(dict(curve=curve, offset_m=offset_m,
                             cut_at_start=cut_at_start, crossing=crossing,
-                            clip_radius=clip_radius, lo=lo, hi=hi))
+                            clip_radius=clip_radius, lo=lo, hi=hi,
+                            preserved=False, ring_offset_m=None))
         return lo, hi
     return bounds
 
@@ -873,12 +1269,14 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
 
     leg_info = []
     ring_curve = circle_segments(center, ring_r, drive_on_left)
-    # Every mode keeps the ring's own concentric divider. Turbo ADDS a peel-off
-    # at each exit on top of it - see RoundaboutBuilder.
+    # Build the ordinary concentric divider first. Turbo later replaces only
+    # the arc owned by each peel, leaving the untouched portions concentric.
     ring_parts = emit_road(ring_curve, rc, solid_lane_lines=(markings == "SolidLanes"))
-    parts_ring_pavement = [p for p in ring_parts if p.name in ("Sidewalk", "Marking")]
+    ring_sidewalk = [p for p in ring_parts if p.name == "Sidewalk"]
+    ring_markings = [p for p in ring_parts if p.name == "Marking"]
 
-    sectors, arm_parts, gore_tris, apron_tris = [], [], [], []
+    pavement_sectors, edge_marking_sectors = [], []
+    arm_parts, gore_tris, apron_tris = [], [], []
     exit_traces = []          # (curve, arm) per exit, for the turbo peel
     exit_markings = []        # per exit arm, that arm's OWN lane lines
     arm_marking_bounds = []   # exact per-offset ring ownership cuts
@@ -918,23 +1316,21 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 return None
             # Junction at the far end (inbound sign +1 above), so the outward
             # arm is the mirrored one - see armProfileFor.
-            comps, outer, inner, road_centre, cut_shoulder = arm_from_group(
+            comps, outer, inner, road_centre, cut_shoulders, core_shift_local = arm_from_group(
                 group, drive_on_left, solo, not travels_inward,
                 SW_M if sidewalk else 0.0)
             merge = ring_kerb - outer
             span_centre = (group["left"] + group["right"]) / 2
-            arm_outer_sign = -1.0 if drive_on_left else 1.0
-            core_shift_local = -arm_outer_sign * cut_shoulder / 2
             core_centre = span_centre + core_shift_local * (1 if travels_inward else -1)
             lat_m = (core_centre - road_centre) if travels_inward else (core_centre + road_centre)
             # Source group kept alongside the built arm so check_arm_kinds can
             # compare the two rather than re-deriving what the arm ought to be.
             arm_kinds.append(dict(role="entry" if travels_inward else "exit",
                                   source=list(group["lanes"]), comps=comps,
-                                  cut_shoulder=cut_shoulder))
+                                  cut_shoulders=cut_shoulders, solo=solo))
             return dict(comps=comps, outer=outer, inner=inner, merge=merge,
                         lat=lat_m*SCALE, cut_pav=group["pav"],
-                        cut_shoulder=cut_shoulder)
+                        cut_shoulders=cut_shoulders)
 
         entry_arm, exit_arm = make(inbound, True), make(outbound, False)
         entry = exit_ = None
@@ -942,37 +1338,45 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
             p0 = (cut[0]+r[0]*entry_arm["lat"], cut[1]+r[1]*entry_arm["lat"])
             p1 = (math.cos(ea)*entry_arm["merge"], math.sin(ea)*entry_arm["merge"])
             entry = arm_curve(p0, inward, p1, rt(ea))
+            edge_offsets = outboard_arm_edge_line_offsets_m(
+                entry_arm["comps"], drive_on_left)
             first_record = len(arm_marking_bounds)
             emitted, shoulder_parts = emit_arm(
                 entry, entry_arm["comps"], entry_arm["cut_pav"],
-                entry_arm["cut_shoulder"], True, drive_on_left,
+                entry_arm["cut_shoulders"], True, drive_on_left,
                 arm_marking_bounder(entry, center, ring_kerb, True,
-                                    arm_marking_bounds))
+                                    arm_marking_bounds,
+                                    edge_offsets[0], edge_offsets[1]),
+                edge_offsets)
             for record in arm_marking_bounds[first_record:]:
                 record["parts"] = [p for p in emitted
                                    if p.marking_offset_m is not None
                                    and abs(p.marking_offset_m - record["offset_m"]) < 1e-9]
             arm_parts += emitted
             shoulder_tapers.append(dict(parts=shoulder_parts,
-                                         cut_shoulder=entry_arm["cut_shoulder"],
+                                         cut_shoulders=entry_arm["cut_shoulders"],
                                          cut_at_start=True))
         if exit_arm:
             p0 = (math.cos(xa)*exit_arm["merge"], math.sin(xa)*exit_arm["merge"])
             p1 = (cut[0]+r[0]*exit_arm["lat"], cut[1]+r[1]*exit_arm["lat"])
             exit_ = arm_curve(p0, rt(xa), p1, (-inward[0], -inward[1]))
+            edge_offsets = outboard_arm_edge_line_offsets_m(
+                exit_arm["comps"], drive_on_left)
             first_record = len(arm_marking_bounds)
             emitted, shoulder_parts = emit_arm(
                 exit_, exit_arm["comps"], exit_arm["cut_pav"],
-                exit_arm["cut_shoulder"], False, drive_on_left,
+                exit_arm["cut_shoulders"], False, drive_on_left,
                 arm_marking_bounder(exit_, center, ring_kerb, False,
-                                    arm_marking_bounds))
+                                    arm_marking_bounds,
+                                    edge_offsets[0], edge_offsets[1]),
+                edge_offsets)
             for record in arm_marking_bounds[first_record:]:
                 record["parts"] = [p for p in emitted
                                    if p.marking_offset_m is not None
                                    and abs(p.marking_offset_m - record["offset_m"]) < 1e-9]
             arm_parts += emitted
             shoulder_tapers.append(dict(parts=shoulder_parts,
-                                         cut_shoulder=exit_arm["cut_shoulder"],
+                                         cut_shoulders=exit_arm["cut_shoulders"],
                                          cut_at_start=False))
             exit_traces.append((exit_, exit_arm))
             # Kept by IDENTITY rather than found later by name or position.
@@ -1110,30 +1514,37 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
             only_curve = entry or exit_
             merge_angle = ea if entry else xa
             outer_radius = ring_kerb + (SW_M*SCALE if sidewalk else 0.0)
-
-            def outer_edge(st):
-                pp, rr, _ = only_curve.frame(max(0.0, min(only_curve.length, st)))
-                return (pp[0]-rr[0]*only["outer"]*flow, pp[1]-rr[1]*only["outer"]*flow)
-
             st = only_curve.length if entry else 0.0
             away = -1 if entry else 1
-            step = only_curve.length/96
-            for _ in range(120):
-                nxt = st + away*step
-                if nxt < 0 or nxt > only_curve.length:
-                    break
-                st = nxt
-                if math.hypot(*outer_edge(st)) > outer_radius:
-                    break
-            pe = outer_edge(st)
-            edge_angle = math.atan2(pe[1], pe[0])
+            edge_angle = band_exit_angle(
+                only_curve, only, st, away, center, outer_radius, flow)
             sweep = angle_delta(merge_angle, edge_angle)
-            half = max(0, abs(sweep)/2 - SECTOR_INSET_RAD)
-            sectors.append((edge_angle + sweep/2, half, half))
+            center_angle = edge_angle + sweep/2
+            pavement_half = max(0, abs(sweep)/2 - SOLO_SECTOR_INSET_RAD)
+            edge_half = abs(sweep)/2
+            pavement_sectors.append((center_angle, pavement_half, pavement_half))
+            edge_marking_sectors.append((center_angle, edge_half, edge_half))
         else:
-            e_half = max(0, esplit-SECTOR_INSET_RAD)
-            x_half = max(0, split-SECTOR_INSET_RAD)
-            sectors.append((a, e_half if flow > 0 else x_half, x_half if flow > 0 else e_half))
+            has_tapered_shoulder = any(
+                sum(arm["cut_shoulders"]) > 1e-6
+                for arm in (entry_arm, exit_arm)
+                if arm is not None
+            )
+            pavement_inset = (SHOULDER_SECTOR_INSET_RAD
+                              if has_tapered_shoulder else SECTOR_INSET_RAD)
+            e_half = max(0, esplit-pavement_inset)
+            x_half = max(0, split-pavement_inset)
+            pavement_sectors.append(
+                (a, e_half if flow > 0 else x_half,
+                 x_half if flow > 0 else e_half)
+            )
+            # These rays are the arm endpoints themselves.  Do not inset or
+            # neighbour-clamp them: moving either ray breaks the exact tangent
+            # handoff the preserved arm edge line was built to meet.
+            edge_marking_sectors.append(
+                (a, esplit if flow > 0 else split,
+                 split if flow > 0 else esplit)
+            )
         leg_info.append(dict(cut=cut, inward=inward))
 
         far = (cut[0]-inward[0]*70, cut[1]-inward[1]*70)
@@ -1141,60 +1552,74 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                                 (far[0]+2*(cut[0]-far[0])/3, far[1]+2*(cut[1]-far[1])/3), cut)])
         arm_parts += emit_road(stem, spoke_profile)
 
-    cl = clamp_sectors(sectors)
+    pavement_cl = clamp_sectors(pavement_sectors)
+    edge_raw = list(edge_marking_sectors)
     min_radius = ring_kerb - MARKING_W_M*1.5*SCALE - 0.5
-    kept, removed, clipped = [], 0, 0
-    for p in ring_parts:
-        if p in parts_ring_pavement:
-            rad = math.hypot(*p.center)
-            if rad >= min_radius:
-                ang = math.atan2(p.center[1], p.center[0])
-                angular_half = angular_half_span(p, center, ang)
-                handled = False
-                for sa, ah, bh in cl:
-                    delta = angle_delta(ang, sa)
-                    if delta <= ah and -delta <= bh:
-                        removed += 1
-                        handled = True
-                        break
-                    if delta <= ah+angular_half and -delta <= bh+angular_half:
-                        ahead_side = delta > ah
-                        boundary_angle = sa + (ah if ahead_side else -bh)
-                        outside = clip_to_angular_side(
-                            p.poly, center, boundary_angle, 1 if ahead_side else -1)
-                        if len(outside) >= 3:
-                            clipped_center = (sum(q[0] for q in outside)/len(outside),
-                                              sum(q[1] for q in outside)/len(outside))
-                            kept.append(Part(p.name, outside, p.color,
-                                             clipped_center, p.y))
-                            clipped += 1
-                        else:
-                            removed += 1
-                        handled = True
-                        break
-                if handled:
-                    continue
-        kept.append(p)
-    parts = kept + arm_parts
-    outer_ring_parts = [
-        p for p in kept
-        if p.name in ("Sidewalk", "Marking") and math.dist(p.center, center) >= min_radius
-    ]
-    spiral, spiral_spans = (
+    kept, removed, clipped = open_angular_parts(
+        ring_parts,
+        center,
+        pavement_cl,
+        lambda part: part in ring_sidewalk,
+        clamp=False,
+    )
+    kept, edge_removed, edge_clipped = open_angular_parts(
+        kept,
+        center,
+        edge_raw,
+        lambda part: part in ring_markings
+        and math.dist(part.center, center) >= min_radius,
+        clamp=False,
+    )
+    removed += edge_removed
+    clipped += edge_clipped
+    spiral, spiral_spans, turbo_replacements = (
         turbo_spiral(center, ring_r, island_r, ring_lanes, lane_width_m, drive_on_left,
                      exit_traces)
-        if markings == "Turbo" else ([], []))
+        if markings == "Turbo" else ([], [], []))
+    # Replace, do not paint over, the ordinary concentric divider over each
+    # peel arc. Mixed short/open-road and long/hazard dash phases are the
+    # doubled "extra markings" visible in Studio.
+    tolerance = max(0.5, MARKING_W_M * SCALE * 1.5)
+    for replacement in turbo_replacements:
+        divider_radius = replacement["divider_radius"]
+        sector_angle = replacement["sector_angle"]
+        sector_half = replacement["sector_half"]
+        kept, turbo_removed, turbo_clipped = open_angular_parts(
+            kept,
+            center,
+            [(sector_angle, sector_half, sector_half)],
+            lambda part, radius=divider_radius: (
+                part.name == "Marking"
+                and abs(math.dist(part.center, center) - radius) <= tolerance
+            ),
+            clamp=False,
+        )
+        removed += turbo_removed
+        clipped += turbo_clipped
+    parts = kept + arm_parts
+    outer_ring_sidewalk = [p for p in kept if p.name == "Sidewalk"]
+    outer_ring_markings = [
+        p for p in kept
+        if p.name == "Marking" and math.dist(p.center, center) >= min_radius
+    ]
+    outer_ring_parts = outer_ring_sidewalk + outer_ring_markings
     parts += spiral
     return dict(tag=tag, parts=parts, gore=gore_tris, apron=apron_tris,
                 spiral=spiral, spiral_spans=spiral_spans, markings=markings,
-                exit_markings=exit_markings, arm_kinds=arm_kinds,
+                turbo_replacements=turbo_replacements,
+                exit_markings=exit_markings, exit_traces=exit_traces,
+                arm_kinds=arm_kinds,
                 arm_marking_bounds=arm_marking_bounds,
                 shoulder_tapers=shoulder_tapers,
                 outer_ring_parts=outer_ring_parts,
+                outer_ring_sidewalk=outer_ring_sidewalk,
+                outer_ring_markings=outer_ring_markings,
                 ring_r=ring_r, ring_lanes=ring_lanes, lane_width_m=lane_width_m,
                 drive_on_left=drive_on_left,
                 island_r=island_r, island=island, legs=leg_info,
-                sectors=cl,
+                sectors=pavement_cl,
+                pavement_sectors=pavement_cl,
+                edge_marking_sectors=edge_raw,
                 outerR=outerR, ring_kerb=ring_kerb, cutR=cutR, center=center,
                 n_ring=len(ring_parts), n_arms=len(arm_parts), removed=removed,
                 clipped=clipped)
@@ -1382,7 +1807,12 @@ def scan_mouths(scene, span=70.0, samples=420, steps=40, min_gap=0.2, max_skip=6
         reach = math.hypot(cut[0] - scene["center"][0], cut[1] - scene["center"][1]) - scene["outerR"]
         if reach <= 0:
             continue
-        for si in range(steps + 1):
+        # The exact ring ownership ray is a shared polygon boundary. The
+        # ray-based `point_in` predicate deliberately excludes some boundary
+        # points, so sampling `si == steps` manufactures a one-row "hole" at
+        # the mathematical handoff. scan_gaps owns the ring footprint itself;
+        # this sweep owns the open interval from the cut up to that ray.
+        for si in range(steps):
             at = reach * si / steps           # 0 = the cut, reach = the ring
             # `inward` points from the cut toward the centre, so stepping into
             # the mouth is PLUS inward. Subtracting it walked the other way,
@@ -1570,14 +2000,13 @@ def report(scene, holes, pitch, hairline):
           f"{len(scene['gore'])} gore tris, {scene['removed']} ring pavement parts "
           f"removed and {scene['clipped']} boundary parts clipped in mouths")
     ok = True
-    boundary_intrusions = ring_boundary_intrusions(
-        scene["outer_ring_parts"], scene["center"], scene["sectors"])
-    if boundary_intrusions:
+    opening_faults = check_ring_openings(scene)
+    if opening_faults:
         ok = False
-        print(f"    RING OPENING: {len(boundary_intrusions)} boundary vertices "
-              f"still intrude into mouth sectors")
+        for fault in opening_faults:
+            print(f"    RING OPENING: {fault}")
     else:
-        print("    ring openings: no sidewalk/edge-line boundary intrusion")
+        print("    ring openings: inset pavement and full-angle edge-line handoffs are clear")
     mouth = scan_mouths(scene)
     mouth_over = [m for m in mouth if m["kind"] == "overhang"]
     if mouth_over:
@@ -1604,11 +2033,14 @@ def report(scene, holes, pitch, hairline):
     for fault in check_shoulder_tapers(scene):
         ok = False
         print(f"    SHOULDER: {fault}")
-    shoulder_widths = [shoulder_taper_widths(t) for t in scene["shoulder_tapers"]
-                       if t["cut_shoulder"] > 1e-6]
-    shoulder_widths = [w for w in shoulder_widths if w is not None]
+    for fault in check_outboard_edge_handoffs(scene):
+        ok = False
+        print(f"    EDGE HANDOFF: {fault}")
+    shoulder_widths = [width
+                       for taper in scene["shoulder_tapers"]
+                       for width in shoulder_taper_widths(taper)]
     if shoulder_widths:
-        print(f"    shoulder taper: {len(shoulder_widths)} arms, "
+        print(f"    shoulder taper: {len(shoulder_widths)} arm sides, "
               f"cut {min(w[0] for w in shoulder_widths):.2f}.."
               f"{max(w[0] for w in shoulder_widths):.2f} studs -> ring "
               f"{max(w[1] for w in shoulder_widths):.2f} studs")
@@ -1666,9 +2098,22 @@ def highway(lanes_each_way, dol, lane=LANE_M, shoulder=SHOULDER_M, median=MEDIAN
     return left + [("Median", median, 0)] + right
 
 
-def case(ring_r, ring_lanes, drive_on_left, legs, markings="Continuous"):
+def one_way_highway(lanes, into_ring, dol, lane=LANE_M,
+                     outer_shoulder=SHOULDER_M, inner_shoulder=None):
+    """Mirror the built-in one-way highway, including both shoulders."""
+    if inner_shoulder is None:
+        inner_shoulder = max(SHOULDER_M * 0.4, 0.8)
+    direction = 1 if into_ring else -1
+    outer = ("Shoulder", outer_shoulder, 0)
+    inner = ("Shoulder", inner_shoulder, 0)
+    drives = [("Drive", lane, direction)] * lanes
+    return ([outer] + drives + [inner]) if dol else ([inner] + drives + [outer])
+
+
+def case(ring_r, ring_lanes, drive_on_left, legs, markings="Continuous",
+         lane_width_m=LANE_M):
     return dict(ring_r=ring_r, ring_lanes=ring_lanes, drive_on_left=drive_on_left,
-                legs=legs, markings=markings)
+                legs=legs, markings=markings, lane_width_m=lane_width_m)
 
 
 def CASE_TABLE(dol_default=True):
@@ -1707,6 +2152,14 @@ def CASE_TABLE(dol_default=True):
                        markings="Turbo"),
         "turbo3x": case(80, 3, False, [(a, two_way(2, 2, False)) for a in (270, 30, 150)],
                         markings="Turbo"),
+        # Deliberately far from the approach width. The retired floor-based
+        # algorithm inferred only one arm lane from 7.3 / 4.4 and emitted no
+        # peel; the actual Drive/Drive boundary still gives Turbo a handoff.
+        "turbo_width": case(
+            95, 3, True,
+            [(a, two_way(2, 2, True)) for a in (0, 90, 180, 270)],
+            markings="Turbo", lane_width_m=4.4,
+        ),
         # Shoulders. A hard shoulder is Direction=0 roadway and was arriving at
         # the mouth as a running lane - see check_arm_kinds. Both hands, because
         # which side the shoulder sits on flips with the hand of the road, and
@@ -1719,6 +2172,12 @@ def CASE_TABLE(dol_default=True):
             (90, two_way(2, 2, True)),
             (180, highway(3, True)),
             (270, two_way(1, 1, True)),
+        ]),
+        "hw_oneway": case(95, 3, True, [
+            (0, one_way_highway(1, True, True)),
+            (90, one_way_highway(3, False, True)),
+            (180, one_way_highway(2, True, True)),
+            (270, one_way_highway(3, False, True)),
         ]),
     }
 

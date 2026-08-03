@@ -80,6 +80,23 @@ is implemented; the panel reports the blocking approach rather than moving it.
 multinode pad. Centre movement is intentionally not exposed because moving a
 connected topology owner safely is a separate operation.
 
+The initial circulating-lane field is profile-derived. For each connected
+endpoint, `RoadProfile.MaxMotorLanesPerCarriageway` counts only positive-width
+Drive components, separates carriageways at a Median, and counts direction
+signs independently. The maximum wins: a divided 3/2 approach suggests 3, an
+undivided 2+2 suggests 2, and a five-lane one-way suggests 5. Shoulders,
+pavement, cycle lanes, parking and bays never inflate the result. The panel
+follows that advice until the user edits the field, then preserves the explicit
+choice.
+
+Conversion has no Highway-category gate. Directed one-way roads and legacy
+single-Drive profiles can form mouths; the latter keep one full-width lane in
+the shared flare rather than being halved. The remaining preflight restriction
+is source topology: connected approaches must still expose exactly one
+recoverable segment, with no transition, bay, or marking/kerb stretch that
+would need source-window slicing. Multi-segment parallel carriageways are
+therefore still blocked even though their road profiles are valid.
+
 Legacy standalone rings remain editable. A legacy ring with generated arms but
 no controller is read-only because its already-shortened source approaches
 cannot be reconstructed safely; recreate that junction once to opt in.
@@ -114,7 +131,18 @@ with `atStart` (`inboundSign = if atStart then -1 else 1`). Halving breaks the
 moment a road is asymmetric: a 3/1 dual carriageway gets two 2-lane arms that
 line up with neither side, and a one-way road gets an entry *and* an exit where
 only one exists. One-way approaches get a single arm with pavements on both
-sides and no splitter island.
+sides and no splitter island. Their outer pavement-band handoff is located by
+`bandExitAngle`: 96 samples find the first crossing bracket and 24 bisections
+put the sector edge on the real curve. This helper must remain above
+`buildMouth`; its earlier accidental omission made every solo one-way mouth
+throw at runtime.
+
+One compatibility exception is deliberate. A legacy/custom profile containing
+exactly one positive-width, undirected Drive cannot express which traffic flow
+owns it. Splitting it geometrically creates two half-width non-lanes, so
+`splitUndirected` instead gives the shared mouth one full-width entry flare and
+one full-width exit flare. Profiles with real direction metadata still produce
+only their physically valid arm.
 
 ### 3.4 The mouth sector is inset, never expanded
 Deleting less ring pavement than the arms cover is invisible. Deleting more is
@@ -209,33 +237,40 @@ start one probe BEFORE it. Apron rungs are also sunk by `ARM_SINK_STUDS`: the
 arms' Parts are dropped after building but their curves are not, so an apron
 laid on the curve would sit proud of the carriageway it is continuous with.
 
-### 3.8 Turbo is a concentric divider plus an exit peel
-The authoritative design keeps the same constant-width annulus and the same
-ordinary concentric Drive/Drive divider as Continuous mode. Turbo adds a short
-dashed peel at each exit; it does **not** suppress that divider and does not
-migrate every boundary across the full arc. Earlier text in this section mixed
-that rejected full-ring spiral with the shipped peel design and contradicted
-the implementation.
+### 3.8 Turbo replaces a concentric-divider arc with an exit peel
+Turbo starts from the same constant-width annulus and concentric Drive/Drive
+divider as Continuous mode. It does **not** spiral the full ring. For each exit,
+`buildTurboMarkings` owns one bounded arc; `openTurboReplacementArcs` clips the
+ordinary divider only over that arc and leaves every other portion concentric.
+Painting both lines together is not acceptable: their different dash phases
+fill one another's gaps and produced the excess white strokes reported in
+Studio.
 
-The peel holds the divider's radius for most of its run, then moves outward
-over `TURBO_FLING_FRACTION = 0.35` of the available exit span and hands over to
-the exit arm's own lane line. Dashes are walked backwards from the exit so the
-last one lands at the handover. `buildTurboMarkings` emits these Parts only
-after the mouth angles and exit traces exist; the base concentric divider still
-comes from the normal roundabout marking plan.
+The peel targets the exit profile's actual adjacent Drive/Drive boundary.
+`armDriveBoundaryOffsetsStuds` orders those boundaries from the outboard edge
+toward the splitter, excluding shoulders, parking and other non-Drive reserve.
+Ring divider `k` maps to the corresponding outside-in boundary; if a narrower
+exit has no such boundary, that peel is omitted instead of being aimed past the
+arm's inner edge.
 
-Python resolves the coincident base-divider/peel phase by painter order. Studio
-cannot rely on coplanar Part order, so `TURBO_MARKING_LIFT_STUDS` puts the peel's
-top face 0.005 studs above RoadBuilder's highest alternate marking layer. This
-changes only 3D ownership, not the accepted bird's-eye appearance.
+Changing the ring lane width can put its divider at a different radius from the
+arm boundary. The polar phase therefore smoothsteps from the ring radius to the
+real target radius with zero radial derivative at both ends, then follows the
+exit arm's own line. It is sampled geometrically, not inferred from total arm
+width divided by `laneWidthM`, so edited and unequal/custom widths keep a real
+handoff. Dashes are walked backwards from the arm end so the last dash lands at
+that handover.
 
-**The ring's divider stays concentric under every mode.** What makes a turbo a
-turbo here is a **peel-off at each exit**, drawn on top of it: a short dashed
-line that leaves the divider a share of the way back from the exit
-(`TURBO_FLING_FRACTION` of the gap to the previous exit, so it scales with leg
-count) and swings out one lane width, arriving at the ring's outer edge exactly
-on the exit. Dashes are walked backwards from that terminus so one lands flush
-on it — the end of the mark is the whole point of it.
+`TURBO_MARKING_LIFT_STUDS` still gives the peel deterministic vertical
+ownership where it follows arm paint. The Python pipeline models the same
+replacement sectors and validates against the scene's edited `lane_width_m`;
+it no longer gets a pass from painter order or a hard-coded default width.
+
+**The divider is concentric outside each replacement sector.** What makes the
+mode Turbo is the exit peel, not a continuously migrating annulus. The sector
+scales with the angular room to the previous exit, while the end target comes
+from that exit's own profile. This distinction is important: the former is ring
+geometry; the latter is lane mathematics.
 
 Four rounds were spent instead trying to spiral the WHOLE ring, and every one
 was wrong in a different way. Recorded so nobody tries again:
@@ -247,10 +282,8 @@ was wrong in a different way. Recorded so nobody tries again:
 | entry edge → exit edge | delivered exactly (53.9° vs 55.0°) but drew nothing across the mouths, leaving the divider on ~30% of the ring |
 | exit → exit | full coverage and correct delivery, but a 13-stud jump at every exit reads as two unrelated lines, and driving the divider to the kerb pinches the outer lane to zero exactly where a 2-lane exit needs it widest |
 
-The last of those is what settled it: a full-ring spiral cannot both stay
-concentric-looking and hand off cleanly, because our exits are two lanes wide
-and the ring only has two. A concentric divider plus a peel does both, and it is
-what the reference photographs actually show.
+The last of those settled the ownership shape: a full-ring spiral cannot both
+stay concentric-looking and hand off cleanly. A bounded replacement peel can.
 
 **The peel ends on the exit arm's own lane line**, not on the ring. That took
 threading the exit arm's `PolyCurve` and `ArmProfile` out of `buildMouth`
@@ -258,43 +291,30 @@ threading the exit arm's `PolyCurve` and `ArmProfile` out of `buildMouth`
 line using ring coordinates alone and every one ended on the ring's outer EDGE
 line instead, because the line they were aiming at is out in the arm and moving.
 
-Two things about how it is built, both learned by getting them wrong:
+Two rules keep that handoff stable:
 
-- **The peel is TWO PHASES, and there is nothing to interpolate.** It is the
-  ring's own divider as far as the exit, then the exit arm's own lane line.
-  Those two already join: the arm merges **tangentially** and its outer edge
-  lands on the ring's kerb, so at the merge the arm's boundary k lanes in from
-  that edge *is* the ring's boundary k lanes out from the island — position and
-  heading both continuous, and the radius monotonic because phase one holds it
-  constant and phase two only runs outward. Two constructions came first. A
-  cubic pinned to the ring tangent at one end and the arm tangent at the other
-  sagged: measured r=57.8 against a divider at 66.4, a marking bulging eight
-  studs toward the island. Capping the handles did not help — the span is 61° of
-  arc once the arm's own swing is counted, and no handle length makes a
-  straight-ish chord follow a circle that far. Blending the two curves by
-  progress cured the sag but pairs mismatched parameters: early on it mixes a
-  ring point with an arm point 40° away, and the chord between them cuts inward.
-  1.4 studs on a 3-lane ring — small, but a kink in the one line a driver is
-  being asked to follow out of the roundabout, and it was the 3-lane cases that
-  surfaced it.
-- **Which offset sign points outward is MEASURED, not assumed.** That was got
-  wrong twice: once by omitting the flow factor (invisible on left-hand drive,
-  mirrored on right) and once by adding it (target 22 studs the wrong way, peel
-  diving to r=47 inside a ring whose divider is at 66). Comparing the two
-  candidate radii at the merge cannot be wrong on either hand.
+- **Use the profile boundary, not lane-width division.** The old
+  `(OuterOffset + InnerOffset) / laneStuds` estimate coupled arm lane count to
+  the editable ring width. Changing the width could make the inferred count
+  drop and suppress every peel. Adjacent Drive components are now the only
+  destination list.
+- **Interpolate radius in polar space, then follow the arm.** A free cubic
+  across a long ring arc sags toward the island; blending unrelated ring/arm
+  parameters kinks. Smoothstep changes only radius while angle follows the
+  ring, reaching the real boundary with zero radial slope before the arm phase.
 
 Also not built, the other half of "turbo on the arms": **lane arrows and
 destination legends on the approaches**, which is how a real turbo tells a
 driver which lane to pick. A `Markings.lua` job on ordinary one-way roads, not
 ring geometry.
 
-It runs after `openRingPavement`, deliberately: that pass deletes ring pavement
-and edge lines inside the mouth sectors, and these parts must survive there.
-Running first would hand them to a `ringPavement` list captured before they
-existed.
+It runs after the mouth openings, deliberately. Mouth ownership first removes
+outer ring paint where an arm takes over. Turbo then emits the peels and clips
+only the matching pre-captured concentric dividers over their replacement
+sectors; peel Parts themselves are never candidates for that clip.
 
-Falls back to a plain ring on one lane (no boundary to spiral) or one mouth (no
-arc to spiral along).
+Falls back to a plain ring on one circulating lane, with no exits, or when an
+exit has no compatible Drive/Drive boundary for a particular divider.
 
 ### 3.8b A shoulder is a tapered reserve behind a solid line, not a lane
 A `LaneGroup` carries a `LaneSpec { Kind, WidthM, Directional }` per strip, not
@@ -322,10 +342,14 @@ things changes nothing you can see:
 Either one alone puts the hard shoulder on the **gore** side of the mouth,
 against the splitter island. But preserving its kind and full width all the way
 to the ring is also wrong: it still draws three surface strips feeding a
-two-lane ring. `armProfileFor` now replaces only the contiguous OUTBOARD
-shoulder with a zero-width Shoulder marker. That marker keeps the semantic
-Drive/Shoulder boundary, so `Markings.lua` draws the required solid line, while
-the two Drive components remain the only running lanes at the merge.
+two-lane ring. `armProfileFor` replaces each tapered terminal shoulder with a
+zero-width Shoulder marker. Paired entry/exit arms consume only the contiguous
+traffic-outboard run; a solo one-way highway consumes both terminal runs and
+stores their left/right widths independently. Those markers keep the semantic
+Drive/Shoulder boundaries, so `Markings.lua` draws the required solid lines,
+while Drive components remain the only running lanes at the merge. The
+remaining roadway centre is shifted by `(leftShoulder - rightShoulder) / 2`, so
+asymmetric one-way shoulders do not slide the live lanes sideways.
 
 **The arm's pavement is load-bearing, and now tapers.** An arm needs one at
 `style.SidewalkWidthM` by the ring even when its approach has none. Keeping it
@@ -336,11 +360,14 @@ it is the arm's pavement that covers the band from the ring's kerb out to its
 outer edge there. Removing it trades the step for **6 studs of bare ground** on
 exactly the highway legs.
 
-`buildArm` now fills two coordinated edge-anchored surfaces outside the fixed
-travel lanes. The shoulder smoothsteps from full width at the cut to zero at the
-merge. Pavement starts outside the current shoulder edge and grows from the
-approach's real width (zero for a motorway) to the ring width, so the surfaces
-never overlap and never expose ground. The three highway cases measure
+`buildArm` now fills coordinated edge-anchored surfaces outside the fixed
+travel lanes. Each terminal shoulder smoothsteps independently from full width
+at the cut to zero at the merge. Pavement starts outside the current shoulder
+edge and grows from the approach's real width (zero for a motorway) to the ring
+width on the traffic-outboard side. A solo arm's inboard pavement instead
+tapers to zero before the circulating carriageway; carrying ring-width pavement
+there produces the long raised kerb sweep that used to cross the annulus. The
+surfaces therefore neither overlap nor expose ground. The highway cases measure
 0.00 / 0.00 / 0.10 studs of seam step; every 3.3 m shoulder measures
 11.78 -> <=0.02 studs (the surface-emission cutoff); none carries a
 `KNOWN_OPEN` exception.
@@ -544,16 +571,20 @@ sector-boundary clip in section 5.4 now removes only those fragments.
 The later live comparison exposed a separate painter-order mismatch. Python
 draws the sunk arms before the ring deck; Studio left their marking tops up to 0.009
 studs proud. Each arm line is now bounded at its own offset's expanded ring-kerb
-crossing (`FromStationStuds` on exits, `ToStationStuds` on entries). Turbo keeps
-the same concentric-divider-plus-peel pixels but puts the peel on a distinct top
-plane. `tools/preview/roundabout_parity_contract.py` locks those 3D ownership
-rules with five destructive break-tests.
+crossing (`FromStationStuds` on exits, `ToStationStuds` on entries), except the
+outboard edge line, which continues to the exact tangent handoff. Turbo replaces
+the base divider over the peel arc and uses a distinct top plane where the peel
+follows arm paint. `tools/preview/roundabout_parity_contract.py` locks the 3D
+ownership rules with destructive break-tests.
 
-Requested on top of that: a **Turbo / Continuous** toggle in the roundabout
-build panel, with a default in regional settings.
+The Continuous/SolidLanes/Turbo selector is available per roundabout and has a
+regional default.
 
 ### 5.3c ~~A real TURBO roundabout~~ — SHIPPED, see §3.8
-Built as a third `RoundaboutMarkings` mode. Rule and reasoning in §3.8.
+Built as a third `RoundaboutMarkings` mode. The lane-width regression is fixed:
+peels resolve actual exit Drive/Drive component boundaries, ease to their real
+radii, and replace (rather than overlay) the base divider over each owned arc.
+Rule and reasoning are in §3.8.
 
 Not built, and not needed for the markings to be right: **entry lanes are not
 matched to spiral lanes.** A driver should be committed to a destination by the
@@ -591,21 +622,32 @@ seam with its approach. Treat it as a lead, not a closure. What it does settle
 is why the overhang check could not find it: the check excludes the splitter
 island by identity, and the splitter island was the thing at fault.
 
-The Lua still replaces the constant-width raised pavement Part touching the
-approach cut with exact station-edge triangles, but the next Studio screenshot
-proved that was not the reported wedge. The visible defect was a ring sidewalk
-Part straddling the angular edge of a mouth: `openRingPavement` kept it because
-its centre was outside, even though its corner was inside.
+The controller-side end of the source road now opts into RoadBuilder's exact
+raised cap too. Its first/last Sidewalk or Median interval ends on the true
+station plane instead of projecting a padded box into the generated arm;
+interior intervals retain overlap. The older arm-local pavement-cap replacement
+remains for the other side of that seam.
+
+The visible ring-side defect was a sidewalk Part straddling the angular edge of
+a mouth: `openRingPavement` kept it because its centre was outside, even though
+its corner was inside.
 
 The opening pass now measures the full Part footprint. A fully interior Part is
 deleted; a straddler is clipped by the radial boundary half-plane and its exact
-outside polygon is triangulated back into the ring. The outer edge-line Parts
-use the same operation, removing the excess white slashes. Whole-Part deletion
-was rejected because it opens multi-stud holes on three-leg rings. The Python
-port models and asserts the clipped boundary. Next step is the rebuilt Studio
-look; keep this open until the reported overlap is visibly gone.
+outside polygon is triangulated back into the ring. Surface and paint ownership
+are deliberately separate: pavement keeps a small conservative angular inset,
+while the outer ring edge line opens to the full merge angles and the matching
+arm edge line is preserved to the same tangent handoff. Arm surfaces are sunk;
+their markings remain on the normal paint plane. Whole-Part deletion was
+rejected because it opens multi-stud holes on three-leg rings. The Python port
+models and asserts the clipped boundary. Next step is the rebuilt Studio look;
+keep this open until the reported overlap is visibly gone.
 
 ### 5.5 Smaller, known limits
+- **Multi-segment approach sources.** Connected editable conversion currently
+  requires exactly one recoverable segment. This blocks curved parallel
+  carriageways even though Highway, one-way, and one-lane profiles themselves
+  are accepted. General source-window slicing is the required fix.
 - **Crowded rings.** 5+ legs, or wide approaches on a small radius, squeeze the
   split until the arms run up against each other partway along. A 4-leg ring
   with legs 65° apart at R=45 now scans clean, so this is narrower than it was.
@@ -629,7 +671,7 @@ of failures that are expected today. See `tools/preview/README.md`.
 | `scan_mouths` | bare ground **and** overhang, cut → ring | a wrong marking (it counts a marking Part as coverage); anything narrower than two sample pitches; whether raised material *should* be raised, only that the splitter island is |
 | `circulating_width` | narrowest DRIVABLE width of the ring, all the way round | anything outside the ring band; it answers "can you drive round it", nothing else |
 | `seam_steps` | lateral extent at the cut | the *shape* of an end cap |
-| `check_turbo` (run it via `turbo_check.py`) | each peel starts on a ring divider, runs outward, and its FAR END lands on the lane lines of the exit it was built for | whether the peel is the right line to draw at all — that is a judgement from reference photographs, and it was wrong six times while every check stayed green |
+| `check_turbo` (run it via `turbo_check.py`) | each peel starts at a circulating divider, targets that exit's actual Drive/Drive boundary under the edited lane width, lands its far end on the arm line, and owns a base-divider replacement sector | whether the peel is the right traffic-design line to draw at all — that remains a judgement from reference photographs |
 | `check_arm_kinds` | non-shoulder running surfaces keep their KIND and width; the shoulder marker is outboard and zero-width at the ring | the physical shoulder wedge between cut and ring |
 | `check_shoulder_tapers` | emitted shoulder polygons have source width at the cut and zero width at the ring | markings and vertical/z-fighting defects |
 | `road_preview.py` | an ordinary road: bare ground inside its own footprint, edge sawtooth, broken edge lines | lane-width transitions and bus bays, which are **not ported at all** |

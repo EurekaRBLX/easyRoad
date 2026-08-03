@@ -98,6 +98,46 @@ function RoadProfile.IsRoadway(kind: ComponentKind): boolean
 	return ROADWAY[kind] == true
 end
 
+-- Maximum number of motor-vehicle lanes carried by one carriageway in this
+-- cross-section.  Only positive-width Drive components count: shoulders,
+-- pavement, medians, cycle lanes, parking and bays must never make a
+-- roundabout wider by masquerading as circulating lanes.
+--
+-- A Median starts a new carriageway.  Within an undivided carriageway the two
+-- direction signs are counted independently (2+2 therefore suggests 2, not
+-- 4).  Old/custom profiles whose Drive components are undirected still get a
+-- useful answer: their undirected run is counted as one carriageway rather
+-- than being halved into two fictional directions.
+function RoadProfile.MaxMotorLanesPerCarriageway(profile: RoadProfile): number
+	local maximum = 0
+	local forward = 0
+	local backward = 0
+	local undirected = 0
+
+	local function flush()
+		maximum = math.max(maximum, forward, backward, undirected)
+		forward = 0
+		backward = 0
+		undirected = 0
+	end
+
+	for _, component in profile.Components do
+		if component.Kind == "Median" then
+			flush()
+		elseif component.Kind == "Drive" and component.WidthM > 1e-6 then
+			if component.Direction > 0 then
+				forward += 1
+			elseif component.Direction < 0 then
+				backward += 1
+			else
+				undirected += 1
+			end
+		end
+	end
+	flush()
+	return maximum
+end
+
 -- Sidewalks (and medians) sit on top of a curb, raised above the roadway
 function RoadProfile.IsRaised(kind: ComponentKind): boolean
 	return kind == "Sidewalk" or kind == "Median"

@@ -19,6 +19,7 @@ local DEFAULT_LANE_WIDTH_M = 3.65
 
 local function JunctionPanel(
 	props: {
+		JunctionId: string,
 		ConnectedRoadCount: number,
 		CornerCount: number,
 		FilletRadiusM: number,
@@ -49,9 +50,15 @@ local function JunctionPanel(
 		-- building it, so the shipped geometry can be diffed against the
 		-- headless preview in tools/preview.
 		OnDumpRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number) -> (),
+		-- Widest motor-vehicle carriageway among the connected endpoint
+		-- profiles.  This deliberately excludes shoulders and other reserve.
+		SuggestedRoundaboutLaneCount: number,
 	}
 )
-	local laneCount, setLaneCount = React.useState(DEFAULT_LANE_COUNT)
+	local suggestedLaneCount =
+		math.clamp(math.floor((props.SuggestedRoundaboutLaneCount or DEFAULT_LANE_COUNT) + 0.5), 1, 6)
+	local laneCount, setLaneCount = React.useState(suggestedLaneCount)
+	local laneCountTouched, setLaneCountTouched = React.useState(false)
 	local laneWidthM, setLaneWidthM = React.useState(DEFAULT_LANE_WIDTH_M)
 	local minimum, suggested = props.GetRoundaboutRadii(laneCount, laneWidthM)
 	local radiusStuds, setRadiusStuds = React.useState(if suggested > 0 then suggested else DEFAULT_RADIUS_STUDS)
@@ -64,6 +71,24 @@ local function JunctionPanel(
 	local ringWalk, setRingWalk = React.useState(nil :: boolean?)
 	local ringIsland, setRingIsland = React.useState(nil :: boolean?)
 	local touched, setTouched = React.useState(false)
+
+	-- A panel can stay mounted while Selection moves directly from one junction
+	-- to another.  Reset the defaults for the new controller, then continue to
+	-- follow profile changes only until the user deliberately edits the field.
+	React.useEffect(function()
+		setLaneCount(suggestedLaneCount)
+		setLaneCountTouched(false)
+		setLaneWidthM(DEFAULT_LANE_WIDTH_M)
+		setMarkings(nil)
+		setRingWalk(nil)
+		setRingIsland(nil)
+		setTouched(false)
+	end, { props.JunctionId } :: { any })
+	React.useEffect(function()
+		if not laneCountTouched and laneCount ~= suggestedLaneCount then
+			setLaneCount(suggestedLaneCount)
+		end
+	end, { suggestedLaneCount, laneCountTouched } :: { any })
 
 	-- Follow the suggestion while the user has not overridden it. Changing lane
 	-- count or width changes what actually fits, and silently leaving a stale
@@ -169,7 +194,7 @@ local function JunctionPanel(
 		LayoutOrder = 11,
 	})
 
-	if props.ConnectedRoadCount >= 3 then
+	if props.ConnectedRoadCount >= 2 then
 		children.RoundaboutSection = e(Components.Section, { Text = "Roundabout", LayoutOrder = 20 })
 		children.RoundaboutRadius = e(Components.Row, { LayoutOrder = 21 }, {
 			Label = e(Components.Label, { Text = "Radius", LayoutOrder = 1, Width = 60 }),
@@ -191,6 +216,7 @@ local function JunctionPanel(
 				Min = 1,
 				Max = 6,
 				OnChanged = function(value: number)
+					setLaneCountTouched(true)
 					setLaneCount(math.floor(value))
 				end,
 				LayoutOrder = 2,

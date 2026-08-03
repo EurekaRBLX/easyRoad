@@ -4933,6 +4933,13 @@ export type BuildOptions = {
 	-- the curve origin and keeps its final partial dash. Ordinary road dash
 	-- phasing remains unchanged when this is nil/false.
 	MarkingDashStartsAtZero: boolean?,
+	-- Emit raised components (Sidewalk/Median) in the first/last station
+	-- interval as exact station-edge triangles rather than longitudinally
+	-- padded boxes. This clips only the requested OUTER end face; interior
+	-- intervals retain their usual overlap padding. Useful when another
+	-- purpose-built surface owns the geometry immediately beyond a road end.
+	ExactStartRaisedCap: boolean?,
+	ExactEndRaisedCap: boolean?,
 }
 
 local MARKING_THICKNESS = 0.05
@@ -5489,9 +5496,10 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	-- could wander from it. Centerline-anchoring avoids that entirely:
 	-- every strip's own center is placed directly on the curve, so the
 	-- road can never drift from the path regardless of curve length or
-	-- cross-section width. No FillTriangle wedges are used for curve
-	-- joints any more - see BuildWithBay below for where wedges are still
-	-- useful (an actually-abrupt shape, not a curve-following one).
+	-- cross-section width. No FillTriangle wedges are used for ordinary curve
+	-- joints any more. The opt-in exact raised caps below are deliberately
+	-- different: their purpose is to end a Sidewalk/Median exactly at station
+	-- 0/Length where another builder owns the surface beyond that plane.
 	--
 	-- On an exactly straight, constant-profile run, adjacent Drive components
 	-- with the same surface signature are emitted as one wider band. Markings
@@ -5575,6 +5583,11 @@ function RoadBuilder.Build(options: BuildOptions): Model
 
 			local kind = componentsStart[c].Kind
 			local raised = RoadProfile.IsRaised(kind)
+			local exactRaisedCap = raised
+				and (
+					(i == 1 and options.ExactStartRaisedCap == true)
+					or (i == stationCount - 1 and options.ExactEndRaisedCap == true)
+				)
 			local partHeight = if raised then thickness + curbHeight else thickness
 			-- Deck (roadway) top surface sits at frame level; raised
 			-- components (sidewalk/median) stand a curb height above
@@ -5646,7 +5659,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			-- that are neither transitioning nor banking (the ordinary
 			-- case for most flat, straight road) are unaffected - same
 			-- plain rectangle construction as before.
-			if math.abs(centerOffset1 - centerOffset0) &gt; 1e-4 or rollDelta &gt; ROLL_WEDGE_EPSILON then
+			if exactRaisedCap or math.abs(centerOffset1 - centerOffset0) &gt; 1e-4 or rollDelta &gt; ROLL_WEDGE_EPSILON then
 				local topY = if raised then curbHeight else 0
 				local innerStart = (frames[i] * CFrame.new(centerOffset0 - w0 / 2, topY, 0)).Position
 				local outerStart = (frames[i] * CFrame.new(centerOffset0 + w0 / 2, topY, 0)).Position
@@ -5995,6 +6008,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			Preview = preview,
 			MarkingStretches = stretchesForSlice(0, taperInStart),
 			KerbStretches = kerbStretchesForSlice(0, taperInStart),
+			ExactStartRaisedCap = options.ExactStartRaisedCap,
 		}))
 	end
 	mergeIn(RoadBuilder.Build({
@@ -6006,6 +6020,8 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		ExcludeComponentIndices = { nearsideIndex },
 		MarkingStretches = stretchesForSlice(taperInStart, taperOutEnd),
 		KerbStretches = kerbStretchesForSlice(taperInStart, taperOutEnd),
+		ExactStartRaisedCap = if taperInStart &lt;= 1e-3 then options.ExactStartRaisedCap else nil,
+		ExactEndRaisedCap = if length - taperOutEnd &lt;= 1e-3 then options.ExactEndRaisedCap else nil,
 	}))
 	if length - taperOutEnd &gt; 1e-3 then
 		mergeIn(RoadBuilder.Build({
@@ -6017,6 +6033,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			Preview = preview,
 			MarkingStretches = stretchesForSlice(taperOutEnd, length),
 			KerbStretches = kerbStretchesForSlice(taperOutEnd, length),
+			ExactEndRaisedCap = options.ExactEndRaisedCap,
 		}))
 	end
 
@@ -6142,6 +6159,11 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		for i = 1, #shiftStations - 1 do
 			local s0 = taperInStart + shiftStations[i]
 			local s1 = taperInStart + shiftStations[i + 1]
+			local exactRaisedCap = nearsideRaised
+				and (
+					(s0 &lt;= 1e-3 and options.ExactStartRaisedCap == true)
+					or (length - s1 &lt;= 1e-3 and options.ExactEndRaisedCap == true)
+				)
 			local sMid = (s0 + s1) / 2
 			local midFrame = frameAt(sMid)
 			local centerOffset0 = kerbOffset
@@ -6176,7 +6198,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			-- Split into two triangles along the innerStart-outerEnd
 			-- diagonal instead of approximating with a rotated rectangle
 			-- (an earlier attempt left sliver gaps at the seams).
-			if math.abs(centerOffset1 - centerOffset0) &gt; 1e-4 then
+			if exactRaisedCap or math.abs(centerOffset1 - centerOffset0) &gt; 1e-4 then
 				local topY = if nearsideRaised then curbHeight else 0
 				local half = nearsideWidthStuds / 2
 				local innerStart = (frameAt(s0) * CFrame.new(centerOffset0 - half, topY, 0)).Position
@@ -6315,11 +6337,10 @@ local function ringComponents(
 	-- region's own dashed lane line. SOLIDLANES marks it solid, to discourage
 	-- weaving on the ring.
 	--
-	-- TURBO leaves it alone too. The ring's circulating divider is an ordinary
-	-- concentric line under every mode; what makes a turbo a turbo is the
-	-- peel-off at each exit, which `buildTurboMarkings` adds ON TOP. An earlier
-	-- version suppressed this line and spiralled the whole ring instead, and
-	-- that is wrong - see ROUNDABOUT.md 3.8.
+	-- TURBO starts with the same concentric divider, then replaces only the arc
+	-- owned by each exit peel. Keeping the ordinary line under that arc mixes
+	-- two dash phases and is the source of the doubled/excess markings reported
+	-- in Studio; suppressing the divider around the whole ring is equally wrong.
 	--
 	-- Set on every lane but the last: `RightBoundary` describes the gap to the
 	-- component on its right, and the last lane's right-hand neighbour is the
@@ -6420,6 +6441,57 @@ local function roundaboutMarkingLines(
 	end
 
 	return lines
+end
+
+-- Lateral offset of the arm line that physically hands onto the ring's outer
+-- edge line. Ordinary carriageways use the familiar inset edge line. Highway
+-- arms instead retain a zero-width Shoulder marker after their real shoulder
+-- surface is tapered away; in that case roundaboutMarkingLines emits the
+-- Drive/Shoulder separator exactly on the roadway edge. Returning the inset
+-- offset for that profile would fail to match any generated line, so the real
+-- highway edge would still be clipped early.
+local function outboardArmMarkingOffsetsM(
+	profile: RoadProfile.RoadProfile,
+	style: RegionStyles.RegionStyle
+): (number?, number?)
+	local components = profile.Components
+	local offsets = RoadProfile.ComponentOffsetsM(profile)
+	local roadwayIndices: { number } = {}
+	for i, component in components do
+		if RoadProfile.IsRoadway(component.Kind) then
+			table.insert(roadwayIndices, i)
+		end
+	end
+	if #roadwayIndices == 0 then
+		return nil, nil
+	end
+	local inset = style.MarkingWidthM * 1.5
+	if style.DriveOnLeft then
+		local firstIndex = roadwayIndices[1]
+		local first = components[firstIndex]
+		local ringOffset = offsets[firstIndex].Left + inset
+		if
+			first.Kind == "Shoulder"
+			and first.WidthM &lt;= 1e-6
+			and firstIndex &lt; #components
+			and components[firstIndex + 1].Kind == "Drive"
+		then
+			return offsets[firstIndex].Right, ringOffset
+		end
+		return ringOffset, ringOffset
+	end
+	local lastIndex = roadwayIndices[#roadwayIndices]
+	local last = components[lastIndex]
+	local ringOffset = offsets[lastIndex].Right - inset
+	if
+		last.Kind == "Shoulder"
+		and last.WidthM &lt;= 1e-6
+		and lastIndex &gt; 1
+		and components[lastIndex - 1].Kind == "Drive"
+	then
+		return offsets[lastIndex].Left, ringOffset
+	end
+	return ringOffset, ringOffset
 end
 
 -- The ring's own outer pavement width. Zero when the pavement is opted out,
@@ -6764,7 +6836,8 @@ local function clipArmMarkingLinesAtRing(
 	ringKerbRadiusStuds: number,
 	cutAtStart: boolean,
 	markingWidthStuds: number,
-	scale: number
+	scale: number,
+	preserveRingOffsetM: number?
 )
 	local length = curve.Length
 	if length &lt;= 1e-6 then
@@ -6775,6 +6848,14 @@ local function clipArmMarkingLinesAtRing(
 	local ringStation = if cutAtStart then length else 0
 
 	for _, line in lines do
+		-- The outboard edge line has an exact tangent hand-off to the ring at
+		-- the arm endpoint. Radially clipping it early creates the visible gap
+		-- reported at every mouth; only internal/inboard lines need the ring-deck
+		-- ownership clip.
+		local ringOffsetM = if cutAtStart then line.OffsetEndM else line.OffsetStartM
+		if preserveRingOffsetM and math.abs(ringOffsetM - preserveRingOffsetM) &lt; 1e-6 then
+			continue
+		end
 		local function radiusAt(station: number): number
 			local alpha = station / length
 			local offsetM = line.OffsetStartM + (line.OffsetEndM - line.OffsetStartM) * alpha
@@ -7016,7 +7097,8 @@ local function rebuildRoadFromSource(
 	windowEnd: number,
 	currentSourceStart: number,
 	style: RegionStyles.RegionStyle,
-	settings: Settings.EasyRoadSettings
+	settings: Settings.EasyRoadSettings,
+	exactRaisedCapAtStart: boolean?
 ): RoadInstance.RoadData?
 	if windowEnd - windowStart &lt; 1e-3 then
 		return nil
@@ -7037,6 +7119,12 @@ local function rebuildRoadFromSource(
 		Preview = false,
 		MarkingStretches = markingStretches,
 		KerbStretches = kerbStretches,
+		-- A live roundabout arm owns the surface immediately past the linked
+		-- source-road end. End raised components exactly at that trim plane so
+		-- their usual longitudinal overlap cannot protrude into the arm. Nil is
+		-- intentional for restoration and unrelated source-window rebuilds.
+		ExactStartRaisedCap = if exactRaisedCapAtStart == true then true else nil,
+		ExactEndRaisedCap = if exactRaisedCapAtStart == false then true else nil,
 	}
 	local visualBay = if data.Bay then table.clone(data.Bay) else nil
 	if visualBay then
@@ -7220,6 +7308,19 @@ local MAX_SECTOR_HALF_RAD = math.rad(60)
 -- strip's angular length so a part whose centre is just inside the bound, and
 -- which therefore straddles it, is still fully covered.
 local SECTOR_INSET_RAD = math.rad(3)
+-- A paired highway mouth replaces its terminal hard shoulders with tapered
+-- shoulder/kerb wedges. Their rigid outer facets sit farther inside the merge
+-- ray than ordinary full-width pavement, so the normal three-degree ownership
+-- overlap can delete ring sidewalk the taper has not reached yet. The strict
+-- component sweep closes the final outer-band crescent at eight degrees.
+-- Keep this shoulder-specific: ordinary mouths retain the tighter opening,
+-- while solo mouths have their own rule below.
+local SHOULDER_SECTOR_INSET_RAD = math.rad(8)
+-- A solo tangent arm has no splitter-side sibling pavement to cover the outer
+-- corner of its opening. The component-level reference sweep needs seven
+-- degrees of pavement overlap to close that small crescent; edge paint still
+-- uses the exact, uninset merge ray.
+local SOLO_SECTOR_INSET_RAD = math.rad(7)
 
 -- Shrink sectors until each leaves MIN_KERB_GAP_RAD of kerb to its angular
 -- neighbours. Each sector may claim at most half of the gap on either side
@@ -7365,9 +7466,10 @@ local function openRingPavement(
 	parts: { BasePart },
 	center: Vector3,
 	rawSectors: { MouthSector },
-	minRadiusStuds: number
+	minRadiusStuds: number,
+	clampOpenings: boolean?
 )
-	local sectors = clampSectors(rawSectors)
+	local sectors = if clampOpenings == false then rawSectors else clampSectors(rawSectors)
 	if #sectors == 0 then
 		return
 	end
@@ -7387,11 +7489,19 @@ local function openRingPavement(
 		local angularHalf = angularFootprintHalfSpan(part, center, angle)
 		for _, sector in sectors do
 			local delta = angleDelta(angle, sector.Angle)
-			if delta &lt;= sector.Ahead and -delta &lt;= sector.Behind then
+			local fullyInside = delta + angularHalf &lt;= sector.Ahead and -delta + angularHalf &lt;= sector.Behind
+			if fullyInside then
 				part:Destroy()
 				break
 			elseif delta &lt;= sector.Ahead + angularHalf and -delta &lt;= sector.Behind + angularHalf then
-				local aheadSide = delta &gt; sector.Ahead
+				-- A straddler's CENTRE may still be inside the opening even though
+				-- one end crosses a boundary. Comparing the centre with `Ahead`
+				-- therefore picked the opposite ray for exactly those terminal
+				-- pieces, which either deleted the useful fragment or left a seam.
+				-- Select the boundary its footprint actually overruns most.
+				local aheadOverflow = delta + angularHalf - sector.Ahead
+				local behindOverflow = -delta + angularHalf - sector.Behind
+				local aheadSide = aheadOverflow &gt;= behindOverflow
 				local boundaryAngle = sector.Angle + (if aheadSide then sector.Ahead else -sector.Behind)
 				local clipped =
 					clipToAngularSide(partTopPolygon(part), center, boundaryAngle, if aheadSide then 1 else -1)
@@ -7406,6 +7516,10 @@ end
 -- chord sags r*(1-cos 1deg) off the true arc - 0.015 studs on a 100-stud ring,
 -- an order of magnitude under the marking's own width.
 local TURBO_ARC_STEP_RAD = math.rad(2)
+-- A tiny/invalid edited divider radius must not turn the arm phase into
+-- millions of samples. Half a stud remains far below the paint scale while
+-- providing a hard upper bound for deliberately extreme editor values.
+local TURBO_MIN_SAMPLE_SPACING_STUDS = 0.5
 -- Fraction of each arc over which a boundary makes its outward move. Corrected
 -- from a reference aerial: the divider does NOT climb steadily from the island
 -- to the kerb across the whole arc. It holds a constant radius for most of the
@@ -7562,11 +7676,18 @@ end
 
 type ArmProfile = {
 	Profile: RoadProfile.RoadProfile,
-	-- Width of the source approach's OUTBOARD shoulder. The profile keeps a
-	-- zero-width Shoulder component at that boundary so Markings emits the solid
-	-- Drive/Shoulder separator, while buildArm lays the actual paved shoulder as
-	-- a wedge that reaches zero width at the ring.
+	-- Width of the source approach's terminal shoulders in the arm's own local
+	-- left/right frame. A normal divided approach contributes only its traffic-
+	-- outboard shoulder; a solo one-way highway has open edges on both sides and
+	-- contributes both. The profile keeps zero-width Shoulder components at
+	-- those boundaries so Markings emits the solid Drive/Shoulder separators,
+	-- while buildArm lays the actual paved shoulders as independent wedges.
 	CutShoulderM: number,
+	CutShoulderLeftM: number,
+	CutShoulderRightM: number,
+	-- Centre shift of the remaining live roadway after those terminal shoulder
+	-- widths are removed, in the arm's local lateral frame.
+	CoreShiftM: number,
 	-- Centreline to roadway edge, on the side facing away from / toward the gore.
 	OuterOffsetStuds: number,
 	InnerOffsetStuds: number,
@@ -7582,6 +7703,32 @@ type ArmProfile = {
 -- peel missed the line it is supposed to join (ROUNDABOUT.md 3.8).
 export type ExitTrace = { Curve: PolyCurve.PolyCurve, Arm: ArmProfile }
 
+type TurboReplacement = {
+	DividerRadiusStuds: number,
+	Sector: MouthSector,
+}
+
+-- Actual Drive/Drive boundaries on an exit arm, ordered from its outboard edge
+-- toward the splitter.  Turbo used to divide total arm width by the EDITED
+-- ring lane width; changing that width therefore changed the inferred arm lane
+-- count and could make every peel disappear.  Component offsets are the source
+-- of truth and also support unequal/custom lane widths.
+local function armDriveBoundaryOffsetsStuds(arm: ArmProfile, style: RegionStyles.RegionStyle, scale: number): { number }
+	local components = arm.Profile.Components
+	local offsets = RoadProfile.ComponentOffsetsM(arm.Profile)
+	local boundaries: { number } = {}
+	for i = 1, #components - 1 do
+		if components[i].Kind == "Drive" and components[i + 1].Kind == "Drive" then
+			table.insert(boundaries, offsets[i].Right * scale)
+		end
+	end
+	local outerLocal = if style.DriveOnLeft then -arm.OuterOffsetStuds else arm.OuterOffsetStuds
+	table.sort(boundaries, function(a, b)
+		return math.abs(a - outerLocal) &lt; math.abs(b - outerLocal)
+	end)
+	return boundaries
+end
+
 local function buildTurboMarkings(
 	ring: Model,
 	center: Vector3,
@@ -7592,12 +7739,13 @@ local function buildTurboMarkings(
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings,
 	exits: { ExitTrace }
-)
+): { TurboReplacement }
 	local lanes = math.max(1, math.floor(laneCount))
 	-- One circulating lane has no boundary to peel off in the first place.
 	if lanes &lt; 2 or #exits == 0 then
-		return
+		return {}
 	end
+	local replacements: { TurboReplacement } = {}
 	local scale = settings.MetersToStuds
 	local innerRadiusStuds = radiusStuds - ringInnerHalfWidthM(profile, style) * scale
 	local laneStuds = laneWidthM * scale
@@ -7610,10 +7758,10 @@ local function buildTurboMarkings(
 	local dashStuds = math.max(0.5, TURBO_DASH_M * scale)
 	local gapStuds = math.max(0.5, TURBO_GAP_M * scale)
 
-	local function place(p0: Vector3, p1: Vector3)
+	local function place(p0: Vector3, p1: Vector3): boolean
 		local span = (p1 - p0).Magnitude
 		if span &lt; 1e-4 then
-			return
+			return false
 		end
 		local part = Instance.new("Part")
 		part.Name = "Marking"
@@ -7629,6 +7777,7 @@ local function buildTurboMarkings(
 		part.Size = Vector3.new(markingWidth, RoadBuilder.MarkingThicknessStuds, span)
 		part.CFrame = CFrame.lookAt((p0 + p1) / 2, p1, Vector3.yAxis)
 		part.Parent = ring
+		return true
 	end
 
 	-- Each exit arm's curve starts ON the ring, so its own merge angle comes
@@ -7658,57 +7807,32 @@ local function buildTurboMarkings(
 		if flatUnit(curve:TangentAt(into)).Magnitude &lt; 1e-6 then
 			continue
 		end
-		-- The arm's outer roadway edge lands on the ring's kerb, so ring
-		-- boundary k - measured k lanes out from the island - is (lanes - k)
-		-- lanes IN from that edge.
-		--
-		-- Which SIGN of the offset points outward is measured, not assumed. The
-		-- profile's Outer/Inner are in the arm's own frame and the relationship
-		-- between that frame, the hand of the road and the radial direction has
-		-- been got wrong here twice: once by omitting the flow factor (invisible
-		-- on left-hand drive, mirrored on right) and once by adding it (target
-		-- 22 studs the wrong way, so the peel dived to r=47 inside a ring whose
-		-- divider is at 66). Asking the geometry which way is out cannot be
-		-- wrong on either hand or under any future convention change.
-		local base = curve:PosAt(0)
-		local baseRight = rightOf(flatUnit(curve:TangentAt(0)))
-		local outerSign = if distanceXZ(base + baseRight * arm.OuterOffsetStuds, center)
-				&gt;= distanceXZ(base - baseRight * arm.OuterOffsetStuds, center)
-			then 1
-			else -1
-		-- The exit arm may be narrower than the ring. Ring boundary k sits
-		-- (lanes - k) lanes in from the kerb, and the arm's outer edge IS the
-		-- kerb, so the arm needs an internal boundary that far in - it has them
-		-- at 1 .. armLanes-1 only. A 3-lane ring feeding 2-lane exits has no
-		-- third boundary to hand to, and stepping in anyway walks past the arm's
-		-- inner edge: the peel then runs INWARD, from the k=1 divider down
-		-- toward the island, which is the opposite of a hand-off.
-		--
-		-- This was present but invisible while the peel was short-dashed - the
-		-- dashes simply sampled past it. Switching to the long hazard mark is
-		-- what surfaced it.
-		local armLanes = math.max(1, math.floor((arm.OuterOffsetStuds + arm.InnerOffsetStuds) / laneStuds + 0.5))
+		local targetOffsets = armDriveBoundaryOffsetsStuds(arm, style, scale)
 		for k = 1, lanes - 1 do
-			if lanes - k &gt; armLanes - 1 then
+			-- Ring boundary k is (lanes-k) boundaries in from the outside.
+			-- Resolve that ordinal against the exit's ACTUAL Drive/Drive
+			-- boundaries. A narrower arm simply cannot receive an inner ring
+			-- divider; shoulders and parking never count as destinations.
+			local targetIndex = lanes - k
+			local offset = targetOffsets[targetIndex]
+			if not offset then
 				continue
 			end
-			local startAngle = angles[i] - travel * sweep
 			local ringRadius = innerRadiusStuds + k * laneStuds
-			-- `* travel` for the same reason goreEdge multiplies by flow: profile
-			-- offsets are in the arm's own frame and the arm's right-of-travel
-			-- flips with the hand of the road. Omitting it is invisible on
-			-- left-hand drive, where the factor is +1, and mirrors the peel onto
-			-- the wrong side of the arm on right-hand drive.
-			local offset = outerSign * (arm.OuterOffsetStuds - (lanes - k) * laneStuds)
-			-- TWO PHASES, not one curve fitted across the whole span: the
-			-- ring's own divider as far as the exit, then the exit arm's own
-			-- lane line. There is nothing to interpolate between them. The arm
-			-- merges TANGENTIALLY to the ring and its outer edge lands on the
-			-- ring's kerb, so at the merge the arm's boundary k lanes in from
-			-- that edge IS the ring's boundary k lanes out from the island:
-			-- position and heading are both already continuous, and the radius
-			-- rises monotonically because phase one holds it constant and phase
-			-- two only ever runs outward.
+			if ringRadius &lt;= math.max(markingWidth, 1e-3) then
+				continue
+			end
+			local mergePosition = curve:PosAt(0)
+			local mergeRight = rightOf(flatUnit(curve:TangentAt(0)))
+			local targetMerge = mergePosition + mergeRight * offset
+			local targetAngle = math.atan2(targetMerge.Z - center.Z, targetMerge.X - center.X)
+			local targetRadius = distanceXZ(targetMerge, center)
+			local startAngle = targetAngle - travel * sweep
+			-- TWO PHASES: a polar peel over the ring, then the exit arm's own
+			-- boundary. When ring and exit lane widths differ, those two
+			-- boundaries do not have the same radius. Ease between their actual
+			-- radii with zero radial derivative at both ends, so editing lane
+			-- width produces a smooth hand-off instead of a jump or no marking.
 			--
 			-- Two constructions came before this one. A free cubic pinned to the
 			-- ring tangent at one end and the arm tangent at the other sagged:
@@ -7726,12 +7850,15 @@ local function buildTurboMarkings(
 			local pts: { Vector3 } = {}
 			for j = 0, arcSamples do
 				local t = j / arcSamples
-				table.insert(pts, ringPointAt(center, startAngle + travel * sweep * t, ringRadius, y))
+				local eased = t * t * (3 - 2 * t)
+				local radius = ringRadius + (targetRadius - ringRadius) * eased
+				table.insert(pts, ringPointAt(center, startAngle + travel * sweep * t, radius, y))
 			end
 			-- The arc's angular step converted to arc length at this radius, so
 			-- both phases are sampled to one visual tolerance rather than to a
 			-- count each.
-			local armSamples = math.max(4, math.ceil(into / math.max(1e-6, TURBO_ARC_STEP_RAD * ringRadius)))
+			local armSamples =
+				math.max(4, math.ceil(into / math.max(TURBO_MIN_SAMPLE_SPACING_STUDS, TURBO_ARC_STEP_RAD * ringRadius)))
 			for j = 1, armSamples do
 				local armS = into * j / armSamples
 				local aPos = curve:PosAt(armS)
@@ -7757,12 +7884,53 @@ local function buildTurboMarkings(
 			end
 			-- Backwards from the arm end, so a dash lands flush where the peel
 			-- meets the line it is handing over to.
+			local placedAny = false
 			local d = total - dashStuds
 			while d &gt;= 0 do
-				place(pointAtLength(d), pointAtLength(d + dashStuds))
+				placedAny = place(pointAtLength(d), pointAtLength(d + dashStuds)) or placedAny
 				d -= dashStuds + gapStuds
 			end
+			if placedAny then
+				table.insert(replacements, {
+					DividerRadiusStuds = ringRadius,
+					Sector = {
+						Angle = startAngle + travel * sweep / 2,
+						Ahead = sweep / 2,
+						Behind = sweep / 2,
+					},
+				})
+			end
 		end
+	end
+	return replacements
+end
+
+-- The ordinary concentric divider must yield over the arc owned by a Turbo
+-- peel. Leaving both dash grammars in the same place is the source of the
+-- doubled/excess markings visible in Studio: the permissive short dash fills
+-- the hazard line's deliberate gaps. Clip only the matching divider radius;
+-- edge lines and other circulating boundaries remain untouched.
+local function openTurboReplacementArcs(
+	baseParts: { BasePart },
+	center: Vector3,
+	replacements: { TurboReplacement },
+	markingWidthStuds: number
+)
+	local tolerance = math.max(0.5, markingWidthStuds * 1.5)
+	for _, replacement in replacements do
+		local matching: { BasePart } = {}
+		for _, part in baseParts do
+			if
+				part.Parent
+				and part.Name == "Marking"
+				and math.abs(distanceXZ(part.Position, center) - replacement.DividerRadiusStuds) &lt;= tolerance
+			then
+				table.insert(matching, part)
+			end
+		end
+		-- The peel itself owns this exact span. Neighbour-sector clamping here
+		-- would leave a short ordinary dash under either end of a wide peel.
+		openRingPavement(matching, center, { replacement.Sector }, 0, false)
 	end
 end
 
@@ -7817,39 +7985,55 @@ local function armProfileFor(
 		table.insert(ordered, group.Lanes[i])
 	end
 	-- A hard shoulder is paved road reserve, not another running lane. Keep a
-	-- zero-width component at the OUTBOARD boundary so Markings.lua still emits
-	-- its mandatory solid separator, and hand the real width to buildArm for a
-	-- surface taper. Only contiguous outboard shoulders are consumed; an unusual
-	-- internal Shoulder remains a real profile component rather than silently
-	-- moving to the road edge.
-	local outboardShoulder: { [number]: boolean } = {}
-	local cutShoulderM = 0
-	if style.DriveOnLeft then
+	-- zero-width component at each tapered boundary so Markings.lua still emits
+	-- its mandatory solid separator, and hand the real widths to buildArm. A
+	-- paired entry/exit tapers only the ring-outboard side; a solo one-way arm
+	-- borders open ground on both sides and must taper both terminal shoulders.
+	-- Internal shoulders remain real profile components rather than silently
+	-- moving to a road edge.
+	local taperedShoulder: { [number]: boolean } = {}
+	local cutShoulderLeftM = 0
+	local cutShoulderRightM = 0
+	local leftShoulderMarkerIndex: number? = nil
+	local rightShoulderMarkerIndex: number? = nil
+	if style.DriveOnLeft or solo then
 		for i = 1, #ordered do
 			if ordered[i].Kind ~= "Shoulder" then
 				break
 			end
-			outboardShoulder[i] = true
-			cutShoulderM += ordered[i].WidthM
+			taperedShoulder[i] = true
+			cutShoulderLeftM += ordered[i].WidthM
+			leftShoulderMarkerIndex = i
 		end
-	else
+	end
+	if not style.DriveOnLeft or solo then
 		for i = #ordered, 1, -1 do
-			if ordered[i].Kind ~= "Shoulder" then
+			if ordered[i].Kind ~= "Shoulder" or taperedShoulder[i] then
 				break
 			end
-			outboardShoulder[i] = true
-			cutShoulderM += ordered[i].WidthM
+			taperedShoulder[i] = true
+			cutShoulderRightM += ordered[i].WidthM
+			rightShoulderMarkerIndex = i
 		end
 	end
 	for i, lane in ordered do
-		table.insert(components, {
-			Kind = lane.Kind,
-			WidthM = if outboardShoulder[i] then 0 else lane.WidthM,
-			Direction = if lane.Directional then 1 else 0,
-		})
+		if taperedShoulder[i] then
+			-- Collapse a contiguous terminal run to one semantic marker next to
+			-- the live lanes. Multiple adjacent zero-width Shoulders would make
+			-- roundaboutMarkingLines emit both an inset edge and a separator.
+			if i == leftShoulderMarkerIndex or i == rightShoulderMarkerIndex then
+				table.insert(components, { Kind = "Shoulder", WidthM = 0, Direction = 0 })
+			end
+		else
+			table.insert(components, {
+				Kind = lane.Kind,
+				WidthM = lane.WidthM,
+				Direction = if lane.Directional then 1 else 0,
+			})
+		end
 	end
-	local function pavement(): RoadProfile.ProfileComponent
-		return { Kind = "Sidewalk", WidthM = pavementM, Direction = 0 }
+	local function pavement(widthM: number?): RoadProfile.ProfileComponent
+		return { Kind = "Sidewalk", WidthM = widthM or pavementM, Direction = 0 }
 	end
 	-- This is the RING-side pavement width. `buildArm` keeps the running lanes
 	-- fixed to this profile and replaces the physical shoulder/Sidewalk surface
@@ -7858,11 +8042,18 @@ local function armProfileFor(
 	-- changes, which would slide the lanes and shoulder sideways along the arm.
 	-- The pavement taper must move only its own OUTER edge.
 	if solo then
-		-- A one-way approach has no sibling arm and so no splitter island: its gore
-		-- side is open ground, and the road it replaces carries a footway there.
-		-- Give it both, or the mouth comes out a pavement narrower than the road.
-		table.insert(components, 1, pavement())
-		table.insert(components, pavement())
+		-- A one-way approach has no sibling arm or splitter. Its traffic-outboard
+		-- side hands onto the ring pavement; its inboard side opens directly into
+		-- the circulating carriageway. Keep a zero-width Sidewalk component on
+		-- that inboard side so buildArm can taper any source footway away without
+		-- carrying a raised kerb deep across the ring.
+		if style.DriveOnLeft then
+			table.insert(components, 1, pavement())
+			table.insert(components, pavement(0))
+		else
+			table.insert(components, 1, pavement(0))
+			table.insert(components, pavement())
+		end
 	elseif style.DriveOnLeft then
 		-- Same placement rule as ringComponents, and it lands on the same world
 		-- side: an arm merges tangentially, so at the merge its right of travel is
@@ -7881,7 +8072,10 @@ local function armProfileFor(
 	local leftM, rightM = roadwayEdgeOffsetsM(profile)
 	return {
 		Profile = profile,
-		CutShoulderM = cutShoulderM,
+		CutShoulderM = cutShoulderLeftM + cutShoulderRightM,
+		CutShoulderLeftM = cutShoulderLeftM,
+		CutShoulderRightM = cutShoulderRightM,
+		CoreShiftM = (cutShoulderLeftM - cutShoulderRightM) / 2,
 		OuterOffsetStuds = (if style.DriveOnLeft then -leftM else rightM) * scale,
 		InnerOffsetStuds = (if style.DriveOnLeft then rightM else -leftM) * scale,
 		RoadwayCentreM = (leftM + rightM) / 2,
@@ -7915,7 +8109,12 @@ local function splitApproachLanes(
 	-- go would put a shoulder at the inboard end of its own group however far
 	-- outboard it actually sits.
 	local picked: { [LaneGroup]: { number } } = { [inbound] = {}, [outbound] = {} }
+	local assigned: { [number]: boolean } = {}
 	local function add(group: LaneGroup, index: number)
+		if assigned[index] then
+			return
+		end
+		assigned[index] = true
 		table.insert(picked[group], index)
 		group.LeftM = math.min(group.LeftM, offsets[index].Left)
 		group.RightM = math.max(group.RightM, offsets[index].Right)
@@ -7930,20 +8129,28 @@ local function splitApproachLanes(
 			add(outbound, i)
 		end
 	end
-	-- Undirected roadway (shoulders, parking) belongs to whichever side it abuts;
-	-- anything left in the middle is a median and becomes the splitter gore.
-	for i, component in profile.Components do
-		if not RoadProfile.IsRoadway(component.Kind) or component.Direction ~= 0 then
-			continue
-		end
-		local edge = offsets[i]
-		for _, group in { inbound, outbound } do
-			if
-				#picked[group] &gt; 0
-				and (math.abs(edge.Right - group.LeftM) &lt; 1e-6 or math.abs(edge.Left - group.RightM) &lt; 1e-6)
-			then
-				add(group, i)
-				break
+	-- Undirected roadway (shoulders, parking) belongs to whichever side it
+	-- abuts; anything left in the middle is a median and becomes the splitter
+	-- gore. Repeat until stable because a terminal reserve can contain multiple
+	-- adjacent components ordered outside-to-inside: the inner one must join
+	-- before the outer one becomes adjacent to the directional lane group.
+	local expanded = true
+	while expanded do
+		expanded = false
+		for i, component in profile.Components do
+			if assigned[i] or not RoadProfile.IsRoadway(component.Kind) or component.Direction ~= 0 then
+				continue
+			end
+			local edge = offsets[i]
+			for _, group in { inbound, outbound } do
+				if
+					#picked[group] &gt; 0
+					and (math.abs(edge.Right - group.LeftM) &lt; 1e-6 or math.abs(edge.Left - group.RightM) &lt; 1e-6)
+				then
+					add(group, i)
+					expanded = true
+					break
+				end
 			end
 		end
 	end
@@ -7987,6 +8194,41 @@ local function splitUndirected(
 	fallbackLaneWidthM: number,
 	style: RegionStyles.RegionStyle
 ): (LaneGroup?, LaneGroup?)
+	local componentOffsets = RoadProfile.ComponentOffsetsM(profile)
+	local onlyDriveIndex: number? = nil
+	local driveCount = 0
+	for i, component in profile.Components do
+		if component.Kind == "Drive" and component.WidthM &gt; 1e-6 then
+			driveCount += 1
+			onlyDriveIndex = i
+		end
+	end
+	-- Legacy/custom one-lane profiles sometimes predate direction metadata.
+	-- Halving that single lane creates two unusable half-width arms. Treat it as
+	-- a shared narrow approach which flares to one full-width entry and one
+	-- full-width exit at the mouth.
+	if driveCount == 1 and onlyDriveIndex then
+		local index = onlyDriveIndex :: number
+		local component = profile.Components[index]
+		local edge = componentOffsets[index]
+		local pavement = style.SidewalkWidthM
+		for _, candidate in profile.Components do
+			if candidate.Kind == "Sidewalk" then
+				pavement = math.max(pavement, candidate.WidthM)
+			end
+		end
+		local function sharedGroup(): LaneGroup
+			return {
+				Lanes = {
+					{ Kind = "Drive" :: RoadProfile.ComponentKind, WidthM = component.WidthM, Directional = true },
+				},
+				LeftM = edge.Left,
+				RightM = edge.Right,
+				PavementM = pavement,
+			}
+		end
+		return sharedGroup(), sharedGroup()
+	end
 	local leftM, rightM = roadwayEdgeOffsetsM(profile)
 	if rightM - leftM &lt; 1e-6 then
 		leftM, rightM = -fallbackLaneWidthM / 2, fallbackLaneWidthM / 2
@@ -8031,6 +8273,27 @@ local function buildArm(
 	end
 
 	local markingLines = roundaboutMarkingLines(arm.Profile, style, false)
+	local sourceOutboardOffsetM, ringOutboardOffsetM = outboardArmMarkingOffsetsM(arm.Profile, style)
+	-- A motorway's solid Drive/Shoulder separator starts exactly on that
+	-- boundary at the source cut, while the ring edge line is inset from its
+	-- kerb. Let the generated arm line make that small lateral transition so it
+	-- reaches the ring at the same point and tangent instead of leaving a radial
+	-- gap. Ordinary road edge lines already use the inset at both ends.
+	if sourceOutboardOffsetM and ringOutboardOffsetM then
+		for _, line in markingLines do
+			if
+				math.abs(line.OffsetStartM - sourceOutboardOffsetM) &lt; 1e-6
+				and math.abs(line.OffsetEndM - sourceOutboardOffsetM) &lt; 1e-6
+			then
+				if cutAtStart then
+					line.OffsetEndM = ringOutboardOffsetM
+				else
+					line.OffsetStartM = ringOutboardOffsetM
+				end
+				break
+			end
+		end
+	end
 	clipArmMarkingLinesAtRing(
 		markingLines,
 		curve,
@@ -8038,7 +8301,8 @@ local function buildArm(
 		ringKerbRadiusStuds,
 		cutAtStart,
 		style.MarkingWidthM * settings.MetersToStuds,
-		settings.MetersToStuds
+		settings.MetersToStuds,
+		ringOutboardOffsetM
 	)
 	local options = {
 		Curve = curve,
@@ -8099,8 +8363,7 @@ local function buildArm(
 			local outward = if leftSide then -1 else 1
 			local innerOffsetM = if leftSide then edge.Right else edge.Left
 			local ringPavementM = component.WidthM
-			local armOutward = if style.DriveOnLeft then -1 else 1
-			local cutShoulderM = if outward == armOutward then arm.CutShoulderM else 0
+			local cutShoulderM = if outward &lt; 0 then arm.CutShoulderLeftM else arm.CutShoulderRightM
 
 			local function surfacePoints(station: number): (Vector3, Vector3, Vector3, Vector3, number, number)
 				local alpha = ringAlphaAt(station)
@@ -8236,7 +8499,11 @@ local function buildArm(
 	model:SetAttribute("RW_Road", nil)
 	model.Name = "RoundaboutArm"
 	for _, descendant in model:GetDescendants() do
-		if descendant:IsA("BasePart") then
+		-- Deck/surfaces sink below the ring to avoid coplanar asphalt. Markings
+		-- have explicit longitudinal ownership above and must stay on the normal
+		-- road/ring paint plane so the preserved outer edge line has no vertical
+		-- step at either hand-off.
+		if descendant:IsA("BasePart") and descendant.Name ~= "Marking" then
 			descendant.CFrame = descendant.CFrame - Vector3.new(0, ARM_SINK_STUDS, 0)
 		end
 	end
@@ -8616,8 +8883,7 @@ local function planMouth(
 		-- has its own right-of-travel reversed against the inward frame, so its
 		-- roadway offset flips with it.
 		local spanCentreInward = (group.LeftM + group.RightM) / 2 * toInward
-		local armOuterSign = if style.DriveOnLeft then -1 else 1
-		local coreShiftLocalM = -armOuterSign * profile.CutShoulderM / 2
+		local coreShiftLocalM = profile.CoreShiftM
 		local coreCentreInward = spanCentreInward + coreShiftLocalM * (if travelsInward then 1 else -1)
 		local lateralM = if travelsInward
 			then coreCentreInward - profile.RoadwayCentreM
@@ -8670,6 +8936,63 @@ local function splitBudgetFor(plans: { MouthPlan }, index: number): number
 	return math.max(MIN_SPLIT_RAD, nearest / 2 - MIN_KERB_GAP_RAD / 2)
 end
 
+-- Angle at which an arm's outboard roadway edge has fully crossed the ring's
+-- outer pavement radius.  Solo one-way mouths use this to open only the band
+-- the single arm actually covers.  The Python reference has always carried
+-- this calculation; the Luau call survived a refactor without its helper,
+-- making every valid one-way mouth fail at runtime.
+--
+-- Sample to find the first bracket, then bisect it.  Returning the first sample
+-- outside the radius (the old Python-only approximation) leaves a visible
+-- several-tenths-of-a-stud step at wide/shallow joins.
+local BAND_EXIT_SAMPLES = 96
+local function bandExitAngle(
+	curve: PolyCurve.PolyCurve,
+	arm: ArmProfile,
+	fromStation: number,
+	away: number,
+	center: Vector3,
+	outerRadiusStuds: number,
+	flow: number
+): number
+	local length = curve.Length
+	local function outerEdgeAt(station: number): Vector3
+		local position = curve:PosAt(station)
+		local tangent = flatUnit(curve:TangentAt(station))
+		return position + rightOf(tangent) * (-arm.OuterOffsetStuds * flow)
+	end
+	local function radiusAt(station: number): number
+		return distanceXZ(outerEdgeAt(station), center)
+	end
+	local station = math.clamp(fromStation, 0, length)
+	local step = if length &gt; 1e-6 then length / BAND_EXIT_SAMPLES else 0
+	if step &gt; 0 and radiusAt(station) &lt;= outerRadiusStuds then
+		for _ = 1, BAND_EXIT_SAMPLES do
+			local nextStation = math.clamp(station + away * step, 0, length)
+			if math.abs(nextStation - station) &lt; 1e-9 then
+				break
+			end
+			if radiusAt(nextStation) &gt; outerRadiusStuds then
+				local inside = station
+				local outside = nextStation
+				for _ = 1, 24 do
+					local mid = (inside + outside) / 2
+					if radiusAt(mid) &gt; outerRadiusStuds then
+						outside = mid
+					else
+						inside = mid
+					end
+				end
+				station = (inside + outside) / 2
+				break
+			end
+			station = nextStation
+		end
+	end
+	local edge = outerEdgeAt(station)
+	return math.atan2(edge.Z - center.Z, edge.X - center.X)
+end
+
 -- The two split angles for a mouth, and where each arm therefore meets the
 -- ring. Shared by the builder and the debug dump on purpose: a dump that
 -- recomputes these itself is a third implementation to disagree with.
@@ -8698,7 +9021,7 @@ local function buildMouth(
 	splitBudgetRad: number,
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings
-): (MouthSector, ExitTrace?)
+): (MouthSector, MouthSector, ExitTrace?)
 	-- Which way traffic circulates, matching circleSegments' own sign.
 	local flow = if style.DriveOnLeft then 1 else -1
 	local dir = plan.Direction
@@ -8801,21 +9124,35 @@ local function buildMouth(
 			flow
 		)
 		local sweep = angleDelta(mergeAngle, edgeAngle)
-		local half = math.max(0, math.abs(sweep) / 2 - SECTOR_INSET_RAD)
+		local half = math.max(0, math.abs(sweep) / 2 - SOLO_SECTOR_INSET_RAD)
+		local edgeHalf = math.max(0, math.abs(sweep) / 2)
 		local soloTrace: ExitTrace? = if exit and exitCurve
 			then { Curve = exitCurve :: PolyCurve.PolyCurve, Arm = exit.Profile }
 			else nil
-		return { Angle = edgeAngle + sweep / 2, Ahead = half, Behind = half }, soloTrace
+		return { Angle = edgeAngle + sweep / 2, Ahead = half, Behind = half },
+			{ Angle = edgeAngle + sweep / 2, Ahead = edgeHalf, Behind = edgeHalf },
+			soloTrace
 	end
 	-- Open exactly as far as each arm actually reaches, inset so the opening can
 	-- never outrun them.
-	local entryHalf = math.max(0, entrySplit - SECTOR_INSET_RAD)
-	local exitHalf = math.max(0, split - SECTOR_INSET_RAD)
-	return {
+	local hasTaperedShoulder = ((entry :: MouthArm).Profile.CutShoulderM &gt; 1e-6)
+		or ((exit :: MouthArm).Profile.CutShoulderM &gt; 1e-6)
+	local pavementInset = if hasTaperedShoulder then SHOULDER_SECTOR_INSET_RAD else SECTOR_INSET_RAD
+	local entryHalf = math.max(0, entrySplit - pavementInset)
+	local exitHalf = math.max(0, split - pavementInset)
+	local pavementSector = {
 		Angle = plan.Angle,
 		Ahead = if flow &gt; 0 then entryHalf else exitHalf,
 		Behind = if flow &gt; 0 then exitHalf else entryHalf,
-	}, { Curve = exitCurve :: PolyCurve.PolyCurve, Arm = (exit :: MouthArm).Profile }
+	}
+	local edgeMarkingSector = {
+		Angle = plan.Angle,
+		Ahead = if flow &gt; 0 then entrySplit else split,
+		Behind = if flow &gt; 0 then split else entrySplit,
+	}
+	return pavementSector,
+		edgeMarkingSector,
+		{ Curve = exitCurve :: PolyCurve.PolyCurve, Arm = (exit :: MouthArm).Profile }
 end
 
 -- COMFORTABLE ring radius: one that gives every leg room for its two arms, a
@@ -8952,10 +9289,34 @@ function RoundaboutBuilder.SuggestedRadiusStuds(
 	return math.ceil(target * SUGGESTED_RADIUS_HEADROOM / SUGGESTED_RADIUS_STEP_STUDS) * SUGGESTED_RADIUS_STEP_STUDS
 end
 
+-- Default circulating-lane advice for a junction.  A roundabout serves the
+-- widest individual carriageway feeding it, not the sum of both directions
+-- and certainly not its shoulders.  Endpoint profiles matter because a road
+-- may legitimately widen away from the junction even though editable
+-- roundabout conversion will reject that transition until source slicing is
+-- implemented.
+function RoundaboutBuilder.SuggestedLaneCount(junctionId: string): number
+	local suggested = 0
+	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
+		local data = RoadInstance.Read(road)
+		if not data then
+			continue
+		end
+		local atStart = data.StartJunctionId == junctionId
+		if not atStart and data.EndJunctionId ~= junctionId then
+			continue
+		end
+		local profile = if atStart then data.ProfileStart else (data.ProfileEnd or data.ProfileStart)
+		suggested = math.max(suggested, RoadProfile.MaxMotorLanesPerCarriageway(profile))
+	end
+	return math.max(1, suggested)
+end
+
 type ApproachPreflight = {
 	Road: Model,
 	Data: RoadInstance.RoadData,
 	Source: CurveSegment.Segment,
+	LinkedAtStart: boolean,
 	CurrentSourceStart: number,
 	WindowStart: number,
 	WindowEnd: number,
@@ -9143,6 +9504,7 @@ local function preflightApproaches(
 			Road = road,
 			Data = data,
 			Source = source,
+			LinkedAtStart = linkedAtStart,
 			CurrentSourceStart = currentSourceStart,
 			WindowStart = windowStart,
 			WindowEnd = windowEnd,
@@ -9251,10 +9613,13 @@ function RoundaboutBuilder.CreateAtJunction(
 	-- as walled off rather than open ("the mouth still has to open, not close
 	-- into it"). Each mouth below reports the angular sector it occupies and we
 	-- delete the ring pavement inside it.
-	local ringPavement: { BasePart } = {}
+	local ringSidewalk: { BasePart } = {}
+	local ringMarkings: { BasePart } = {}
 	for _, descendant in ring:GetDescendants() do
-		if descendant:IsA("BasePart") and (descendant.Name == "Sidewalk" or descendant.Name == "Marking") then
-			table.insert(ringPavement, descendant :: BasePart)
+		if descendant:IsA("BasePart") and descendant.Name == "Sidewalk" then
+			table.insert(ringSidewalk, descendant :: BasePart)
+		elseif descendant:IsA("BasePart") and descendant.Name == "Marking" then
+			table.insert(ringMarkings, descendant :: BasePart)
 		end
 	end
 
@@ -9281,7 +9646,8 @@ function RoundaboutBuilder.CreateAtJunction(
 			approach.WindowEnd,
 			approach.CurrentSourceStart,
 			style,
-			settings
+			settings,
+			approach.LinkedAtStart
 		)
 		if not rebuilt then
 			ring:Destroy()
@@ -9291,10 +9657,12 @@ function RoundaboutBuilder.CreateAtJunction(
 	end
 
 	local mouthSectors: { MouthSector } = {}
+	local edgeMarkingSectors: { MouthSector } = {}
 	local exitTraces: { ExitTrace } = {}
 	for i, plan in plans do
-		local sector, trace = buildMouth(ring, plan, center, splitBudgetFor(plans, i), ringStyle, settings)
+		local sector, edgeSector, trace = buildMouth(ring, plan, center, splitBudgetFor(plans, i), ringStyle, settings)
 		table.insert(mouthSectors, sector)
+		table.insert(edgeMarkingSectors, edgeSector)
 		if trace then
 			table.insert(exitTraces, trace)
 		end
@@ -9310,14 +9678,29 @@ function RoundaboutBuilder.CreateAtJunction(
 	-- pushes the edge line inside the bound, and it survives as a white line
 	-- painted straight across the mouth.
 	local edgeLineInset = ringStyle.MarkingWidthM * 1.5 * scale
-	openRingPavement(ringPavement, center, mouthSectors, ringKerbRadius - edgeLineInset - 0.5)
+	openRingPavement(ringSidewalk, center, mouthSectors, 0)
+	-- Edge paint has a different physical hand-off from raised pavement. Open
+	-- it to the full merge angles so the preserved arm edge line reaches the
+	-- same point and tangent; the radial bound keeps all internal dividers.
+	openRingPavement(ringMarkings, center, edgeMarkingSectors, ringKerbRadius - edgeLineInset - 0.5, false)
 
 	-- After openRingPavement, deliberately. The spiral is laid only on the arcs
 	-- BETWEEN mouths, so there is nothing in a sector for that pass to remove -
 	-- and running it first would hand these parts to `ringPavement`, which was
 	-- captured before any of them existed.
 	if ringStyle.RoundaboutMarkings == "Turbo" then
-		buildTurboMarkings(ring, center, radiusStuds, profile, laneCount, laneWidthM, ringStyle, settings, exitTraces)
+		local replacements = buildTurboMarkings(
+			ring,
+			center,
+			radiusStuds,
+			profile,
+			laneCount,
+			laneWidthM,
+			ringStyle,
+			settings,
+			exitTraces
+		)
+		openTurboReplacementArcs(ringMarkings, center, replacements, ringStyle.MarkingWidthM * scale)
 	end
 
 	packGeneratedGeometry(ring, true)
@@ -13187,6 +13570,46 @@ end
 
 function RoadProfile.IsRoadway(kind: ComponentKind): boolean
 	return ROADWAY[kind] == true
+end
+
+-- Maximum number of motor-vehicle lanes carried by one carriageway in this
+-- cross-section.  Only positive-width Drive components count: shoulders,
+-- pavement, medians, cycle lanes, parking and bays must never make a
+-- roundabout wider by masquerading as circulating lanes.
+--
+-- A Median starts a new carriageway.  Within an undivided carriageway the two
+-- direction signs are counted independently (2+2 therefore suggests 2, not
+-- 4).  Old/custom profiles whose Drive components are undirected still get a
+-- useful answer: their undirected run is counted as one carriageway rather
+-- than being halved into two fictional directions.
+function RoadProfile.MaxMotorLanesPerCarriageway(profile: RoadProfile): number
+	local maximum = 0
+	local forward = 0
+	local backward = 0
+	local undirected = 0
+
+	local function flush()
+		maximum = math.max(maximum, forward, backward, undirected)
+		forward = 0
+		backward = 0
+		undirected = 0
+	end
+
+	for _, component in profile.Components do
+		if component.Kind == "Median" then
+			flush()
+		elseif component.Kind == "Drive" and component.WidthM &gt; 1e-6 then
+			if component.Direction &gt; 0 then
+				forward += 1
+			elseif component.Direction &lt; 0 then
+				backward += 1
+			else
+				undirected += 1
+			end
+		end
+	end
+	flush()
+	return maximum
 end
 
 -- Sidewalks (and medians) sit on top of a curb, raised above the roadway
@@ -17321,6 +17744,7 @@ local DEFAULT_LANE_WIDTH_M = 3.65
 
 local function JunctionPanel(
 	props: {
+		JunctionId: string,
 		ConnectedRoadCount: number,
 		CornerCount: number,
 		FilletRadiusM: number,
@@ -17351,9 +17775,15 @@ local function JunctionPanel(
 		-- building it, so the shipped geometry can be diffed against the
 		-- headless preview in tools/preview.
 		OnDumpRoundabout: (radiusStuds: number, laneCount: number, laneWidthM: number) -&gt; (),
+		-- Widest motor-vehicle carriageway among the connected endpoint
+		-- profiles.  This deliberately excludes shoulders and other reserve.
+		SuggestedRoundaboutLaneCount: number,
 	}
 )
-	local laneCount, setLaneCount = React.useState(DEFAULT_LANE_COUNT)
+	local suggestedLaneCount =
+		math.clamp(math.floor((props.SuggestedRoundaboutLaneCount or DEFAULT_LANE_COUNT) + 0.5), 1, 6)
+	local laneCount, setLaneCount = React.useState(suggestedLaneCount)
+	local laneCountTouched, setLaneCountTouched = React.useState(false)
 	local laneWidthM, setLaneWidthM = React.useState(DEFAULT_LANE_WIDTH_M)
 	local minimum, suggested = props.GetRoundaboutRadii(laneCount, laneWidthM)
 	local radiusStuds, setRadiusStuds = React.useState(if suggested &gt; 0 then suggested else DEFAULT_RADIUS_STUDS)
@@ -17366,6 +17796,24 @@ local function JunctionPanel(
 	local ringWalk, setRingWalk = React.useState(nil :: boolean?)
 	local ringIsland, setRingIsland = React.useState(nil :: boolean?)
 	local touched, setTouched = React.useState(false)
+
+	-- A panel can stay mounted while Selection moves directly from one junction
+	-- to another.  Reset the defaults for the new controller, then continue to
+	-- follow profile changes only until the user deliberately edits the field.
+	React.useEffect(function()
+		setLaneCount(suggestedLaneCount)
+		setLaneCountTouched(false)
+		setLaneWidthM(DEFAULT_LANE_WIDTH_M)
+		setMarkings(nil)
+		setRingWalk(nil)
+		setRingIsland(nil)
+		setTouched(false)
+	end, { props.JunctionId } :: { any })
+	React.useEffect(function()
+		if not laneCountTouched and laneCount ~= suggestedLaneCount then
+			setLaneCount(suggestedLaneCount)
+		end
+	end, { suggestedLaneCount, laneCountTouched } :: { any })
 
 	-- Follow the suggestion while the user has not overridden it. Changing lane
 	-- count or width changes what actually fits, and silently leaving a stale
@@ -17471,7 +17919,7 @@ local function JunctionPanel(
 		LayoutOrder = 11,
 	})
 
-	if props.ConnectedRoadCount &gt;= 3 then
+	if props.ConnectedRoadCount &gt;= 2 then
 		children.RoundaboutSection = e(Components.Section, { Text = "Roundabout", LayoutOrder = 20 })
 		children.RoundaboutRadius = e(Components.Row, { LayoutOrder = 21 }, {
 			Label = e(Components.Label, { Text = "Radius", LayoutOrder = 1, Width = 60 }),
@@ -17493,6 +17941,7 @@ local function JunctionPanel(
 				Min = 1,
 				Max = 6,
 				OnChanged = function(value: number)
+					setLaneCountTouched(true)
 					setLaneCount(math.floor(value))
 				end,
 				LayoutOrder = 2,
@@ -25678,6 +26127,20 @@ return function(
 				Size = UDim2.new(0, 320, 0, 470),
 			}
 		elseif junctionEditSession.GetSelectedJunction() then
+			local selectedJunction = junctionEditSession.GetSelectedJunction()
+			local selectedJunctionData = if selectedJunction then JunctionInstance.Read(selectedJunction) else nil
+			local selectedJunctionId = if selectedJunctionData then selectedJunctionData.Id else ""
+			local suggestedRoundaboutLaneCount = 1
+			if selectedJunctionData then
+				local ok, value = pcall(RoundaboutBuilder.SuggestedLaneCount, selectedJunctionData.Id)
+				if ok and typeof(value) == "number" then
+					suggestedRoundaboutLaneCount = value
+				else
+					warn(
+						"[EasyRoad] Roundabout lane suggestion failed; using one circulating lane: " .. tostring(value)
+					)
+				end
+			end
 			-- Both radius figures depend on the approaches meeting here AND on the
 			-- ring's own lane settings, which live in the panel - so this is a
 			-- callback it invokes with its current values rather than a number
@@ -25724,6 +26187,7 @@ return function(
 				return result.Minimum, result.Suggested
 			end
 			bottomContent = React.createElement(JunctionPanel, {
+				JunctionId = selectedJunctionId,
 				ConnectedRoadCount = junctionEditSession.GetConnectedRoadCount(),
 				CornerCount = junctionEditSession.GetCornerCount(),
 				FilletRadiusM = junctionEditSession.GetFilletRadiusM(),
@@ -25738,6 +26202,7 @@ return function(
 				OnRebuild = junctionEditSession.RebuildSelected,
 				OnDelete = junctionEditSession.DeleteJunction,
 				RoundaboutStatus = junctionRoundaboutStatus,
+				SuggestedRoundaboutLaneCount = suggestedRoundaboutLaneCount,
 				GetRoundaboutRadii = getRoundaboutRadii,
 				OnDumpRoundabout = function(radiusStuds: number, laneCount: number, laneWidthM: number)
 					local junctionModel = junctionEditSession.GetSelectedJunction()

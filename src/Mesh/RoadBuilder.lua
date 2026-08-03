@@ -48,6 +48,13 @@ export type BuildOptions = {
 	-- the curve origin and keeps its final partial dash. Ordinary road dash
 	-- phasing remains unchanged when this is nil/false.
 	MarkingDashStartsAtZero: boolean?,
+	-- Emit raised components (Sidewalk/Median) in the first/last station
+	-- interval as exact station-edge triangles rather than longitudinally
+	-- padded boxes. This clips only the requested OUTER end face; interior
+	-- intervals retain their usual overlap padding. Useful when another
+	-- purpose-built surface owns the geometry immediately beyond a road end.
+	ExactStartRaisedCap: boolean?,
+	ExactEndRaisedCap: boolean?,
 }
 
 local MARKING_THICKNESS = 0.05
@@ -604,9 +611,10 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	-- could wander from it. Centerline-anchoring avoids that entirely:
 	-- every strip's own center is placed directly on the curve, so the
 	-- road can never drift from the path regardless of curve length or
-	-- cross-section width. No FillTriangle wedges are used for curve
-	-- joints any more - see BuildWithBay below for where wedges are still
-	-- useful (an actually-abrupt shape, not a curve-following one).
+	-- cross-section width. No FillTriangle wedges are used for ordinary curve
+	-- joints any more. The opt-in exact raised caps below are deliberately
+	-- different: their purpose is to end a Sidewalk/Median exactly at station
+	-- 0/Length where another builder owns the surface beyond that plane.
 	--
 	-- On an exactly straight, constant-profile run, adjacent Drive components
 	-- with the same surface signature are emitted as one wider band. Markings
@@ -690,6 +698,11 @@ function RoadBuilder.Build(options: BuildOptions): Model
 
 			local kind = componentsStart[c].Kind
 			local raised = RoadProfile.IsRaised(kind)
+			local exactRaisedCap = raised
+				and (
+					(i == 1 and options.ExactStartRaisedCap == true)
+					or (i == stationCount - 1 and options.ExactEndRaisedCap == true)
+				)
 			local partHeight = if raised then thickness + curbHeight else thickness
 			-- Deck (roadway) top surface sits at frame level; raised
 			-- components (sidewalk/median) stand a curb height above
@@ -761,7 +774,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			-- that are neither transitioning nor banking (the ordinary
 			-- case for most flat, straight road) are unaffected - same
 			-- plain rectangle construction as before.
-			if math.abs(centerOffset1 - centerOffset0) > 1e-4 or rollDelta > ROLL_WEDGE_EPSILON then
+			if exactRaisedCap or math.abs(centerOffset1 - centerOffset0) > 1e-4 or rollDelta > ROLL_WEDGE_EPSILON then
 				local topY = if raised then curbHeight else 0
 				local innerStart = (frames[i] * CFrame.new(centerOffset0 - w0 / 2, topY, 0)).Position
 				local outerStart = (frames[i] * CFrame.new(centerOffset0 + w0 / 2, topY, 0)).Position
@@ -1110,6 +1123,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			Preview = preview,
 			MarkingStretches = stretchesForSlice(0, taperInStart),
 			KerbStretches = kerbStretchesForSlice(0, taperInStart),
+			ExactStartRaisedCap = options.ExactStartRaisedCap,
 		}))
 	end
 	mergeIn(RoadBuilder.Build({
@@ -1121,6 +1135,8 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		ExcludeComponentIndices = { nearsideIndex },
 		MarkingStretches = stretchesForSlice(taperInStart, taperOutEnd),
 		KerbStretches = kerbStretchesForSlice(taperInStart, taperOutEnd),
+		ExactStartRaisedCap = if taperInStart <= 1e-3 then options.ExactStartRaisedCap else nil,
+		ExactEndRaisedCap = if length - taperOutEnd <= 1e-3 then options.ExactEndRaisedCap else nil,
 	}))
 	if length - taperOutEnd > 1e-3 then
 		mergeIn(RoadBuilder.Build({
@@ -1132,6 +1148,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			Preview = preview,
 			MarkingStretches = stretchesForSlice(taperOutEnd, length),
 			KerbStretches = kerbStretchesForSlice(taperOutEnd, length),
+			ExactEndRaisedCap = options.ExactEndRaisedCap,
 		}))
 	end
 
@@ -1257,6 +1274,11 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		for i = 1, #shiftStations - 1 do
 			local s0 = taperInStart + shiftStations[i]
 			local s1 = taperInStart + shiftStations[i + 1]
+			local exactRaisedCap = nearsideRaised
+				and (
+					(s0 <= 1e-3 and options.ExactStartRaisedCap == true)
+					or (length - s1 <= 1e-3 and options.ExactEndRaisedCap == true)
+				)
 			local sMid = (s0 + s1) / 2
 			local midFrame = frameAt(sMid)
 			local centerOffset0 = kerbOffset
@@ -1291,7 +1313,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			-- Split into two triangles along the innerStart-outerEnd
 			-- diagonal instead of approximating with a rotated rectangle
 			-- (an earlier attempt left sliver gaps at the seams).
-			if math.abs(centerOffset1 - centerOffset0) > 1e-4 then
+			if exactRaisedCap or math.abs(centerOffset1 - centerOffset0) > 1e-4 then
 				local topY = if nearsideRaised then curbHeight else 0
 				local half = nearsideWidthStuds / 2
 				local innerStart = (frameAt(s0) * CFrame.new(centerOffset0 - half, topY, 0)).Position

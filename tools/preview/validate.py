@@ -28,20 +28,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 # (suite, case, check) -> why it is expected to fail today.
-KNOWN_OPEN = {
-    # Deterministic on the unchanged baseline roundabout port: one sample in
-    # the four-approach US stress case lands in an arm tear 73.6 studs from its cut.
-    # None of the structure/parallel/profile paths in this change feed this
-    # Python geometry, so carry it explicitly instead of misreporting the
-    # unrelated existing boundary case as a regression from this round.
-    ("roundabout", "stress_us", "mouth"):
-        "one 3.00-stud arm-tear sample 73.6 studs from leg 2's cut",
-}
+KNOWN_OPEN = {}
 
-QUICK_ROUNDABOUT = ["uk4", "uk3", "us4", "turbo4", "hw4"]
+QUICK_ROUNDABOUT = ["uk4", "uk3", "us4", "turbo4", "turbo_width", "hw4"]
 FULL_ROUNDABOUT = ["uk4", "uk3", "us4", "uk5mini", "liveX2", "liveX4", "liveT2",
                    "liveT4", "stress", "stress_us", "turbo4", "turbo3x",
-                   "hw4", "hw4us", "hwmix"]
+                   "turbo_width", "hw4", "hw4us", "hwmix", "hw_oneway"]
 
 
 def run_script(name, args=()):
@@ -74,10 +66,10 @@ def roundabout_suite(cases):
         checks["arm_kinds"] = not rp.check_arm_kinds(scene)
         checks["shoulder"] = not rp.check_shoulder_tapers(scene)
         checks["turbo"] = not rp.check_turbo(scene)
-        checks["ring_boundary"] = not rp.ring_boundary_intrusions(
-            scene["outer_ring_parts"], scene["center"], scene["sectors"])
+        checks["ring_boundary"] = not rp.check_ring_openings(scene)
         checks["visual_ownership"] = not rp.check_visual_ownership(scene)
         checks["arm_marking_bounds"] = not rp.check_arm_marking_bounds(scene)
+        checks["edge_handoff"] = not rp.check_outboard_edge_handoffs(scene)
         steps = rp.seam_steps(scene)
         checks["seam"] = not steps or max(max(a, b) for a, b in steps) <= 0.5
         results.append((name, checks))

@@ -32,6 +32,7 @@ T = {
     "uk 3-lane / 3-lane exits": case(90, 3, True, [(a, two_way(3, 3, True)) for a in (0, 90, 180, 270)],
                                      markings="Turbo"),
     "us 3-lane 3-leg (turbo3x)": m.CASES["turbo3x"],
+    "edited 4.4m / 3.65m exits": m.CASES["turbo_width"],
 }
 
 # One break-test per rule, each isolating the rule it targets. The defect is
@@ -46,7 +47,9 @@ def break_tests():
     def transform(fn):
         """Rebuild the peel's parts and spans through a plane map."""
         def wrapped(center, ring_r, island_r, lanes, lane_m, dol, exits):
-            parts, spans = real(center, ring_r, island_r, lanes, lane_m, dol, exits)
+            parts, spans, replacements = real(
+                center, ring_r, island_r, lanes, lane_m, dol, exits
+            )
             out = []
             for p in parts:
                 out.append(m.Part(p.name, [fn(center, q) for q in p.poly], p.color,
@@ -60,7 +63,9 @@ def break_tests():
                            math.hypot(q0[0] - center[0], q0[1] - center[1]),
                            math.atan2(q1[1] - center[1], q1[0] - center[0]),
                            math.hypot(q1[0] - center[0], q1[1] - center[1])))
-            return out, sp
+            # Keep the expected physical handoffs untransformed. check_turbo
+            # must notice the emitted geometry no longer reaches them.
+            return out, sp, replacements
         return wrapped
 
     def push_out(center, q):
@@ -77,13 +82,34 @@ def break_tests():
         return (center[0] + math.cos(a) * r, center[1] + math.sin(a) * r)
 
     def backwards(center, ring_r, island_r, lanes, lane_m, dol, exits):
-        parts, spans = real(center, ring_r, island_r, lanes, lane_m, dol, exits)
-        return parts, [(n, k, a1, r1, a0, r0) for n, k, a0, r0, a1, r1 in spans]
+        parts, spans, replacements = real(
+            center, ring_r, island_r, lanes, lane_m, dol, exits
+        )
+        return (parts,
+                [(n, k, a1, r1, a0, r0)
+                 for n, k, a0, r0, a1, r1 in spans],
+                replacements)
+
+    def wrong_boundary(center, ring_r, island_r, lanes, lane_m, dol, exits):
+        parts, spans, replacements = real(
+            center, ring_r, island_r, lanes, lane_m, dol, exits
+        )
+        replacements = [dict(replacement) for replacement in replacements]
+        replacements[0]["target_offset_m"] += 1.0
+        return parts, spans, replacements
+
+    def no_replacement(center, ring_r, island_r, lanes, lane_m, dol, exits):
+        parts, spans, _replacements = real(
+            center, ring_r, island_r, lanes, lane_m, dol, exits
+        )
+        return parts, spans, []
 
     ok = True
     for name, fn in (("peel 1.5 lanes off any divider", transform(push_out)),
                      ("peel that ends at no exit", transform(spin)),
-                     ("peel run backwards", backwards)):
+                     ("peel run backwards", backwards),
+                     ("peel mapped to a fictional boundary", wrong_boundary),
+                     ("peel painted over base divider", no_replacement)):
         m.turbo_spiral = fn
         try:
             scene = m.build(tag="brk", **T["uk 2-lane 4-leg"])

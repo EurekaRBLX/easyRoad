@@ -137,10 +137,11 @@ Corrections to earlier entries here, so they are not acted on again:
   perimeter order, and collinear input could empty the hull and produce a NaN
   apex.
 
-## Roundabout: open live reports (not yet fixed)
+## Roundabout: Studio reports and follow-through
 
-All of these came from Studio sessions and none is built yet. Ordered by how
-well understood they are, not by value.
+These entries preserve the Studio evidence and the reasoning behind each fix.
+Most are now fixed headlessly; anything labelled for a live recheck remains
+open until the rebuilt plugin is inspected in Studio.
 
 1. ~~Centre island is a true cylinder; the ring around it is a polygon~~ -
    FIXED, see the SHIPPED.md entry. `RoadBuilder.StationsFor` now exposes the
@@ -272,7 +273,10 @@ well understood they are, not by value.
    mode. Dash phase and the final partial dash match `emit_road`. Ordinary roads
    still use the complete `Markings.Compute` pipeline. The excess live strokes
    were surviving fragments of the ring's outer edge line at sector boundaries,
-   not extra lines in this plan; the same exact sector clip now trims them.
+   plus, in Turbo mode, the ordinary concentric divider remaining under each
+   peel with a different dash phase. Exact sector clips now trim both ownership
+   conflicts: full mouth sectors for outer edge paint and peel-only replacement
+   sectors for circulating dividers.
    Remaining step: reinstall the rebuilt dist and compare against the bird's-eye
    target.
 
@@ -280,10 +284,12 @@ well understood they are, not by value.
    Builder widget**, only on the junction panel. `RoundaboutBuilder.SuggestedRadiusStuds`
    already exists and is UI-agnostic; this is wiring.
 
-9. **The suggestion does not adapt to the lane count of the roads actually
-   connected** - it uses the panel's lane count. It should take the maximum
-   over the connected approaches. `MinimumRadiusStuds` already walks the legs
-   and knows each one's width, so the input is there.
+9. ~~**The circulating-lane suggestion does not adapt to the connected
+   roads.**~~ FIXED HEADLESS. The junction panel now takes the maximum motor
+   lane count of any individual connected carriageway: 3/2 -> 3, 2+2 -> 2,
+   one-way five -> 5. Only positive-width Drive components count; shoulders,
+   parking, cycle lanes, bays and pavements do not. It follows the suggestion
+   until the user edits the lane field, then keeps that override.
 
 10. **Cul-de-sacs**: asked for, nothing exists. Open question, not a bug.
 
@@ -317,22 +323,24 @@ Left open:
   studs for a 2-lane UK ring, which is where the `circulating_width` sweeps in
   ROUNDABOUT.md 3.9 independently found the geometry stops holding (R=18).
 
-## Turbo roundabout markings — SHIPPED, not yet confirmed live
+## Turbo roundabout markings — SHIPPED HEADLESS, rebuilt Studio recheck open
 
 Third `RoundaboutMarkings` mode beside Continuous and SolidLanes, selectable per
-roundabout in the junction panel and as a regional default. The ring keeps its
-ordinary concentric divider; a dashed peel-off at each exit leaves it and hands
-over to the exit arm's own lane line. Built in two phases — ring divider, then
-arm line — because the arm merges tangentially and the two already join. Rule
-and reasoning in ROUNDABOUT.md 3.8.
+roundabout in the junction panel and as a regional default. Outside a peel the
+ring keeps its ordinary concentric divider. Inside the peel-owned arc that base
+divider is clipped out, so its short dash phase cannot fill the Turbo marking's
+deliberate gaps. The peel resolves the exit profile's actual Drive/Drive
+boundary instead of inferring a lane count from total arm width divided by the
+ring lane width. It therefore survives edited lane widths and unequal/custom
+approach widths. Rule and reasoning are in ROUNDABOUT.md 3.8.
 
 The Studio/Python visual divergence is now fixed in source: every arm marking
 gets a `FromStationStuds` or `ToStationStuds` bound at that line offset's exact
-ring-kerb crossing, matching the area Python hides below the ring deck. Turbo's
-peel has a distinct top plane above the concentric divider, so the accepted
-visible union no longer depends on coplanar Part ordering. Regression coverage
-is `tools/preview/roundabout_parity_contract.py`; its five break-tests remove
-each rule and must fail.
+ring-kerb crossing, while the outboard edge line is preserved to its tangent
+handoff. Turbo's peel has a distinct top plane where it follows the arm, and
+the base ring divider is physically replaced over the polar peel. The Python
+preview validates with the edited `lane_width_m` and requires replacement
+sectors rather than relying on painter order.
 
 Left open:
 
@@ -366,7 +374,13 @@ Left open by that round, both cheap:
   already ramps a lateral offset along a curve, so this is the same machinery
   the turbo work needs.
 
-## Highway shoulders built as running lanes — FIXED for roundabouts, not confirmed live
+## Highway/one-way roundabout approaches and shoulder semantics — FIXED HEADLESS
+
+There is no Highway-category rejection in roundabout conversion. Directed
+one-way roads create only the arm their traffic direction permits, and the
+solo-mouth outer pavement crossing now has the same sampled-and-bisected helper
+as the Python reference. A legacy/custom profile with one undirected Drive uses
+a full-width shared entry/exit flare instead of two half-width fictional lanes.
 
 `LaneGroup` now carries a `LaneSpec { Kind, WidthM, Directional }` per strip
 instead of a bare width, so the arm can distinguish a shoulder from a Drive.
@@ -379,14 +393,17 @@ for. Either one alone puts the hard shoulder on the gore side of the mouth,
 against the splitter island. `splitApproachLanes` now collects indices and
 sorts them; `armProfileFor` takes a `mirrored` flag, `travelsInward == atStart`.
 
-The outboard shoulder is no longer carried full-width into the ring.
-`armProfileFor` leaves a zero-width Shoulder marker at the outboard boundary so
-`Markings.lua` paints a solid Drive/Shoulder separator, while `buildArm` emits
-the physical shoulder as an edge-anchored surface taper from its source width to
-zero. The running lanes stay fixed: a 2+2 highway therefore has two-lane arms,
-not three-lane arms with a differently coloured third strip.
+Terminal shoulders are no longer carried full-width into the ring.
+`armProfileFor` leaves a zero-width Shoulder marker at every tapered boundary
+so `Markings.lua` paints the solid Drive/Shoulder separator, while `buildArm`
+emits each physical shoulder as an independent edge-anchored surface taper from
+its source width to zero. Paired arms taper their traffic-outboard shoulder;
+solo one-way highway mouths taper both sides and retain the resulting asymmetric
+lane-centre shift. The running lanes stay fixed: a 2+2 highway therefore has
+two-lane arms, not three-lane arms with a differently coloured third strip.
 
-Covered by `check_arm_kinds`, `check_shoulder_tapers`, and three break-tests.
+Covered by `check_arm_kinds`, `check_shoulder_tapers`, the mixed highway cases,
+and the dedicated one-way-highway fixture.
 
 The ring-side pavement is coordinated outside that shoulder taper, growing from
 the approach's real pavement width (zero on a motorway) while the shoulder
@@ -397,6 +414,11 @@ the ring (below the emitter's 0.02-stud cutoff), all with no mouth holes. The th
 
 Still open:
 
+- **Multi-segment connected approaches.** Editable conversion still requires
+  exactly one recoverable source segment. Curved parallel carriageways are
+  commonly serialized as PolyCurves and remain blocked even though their
+  Highway/one-way profiles are now valid. Source-window slicing must be
+  generalized before this restriction can be removed safely.
 - **`RoadBuilder`'s half is still untraced.** The live report was that both
   sides do this; only the roundabout was confirmed. Widen/narrow transitions
   between a highway and a parkway/avenue/street are the case to look at.

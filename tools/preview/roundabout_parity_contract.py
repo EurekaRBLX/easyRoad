@@ -36,6 +36,8 @@ def static_faults(source):
             "Luau marking ownership gap differs from the Python port")
     require(source, "local ROADBUILDER_MARKING_ALT_STUDS = 0.004",
             "Luau Turbo layer does not account for RoadBuilder's alternate lift")
+    require(source, "local SHOULDER_SECTOR_INSET_RAD = math.rad(8)",
+            "paired shoulder-taper mouths do not retain the measured ring-sidewalk overlap")
     require(
         source,
         "local TURBO_MARKING_LIFT_STUDS = RoadBuilder.MarkingLiftStuds + ROADBUILDER_MARKING_ALT_STUDS + MARKING_LAYER_GAP_STUDS",
@@ -58,6 +60,12 @@ def static_faults(source):
     require(build_arm, "MarkingLines = markingLines",
             "RoadBuilder does not receive the clipped arm marking plan")
 
+    mouth = function_scope(source, "local function buildMouth(")
+    require(mouth, "local hasTaperedShoulder =",
+            "buildMouth does not distinguish shoulder-taper pavement ownership")
+    require(mouth, "then SHOULDER_SECTOR_INSET_RAD else SECTOR_INSET_RAD",
+            "paired highway mouths still use the ordinary pavement opening")
+
     turbo = function_scope(source, "local function buildTurboMarkings(")
     require(turbo, "local y = center.Y + TURBO_MARKING_LIFT_STUDS",
             "Turbo markings still share the ordinary marking top plane")
@@ -68,11 +76,9 @@ def geometry_faults(name):
     scene = rp.build(tag=name, **rp.CASES[name])
     faults = []
     faults += rp.check_arm_marking_bounds(scene)
+    faults += rp.check_outboard_edge_handoffs(scene)
     faults += rp.check_visual_ownership(scene)
-    intrusions = rp.ring_boundary_intrusions(
-        scene["outer_ring_parts"], scene["center"], scene["sectors"])
-    if intrusions:
-        faults.append(f"{len(intrusions)} ring boundary vertices remain in mouth ownership")
+    faults += rp.check_ring_openings(scene)
     records = [record for record in scene["arm_marking_bounds"]
                if record["crossing"] is not None]
     if not records:
@@ -112,8 +118,19 @@ def break_tests(source):
     results.append(("coplanar Turbo overlay",
                     bool(rp.check_visual_ownership(turbo))))
 
+    handoff, _ = geometry_faults("uk4")
+    edge = next(record for record in handoff["arm_marking_bounds"]
+                if record.get("preserved") and record["parts"])
+    terminal_part = edge["parts"][-1 if edge["cut_at_start"] else 0]
+    if edge["cut_at_start"]:
+        terminal_part.to_station = edge["curve"].length - 1.0
+    else:
+        terminal_part.from_station = 1.0
+    results.append(("clipped outboard handoff early",
+                    bool(rp.check_outboard_edge_handoffs(handoff))))
+
     boundary, _ = geometry_faults("uk4")
-    angle, _ahead, _behind = boundary["sectors"][0]
+    angle, _ahead, _behind = boundary["edge_marking_sectors"][0]
     radius = boundary["ring_kerb"]
     center = boundary["center"]
     point = (center[0] + math.cos(angle) * radius,
@@ -124,17 +141,47 @@ def break_tests(source):
         (point[0], point[1] + 0.05),
     ], rp.MARK_C, point, rp.MARKING_LIFT)
     results.append(("ring fragment inside mouth", bool(rp.ring_boundary_intrusions(
-        [fake], center, boundary["sectors"]))))
+        [fake], center, boundary["edge_marking_sectors"]))))
+
+    # Centre remains inside the sector, but the ahead corner crosses its ray.
+    # The retired selector (`delta > ahead`) clipped this against the BEHIND
+    # ray and left the visible ahead corner untouched.
+    sector = (0.0, 0.25, 0.25)
+    polar = lambda radius, angle: (math.cos(angle) * radius,
+                                   math.sin(angle) * radius)
+    polygon = [polar(10, 0.10), polar(11, 0.10),
+               polar(11, 0.30), polar(10, 0.30)]
+    centre = (sum(point[0] for point in polygon) / 4,
+              sum(point[1] for point in polygon) / 4)
+    straddler = rp.Part("Sidewalk", polygon, rp.SIDEWALK_C, centre, 0.0)
+    kept, _removed, _clipped = rp.open_angular_parts(
+        [straddler], (0.0, 0.0), [sector], lambda _part: True, clamp=False
+    )
+    results.append(("inside-centre part clipped at crossed ray",
+                    not rp.ring_boundary_intrusions(
+                        kept, (0.0, 0.0), [sector]
+                    )))
     return results
 
 
 def main():
     source = ROUNDABOUT.read_text(encoding="utf-8")
     faults = static_faults(source)
-    for name in ("uk4", "us4", "turbo4", "turbo3x", "hw4", "hw4us"):
+    for name in ("uk4", "us4", "turbo4", "turbo3x", "turbo_width",
+                 "hw4", "hw4us", "hw_oneway"):
         _scene, case_faults = geometry_faults(name)
         for fault in case_faults:
             faults.append(f"{name}: {fault}")
+    # The shoulder-specific sector ownership exists for one concrete reason:
+    # rigid shoulder/kerb taper facets otherwise leave outer-band crescents in
+    # the ring sidewalk. Exercise both traffic hands with the strict annulus
+    # scan so the eight-degree constant cannot silently regress to three.
+    for name in ("hw4", "hw4us"):
+        scene = rp.build(tag=name, **rp.CASES[name])
+        holes, pitch = rp.scan_gaps(scene)
+        real, _thin = rp.cluster_gaps(holes, pitch, 0.15)
+        if real:
+            faults.append(f"{name}: visible ring-sidewalk gaps {real}")
 
     print("break-tests (each MUST be caught):")
     for name, caught in break_tests(source):
@@ -146,7 +193,7 @@ def main():
         for fault in faults:
             print("FAILED:", fault)
         return 1
-    print("roundabout 3D parity passed: per-offset arm clips, mouth bounds, Turbo layer ownership")
+    print("roundabout 3D parity passed: edge handoffs, split mouth ownership, and width-safe Turbo")
     return 0
 
 

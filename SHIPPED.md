@@ -4,6 +4,49 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Roundabout approach compatibility, lane advice, seam ownership, and Turbo width parity
+
+Roundabout conversion is now profile-driven rather than category-gated. Highway
+profiles, directed one-way roads, and legacy/custom single-Drive profiles can
+all form mouths. The missing exact outer-band crossing helper used by solo
+one-way mouths has been restored with deterministic sampling plus bisection.
+An undirected single Drive is no longer cut into two half-width lanes; it keeps
+its full width through the shared entry/exit flare. Shoulders remain reserve,
+not traffic lanes. Solo one-way highway mouths retain independent left/right
+shoulder widths, taper both surfaces to zero, and preserve the asymmetric live
+lane centre instead of carrying either shoulder into the ring as a lane. Only
+the solo arm's traffic-outboard pavement reaches the ring footway; its inboard
+pavement tapers to zero before the circulating carriageway.
+
+The junction editor now suggests the circulating-lane count from the widest
+connected motor carriageway. It counts only positive-width `Drive` components,
+separates carriageways at medians, and counts opposing directions independently:
+3/2 suggests 3, an undivided 2+2 suggests 2, and a five-lane one-way road
+suggests 5. The suggestion follows selection/profile changes until the user
+edits the lane field, then preserves that explicit override.
+
+Two separate mouth ownership errors are fixed in source. The controller-side
+end of a trimmed source road can now end raised Sidewalk/Median components on
+the exact station plane, while interior RoadBuilder intervals keep their normal
+overlap. At the ring, outer arm edge paint is preserved to its actual tangent
+handoff and the ring edge opening uses the full marking sector; surface Parts
+still use the conservative pavement sector. Arm surfaces remain sunk, but
+paint stays on the normal marking plane.
+
+Turbo no longer guesses exit lane boundaries by dividing arm width by the
+edited ring lane width. Each peel resolves the exit profile's actual adjacent
+Drive/Drive boundary, eases from the circulating divider radius to that real
+handoff radius, and follows the arm line. The ordinary concentric divider is
+clipped only over the peel-owned arc, preventing its short dash phase from
+filling the Turbo line's deliberate gaps. The Python bird's-eye port and static
+contracts use the same edited-width and replacement-sector rules.
+
+The remaining conversion limit is structural rather than categorical: an
+editable connected approach must still have exactly one source segment and no
+unsliceable transition, bay, or marking/kerb stretch. Multi-segment parallel
+carriageways remain a follow-up. Headless contracts pass; the rebuilt plugin
+still needs the requested Studio visual check.
+
 ## Persistent selectable roundabout editor
 
 Selecting a generated roundabout ring or arm now opens a dedicated React-Lua

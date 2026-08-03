@@ -999,6 +999,20 @@ return function(
 				Size = UDim2.new(0, 320, 0, 470),
 			}
 		elseif junctionEditSession.GetSelectedJunction() then
+			local selectedJunction = junctionEditSession.GetSelectedJunction()
+			local selectedJunctionData = if selectedJunction then JunctionInstance.Read(selectedJunction) else nil
+			local selectedJunctionId = if selectedJunctionData then selectedJunctionData.Id else ""
+			local suggestedRoundaboutLaneCount = 1
+			if selectedJunctionData then
+				local ok, value = pcall(RoundaboutBuilder.SuggestedLaneCount, selectedJunctionData.Id)
+				if ok and typeof(value) == "number" then
+					suggestedRoundaboutLaneCount = value
+				else
+					warn(
+						"[EasyRoad] Roundabout lane suggestion failed; using one circulating lane: " .. tostring(value)
+					)
+				end
+			end
 			-- Both radius figures depend on the approaches meeting here AND on the
 			-- ring's own lane settings, which live in the panel - so this is a
 			-- callback it invokes with its current values rather than a number
@@ -1045,6 +1059,7 @@ return function(
 				return result.Minimum, result.Suggested
 			end
 			bottomContent = React.createElement(JunctionPanel, {
+				JunctionId = selectedJunctionId,
 				ConnectedRoadCount = junctionEditSession.GetConnectedRoadCount(),
 				CornerCount = junctionEditSession.GetCornerCount(),
 				FilletRadiusM = junctionEditSession.GetFilletRadiusM(),
@@ -1059,6 +1074,7 @@ return function(
 				OnRebuild = junctionEditSession.RebuildSelected,
 				OnDelete = junctionEditSession.DeleteJunction,
 				RoundaboutStatus = junctionRoundaboutStatus,
+				SuggestedRoundaboutLaneCount = suggestedRoundaboutLaneCount,
 				GetRoundaboutRadii = getRoundaboutRadii,
 				OnDumpRoundabout = function(radiusStuds: number, laneCount: number, laneWidthM: number)
 					local junctionModel = junctionEditSession.GetSelectedJunction()

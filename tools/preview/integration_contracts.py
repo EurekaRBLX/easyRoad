@@ -28,6 +28,38 @@ def reject(text, needle, message, problems):
         problems.append(message)
 
 
+def require_count(text, needle, minimum, message, problems):
+    if text.count(needle) < minimum:
+        problems.append(message)
+
+
+def max_motor_lanes_per_carriageway(components):
+    """Executable contract for RoadProfile.MaxMotorLanesPerCarriageway.
+
+    Component tuples are (kind, width_m, direction). A Median separates
+    carriageways; direction signs separate flows on an undivided carriageway.
+    """
+    maximum = forward = backward = undirected = 0
+
+    def flush():
+        nonlocal maximum, forward, backward, undirected
+        maximum = max(maximum, forward, backward, undirected)
+        forward = backward = undirected = 0
+
+    for kind, width_m, direction in components:
+        if kind == "Median":
+            flush()
+        elif kind == "Drive" and width_m > 1e-6:
+            if direction > 0:
+                forward += 1
+            elif direction < 0:
+                backward += 1
+            else:
+                undirected += 1
+    flush()
+    return maximum
+
+
 def main():
     problems = []
     junction = source("src/Mesh/JunctionBuilder.lua")
@@ -85,6 +117,67 @@ def main():
     require(packing, "ringSidewalkWidthM(style)", "junction panel radius suggestion passes nil pavement width to armProfileFor", problems)
     require(main_source, "local ok, radii = pcall", "roundabout advice is not isolated from the selected-junction panel", problems)
     require(main_source, "junction editor remains available", "roundabout advice failure has no panel-safe fallback", problems)
+    require(profiles, "function RoadProfile.MaxMotorLanesPerCarriageway", "profiles cannot infer the widest motor carriageway", problems)
+    lane_rule_start = profiles.find("function RoadProfile.MaxMotorLanesPerCarriageway")
+    lane_rule_end = profiles.find("function RoadProfile.IsRaised", lane_rule_start)
+    lane_rule = profiles[lane_rule_start:lane_rule_end]
+    require(lane_rule, 'component.Kind == "Median"', "roundabout lane advice does not separate divided carriageways", problems)
+    require(lane_rule, 'component.Kind == "Drive" and component.WidthM > 1e-6', "roundabout lane advice counts shoulders/non-drive reserve", problems)
+    require(lane_rule, "forward += 1", "roundabout lane advice does not count forward traffic independently", problems)
+    require(lane_rule, "backward += 1", "roundabout lane advice does not count opposing traffic independently", problems)
+    require(roundabout, "function RoundaboutBuilder.SuggestedLaneCount", "roundabout builder has no connected-profile lane suggestion", problems)
+    require(roundabout, "RoadProfile.MaxMotorLanesPerCarriageway(profile)", "roundabout lane suggestion bypasses the carriageway rule", problems)
+    require(roundabout, "data.ProfileEnd or data.ProfileStart", "roundabout lane suggestion ignores the connected endpoint profile", problems)
+    require(main_source, "pcall(RoundaboutBuilder.SuggestedLaneCount", "junction UI does not isolate or request roundabout lane advice", problems)
+    require(main_source, "SuggestedRoundaboutLaneCount = suggestedRoundaboutLaneCount", "junction UI does not receive roundabout lane advice", problems)
+    require(junction_panel, "SuggestedRoundaboutLaneCount: number", "junction panel has no suggested circulating-lane input", problems)
+    require(junction_panel, "local laneCountTouched", "junction panel cannot preserve an explicit lane-count override", problems)
+    require(junction_panel, "setLaneCount(suggestedLaneCount)", "junction panel does not apply the connected-road lane suggestion", problems)
+    require(junction_panel, "props.JunctionId", "junction panel does not reset lane advice when selection changes", problems)
+    require(junction_panel, "setLaneWidthM(DEFAULT_LANE_WIDTH_M)", "junction selection leaks the previous roundabout lane width", problems)
+    require(junction_panel, "setMarkings(nil)", "junction selection leaks the previous roundabout marking override", problems)
+    require(junction_panel, "setRingWalk(nil)", "junction selection leaks the previous roundabout pavement override", problems)
+    require(junction_panel, "setRingIsland(nil)", "junction selection leaks the previous roundabout island override", problems)
+    require(junction_panel, "props.ConnectedRoadCount >= 2", "two-road/one-way junctions cannot expose roundabout conversion", problems)
+
+    lane_cases = {
+        "asymmetric divided 3/2": (
+            [("Shoulder", 3.0, 0)]
+            + [("Drive", 3.65, 1)] * 3
+            + [("Median", 2.0, 0)]
+            + [("Drive", 3.65, -1)] * 2,
+            3,
+        ),
+        "undivided 2+2": (
+            [("Sidewalk", 2.0, 0)]
+            + [("Drive", 3.65, -1)] * 2
+            + [("Drive", 3.65, 1)] * 2
+            + [("Sidewalk", 2.0, 0)],
+            2,
+        ),
+        "one-way five": (
+            [("Shoulder", 1.0, 0)]
+            + [("Drive", 3.65, 1)] * 5
+            + [("Shoulder", 3.0, 0)],
+            5,
+        ),
+        "non-drive components ignored": (
+            [
+                ("Sidewalk", 2.0, 0),
+                ("Parking", 2.5, 0),
+                ("Bike", 1.8, 1),
+                ("Shoulder", 3.0, 0),
+                ("Bay", 3.0, 0),
+                ("Drive", 0.0, 1),
+                ("Drive", 3.65, 1),
+            ],
+            1,
+        ),
+    }
+    for label, (components, expected) in lane_cases.items():
+        actual = max_motor_lanes_per_carriageway(components)
+        if actual != expected:
+            problems.append(f"roundabout lane contract {label}: expected {expected}, got {actual}")
     require(junction_instance, 'Kind: "Intersection" | "Roundabout"', "junction data cannot retain a roundabout controller", problems)
     require(junction_instance, 'model:SetAttribute("RW_JunctionKind", kind)', "junction kind is not persisted", problems)
     require(junction_instance, "SetRoundaboutGeometry", "roundabout geometry is not mirrored to its controller", problems)
@@ -120,7 +213,8 @@ def main():
     require(main_source, "React.createElement(RoundaboutPanel", "roundabout editor panel is unreachable", problems)
     require(main_source, "Selection:Set({ ring })", "junction conversion does not transition selection into the roundabout editor", problems)
     require(roundabout_editor_preview, "import roundabout_preview as rp", "roundabout editor preview does not use the canonical component pipeline", problems)
-    require(roundabout_editor_preview, 'lane_width_m=3.5', "roundabout editor preview does not exercise editable lane width", problems)
+    require(roundabout_editor_preview, 'lane_width_m=4.4', "roundabout editor preview does not exercise the Turbo width regression", problems)
+    require(roundabout_editor_preview, 'rp.CASES["hw_oneway"]', "roundabout editor preview does not exercise one-way highway mouths", problems)
     require(road_builder, "MarkingLines: { Markings.MarkingLine }?", "RoadBuilder has no exact marking-plan hook", problems)
     require(roundabout, "local function roundaboutMarkingLines(", "roundabouts do not own a preview-matched marking plan", problems)
     require(roundabout, "Color3.fromRGB(245, 245, 245)", "roundabout marking colour differs from the Python appearance contract", problems)
@@ -131,13 +225,49 @@ def main():
     require(roundabout, "line.FromStationStuds = crossing", "exit-arm markings still protrude through the ring deck", problems)
     require(roundabout, "MarkingLines = markingLines", "RoadBuilder does not receive the clipped arm marking plan", problems)
     require(roundabout, "local y = center.Y + TURBO_MARKING_LIFT_STUDS", "Turbo overlay is coplanar with the concentric divider", problems)
+    require(roundabout, "local function armDriveBoundaryOffsetsStuds(", "Turbo still has no actual exit-boundary lookup", problems)
+    require(roundabout, "components[i].Kind == \"Drive\" and components[i + 1].Kind == \"Drive\"", "Turbo accepts shoulder/non-drive boundaries as lane targets", problems)
+    require(roundabout, "local targetOffsets = armDriveBoundaryOffsetsStuds(arm, style, scale)", "Turbo does not use the exit arm's real Drive boundaries", problems)
+    require(roundabout, "local targetIndex = lanes - k", "Turbo no longer maps ring dividers to outside-in exit boundaries", problems)
+    require(roundabout, "local radius = ringRadius + (targetRadius - ringRadius) * eased", "Turbo does not ease to the edited-width handoff radius", problems)
+    require(roundabout, "local function openTurboReplacementArcs(", "Turbo does not remove the base divider under a peel", problems)
+    require(roundabout, "openTurboReplacementArcs(ringMarkings, center, replacements", "Turbo replacement sectors are not applied to the built ring", problems)
+    require(roundabout, "openRingPavement(matching, center, { replacement.Sector }, 0, false)", "Turbo base-divider opening is clamped shorter than its peel", problems)
+    require(roundabout, "local TURBO_MIN_SAMPLE_SPACING_STUDS = 0.5", "Turbo has no bounded spatial sampling floor", problems)
+    require(roundabout, "if ringRadius <= math.max(markingWidth, 1e-3) then", "Turbo samples invalid/non-positive edited divider radii", problems)
+    reject(roundabout, "(arm.OuterOffsetStuds + arm.InnerOffsetStuds) / laneStuds", "Turbo still infers arm lanes from edited ring lane width", problems)
+    require(roundabout_preview, 'scene["lane_width_m"] * SCALE', "Python Turbo validation still assumes the default lane width", problems)
+    require(roundabout_preview, 'scene.get("turbo_replacements")', "Python Turbo validation does not require base-divider replacement", problems)
+    require(roundabout, "local function bandExitAngle(", "one-way roundabout mouths call a missing outer-band helper", problems)
+    require(roundabout, "local SOLO_SECTOR_INSET_RAD = math.rad(7)", "solo one-way pavement openings retain their outer-band crescent gap", problems)
+    require(roundabout, "local BAND_EXIT_SAMPLES = 96", "one-way outer-band crossing has no deterministic bracket", problems)
+    require_count(roundabout, "bandExitAngle(", 2, "one-way outer-band helper exists but is never called", problems)
+    require(roundabout, "if driveCount == 1 and onlyDriveIndex then", "legacy one-lane roads are still split into two half-width lanes", problems)
+    require(roundabout, "return sharedGroup(), sharedGroup()", "legacy one-lane roads do not retain full-width entry/exit arms", problems)
+    reject(roundabout, 'Category == "Highways"', "roundabout conversion still rejects Highway profiles by category", problems)
+    require(roundabout, "CutShoulderLeftM: number", "solo one-way highway arms cannot retain their left shoulder width", problems)
+    require(roundabout, "CutShoulderRightM: number", "solo one-way highway arms cannot retain their right shoulder width", problems)
+    require(roundabout, "if style.DriveOnLeft or solo then", "solo one-way arms do not taper their left terminal shoulder", problems)
+    require(roundabout, "if not style.DriveOnLeft or solo then", "solo one-way arms do not taper their right terminal shoulder", problems)
+    require(roundabout, "if outward < 0 then arm.CutShoulderLeftM else arm.CutShoulderRightM", "arm surface emission does not select shoulder width per side", problems)
+    require_count(roundabout, "pavement(0)", 2, "solo one-way arms carry their inboard kerb across the circulating carriageway", problems)
+    require(roundabout, "while expanded do", "contiguous undirected shoulder runs are not assigned to their lane group", problems)
+    require(roundabout, "leftShoulderMarkerIndex", "terminal shoulder runs are not collapsed to one marking boundary", problems)
+    require(roundabout, "rightShoulderMarkerIndex", "mirrored terminal shoulder runs are not collapsed to one marking boundary", problems)
     require(roundabout, "local function replaceCutPavementCaps()", "roundabout approach seams still use padded pavement end caps", problems)
+    require(road_builder, "ExactStartRaisedCap: boolean?", "RoadBuilder cannot end raised start caps at an ownership plane", problems)
+    require(road_builder, "ExactEndRaisedCap: boolean?", "RoadBuilder cannot end raised end caps at an ownership plane", problems)
+    require(road_builder, "local exactRaisedCap = raised", "RoadBuilder exact-cap options are declared but not emitted", problems)
+    require(roundabout, "ExactStartRaisedCap = if exactRaisedCapAtStart == true", "roundabout trimming does not wire an exact raised start cap", problems)
+    require(roundabout, "ExactEndRaisedCap = if exactRaisedCapAtStart == false", "roundabout trimming does not wire an exact raised end cap", problems)
+    require(roundabout, "approach.LinkedAtStart", "roundabout preflight does not choose which source-road end receives the exact cap", problems)
     require(roundabout, "local function angularFootprintHalfSpan(", "roundabout mouth opening still clips ring Parts by centre only", problems)
     require(roundabout, "local function clipToAngularSide(", "roundabout mouth boundary Parts are deleted instead of clipped exactly", problems)
     require(roundabout_preview, "def ring_boundary_intrusions(", "Python preview does not reject ring Parts intruding across a mouth boundary", problems)
     require(dump_compare, "grown = args.radius", "roundabout dump comparison still grows the requested radius", problems)
     reject(dump_compare, "grown = max(args.radius, minimum)", "roundabout dump comparison disagrees with the live radius rule", problems)
-    require(dump_compare, "road_centre, _cut_shoulder = P.arm_from_group", "roundabout dump comparison still expects the old arm-profile contract", problems)
+    require(dump_compare, "road_centre, _cut_shoulders, core_shift", "roundabout dump comparison still expects the old arm-profile contract", problems)
+    require(dump_compare, "core_centre = span_centre + core_shift", "roundabout dump comparison ignores two-sided shoulder core shift", problems)
     require(multinode_preview, "from preview_core import (", "multinode preview no longer shares the roundabout component pipeline", problems)
     require(multinode_preview, "SIX_LANE_BOULEVARD = uk_two_way(3)", "multinode preview lost the UK six-lane boulevard case", problems)
     require(multinode_preview, 'suffix = "gaps" if flat else "parts"', "multinode preview no longer emits matching parts/gaps QA views", problems)
@@ -235,7 +365,7 @@ def main():
         for problem in problems:
             print("FAILED:", problem)
         return 1
-    print("integration contracts passed: editable roundabouts, multinode junctions, assets, procedural structures, snap references, parallel roadways, marking boundaries, highway presets, Software dock")
+    print("integration contracts passed: editable roundabouts, lane inference, one-way/highway mouths, Turbo width parity, exact caps, multinode junctions, assets, procedural structures, snap references, parallel roadways, marking boundaries, highway presets, Software dock")
     return 0
 
 

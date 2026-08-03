@@ -38,7 +38,9 @@ def min_radius(legs, lane_count, lane_w, dol):
         for group in (inbound, outbound):
             if not group:
                 continue
-            comps, outer, _inner, _centre, _cut_shoulder = P.arm_from_group(group, dol, solo)
+            comps, outer, _inner, _centre, _cut_shoulders, _core_shift = P.arm_from_group(
+                group, dol, solo
+            )
             width = sum(c[1] for c in comps) * P.SCALE
             total += width
             widest = max(widest, width)
@@ -123,10 +125,14 @@ def main():
             if not group:
                 print(f"     {label}: none")
                 continue
-            comps, outer_off, inner_off, road_centre, _cut_shoulder = P.arm_from_group(group, dol, solo)
+            comps, outer_off, inner_off, road_centre, _cut_shoulders, core_shift = (
+                P.arm_from_group(group, dol, solo, not travels_inward)
+            )
             merge = kerb - outer_off
             span_centre = (group["left"] + group["right"]) / 2
-            lat = (span_centre - road_centre) if travels_inward else (span_centre + road_centre)
+            core_centre = span_centre + core_shift * (1 if travels_inward else -1)
+            lat = ((core_centre - road_centre) if travels_inward
+                   else (core_centre + road_centre))
             print(f"     {label}: merge={merge:.4f} lateral={lat * P.SCALE:.4f} "
                   f"outer={outer_off:.4f} inner={inner_off:.4f} "
                   f"width={sum(c[1] for c in comps) * P.SCALE:.4f}")
