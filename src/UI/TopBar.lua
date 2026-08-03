@@ -32,6 +32,9 @@ local function TopBar(props: {
 	OnOpenKeybinds: () -> (),
 	OnOpenSoftware: () -> (),
 	OnHoverChanged: ((hovered: boolean) -> ())?,
+	-- Y offset from EasyAPI TopBarBridge so multiple easy* bars stack
+	-- instead of overlapping. Defaults to 8 (single-plugin position).
+	TopOffset: number?,
 })
 	-- Settings has no single dock of its own any more - clicking it opens a
 	-- small home menu to choose Regional Preference or Keybinds, each its
@@ -40,11 +43,12 @@ local function TopBar(props: {
 	-- position with no way to tell the second one was even there).
 	local menuOpen, setMenuOpen = React.useState(false)
 	local settingsSelected = props.RegionalOpen or props.KeybindsOpen or props.SoftwareOpen or menuOpen
+	local topY = props.TopOffset or 8
 
 	return e(React.Fragment, nil, {
 		Bar = e("Frame", {
 			AnchorPoint = Vector2.new(0.5, 0),
-			Position = UDim2.new(0.5, 0, 0, 8),
+			Position = UDim2.new(0.5, 0, 0, topY),
 			Size = UDim2.new(0, 0, 0, 42),
 			AutomaticSize = Enum.AutomaticSize.X,
 			BackgroundColor3 = Theme.GLASS_BG,
@@ -121,7 +125,7 @@ local function TopBar(props: {
 		-- own dock, opened one at a time instead of both together.
 		SettingsMenu = menuOpen and e("Frame", {
 			AnchorPoint = Vector2.new(0.5, 0),
-			Position = UDim2.new(0.5, 0, 0, 56),
+			Position = UDim2.new(0.5, 0, 0, topY + 48),
 			Size = UDim2.new(0, 200, 0, 0),
 			AutomaticSize = Enum.AutomaticSize.Y,
 			BackgroundColor3 = Theme.GLASS_BG,

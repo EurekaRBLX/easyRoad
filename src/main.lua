@@ -46,6 +46,7 @@ local RoadInspector = require("./UI/RoadInspector")
 local BuildBar = require("./UI/BuildBar")
 local RoadLibraryPanel = require("./UI/RoadLibraryPanel")
 local TopBar = require("./UI/TopBar")
+local TopBarBridge = require("./EasyAPI/TopBarBridge")
 local RegionalPreferenceGui = require("./UI/RegionalPreferenceGui")
 local KeybindsGui = require("./UI/KeybindsGui")
 local SoftwareGui = require("./UI/SoftwareGui")
@@ -115,7 +116,44 @@ return function(
 	local pieMenuRoot: ReactRoblox.RootType? = nil
 	local pieMenuScreenGui: ScreenGui? = nil
 
+	-- EasyAPI: stack this top bar under any longer-open easy* siblings.
+	local topBarBridge: TopBarBridge.Handle? = nil
+	local topBarOffset = TopBarBridge.BASE_Y
+	local topBarBridgeDisconnect: (() -> ())? = nil
+
 	local updateUI: () -> () = nil :: any
+
+	local function releaseTopBarBridge()
+		if topBarBridgeDisconnect then
+			topBarBridgeDisconnect()
+			topBarBridgeDisconnect = nil
+		end
+		if topBarBridge then
+			topBarBridge:Unregister()
+			topBarBridge = nil
+		end
+		topBarOffset = TopBarBridge.BASE_Y
+	end
+
+	local function ensureTopBarBridge()
+		if topBarBridge then
+			return
+		end
+		local handle = TopBarBridge.register({
+			Id = "easyRoad",
+			DisplayName = "easyRoad",
+			Height = TopBarBridge.DEFAULT_HEIGHT,
+		})
+		topBarBridge = handle
+		topBarOffset = handle:GetOffset()
+		topBarBridgeDisconnect = handle:OnChanged(function(offset: number)
+			if topBarOffset == offset then
+				return
+			end
+			topBarOffset = offset
+			task.defer(updateUI)
+		end)
+	end
 
 	local function getStyle(): RegionStyles.RegionStyle
 		return regionLibrary.Get(settings.RegionId)
@@ -524,6 +562,7 @@ return function(
 	function updateUI()
 		-- Top mode bar --------------------------------------------------------
 		if pluginOpen then
+			ensureTopBarBridge()
 			if not topRoot then
 				local screen = Instance.new("ScreenGui")
 				screen.Name = "EasyRoadTopBar"
@@ -543,6 +582,7 @@ return function(
 				RegionalOpen = regionalDock.Enabled,
 				KeybindsOpen = keybindsDock.Enabled,
 				SoftwareOpen = softwareDock.Enabled,
+				TopOffset = topBarOffset,
 				OnTools = function()
 					if session then
 						stopSession()
@@ -592,6 +632,7 @@ return function(
 				topScreenGui:Destroy()
 				topScreenGui = nil
 			end
+			releaseTopBarBridge()
 		end
 
 		-- Bottom HUD ----------------------------------------------------------
@@ -1653,6 +1694,7 @@ return function(
 			topScreenGui:Destroy()
 			topScreenGui = nil
 		end
+		releaseTopBarBridge()
 		if bottomRoot then
 			bottomRoot:unmount()
 			bottomRoot = nil
