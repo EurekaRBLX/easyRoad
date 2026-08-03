@@ -74,6 +74,10 @@ def roundabout_suite(cases):
         checks["arm_kinds"] = not rp.check_arm_kinds(scene)
         checks["shoulder"] = not rp.check_shoulder_tapers(scene)
         checks["turbo"] = not rp.check_turbo(scene)
+        checks["ring_boundary"] = not rp.ring_boundary_intrusions(
+            scene["outer_ring_parts"], scene["center"], scene["sectors"])
+        checks["visual_ownership"] = not rp.check_visual_ownership(scene)
+        checks["arm_marking_bounds"] = not rp.check_arm_marking_bounds(scene)
         steps = rp.seam_steps(scene)
         checks["seam"] = not steps or max(max(a, b) for a, b in steps) <= 0.5
         results.append((name, checks))
@@ -121,7 +125,7 @@ def main():
         print("roundabout:", " ".join(cases))
         import road_preview as rd
         print("road:      ", " ".join(rd.CASES))
-        print("scripts:    turbo_check.py road_break_tests.py straight_optimization_preview.py --check structure_preview.py --check parallel_preview.py --check multinode_junction_preview.py --check marking_boundary_preview.py --check structure_break_tests.py hardware_reference_check.py integration_contracts.py check_parity.py")
+        print("scripts:    turbo_check.py roundabout_parity_contract.py road_break_tests.py straight_optimization_preview.py --check structure_preview.py --check parallel_preview.py --check multinode_junction_preview.py --check marking_boundary_preview.py --check structure_break_tests.py hardware_reference_check.py integration_contracts.py check_parity.py")
         return 0
 
     problems, stale = [], []
@@ -136,6 +140,7 @@ def main():
     print("\nbreak-tests and parity")
     for script, script_args in (
             ("turbo_check.py", ()),
+            ("roundabout_parity_contract.py", ()),
             ("road_break_tests.py", ()),
             ("straight_optimization_preview.py", ("--check",)),
             ("structure_preview.py", ("--check",)),
@@ -169,9 +174,10 @@ LIMITS - what a green run here does NOT mean:
   * nothing is executed in Roblox. This re-implements the geometry in Python;
     it cannot catch a nil identifier, a Luau error, or the Lua diverging from
     this port. check_parity.py compares CONSTANTS, not behaviour.
-  * road/roundabout heights and render order are not modelled. The structure
-    preview models elevation, but z-fighting and actual Roblox raycasts remain
-    Studio-only.
+  * general road/roundabout heights and render order are not modelled. The
+    roundabout contract models its two explicit marking top planes and the
+    structure preview models elevation, but other z-fighting and actual Roblox
+    raycasts remain Studio-only.
   * lane-width transitions and bus bays are not ported at all, so no case here
     says anything about them.
   * imported Roblox Models are represented by their start/end socket chord;

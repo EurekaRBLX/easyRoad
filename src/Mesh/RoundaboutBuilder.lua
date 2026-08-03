@@ -35,6 +35,21 @@ local ROUNDABOUT_DASH_LENGTH_M = 3
 local ROUNDABOUT_DASH_GAP_M = 3
 local ROUNDABOUT_MARKING_COLOR = Color3.fromRGB(245, 245, 245)
 
+-- Python's preview is a painter: the ordinary ring is drawn over the sunk arms
+-- and Turbo is drawn over the ordinary ring markings. Studio has no equivalent
+-- draw order for opaque Parts, so equal or nearly equal top faces flicker and
+-- the sunk arm markings can poke up to 0.009 studs through the ring. Keep the
+-- same visible geometry, but make those two ownership boundaries explicit. The
+-- apron is also painted last in Python, but its interior does not intersect the
+-- arm/Turbo lines; lifting that asphalt would introduce a visible lip instead
+-- of fixing a real overlap. All affected marking Parts are non-collidable.
+local MARKING_LAYER_GAP_STUDS = 0.005
+local ROADBUILDER_MARKING_ALT_STUDS = 0.004
+-- A different top plane is sufficient: the Parts may interpenetrate because
+-- they are visual-only, but their visible faces must not be coplanar. Keeping
+-- the offset small avoids a visibly floating Turbo stripe in an oblique view.
+local TURBO_MARKING_LIFT_STUDS = RoadBuilder.MarkingLiftStuds + ROADBUILDER_MARKING_ALT_STUDS + MARKING_LAYER_GAP_STUDS
+
 -- How far past the ring's outer edge each approach is cut back, so the entry
 -- and exit arms have the length to split apart and swing round onto the rim.
 -- Scaled off the ring so a big roundabout gets long sweeping arms and a mini
@@ -430,6 +445,76 @@ end
 local function distanceXZ(a: Vector3, b: Vector3): number
 	local dx, dz = a.X - b.X, a.Z - b.Z
 	return math.sqrt(dx * dx + dz * dz)
+end
+
+-- Python draws the ring deck after the sunk arm Parts, so any arm marking that
+-- reaches inside the ring kerb simply disappears beneath it. In Studio the
+-- marking's 0.03-stud lift plus half its thickness is just larger than the
+-- 0.05-stud arm sink, leaving the fragments reported at every mouth. Give each
+-- line its own exact longitudinal bound at the circle crossing of that line's
+-- lateral offset. The half-width-expanded radius keeps the marking rectangle,
+-- not only its centreline, outside the ring-owned deck.
+local ARM_MARKING_CLIP_SAMPLES = 96
+local function clipArmMarkingLinesAtRing(
+	lines: { Markings.MarkingLine },
+	curve: PolyCurve.PolyCurve,
+	center: Vector3,
+	ringKerbRadiusStuds: number,
+	cutAtStart: boolean,
+	markingWidthStuds: number,
+	scale: number
+)
+	local length = curve.Length
+	if length <= 1e-6 then
+		return
+	end
+	local clipRadius = ringKerbRadiusStuds + markingWidthStuds / 2 + MARKING_LAYER_GAP_STUDS
+	local outsideStation = if cutAtStart then 0 else length
+	local ringStation = if cutAtStart then length else 0
+
+	for _, line in lines do
+		local function radiusAt(station: number): number
+			local alpha = station / length
+			local offsetM = line.OffsetStartM + (line.OffsetEndM - line.OffsetStartM) * alpha
+			local point = (curve:FrameAt(station) * CFrame.new(offsetM * scale, 0, 0)).Position
+			return distanceXZ(point, center)
+		end
+
+		-- A future unusual arm may never enter the ring at this offset. In that
+		-- case Python has nothing to cover and the full line is correct.
+		if radiusAt(outsideStation) <= clipRadius or radiusAt(ringStation) > clipRadius then
+			continue
+		end
+
+		local previous = outsideStation
+		local crossing: number? = nil
+		for i = 1, ARM_MARKING_CLIP_SAMPLES do
+			local station = outsideStation + (ringStation - outsideStation) * (i / ARM_MARKING_CLIP_SAMPLES)
+			if radiusAt(station) <= clipRadius then
+				local outsideS = previous
+				local insideS = station
+				for _ = 1, 24 do
+					local mid = (outsideS + insideS) / 2
+					if radiusAt(mid) > clipRadius then
+						outsideS = mid
+					else
+						insideS = mid
+					end
+				end
+				crossing = (outsideS + insideS) / 2
+				break
+			end
+			previous = station
+		end
+
+		if crossing then
+			if cutAtStart then
+				line.ToStationStuds = crossing
+			else
+				line.FromStationStuds = crossing
+			end
+		end
+	end
 end
 
 local function roadwayEdgeOffsetsM(profile: RoadProfile.RoadProfile): (number, number)
@@ -1080,7 +1165,10 @@ local function buildTurboMarkings(
 	local laneStuds = laneWidthM * scale
 	local travel = if style.DriveOnLeft then 1 else -1
 	local markingWidth = style.MarkingWidthM * scale
-	local y = center.Y + RoadBuilder.MarkingLiftStuds
+	-- Python paints Turbo after the ordinary concentric divider. Lift this
+	-- non-collidable overlay above RoadBuilder's highest alternate marking
+	-- layer, preserving that same visible union without coplanar Parts.
+	local y = center.Y + TURBO_MARKING_LIFT_STUDS
 	local dashStuds = math.max(0.5, TURBO_DASH_M * scale)
 	local gapStuds = math.max(0.5, TURBO_GAP_M * scale)
 
@@ -1488,6 +1576,8 @@ local function buildArm(
 	arm: ArmProfile,
 	cutPavementM: number,
 	cutAtStart: boolean,
+	center: Vector3,
+	ringKerbRadiusStuds: number,
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings
 ): Model
@@ -1502,6 +1592,16 @@ local function buildArm(
 		end
 	end
 
+	local markingLines = roundaboutMarkingLines(arm.Profile, style, false)
+	clipArmMarkingLinesAtRing(
+		markingLines,
+		curve,
+		center,
+		ringKerbRadiusStuds,
+		cutAtStart,
+		style.MarkingWidthM * settings.MetersToStuds,
+		settings.MetersToStuds
+	)
 	local options = {
 		Curve = curve,
 		ProfileStart = arm.Profile,
@@ -1513,7 +1613,7 @@ local function buildArm(
 		-- exactly where planMouth placed them. Only the physical surface outside
 		-- that line is replaced below.
 		ExcludeComponentIndices = if needsSurfaceTaper then sidewalkIndices else nil,
-		MarkingLines = roundaboutMarkingLines(arm.Profile, style, false),
+		MarkingLines = markingLines,
 		MarkingDashStartsAtZero = true,
 	}
 	local model = RoadBuilder.Build(options)
@@ -2174,6 +2274,7 @@ local function buildMouth(
 
 	local entry = plan.Entry
 	if entry then
+		local entryRingKerbRadius = entry.MergeRadius + entry.Profile.OuterOffsetStuds
 		entryCurve = PolyCurve.new({
 			armSegment(
 				plan.CutMid + side * entry.LateralStuds,
@@ -2183,13 +2284,23 @@ local function buildMouth(
 				ARM_HANDLE
 			),
 		})
-		buildArm(entryCurve :: PolyCurve.PolyCurve, entry.Profile, entry.CutPavementM, true, style, settings).Parent =
+		buildArm(
+			entryCurve :: PolyCurve.PolyCurve,
+			entry.Profile,
+			entry.CutPavementM,
+			true,
+			center,
+			entryRingKerbRadius,
+			style,
+			settings
+		).Parent =
 			ring
-		ringKerbRadius = entry.MergeRadius + entry.Profile.OuterOffsetStuds
+		ringKerbRadius = entryRingKerbRadius
 	end
 
 	local exit = plan.Exit
 	if exit then
+		local exitRingKerbRadius = exit.MergeRadius + exit.Profile.OuterOffsetStuds
 		exitCurve = PolyCurve.new({
 			armSegment(
 				ringPointAt(center, exitAngle, exit.MergeRadius, plan.CutMid.Y),
@@ -2199,9 +2310,18 @@ local function buildMouth(
 				ARM_HANDLE
 			),
 		})
-		buildArm(exitCurve :: PolyCurve.PolyCurve, exit.Profile, exit.CutPavementM, false, style, settings).Parent =
+		buildArm(
+			exitCurve :: PolyCurve.PolyCurve,
+			exit.Profile,
+			exit.CutPavementM,
+			false,
+			center,
+			exitRingKerbRadius,
+			style,
+			settings
+		).Parent =
 			ring
-		ringKerbRadius = exit.MergeRadius + exit.Profile.OuterOffsetStuds
+		ringKerbRadius = exitRingKerbRadius
 	end
 
 	-- Splitter island only where there are actually two carriageways to divide.

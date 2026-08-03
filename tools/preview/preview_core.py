@@ -22,6 +22,7 @@ CHORD_TOLERANCE = 0.05
 MIN_STEP = 0.4
 MAX_TURN_PER_STEP = 0.2
 MARKING_THICKNESS = 0.05
+MARKING_LIFT = 0.03
 MAX_SEGMENT_LENGTH = 8.0          # settings.MaxSegmentLengthStuds
 ARC_SAMPLES = 64                  # CurveSegment.ARC_SAMPLES
 
@@ -191,10 +192,14 @@ def is_roadway(component):
 
 # --- part emission -----------------------------------------------------------
 class Part:
-    __slots__ = ("name", "poly", "color", "center", "y")
+    __slots__ = ("name", "poly", "color", "center", "y",
+                 "marking_offset_m", "from_station", "to_station")
 
     def __init__(self, name, poly, color, center, y):
         self.name, self.poly, self.color, self.center, self.y = name, poly, color, center, y
+        self.marking_offset_m = None
+        self.from_station = None
+        self.to_station = None
 
 
 def rect(center, right, forward, half_w, half_l):
@@ -206,7 +211,8 @@ def rect(center, right, forward, half_w, half_l):
             (center[0]-a[0]+b[0], center[1]-a[1]+b[1])]
 
 
-def emit_road(curve, components, y_base=0.0, solid_lane_lines=False, lane_lines=True):
+def emit_road(curve, components, y_base=0.0, solid_lane_lines=False, lane_lines=True,
+              marking_bounds=None):
     """Port of the deck-strip + marking emission for a flat (unbanked) road."""
     parts = []
     total_m = sum(c[1] for c in components)
@@ -266,12 +272,11 @@ def emit_road(curve, components, y_base=0.0, solid_lane_lines=False, lane_lines=
     for c in range(len(components)-1):
         a, b = components[c], components[c + 1]
         if is_roadway(a) and is_roadway(b):
-            # `solid_lane_lines` stands in for RoadProfile's
-            # RightBoundary = "Solid" (the SolidLanes ring); `lane_lines=False`
-            # for its "None" (the Turbo ring, which suppresses the straight
-            # boundary and spirals its own). Neither is a port of Markings.lua
-            # - see ROUNDABOUT.md 5.3 - just enough for the three-way choice to
-            # be visible here at all.
+            # `solid_lane_lines` stands in for RoadProfile's RightBoundary =
+            # "Solid" (the SolidLanes ring). `lane_lines=False` remains a
+            # generic preview override, but Turbo deliberately does not use it:
+            # Turbo retains this concentric divider and adds an exit peel.
+            # Neither flag is a port of Markings.lua; see ROUNDABOUT.md 5.3.
             if a[0] == "Drive" and b[0] == "Drive":
                 if lane_lines:
                     lines.append((offs[c][1], solid_lane_lines))
@@ -288,6 +293,10 @@ def emit_road(curve, components, y_base=0.0, solid_lane_lines=False, lane_lines=
             while s < curve.length:
                 spans.append((s, min(s+dash, curve.length)))
                 s += dash+gap
+        if marking_bounds is not None:
+            lo, hi = marking_bounds(off_m)
+            spans = [(max(a, lo), min(b, hi)) for a, b in spans
+                     if min(b, hi) - max(a, lo) > 1e-6]
         for j, (a, b) in enumerate(spans):
             p0c, r0, _ = curve.frame(a)
             p1c, r1, _ = curve.frame(b)
@@ -299,9 +308,13 @@ def emit_road(curve, components, y_base=0.0, solid_lane_lines=False, lane_lines=
             fwd = unit((p1[0]-p0[0], p1[1]-p0[1]))
             mid = ((p0[0]+p1[0])/2, (p0[1]+p1[1])/2)
             extra = 0.0 if not solid else 0.0
-            parts.append(Part("Marking", rect(mid, right_of(fwd), fwd, mw/2,
-                                              (seg_len+extra)/2),
-                              MARK_C, mid, y_base+0.02))
+            part = Part("Marking", rect(mid, right_of(fwd), fwd, mw/2,
+                                        (seg_len+extra)/2),
+                        MARK_C, mid, y_base+MARKING_LIFT)
+            part.marking_offset_m = off_m
+            part.from_station = a
+            part.to_station = b
+            parts.append(part)
     return parts
 
 # --- bare-ground scan --------------------------------------------------------

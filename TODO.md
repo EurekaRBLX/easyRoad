@@ -287,14 +287,6 @@ well understood they are, not by value.
 
 10. **Cul-de-sacs**: asked for, nothing exists. Open question, not a bug.
 
-## Turbo roundabout markings — scoped, not built
-
-Spiral lane boundaries on the existing constant-width ring. Smaller than the
-earlier note in this file claimed: no new ring generator, and
-`Markings.MarkingLine` already ramps a lateral offset along a curve
-(`OffsetStartM`/`OffsetEndM`), which is the primitive a spiral needs. See
-ROUNDABOUT.md 5.3c for what still has to be worked out.
-
 ## Roundabout minimum radius — RE-DERIVED, not yet confirmed live
 
 `MinimumRadiusStuds` now means the hard geometric floor (below it the ring's
@@ -334,6 +326,14 @@ over to the exit arm's own lane line. Built in two phases — ring divider, then
 arm line — because the arm merges tangentially and the two already join. Rule
 and reasoning in ROUNDABOUT.md 3.8.
 
+The Studio/Python visual divergence is now fixed in source: every arm marking
+gets a `FromStationStuds` or `ToStationStuds` bound at that line offset's exact
+ring-kerb crossing, matching the area Python hides below the ring deck. Turbo's
+peel has a distinct top plane above the concentric divider, so the accepted
+visible union no longer depends on coplanar Part ordering. Regression coverage
+is `tools/preview/roundabout_parity_contract.py`; its five break-tests remove
+each rule and must fail.
+
 Left open:
 
 - **Entry lanes are not matched to spiral lanes.** In a real turbo the lane you
@@ -346,9 +346,6 @@ Left open:
   a peel-off at each exit, ROUNDABOUT.md 3.8) and the arm side is how a real
   turbo tells a driver which lane to pick. Same Markings.lua job as the give-way
   lines already logged above.
-- **`RoadProfile.BoundaryRule` gained `"None"`** to let the ring suppress its
-  straight lane lines. It is a real user-facing option now (the Road Editor
-  boundary dropdown lists it) but has never been exercised on an ordinary road.
 
 ## Roundabout mouth indentation — SHIPPED, not yet confirmed live
 

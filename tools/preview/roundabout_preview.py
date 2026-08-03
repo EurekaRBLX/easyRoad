@@ -25,7 +25,8 @@ import os
 
 from preview_core import *          # noqa: F401,F403  - shared emission core
 from preview_core import (ARC_SAMPLES, ASPHALT_C, CHORD_TOLERANCE, Cubic, FLAT, GROUND,
-                          ISLAND_C, KIND_C, LANE_M, MARK_C, MARKING_W_M, MAX_SEGMENT_LENGTH,
+                          ISLAND_C, KIND_C, LANE_M, MARK_C, MARKING_LIFT, MARKING_THICKNESS,
+                          MARKING_W_M, MAX_SEGMENT_LENGTH,
                           MEDIAN_M, Part, PolyCurve, SCALE, SHOULDER_M, SIDEWALK_C, SW_M,
                           THICKNESS, build_stations, direction_of, emit_road, is_roadway,
                           offsets_m, point_in, rect, right_of, roadway_edges_m, unit)
@@ -54,6 +55,14 @@ ISLAND_NOSE_TAPER_M = 6.0
 NOSE_ARC_STEP_RAD = math.radians(2)
 ARM_SINK = 0.05
 ARM_RUN_FACTOR, ARM_RUN_MIN, ARM_RUN_MAX = 0.85, 28, 90
+
+# Python can resolve equal-height overlaps by paint order; Studio cannot.  Keep
+# the same plan-view pixels while recording a deterministic layer for the
+# Turbo peel above the ordinary concentric divider.
+ROADBUILDER_MARKING_ALT_STUDS = 0.004
+MARKING_LAYER_GAP_STUDS = 0.005
+TURBO_MARKING_LIFT = MARKING_LIFT + ROADBUILDER_MARKING_ALT_STUDS + MARKING_LAYER_GAP_STUDS
+ARM_MARKING_CLIP_SAMPLES = 96
 
 
 def split_approach_lanes(components, inbound_sign, style_pav=SW_M):
@@ -142,7 +151,7 @@ def arm_from_group(group, drive_on_left, solo=False, mirrored=False, ring_pav=SW
 
 
 def emit_arm(curve, components, cut_pavement_m, cut_shoulder_m, cut_at_start,
-             drive_on_left):
+             drive_on_left, marking_bounds=None):
     """Emit fixed travel lanes with shoulder and pavement outside them.
 
     The Shoulder component is deliberately zero-width in `components`: it keeps
@@ -154,7 +163,8 @@ def emit_arm(curve, components, cut_pavement_m, cut_shoulder_m, cut_at_start,
     sidewalk_indices = [i for i, c in enumerate(components) if c[0] == "Sidewalk"]
     needs_taper = cut_shoulder_m > 1e-6 or any(
         abs(components[i][1] - cut_pavement_m) > 1e-6 for i in sidewalk_indices)
-    emitted = emit_road(curve, components, -ARM_SINK)
+    emitted = emit_road(curve, components, -ARM_SINK,
+                        marking_bounds=marking_bounds)
     offs = offsets_m(components)
     max_offset = sum(c[1] for c in components) / 2 * SCALE
     stations = build_stations(curve, MAX_SEGMENT_LENGTH, CHORD_TOLERANCE, max_offset)
@@ -338,6 +348,108 @@ def ring_boundary_intrusions(parts, center, sectors, tolerance=1e-7):
     return intrusions
 
 
+def _signed_area(poly):
+    return sum(a[0] * b[1] - b[0] * a[1]
+               for a, b in zip(poly, poly[1:] + poly[:1])) / 2
+
+
+def _convex_intersection(subject, clip, tolerance=1e-9):
+    """Clip one convex plan-view footprint by another."""
+    if len(subject) < 3 or len(clip) < 3:
+        return []
+    orientation = 1 if _signed_area(clip) >= 0 else -1
+    out = list(subject)
+    for a, b in zip(clip, clip[1:] + clip[:1]):
+        if not out:
+            break
+
+        def side(point):
+            return orientation * ((b[0] - a[0]) * (point[1] - a[1])
+                                  - (b[1] - a[1]) * (point[0] - a[0]))
+
+        clipped = []
+        previous = out[-1]
+        previous_side = side(previous)
+        previous_inside = previous_side >= -tolerance
+        for current in out:
+            current_side = side(current)
+            current_inside = current_side >= -tolerance
+            if current_inside != previous_inside:
+                denominator = previous_side - current_side
+                if abs(denominator) > 1e-12:
+                    t = previous_side / denominator
+                    clipped.append((previous[0] + (current[0] - previous[0]) * t,
+                                    previous[1] + (current[1] - previous[1]) * t))
+            if current_inside:
+                clipped.append(current)
+            previous = current
+            previous_side = current_side
+            previous_inside = current_inside
+        out = clipped
+    return out
+
+
+def _overlap_area(a, b):
+    overlap = _convex_intersection(a, b)
+    return abs(_signed_area(overlap)) if len(overlap) >= 3 else 0.0
+
+
+def check_visual_ownership(scene, area_tolerance=1e-5, height_tolerance=1e-6):
+    """3D ownership invariants hidden by the Python painter.
+
+    The raster resolves overlap by paint order, while Roblox needs distinct top
+    planes. Turbo deliberately retains the concentric divider and adds the
+    peel, but coincident pieces must not have coplanar top faces.
+    """
+    faults = []
+    markings = [part for part in scene["parts"] if part.name == "Marking"]
+    if scene.get("markings") == "Turbo":
+        spiral_ids = {id(part) for part in scene["spiral"]}
+        base = [part for part in markings if id(part) not in spiral_ids]
+        for peel in scene["spiral"]:
+            for ordinary in base:
+                if _overlap_area(peel.poly, ordinary.poly) <= area_tolerance:
+                    continue
+                if abs(peel.y - ordinary.y) <= height_tolerance:
+                    faults.append(
+                        "Turbo peel and concentric divider have coplanar top faces"
+                    )
+                    return faults
+    return faults
+
+
+def check_arm_marking_bounds(scene, station_tolerance=1e-5, radius_tolerance=0.02):
+    """Arm lines stop at their own offset's ring-ownership crossing."""
+    faults = []
+    half_width = MARKING_W_M * SCALE / 2
+    for index, record in enumerate(scene.get("arm_marking_bounds", [])):
+        crossing = record["crossing"]
+        if crossing is None:
+            continue
+        curve = record["curve"]
+        position, right, _ = curve.frame(crossing)
+        point = (position[0] + right[0] * record["offset_m"] * SCALE,
+                 position[1] + right[1] * record["offset_m"] * SCALE)
+        radius = math.dist(point, scene["center"])
+        if abs(radius - record["clip_radius"]) > radius_tolerance:
+            faults.append(
+                f"arm line {index}: crossing radius {radius:.3f} differs from "
+                f"clip radius {record['clip_radius']:.3f}"
+            )
+        for part in record["parts"]:
+            if record["cut_at_start"] and part.to_station > crossing + station_tolerance:
+                faults.append(f"arm line {index}: entry marking extends past its ToStation")
+                break
+            if not record["cut_at_start"] and part.from_station < crossing - station_tolerance:
+                faults.append(f"arm line {index}: exit marking begins before its FromStation")
+                break
+            ring_kerb = record["clip_radius"] - half_width - MARKING_LAYER_GAP_STUDS
+            if min(math.dist(vertex, scene["center"]) for vertex in part.poly) < ring_kerb - radius_tolerance:
+                faults.append(f"arm line {index}: marking footprint intrudes into ring ownership")
+                break
+    return faults
+
+
 def clamp_sectors(sectors):
     """sectors are (angle, ahead, behind)."""
     if not sectors:
@@ -505,7 +617,7 @@ def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, exits):
                     fwd = unit((q1[0] - q0[0], q1[1] - q0[1]))
                     mid = ((q0[0] + q1[0]) / 2, (q0[1] + q1[1]) / 2)
                     out.append(Part("Marking", rect(mid, right_of(fwd), fwd, mw / 2, length / 2),
-                                    MARK_C, mid, 0.03))
+                                    MARK_C, mid, TURBO_MARKING_LIFT))
                     # Tagged with the exit it belongs to. check_turbo needs to
                     # ask about ONE peel's far end against ONE arm's lines;
                     # asked over the whole scene at once the question answers
@@ -678,6 +790,60 @@ def shoulder_taper_widths(taper):
             math.dist(first.poly[0], first.poly[1]))
 
 
+def arm_marking_ring_crossing(curve, offset_m, center, ring_kerb, cut_at_start):
+    """Exact per-offset station where an arm marking enters ring ownership."""
+    clip_radius = (ring_kerb + MARKING_W_M * SCALE / 2
+                   + MARKING_LAYER_GAP_STUDS)
+    outside_station = 0.0 if cut_at_start else curve.length
+    ring_station = curve.length if cut_at_start else 0.0
+
+    def radius_at(station):
+        position, right, _ = curve.frame(station)
+        point = (position[0] + right[0] * offset_m * SCALE,
+                 position[1] + right[1] * offset_m * SCALE)
+        return math.dist(point, center)
+
+    if (radius_at(outside_station) <= clip_radius
+            or radius_at(ring_station) > clip_radius):
+        return None, clip_radius
+
+    previous = outside_station
+    crossing = None
+    for i in range(1, ARM_MARKING_CLIP_SAMPLES + 1):
+        station = outside_station + (ring_station - outside_station) * (
+            i / ARM_MARKING_CLIP_SAMPLES)
+        if radius_at(station) <= clip_radius:
+            outside_s, inside_s = previous, station
+            for _ in range(24):
+                middle = (outside_s + inside_s) / 2
+                if radius_at(middle) > clip_radius:
+                    outside_s = middle
+                else:
+                    inside_s = middle
+            crossing = (outside_s + inside_s) / 2
+            break
+        previous = station
+    return crossing, clip_radius
+
+
+def arm_marking_bounder(curve, center, ring_kerb, cut_at_start, records):
+    """Return an emit_road callback mirroring clipArmMarkingLinesAtRing."""
+    def bounds(offset_m):
+        crossing, clip_radius = arm_marking_ring_crossing(
+            curve, offset_m, center, ring_kerb, cut_at_start)
+        lo, hi = 0.0, curve.length
+        if crossing is not None:
+            if cut_at_start:
+                hi = crossing
+            else:
+                lo = crossing
+        records.append(dict(curve=curve, offset_m=offset_m,
+                            cut_at_start=cut_at_start, crossing=crossing,
+                            clip_radius=clip_radius, lo=lo, hi=hi))
+        return lo, hi
+    return bounds
+
+
 def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=True,
           island=True, markings="Continuous"):
     """legs is a list of (degrees, approach component list).
@@ -712,6 +878,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     sectors, arm_parts, gore_tris, apron_tris = [], [], [], []
     exit_traces = []          # (curve, arm) per exit, for the turbo peel
     exit_markings = []        # per exit arm, that arm's OWN lane lines
+    arm_marking_bounds = []   # exact per-offset ring ownership cuts
     arm_kinds = []            # source group vs built arm, for check_arm_kinds
     shoulder_tapers = []      # emitted polygons, measured at cut and ring
     angles = [d for d, _ in legs]
@@ -772,9 +939,16 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
             p0 = (cut[0]+r[0]*entry_arm["lat"], cut[1]+r[1]*entry_arm["lat"])
             p1 = (math.cos(ea)*entry_arm["merge"], math.sin(ea)*entry_arm["merge"])
             entry = arm_curve(p0, inward, p1, rt(ea))
+            first_record = len(arm_marking_bounds)
             emitted, shoulder_parts = emit_arm(
                 entry, entry_arm["comps"], entry_arm["cut_pav"],
-                entry_arm["cut_shoulder"], True, drive_on_left)
+                entry_arm["cut_shoulder"], True, drive_on_left,
+                arm_marking_bounder(entry, center, ring_kerb, True,
+                                    arm_marking_bounds))
+            for record in arm_marking_bounds[first_record:]:
+                record["parts"] = [p for p in emitted
+                                   if p.marking_offset_m is not None
+                                   and abs(p.marking_offset_m - record["offset_m"]) < 1e-9]
             arm_parts += emitted
             shoulder_tapers.append(dict(parts=shoulder_parts,
                                          cut_shoulder=entry_arm["cut_shoulder"],
@@ -783,9 +957,16 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
             p0 = (math.cos(xa)*exit_arm["merge"], math.sin(xa)*exit_arm["merge"])
             p1 = (cut[0]+r[0]*exit_arm["lat"], cut[1]+r[1]*exit_arm["lat"])
             exit_ = arm_curve(p0, rt(xa), p1, (-inward[0], -inward[1]))
+            first_record = len(arm_marking_bounds)
             emitted, shoulder_parts = emit_arm(
                 exit_, exit_arm["comps"], exit_arm["cut_pav"],
-                exit_arm["cut_shoulder"], False, drive_on_left)
+                exit_arm["cut_shoulder"], False, drive_on_left,
+                arm_marking_bounder(exit_, center, ring_kerb, False,
+                                    arm_marking_bounds))
+            for record in arm_marking_bounds[first_record:]:
+                record["parts"] = [p for p in emitted
+                                   if p.marking_offset_m is not None
+                                   and abs(p.marking_offset_m - record["offset_m"]) < 1e-9]
             arm_parts += emitted
             shoulder_tapers.append(dict(parts=shoulder_parts,
                                          cut_shoulder=exit_arm["cut_shoulder"],
@@ -1004,6 +1185,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     return dict(tag=tag, parts=parts, gore=gore_tris, apron=apron_tris,
                 spiral=spiral, spiral_spans=spiral_spans, markings=markings,
                 exit_markings=exit_markings, arm_kinds=arm_kinds,
+                arm_marking_bounds=arm_marking_bounds,
                 shoulder_tapers=shoulder_tapers,
                 outer_ring_parts=outer_ring_parts,
                 ring_r=ring_r, ring_lanes=ring_lanes, drive_on_left=drive_on_left,

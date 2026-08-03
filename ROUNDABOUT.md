@@ -176,49 +176,25 @@ start one probe BEFORE it. Apron rungs are also sunk by `ARM_SINK_STUDS`: the
 arms' Parts are dropped after building but their curves are not, so an apron
 laid on the curve would sit proud of the carriageway it is continuous with.
 
-### 3.8 Turbo is a marking spiral, not a second ring generator
-An earlier note here claimed a turbo roundabout needs its own generator because
-"lane count and lane centres vary with angle". An aerial of a real spiral-marked
-roundabout says otherwise: the circulating **carriageway is a constant-width
-annulus**, exactly what is already built. Only the boundaries inside it move.
+### 3.8 Turbo is a concentric divider plus an exit peel
+The authoritative design keeps the same constant-width annulus and the same
+ordinary concentric Drive/Drive divider as Continuous mode. Turbo adds a short
+dashed peel at each exit; it does **not** suppress that divider and does not
+migrate every boundary across the full arc. Earlier text in this section mixed
+that rejected full-ring spiral with the shipped peel design and contradicted
+the implementation.
 
-Across each arc between two mouths, every boundary migrates outward by exactly
-one lane width:
+The peel holds the divider's radius for most of its run, then moves outward
+over `TURBO_FLING_FRACTION = 0.35` of the available exit span and hands over to
+the exit arm's own lane line. Dashes are walked backwards from the exit so the
+last one lands at the handover. `buildTurboMarkings` emits these Parts only
+after the mouth angles and exit traces exist; the base concentric divider still
+comes from the normal roundabout marking plan.
 
-    boundary k runs from  inner + k*w  to  inner + (k+1)*w
-
-which conserves the carriageway without conserving the lane count.
-
-**The move is concentrated at the exit, not spread over the arc**
-(`TURBO_FLING_FRACTION = 0.35`), and the line is **dashed**. Both corrected from
-a reference aerial the user supplied: the divider holds a constant radius for
-most of the way round, reading as an ordinary concentric lane line, and is flung
-outward into the exit over a short run at the end. A steady climb from island to
-kerb across the whole quadrant reads as a slow drift and loses the thing that
-makes a turbo legible — that the lane you are in is committed to the next exit.
-Dashes are walked BACKWARDS from the exit so one lands flush on it; starting
-from the other end leaves the pattern wherever it runs out, which on a 65° arc
-was 22° of unmarked fling at the mouth — the one part of the boundary that has
-to be marked.
-
-On an L-lane
-ring the outermost boundary reaches the outer edge — its lane has been delivered
-to the exit — and the innermost lane arrives at the mouth 2*w wide, which the
-next arc's new innermost boundary splits back in two. A mouth is entered with
-L−1 lanes and left with L, the extra one being the entry's own traffic. That is
-the "inner lane flung out to the exit" the reference shows, and it works for any
-lane count without a special case.
-
-Two things this does NOT go through, both for the same reason:
-
-- **Not a `RightBoundary` rule.** A spiral is not a line style. Turbo sets the
-  ring's lane boundaries to `"None"` (a new `RoadProfile.BoundaryRule`, which
-  `Markings.addLine` already drops) and lays its own.
-- **Not `RoadBuilder.Build`.** The spiral needs the mouth angles, and those are
-  not known until every leg has been trimmed and planned — which happens after
-  the ring model exists. `buildTurboMarkings` therefore emits its own parts,
-  using `RoadBuilder.MarkingLiftStuds` / `MarkingThicknessStuds` so the two sets
-  of markings cannot drift apart in height.
+Python resolves the coincident base-divider/peel phase by painter order. Studio
+cannot rely on coplanar Part order, so `TURBO_MARKING_LIFT_STUDS` puts the peel's
+top face 0.005 studs above RoadBuilder's highest alternate marking layer. This
+changes only 3D ownership, not the accepted bird's-eye appearance.
 
 **The ring's divider stays concentric under every mode.** What makes a turbo a
 turbo here is a **peel-off at each exit**, drawn on top of it: a short dashed
@@ -498,7 +474,7 @@ annulus either way, so this is a landscaped centre the user fills, not a hole.
 A flush drivable centre (mini-roundabout) is a different feature, not built.
 
 ### 5.3a Continuous vs SolidLanes — SHIPPED
-`RegionStyle.RoundaboutMarkings` ("Continuous" | "Turbo") sets the regional
+`RegionStyle.RoundaboutMarkings` ("Continuous" | "SolidLanes" | "Turbo") sets the regional
 default; `JunctionData.RoundaboutMarkings` overrides it per roundabout. Both
 optional, both nil-reads-as-Continuous, so every region and junction that
 predates the field keeps its behaviour.
@@ -532,8 +508,15 @@ systems. The generated ring and arms are the only callers of the exact-plan
 hook. The first live Studio comparison showed extra white slashes despite this
 line plan being correct. They were fragments of the ring's outer edge line whose
 Part centres lay outside a mouth while their corners crossed inside. The exact
-sector-boundary clip in section 5.4 now removes only those fragments. A rebuilt
-Studio comparison against the UK target is still required.
+sector-boundary clip in section 5.4 now removes only those fragments.
+
+The later live comparison exposed a separate painter-order mismatch. Python
+draws the sunk arms before the ring deck; Studio left their marking tops up to 0.009
+studs proud. Each arm line is now bounded at its own offset's expanded ring-kerb
+crossing (`FromStationStuds` on exits, `ToStationStuds` on entries). Turbo keeps
+the same concentric-divider-plus-peel pixels but puts the peel on a distinct top
+plane. `tools/preview/roundabout_parity_contract.py` locks those 3D ownership
+rules with five destructive break-tests.
 
 Requested on top of that: a **Turbo / Continuous** toggle in the roundabout
 build panel, with a default in regional settings.

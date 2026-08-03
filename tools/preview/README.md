@@ -32,6 +32,7 @@ trap as an invariant nobody re-reads.
 | `hardware_reference_check.py` | Parses the five `hardware/*.rbxmx` references and verifies their deck/base, parapet/wall, and tunnel-crown cues. |
 | `junction_pad_preview.py`, `corner_preview.py` | Junction pad and curb-return shapes. Not yet wired into `validate.py`. |
 | `turbo_check.py`, `road_break_tests.py`, `structure_break_tests.py` | Break-tests: reintroduce a defect and confirm the relevant scan catches it. |
+| `roundabout_parity_contract.py` | Static plus geometry contract for per-offset arm-line clipping, mouth-boundary ownership, and non-coplanar Turbo overlay; includes five break-tests. |
 | `check_parity.py` | Constants shared with the Lua. Constants only. |
 | `dump_compare.py` | Diffs a live plugin dump against this port. |
 | `raster.py` | Stdlib-only PNG writer. |
@@ -167,8 +168,9 @@ common for roads produced by an X-split.
 
 - Nothing executes in Roblox. A nil identifier, a Luau error, or the Lua
   diverging from this port are all invisible here.
-- Part **footprints in plan** only: no heights, render order, dash phase or
-  z-fighting. A live check is still the last word on those.
+- Mostly Part **footprints in plan**. The roundabout parity contract models the
+  two explicit marking top planes, but general heights, render order, dash phase
+  and z-fighting still require a live check.
 - **Lane-width transitions (`MatchForTransition`) and bus bays (`BuildWithBay`)
   are not ported at all**, so no case here says anything about them. Modelling
   them from scratch would produce a check that agrees with the model rather than

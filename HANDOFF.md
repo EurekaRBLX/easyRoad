@@ -144,6 +144,13 @@ holes. The Python port models and rejects boundary intrusion. Reinstall the
 rebuilt dist and compare a UK 2-lane ring side-by-side before closing live visual
 parity.
 
+The next live comparison found the remaining Luau-only lines were sunk arm
+markings protruding through ring ownership, not a different marking grammar.
+Arm lines now stop at a per-offset kerb crossing, and Turbo's peel has a small
+deterministic layer gap above the retained concentric divider. Run
+`tools/preview/roundabout_parity_contract.py`: it covers entry/exit bounds,
+mouth fragments, Turbo layer ownership, both traffic hands, and five break-tests.
+
 ### Nothing has been confirmed in Studio
 Every result in these docs is headless. The user's screenshots are the
 authority, and they have repeatedly shown defects the tooling passed.
