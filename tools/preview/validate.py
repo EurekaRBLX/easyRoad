@@ -33,7 +33,7 @@ KNOWN_OPEN = {}
 QUICK_ROUNDABOUT = ["uk4", "uk3", "us4", "turbo4", "turbo_width", "hw4"]
 FULL_ROUNDABOUT = ["uk4", "uk3", "us4", "uk5mini", "liveX2", "liveX4", "liveT2",
                    "liveT4", "stress", "stress_us", "turbo4", "turbo3x",
-                   "turbo_width", "hw4", "hw4us", "hwmix", "hw_oneway"]
+                   "turbo_width", "hw4", "hw4us", "hwmix", "hw_oneway", "solo_flare"]
 
 
 def run_script(name, args=()):
@@ -70,6 +70,7 @@ def roundabout_suite(cases):
         checks["visual_ownership"] = not rp.check_visual_ownership(scene)
         checks["arm_marking_bounds"] = not rp.check_arm_marking_bounds(scene)
         checks["edge_handoff"] = not rp.check_outboard_edge_handoffs(scene)
+        checks["solo_merge"] = not rp.check_solo_merges(scene)
         steps = rp.seam_steps(scene)
         checks["seam"] = not steps or max(max(a, b) for a, b in steps) <= 0.5
         results.append((name, checks))

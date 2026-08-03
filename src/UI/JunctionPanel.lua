@@ -17,6 +17,15 @@ local DEFAULT_RADIUS_STUDS = 30
 local DEFAULT_LANE_COUNT = 1
 local DEFAULT_LANE_WIDTH_M = 3.65
 
+export type ApproachSetbackRow = {
+	Id: string,
+	Label: string,
+	-- The effective value currently used by geometry. IsOverride distinguishes
+	-- an explicit approach value from one inherited from Default setback.
+	SetbackStuds: number,
+	IsOverride: boolean,
+}
+
 local function JunctionPanel(
 	props: {
 		JunctionId: string,
@@ -24,12 +33,14 @@ local function JunctionPanel(
 		CornerCount: number,
 		FilletRadiusM: number,
 		PadMarginStuds: number,
+		ApproachSetbacks: { ApproachSetbackRow },
 		LinkedCornerRadii: boolean,
 		SelectedCornerLabel: string?,
 		SelectedCornerRadiusM: number?,
 		RoundaboutStatus: string?,
 		OnFilletRadiusChanged: (value: number) -> (),
 		OnPadMarginChanged: (value: number) -> (),
+		OnApproachSetbackChanged: (approachId: string, value: number?) -> (),
 		OnLinkedCornerRadiiChanged: (linked: boolean) -> (),
 		OnSelectedCornerRadiusChanged: (value: number) -> (),
 		OnRebuild: () -> (),
@@ -71,6 +82,7 @@ local function JunctionPanel(
 	local ringWalk, setRingWalk = React.useState(nil :: boolean?)
 	local ringIsland, setRingIsland = React.useState(nil :: boolean?)
 	local touched, setTouched = React.useState(false)
+	local individualSetbacksOpen, setIndividualSetbacksOpen = React.useState(false)
 
 	-- A panel can stay mounted while Selection moves directly from one junction
 	-- to another.  Reset the defaults for the new controller, then continue to
@@ -164,7 +176,7 @@ local function JunctionPanel(
 		end
 	end
 	children.SetbackRow = e(Components.Row, { LayoutOrder = 8 }, {
-		Label = e(Components.Label, { Text = "Setback", LayoutOrder = 1, Width = 90 }),
+		Label = e(Components.Label, { Text = "Default setback", LayoutOrder = 1, Width = 112 }),
 		Field = e(Components.NumberField, {
 			Value = props.PadMarginStuds,
 			Min = 1,
@@ -174,10 +186,71 @@ local function JunctionPanel(
 		}),
 		Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 3 }),
 	})
+	if #props.ApproachSetbacks > 0 then
+		local setbackChildren: { [string]: any } = {
+			Layout = e("UIListLayout", {
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				Padding = UDim.new(0, 4),
+			}),
+			Toggle = e(Components.Button, {
+				Text = if individualSetbacksOpen then "Hide individual setbacks" else "Edit individual setbacks",
+				Selected = individualSetbacksOpen,
+				Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
+				LayoutOrder = 1,
+				OnClick = function()
+					setIndividualSetbacksOpen(not individualSetbacksOpen)
+				end,
+			}),
+		}
+		if individualSetbacksOpen then
+			for index, approach in props.ApproachSetbacks do
+				local row = approach
+				setbackChildren["Approach" .. row.Id] = e(Components.Row, { LayoutOrder = index + 1 }, {
+					Label = e(Components.Label, {
+						Text = row.Label,
+						Width = 94,
+						LayoutOrder = 1,
+					}),
+					Field = e(Components.NumberField, {
+						Value = row.SetbackStuds,
+						Min = 1,
+						Max = 40,
+						Width = 56,
+						LayoutOrder = 2,
+						OnChanged = function(value: number)
+							props.OnApproachSetbackChanged(row.Id, value)
+						end,
+					}),
+					Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 3 }),
+					State = if row.IsOverride
+						then e(Components.Button, {
+							Text = "Reset",
+							Size = UDim2.new(0, 54, 0, Theme.ROW_HEIGHT),
+							LayoutOrder = 4,
+							OnClick = function()
+								props.OnApproachSetbackChanged(row.Id, nil)
+							end,
+						})
+						else e(Components.Label, {
+							Text = "Default",
+							Dim = true,
+							Width = 54,
+							LayoutOrder = 4,
+						}),
+				})
+			end
+		end
+		children.SetbackAdvanced = e("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = 9,
+		}, setbackChildren)
+	end
 	children.Rebuild = e(Components.Button, {
 		Text = "Rebuild junction",
 		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-		LayoutOrder = 9,
+		LayoutOrder = 10,
 		OnClick = props.OnRebuild,
 	})
 
@@ -185,13 +258,13 @@ local function JunctionPanel(
 		Text = "Delete Junction",
 		Danger = true,
 		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-		LayoutOrder = 10,
+		LayoutOrder = 11,
 		OnClick = props.OnDelete,
 	})
 	children.Hint = e(Components.Label, {
 		Text = "Unlinks the roads meeting here — doesn't delete them.",
 		Dim = true,
-		LayoutOrder = 11,
+		LayoutOrder = 12,
 	})
 
 	if props.ConnectedRoadCount >= 2 then

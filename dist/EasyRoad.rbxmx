@@ -1351,6 +1351,16 @@ local RoadInstance = require("./RoadInstance")
 local RegionStyles = require("./RegionStyles")
 local Settings = require("./Settings")
 
+export type ApproachSetbackRow = {
+	Id: string,
+	Label: string,
+	RoadName: string,
+	RoadEnd: "Start" | "End",
+	SetbackStuds: number,
+	IsOverride: boolean,
+	Selected: boolean,
+}
+
 export type JunctionEditSession = {
 	ChangeSignal: Signal.Signal&lt;&gt;,
 	GetSelectedJunction: () -&gt; Model?,
@@ -1358,12 +1368,15 @@ export type JunctionEditSession = {
 	GetSelectedJunctionPosition: () -&gt; Vector3?,
 	GetFilletRadiusM: () -&gt; number,
 	GetPadMarginStuds: () -&gt; number,
+	GetApproachSetbacks: () -&gt; { ApproachSetbackRow },
 	GetCornerCount: () -&gt; number,
 	GetLinkedCornerRadii: () -&gt; boolean,
 	GetSelectedCornerLabel: () -&gt; string?,
 	GetSelectedCornerRadiusM: () -&gt; number?,
 	SetFilletRadiusM: (value: number) -&gt; (),
 	SetPadMarginStuds: (value: number) -&gt; (),
+	SetApproachSetbackStuds: (approachId: string, value: number) -&gt; (),
+	ResetApproachSetbackStuds: (approachId: string) -&gt; (),
 	SetLinkedCornerRadii: (linked: boolean) -&gt; (),
 	SetSelectedCornerRadiusM: (value: number) -&gt; (),
 	RebuildSelected: () -&gt; (),
@@ -1383,6 +1396,7 @@ local function createJunctionEditSession(
 	local selectedJunction: Model? = nil
 	local handlesFolder: Folder? = nil
 	local selectedCornerId: string? = nil
+	local selectedApproachId: string? = nil
 	local draggingCenter = false
 	local dragPlaneY = 0
 	local connections: { RBXScriptConnection } = {}
@@ -1440,6 +1454,18 @@ local function createJunctionEditSession(
 				selectedCornerId = nil
 			end
 		end
+		if selectedApproachId then
+			local stillExists = false
+			for _, mouth in layout.Mouths do
+				if mouth.Id == selectedApproachId then
+					stillExists = true
+					break
+				end
+			end
+			if not stillExists then
+				selectedApproachId = nil
+			end
+		end
 
 		local folder = Instance.new("Folder")
 		folder.Name = HANDLES_FOLDER_NAME
@@ -1462,7 +1488,11 @@ local function createJunctionEditSession(
 			local mid = (left + right) * 0.5
 			local len = (right - left).Magnitude
 			if len &gt; 0.1 then
-				local bar = makeHandlePart(MOUTH_PREFIX .. i, Vector3.new(0.25, 0.25, len), Color3.fromRGB(255, 70, 70))
+				local selected = mouth.Id == selectedApproachId
+				local mouthColor = if selected then Color3.fromRGB(255, 165, 55) else Color3.fromRGB(255, 70, 70)
+				local bar = makeHandlePart(MOUTH_PREFIX .. i, Vector3.new(0.25, 0.25, len), mouthColor)
+				bar:SetAttribute("RW_ApproachId", mouth.Id)
+				bar:SetAttribute("RW_ApproachLabel", "A" .. i)
 				bar.CFrame = CFrame.lookAt(mid + Vector3.new(0, 0.4, 0), right + Vector3.new(0, 0.4, 0))
 				bar.Parent = folder
 				local dotL = makeHandlePart(
@@ -1472,6 +1502,8 @@ local function createJunctionEditSession(
 					Enum.PartType.Ball
 				)
 				dotL.CFrame = CFrame.new(left + Vector3.new(0, 0.5, 0))
+				dotL:SetAttribute("RW_ApproachId", mouth.Id)
+				dotL:SetAttribute("RW_ApproachLabel", "A" .. i)
 				dotL.Parent = folder
 				local dotR = makeHandlePart(
 					MOUTH_PREFIX .. i .. "_R",
@@ -1480,6 +1512,8 @@ local function createJunctionEditSession(
 					Enum.PartType.Ball
 				)
 				dotR.CFrame = CFrame.new(right + Vector3.new(0, 0.5, 0))
+				dotR:SetAttribute("RW_ApproachId", mouth.Id)
+				dotR:SetAttribute("RW_ApproachLabel", "A" .. i)
 				dotR.Parent = folder
 			end
 		end
@@ -1511,7 +1545,7 @@ local function createJunctionEditSession(
 		changeSignal:Fire()
 	end
 
-	local function loadSelection()
+	local function loadSelection(forceRefresh: boolean?)
 		local junction: Model? = nil
 		for _, instance in Selection:Get() do
 			local current: Instance? = instance
@@ -1541,11 +1575,15 @@ local function createJunctionEditSession(
 				break
 			end
 		end
-		if junction == selectedJunction then
+		local changedJunction = junction ~= selectedJunction
+		if not changedJunction and not forceRefresh then
 			return
 		end
 		selectedJunction = junction
-		selectedCornerId = nil
+		if changedJunction then
+			selectedCornerId = nil
+			selectedApproachId = nil
+		end
 		refreshHandles()
 		changeSignal:Fire()
 	end
@@ -1588,7 +1626,9 @@ local function createJunctionEditSession(
 	-- Roundabout without changing Studio selection. Re-read its kind after the
 	-- history operation so ordinary corner handles never remain on a ring.
 	local function refreshAfterHistory()
-		task.defer(loadSelection)
+		task.defer(function()
+			loadSelection(true)
+		end)
 	end
 	table.insert(connections, ChangeHistoryService.OnUndo:Connect(refreshAfterHistory))
 	table.insert(connections, ChangeHistoryService.OnRedo:Connect(refreshAfterHistory))
@@ -1611,8 +1651,17 @@ local function createJunctionEditSession(
 					local cornerId = handle:GetAttribute("RW_CornerId")
 					if typeof(cornerId) == "string" then
 						selectedCornerId = cornerId
+						selectedApproachId = nil
 						refreshHandles()
 						changeSignal:Fire()
+					else
+						local approachId = handle:GetAttribute("RW_ApproachId")
+						if typeof(approachId) == "string" then
+							selectedApproachId = approachId
+							selectedCornerId = nil
+							refreshHandles()
+							changeSignal:Fire()
+						end
 					end
 				end
 			end
@@ -1694,6 +1743,38 @@ local function createJunctionEditSession(
 		return if data and data.PadMarginStuds then data.PadMarginStuds else 6
 	end
 
+	function session.GetApproachSetbacks(): { ApproachSetbackRow }
+		if not selectedJunction then
+			return {}
+		end
+		local data = JunctionInstance.Read(selectedJunction)
+		local layout = if data then JunctionBuilder.GetLayout(data.Id, settings) else nil
+		if not data or not layout then
+			return {}
+		end
+		local global = math.clamp(data.PadMarginStuds or 6, 1, 40)
+		local rows: { ApproachSetbackRow } = {}
+		for index, mouth in layout.Mouths do
+			local roadData = RoadInstance.Read(mouth.Road)
+			local atStart = roadData and roadData.StartJunctionId == data.Id and roadData.StartPortId == mouth.Id
+			local roadEnd: "Start" | "End" = if atStart then "Start" else "End"
+			local profile = if roadData
+				then if atStart then roadData.ProfileStart else (roadData.ProfileEnd or roadData.ProfileStart)
+				else nil
+			local override = data.ApproachSetbacksStuds[mouth.Id]
+			table.insert(rows, {
+				Id = mouth.Id,
+				Label = string.format("A%d - %s", index, if profile then profile.Name else mouth.Road.Name),
+				RoadName = mouth.Road.Name,
+				RoadEnd = roadEnd,
+				SetbackStuds = math.clamp(override or global, 1, 40),
+				IsOverride = override ~= nil,
+				Selected = selectedApproachId == mouth.Id,
+			})
+		end
+		return rows
+	end
+
 	local function selectedLayout(): JunctionBuilder.JunctionLayout?
 		if not selectedJunction then
 			return nil
@@ -1763,6 +1844,42 @@ local function createJunctionEditSession(
 		if recording then
 			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
 		end
+	end
+
+	local function editApproachSetback(approachId: string, value: number?)
+		if not selectedJunction then
+			return
+		end
+		local layout = selectedLayout()
+		local connected = false
+		if layout then
+			for _, mouth in layout.Mouths do
+				if mouth.Id == approachId then
+					connected = true
+					break
+				end
+			end
+		end
+		if not connected then
+			return
+		end
+		selectedApproachId = approachId
+		selectedCornerId = nil
+		local label = if value == nil then "Reset junction approach setback" else "Junction approach setback"
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", label)
+		JunctionInstance.SetApproachSetbackStuds(selectedJunction, approachId, value)
+		rebuildSelected()
+		if recording then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		end
+	end
+
+	function session.SetApproachSetbackStuds(approachId: string, value: number)
+		editApproachSetback(approachId, math.clamp(value, 1, 40))
+	end
+
+	function session.ResetApproachSetbackStuds(approachId: string)
+		editApproachSetback(approachId, nil)
 	end
 
 	function session.SetLinkedCornerRadii(linked: boolean)
@@ -1884,6 +2001,11 @@ export type JunctionData = {
 	RoundaboutSidewalk: boolean?,
 	RoundaboutIsland: boolean?,
 	PadMarginStuds: number?,
+	-- Optional per-approach replacements for PadMarginStuds, keyed by the
+	-- connected road ENDPOINT'S stable port id.  The junction still derives
+	-- its approach list from roads; this map stores editing intent only.  A
+	-- missing entry follows PadMarginStuds (or the builder default).
+	ApproachSetbacksStuds: { [string]: number },
 	-- Multinode v2 controller. Approaches are derived from connected roads;
 	-- only editing intent lives here, avoiding a second topology list that can
 	-- desynchronise. Legacy junctions read as linked with no overrides.
@@ -2013,6 +2135,19 @@ function JunctionInstance.Read(model: Model): JunctionData?
 	local ringWalk = model:GetAttribute("RW_RoundaboutSidewalk")
 	local ringIsland = model:GetAttribute("RW_RoundaboutIsland")
 	local linked = model:GetAttribute("RW_LinkedCornerRadii")
+	local approachSetbacks: { [string]: number } = {}
+	local rawApproachSetbacks = model:GetAttribute("RW_ApproachSetbacksJson")
+	if typeof(rawApproachSetbacks) == "string" then
+		local ok, decoded = pcall(HttpService.JSONDecode, HttpService, rawApproachSetbacks)
+		if ok and typeof(decoded) == "table" then
+			for approachId, setback in decoded do
+				local validSetback = finiteNumber(setback)
+				if typeof(approachId) == "string" and approachId ~= "" and validSetback then
+					approachSetbacks[approachId] = math.clamp(validSetback, 1, 40)
+				end
+			end
+		end
+	end
 	local cornerRadii: { [string]: number } = {}
 	local rawCornerRadii = model:GetAttribute("RW_CornerRadiiJson")
 	if typeof(rawCornerRadii) == "string" then
@@ -2035,6 +2170,7 @@ function JunctionInstance.Read(model: Model): JunctionData?
 		RoundaboutLaneWidthM = positiveNumber(roundaboutLaneWidth),
 		FilletRadiusM = finiteNumber(fillet),
 		PadMarginStuds = finiteNumber(margin),
+		ApproachSetbacksStuds = approachSetbacks,
 		RoundaboutMarkings = if typeof(markings) == "string" and table.find(ROUNDABOUT_MARKING_STYLES, markings)
 			then markings
 			else nil,
@@ -2086,6 +2222,25 @@ end
 
 function JunctionInstance.SetPadMarginStuds(model: Model, marginStuds: number?)
 	model:SetAttribute("RW_PadMarginStuds", marginStuds)
+end
+
+-- Stores one approach's setback independently of the derived topology list.
+-- Do not prune disconnected ids here: keeping the stable port key lets
+-- undo/reconnect and roundabout -&gt; junction restoration recover the user's
+-- exact editing intent. nil explicitly returns this approach to the global
+-- PadMarginStuds value.
+function JunctionInstance.SetApproachSetbackStuds(model: Model, approachId: string, setbackStuds: number?)
+	assert(approachId ~= "", "approach id must not be empty")
+	local data = JunctionInstance.Read(model)
+	local setbacks = if data then table.clone(data.ApproachSetbacksStuds) else {}
+	if setbackStuds == nil then
+		setbacks[approachId] = nil
+	else
+		local validSetback = finiteNumber(setbackStuds)
+		assert(validSetback ~= nil, "approach setback must be a finite number")
+		setbacks[approachId] = math.clamp(validSetback :: number, 1, 40)
+	end
+	model:SetAttribute("RW_ApproachSetbacksJson", if next(setbacks) then HttpService:JSONEncode(setbacks) else nil)
 end
 
 function JunctionInstance.SetLinkedCornerRadii(model: Model, linked: boolean)
@@ -2623,9 +2778,11 @@ return fillTriangle
 --
 -- Two halves, called in order by the placement flow (createRoadSession):
 --
--- 1. TrimApproaches: every connected road is cut back so it STOPS at the
---    pad boundary (max connected half-width + margin from the junction
---    centre) instead of running full-profile to the junction centre point.
+-- 1. TrimApproaches: every connected road is cut back so it STOPS at its
+--    pad boundary (max connected half-width + that endpoint's effective
+--    setback margin from the junction centre) instead of running full-profile
+--    to the junction centre point. Missing endpoint overrides follow the
+--    junction-wide margin, preserving legacy junctions exactly.
 --    Untrimmed approaches were the root cause of the long-standing "faulty
 --    intersection" reports: each road's sidewalks, kerb lines, and edge
 --    markings plowed straight through the intersection interior, overlapping
@@ -2633,9 +2790,9 @@ return fillTriangle
 --    right on top of that. Same mechanism as RoundaboutBuilder's
 --    trimSpokeToRing (bisection for the boundary crossing, CurveSegment.Sub
 --    to truncate, rebuild + restamp, destroy the original), except the
---    trimmed end KEEPS its junction link. Idempotent: an end already at the
---    boundary is skipped, so re-running when another road joins later only
---    trims further if the pad radius actually grew.
+--    trimmed end KEEPS its junction link. Rebuild always starts from its
+--    durable source, so increasing or decreasing one endpoint's setback is
+--    non-cumulative and leaves every other endpoint on its own resolved cut.
 --
 -- 2. Rebuild: the pad's asphalt, filled from the OUTLINE walked in point 3
 --    below - each approach's mouth joined to the next by that gap's corner
@@ -2747,6 +2904,21 @@ local function profileAtJunctionEnd(road: Model, junctionId: string): RoadProfil
 		return data.ProfileEnd or data.ProfileStart
 	end
 	return data.ProfileStart
+end
+
+-- Stable endpoint-port identity for this road's approach to `junctionId`.
+-- This deliberately mirrors edgePointsForRoad's start-first convention.
+local function approachIdAtJunction(road: Model, junctionId: string): string?
+	local data = RoadInstance.Read(road)
+	if not data then
+		return nil
+	end
+	if data.StartJunctionId == junctionId then
+		return data.StartPortId
+	elseif data.EndJunctionId == junctionId then
+		return data.EndPortId
+	end
+	return nil
 end
 
 -- The direction `road` extends AWAY from this junction - +TangentAt(0) if
@@ -3070,7 +3242,7 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 	preserveRoundaboutEndpoint(data.StartJunctionId, true)
 	preserveRoundaboutEndpoint(data.EndJunctionId, false)
 
-	local function trimStationFor(junctionId: string, atStart: boolean): number?
+	local function trimStationFor(junctionId: string, approachId: string, atStart: boolean): number?
 		local junctionModel = JunctionInstance.FindById(junctionId)
 		local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
 		if not junctionData then
@@ -3080,7 +3252,7 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 		if #connected &lt; 2 or isSmoothPassThrough(connected, junctionId) then
 			return nil
 		end
-		local radiusStuds = JunctionBuilder.PadRadiusStuds(junctionId, settings)
+		local radiusStuds = JunctionBuilder.ApproachTrimRadiusStuds(junctionId, approachId, settings)
 		if not radiusStuds then
 			return nil
 		end
@@ -3094,14 +3266,14 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 	end
 
 	if data.StartJunctionId then
-		local crossing = trimStationFor(data.StartJunctionId, true)
+		local crossing = trimStationFor(data.StartJunctionId, data.StartPortId, true)
 		if crossing then
 			startStation = crossing
 			trimmed = true
 		end
 	end
 	if data.EndJunctionId then
-		local crossing = trimStationFor(data.EndJunctionId, false)
+		local crossing = trimStationFor(data.EndJunctionId, data.EndPortId, false)
 		if crossing then
 			endStation = crossing
 			trimmed = true
@@ -3167,39 +3339,67 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 	BusStops.Render(road)
 end
 
--- The radius (studs, from the junction centre) of this junction's pad -
--- widest connected road's half-width plus the setback margin, the same
--- number TrimApproaches cuts every approach back to. nil when no connected
--- road contributes a usable width. Public so createRoadSession can match a
--- click against the pad's real physical extent (its visible footprint)
--- rather than just a fixed snap radius around the centre point, which for
--- a wide avenue's junction is far smaller than the pad itself.
-function JunctionBuilder.PadRadiusStuds(junctionId: string, settings: Settings.EasyRoadSettings): number?
-	local junctionModel = JunctionInstance.FindById(junctionId)
-	if junctionModel and junctionModel:GetAttribute("RW_JunctionKind") == "Roundabout" then
-		return nil
-	end
-	local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
-	local roads = JunctionInstance.ConnectedRoads(junctionId)
-	if #roads == 0 then
-		return nil
-	end
-	local scale = settings.MetersToStuds
+local function padEnvelopeBaseStuds(junctionId: string, settings: Settings.EasyRoadSettings): number?
 	local maxHalfWidthStuds = 0
-	for _, road in roads do
+	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
 		local profile = profileAtJunctionEnd(road, junctionId)
 		if profile then
-			maxHalfWidthStuds = math.max(maxHalfWidthStuds, RoadProfile.TotalWidthM(profile) / 2 * scale)
+			maxHalfWidthStuds =
+				math.max(maxHalfWidthStuds, RoadProfile.TotalWidthM(profile) / 2 * settings.MetersToStuds)
 		end
 	end
-	if maxHalfWidthStuds &lt;= 0 then
+	return if maxHalfWidthStuds &gt; 0 then maxHalfWidthStuds else nil
+end
+
+local function effectiveApproachSetbackStuds(junctionData: JunctionInstance.JunctionData, approachId: string): number
+	local global = math.clamp(junctionData.PadMarginStuds or PAD_MARGIN_STUDS, 1, 40)
+	return math.clamp(junctionData.ApproachSetbacksStuds[approachId] or global, 1, 40)
+end
+
+-- The actual trim radius for one connected endpoint. The widest-road base is
+-- intentionally shared by every approach to preserve legacy pad geometry;
+-- only the margin beyond that envelope is independently editable.
+function JunctionBuilder.ApproachTrimRadiusStuds(
+	junctionId: string,
+	approachId: string,
+	settings: Settings.EasyRoadSettings
+): number?
+	local junctionModel = JunctionInstance.FindById(junctionId)
+	local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
+	if not junctionData or junctionData.Kind == "Roundabout" then
 		return nil
 	end
-	local margin = PAD_MARGIN_STUDS
-	if junctionData and junctionData.PadMarginStuds then
-		margin = math.clamp(junctionData.PadMarginStuds, 1, 40)
+	local base = padEnvelopeBaseStuds(junctionId, settings)
+	if not base then
+		return nil
 	end
-	return maxHalfWidthStuds + margin
+	return base + effectiveApproachSetbackStuds(junctionData, approachId)
+end
+
+-- Conservative outer radius of the asymmetric pad. This is no longer the
+-- cut used for every road; createRoadSession uses it only for footprint hit
+-- testing. Actual trimming resolves ApproachTrimRadiusStuds per endpoint.
+function JunctionBuilder.PadRadiusStuds(junctionId: string, settings: Settings.EasyRoadSettings): number?
+	local junctionModel = JunctionInstance.FindById(junctionId)
+	local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
+	if not junctionData or junctionData.Kind == "Roundabout" then
+		return nil
+	end
+	local base = padEnvelopeBaseStuds(junctionId, settings)
+	if not base then
+		return nil
+	end
+	local maxSetback = 0
+	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
+		local approachId = approachIdAtJunction(road, junctionId)
+		if approachId then
+			maxSetback = math.max(maxSetback, effectiveApproachSetbackStuds(junctionData, approachId))
+		end
+	end
+	if maxSetback &lt;= 0 then
+		maxSetback = math.clamp(junctionData.PadMarginStuds or PAD_MARGIN_STUDS, 1, 40)
+	end
+	return base + maxSetback
 end
 
 -- Layout snapshot for the node controller (viewport handles / panel).
@@ -3288,6 +3488,12 @@ function JunctionBuilder.GetLayout(junctionId: string, settings: Settings.EasyRo
 	table.sort(approaches, function(a, b)
 		return a.Angle &lt; b.Angle
 	end)
+	table.sort(mouths, function(a, b)
+		if a.Angle == b.Angle then
+			return a.Id &lt; b.Id
+		end
+		return a.Angle &lt; b.Angle
+	end)
 	for i = 1, #approaches do
 		local nextI = if i &lt; #approaches then i + 1 else 1
 		local span = approaches[nextI].Angle - approaches[i].Angle
@@ -3325,8 +3531,9 @@ end
 -- connected to the junction. Deliberately NOT called from Rebuild itself:
 -- Rebuild also runs from the road-deletion listener in main.lua (including
 -- removals driven by undo), and trimming from there would re-cut roads the
--- user is trying to restore. Idempotent per pad radius - re-running only
--- trims further when a new, wider road has grown the pad.
+-- user is trying to restore. Each rebuild resolves the endpoint's stable port
+-- override from its durable source, so both increasing and decreasing a
+-- setback are safe and non-cumulative.
 function JunctionBuilder.TrimApproaches(
 	junctionId: string,
 	style: RegionStyles.RegionStyle,
@@ -4192,7 +4399,8 @@ function JunctionBuilder.Rebuild(
 			end
 		end
 		if maxHalfWidthM &gt; 0 then
-			local radiusStuds = maxHalfWidthM * settings.MetersToStuds + PAD_MARGIN_STUDS
+			local radiusStuds = JunctionBuilder.PadRadiusStuds(junctionId, settings)
+				or (maxHalfWidthM * settings.MetersToStuds + PAD_MARGIN_STUDS)
 			local pad = makeAsphaltPart()
 			pad.Shape = Enum.PartType.Cylinder
 			pad.Size = Vector3.new(thickness, radiusStuds * 2, radiusStuds * 2)
@@ -7318,9 +7526,12 @@ local SECTOR_INSET_RAD = math.rad(3)
 local SHOULDER_SECTOR_INSET_RAD = math.rad(8)
 -- A solo tangent arm has no splitter-side sibling pavement to cover the outer
 -- corner of its opening. The component-level reference sweep needs seven
--- degrees of pavement overlap to close that small crescent; edge paint still
+-- degrees of pavement overlap on the old wide tangent. A width-fit solo flare
+-- can be narrower than twice that, so cap the overlap to a share of the actual
+-- sweep instead of allowing the opening to collapse to zero. Edge paint still
 -- uses the exact, uninset merge ray.
 local SOLO_SECTOR_INSET_RAD = math.rad(7)
+local SOLO_SECTOR_OVERLAP_SHARE = 0.3
 
 -- Shrink sectors until each leaves MIN_KERB_GAP_RAD of kerb to its angular
 -- neighbours. Each sector may claim at most half of the gap on either side
@@ -7586,6 +7797,14 @@ end
 -- nothing extra for the arms' own width.
 local SPLIT_ANGLE_RAD = math.rad(38)
 local MIN_SPLIT_RAD = math.rad(14)
+-- A lone one-way arm has no sibling carriageway or splitter island to justify
+-- the paired mouth's full 38-degree fan. Driving it to that same ray makes the
+-- approach orbit the ring before it joins, which reads as a pasted-on slip
+-- road and leaves a bulbous kerb return. Fit the solo deflection to the arm's
+-- actual half-width at the merge circle, with a small clearance and a hard cap
+-- comfortably below the paired layout.
+local SOLO_SPLIT_CLEARANCE_RAD = math.rad(3)
+local SOLO_SPLIT_MAX_RAD = math.rad(26)
 -- Kerb reserved beyond a mouth's own split when budgeting against neighbouring
 -- legs. Distinct from SECTOR_INSET_RAD, which trims the PAVEMENT OPENING back
 -- inside the arms; this one just keeps two mouths from growing into each other.
@@ -9002,6 +9221,15 @@ local function resolveSplits(
 	flow: number,
 	settings: Settings.EasyRoadSettings
 ): (number, number, number, number)
+	local solo = (plan.Entry == nil) ~= (plan.Exit == nil)
+	if solo then
+		local arm = (plan.Entry or plan.Exit) :: MouthArm
+		local halfWidth = (arm.Profile.OuterOffsetStuds + arm.Profile.InnerOffsetStuds) / 2
+		local fitAngle = math.asin(math.clamp(halfWidth / math.max(arm.MergeRadius, 1), 0, 0.95))
+		local budgetCap = math.min(SOLO_SPLIT_MAX_RAD, math.max(MIN_SPLIT_RAD, splitBudgetRad - SECTOR_MARGIN_RAD))
+		local soloSplit = math.clamp(fitAngle + SOLO_SPLIT_CLEARANCE_RAD, MIN_SPLIT_RAD, budgetCap)
+		return soloSplit, soloSplit, plan.Angle + flow * soloSplit, plan.Angle - flow * soloSplit
+	end
 	local split =
 		math.clamp(SPLIT_ANGLE_RAD, MIN_SPLIT_RAD, math.max(MIN_SPLIT_RAD, splitBudgetRad - SECTOR_MARGIN_RAD))
 	local entrySplit = if settings.RoundaboutEntryCurve
@@ -9124,7 +9352,8 @@ local function buildMouth(
 			flow
 		)
 		local sweep = angleDelta(mergeAngle, edgeAngle)
-		local half = math.max(0, math.abs(sweep) / 2 - SOLO_SECTOR_INSET_RAD)
+		local soloInset = math.min(SOLO_SECTOR_INSET_RAD, math.abs(sweep) * SOLO_SECTOR_OVERLAP_SHARE)
+		local half = math.max(0, math.abs(sweep) / 2 - soloInset)
 		local edgeHalf = math.max(0, math.abs(sweep) / 2)
 		local soloTrace: ExitTrace? = if exit and exitCurve
 			then { Curve = exitCurve :: PolyCurve.PolyCurve, Arm = exit.Profile }
@@ -17742,6 +17971,15 @@ local DEFAULT_RADIUS_STUDS = 30
 local DEFAULT_LANE_COUNT = 1
 local DEFAULT_LANE_WIDTH_M = 3.65
 
+export type ApproachSetbackRow = {
+	Id: string,
+	Label: string,
+	-- The effective value currently used by geometry. IsOverride distinguishes
+	-- an explicit approach value from one inherited from Default setback.
+	SetbackStuds: number,
+	IsOverride: boolean,
+}
+
 local function JunctionPanel(
 	props: {
 		JunctionId: string,
@@ -17749,12 +17987,14 @@ local function JunctionPanel(
 		CornerCount: number,
 		FilletRadiusM: number,
 		PadMarginStuds: number,
+		ApproachSetbacks: { ApproachSetbackRow },
 		LinkedCornerRadii: boolean,
 		SelectedCornerLabel: string?,
 		SelectedCornerRadiusM: number?,
 		RoundaboutStatus: string?,
 		OnFilletRadiusChanged: (value: number) -&gt; (),
 		OnPadMarginChanged: (value: number) -&gt; (),
+		OnApproachSetbackChanged: (approachId: string, value: number?) -&gt; (),
 		OnLinkedCornerRadiiChanged: (linked: boolean) -&gt; (),
 		OnSelectedCornerRadiusChanged: (value: number) -&gt; (),
 		OnRebuild: () -&gt; (),
@@ -17796,6 +18036,7 @@ local function JunctionPanel(
 	local ringWalk, setRingWalk = React.useState(nil :: boolean?)
 	local ringIsland, setRingIsland = React.useState(nil :: boolean?)
 	local touched, setTouched = React.useState(false)
+	local individualSetbacksOpen, setIndividualSetbacksOpen = React.useState(false)
 
 	-- A panel can stay mounted while Selection moves directly from one junction
 	-- to another.  Reset the defaults for the new controller, then continue to
@@ -17889,7 +18130,7 @@ local function JunctionPanel(
 		end
 	end
 	children.SetbackRow = e(Components.Row, { LayoutOrder = 8 }, {
-		Label = e(Components.Label, { Text = "Setback", LayoutOrder = 1, Width = 90 }),
+		Label = e(Components.Label, { Text = "Default setback", LayoutOrder = 1, Width = 112 }),
 		Field = e(Components.NumberField, {
 			Value = props.PadMarginStuds,
 			Min = 1,
@@ -17899,10 +18140,71 @@ local function JunctionPanel(
 		}),
 		Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 3 }),
 	})
+	if #props.ApproachSetbacks &gt; 0 then
+		local setbackChildren: { [string]: any } = {
+			Layout = e("UIListLayout", {
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				Padding = UDim.new(0, 4),
+			}),
+			Toggle = e(Components.Button, {
+				Text = if individualSetbacksOpen then "Hide individual setbacks" else "Edit individual setbacks",
+				Selected = individualSetbacksOpen,
+				Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
+				LayoutOrder = 1,
+				OnClick = function()
+					setIndividualSetbacksOpen(not individualSetbacksOpen)
+				end,
+			}),
+		}
+		if individualSetbacksOpen then
+			for index, approach in props.ApproachSetbacks do
+				local row = approach
+				setbackChildren["Approach" .. row.Id] = e(Components.Row, { LayoutOrder = index + 1 }, {
+					Label = e(Components.Label, {
+						Text = row.Label,
+						Width = 94,
+						LayoutOrder = 1,
+					}),
+					Field = e(Components.NumberField, {
+						Value = row.SetbackStuds,
+						Min = 1,
+						Max = 40,
+						Width = 56,
+						LayoutOrder = 2,
+						OnChanged = function(value: number)
+							props.OnApproachSetbackChanged(row.Id, value)
+						end,
+					}),
+					Unit = e(Components.Label, { Text = "studs", Dim = true, LayoutOrder = 3 }),
+					State = if row.IsOverride
+						then e(Components.Button, {
+							Text = "Reset",
+							Size = UDim2.new(0, 54, 0, Theme.ROW_HEIGHT),
+							LayoutOrder = 4,
+							OnClick = function()
+								props.OnApproachSetbackChanged(row.Id, nil)
+							end,
+						})
+						else e(Components.Label, {
+							Text = "Default",
+							Dim = true,
+							Width = 54,
+							LayoutOrder = 4,
+						}),
+				})
+			end
+		end
+		children.SetbackAdvanced = e("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = 9,
+		}, setbackChildren)
+	end
 	children.Rebuild = e(Components.Button, {
 		Text = "Rebuild junction",
 		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-		LayoutOrder = 9,
+		LayoutOrder = 10,
 		OnClick = props.OnRebuild,
 	})
 
@@ -17910,13 +18212,13 @@ local function JunctionPanel(
 		Text = "Delete Junction",
 		Danger = true,
 		Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-		LayoutOrder = 10,
+		LayoutOrder = 11,
 		OnClick = props.OnDelete,
 	})
 	children.Hint = e(Components.Label, {
 		Text = "Unlinks the roads meeting here — doesn't delete them.",
 		Dim = true,
-		LayoutOrder = 11,
+		LayoutOrder = 12,
 	})
 
 	if props.ConnectedRoadCount &gt;= 2 then
@@ -26192,11 +26494,19 @@ return function(
 				CornerCount = junctionEditSession.GetCornerCount(),
 				FilletRadiusM = junctionEditSession.GetFilletRadiusM(),
 				PadMarginStuds = junctionEditSession.GetPadMarginStuds(),
+				ApproachSetbacks = junctionEditSession.GetApproachSetbacks(),
 				LinkedCornerRadii = junctionEditSession.GetLinkedCornerRadii(),
 				SelectedCornerLabel = junctionEditSession.GetSelectedCornerLabel(),
 				SelectedCornerRadiusM = junctionEditSession.GetSelectedCornerRadiusM(),
 				OnFilletRadiusChanged = junctionEditSession.SetFilletRadiusM,
 				OnPadMarginChanged = junctionEditSession.SetPadMarginStuds,
+				OnApproachSetbackChanged = function(approachId: string, value: number?)
+					if value == nil then
+						junctionEditSession.ResetApproachSetbackStuds(approachId)
+					else
+						junctionEditSession.SetApproachSetbackStuds(approachId, value)
+					end
+				end,
 				OnLinkedCornerRadiiChanged = junctionEditSession.SetLinkedCornerRadii,
 				OnSelectedCornerRadiusChanged = junctionEditSession.SetSelectedCornerRadiusM,
 				OnRebuild = junctionEditSession.RebuildSelected,

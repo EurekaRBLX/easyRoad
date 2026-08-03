@@ -6,9 +6,11 @@
 --
 -- Two halves, called in order by the placement flow (createRoadSession):
 --
--- 1. TrimApproaches: every connected road is cut back so it STOPS at the
---    pad boundary (max connected half-width + margin from the junction
---    centre) instead of running full-profile to the junction centre point.
+-- 1. TrimApproaches: every connected road is cut back so it STOPS at its
+--    pad boundary (max connected half-width + that endpoint's effective
+--    setback margin from the junction centre) instead of running full-profile
+--    to the junction centre point. Missing endpoint overrides follow the
+--    junction-wide margin, preserving legacy junctions exactly.
 --    Untrimmed approaches were the root cause of the long-standing "faulty
 --    intersection" reports: each road's sidewalks, kerb lines, and edge
 --    markings plowed straight through the intersection interior, overlapping
@@ -16,9 +18,9 @@
 --    right on top of that. Same mechanism as RoundaboutBuilder's
 --    trimSpokeToRing (bisection for the boundary crossing, CurveSegment.Sub
 --    to truncate, rebuild + restamp, destroy the original), except the
---    trimmed end KEEPS its junction link. Idempotent: an end already at the
---    boundary is skipped, so re-running when another road joins later only
---    trims further if the pad radius actually grew.
+--    trimmed end KEEPS its junction link. Rebuild always starts from its
+--    durable source, so increasing or decreasing one endpoint's setback is
+--    non-cumulative and leaves every other endpoint on its own resolved cut.
 --
 -- 2. Rebuild: the pad's asphalt, filled from the OUTLINE walked in point 3
 --    below - each approach's mouth joined to the next by that gap's corner
@@ -130,6 +132,21 @@ local function profileAtJunctionEnd(road: Model, junctionId: string): RoadProfil
 		return data.ProfileEnd or data.ProfileStart
 	end
 	return data.ProfileStart
+end
+
+-- Stable endpoint-port identity for this road's approach to `junctionId`.
+-- This deliberately mirrors edgePointsForRoad's start-first convention.
+local function approachIdAtJunction(road: Model, junctionId: string): string?
+	local data = RoadInstance.Read(road)
+	if not data then
+		return nil
+	end
+	if data.StartJunctionId == junctionId then
+		return data.StartPortId
+	elseif data.EndJunctionId == junctionId then
+		return data.EndPortId
+	end
+	return nil
 end
 
 -- The direction `road` extends AWAY from this junction - +TangentAt(0) if
@@ -453,7 +470,7 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 	preserveRoundaboutEndpoint(data.StartJunctionId, true)
 	preserveRoundaboutEndpoint(data.EndJunctionId, false)
 
-	local function trimStationFor(junctionId: string, atStart: boolean): number?
+	local function trimStationFor(junctionId: string, approachId: string, atStart: boolean): number?
 		local junctionModel = JunctionInstance.FindById(junctionId)
 		local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
 		if not junctionData then
@@ -463,7 +480,7 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 		if #connected < 2 or isSmoothPassThrough(connected, junctionId) then
 			return nil
 		end
-		local radiusStuds = JunctionBuilder.PadRadiusStuds(junctionId, settings)
+		local radiusStuds = JunctionBuilder.ApproachTrimRadiusStuds(junctionId, approachId, settings)
 		if not radiusStuds then
 			return nil
 		end
@@ -477,14 +494,14 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 	end
 
 	if data.StartJunctionId then
-		local crossing = trimStationFor(data.StartJunctionId, true)
+		local crossing = trimStationFor(data.StartJunctionId, data.StartPortId, true)
 		if crossing then
 			startStation = crossing
 			trimmed = true
 		end
 	end
 	if data.EndJunctionId then
-		local crossing = trimStationFor(data.EndJunctionId, false)
+		local crossing = trimStationFor(data.EndJunctionId, data.EndPortId, false)
 		if crossing then
 			endStation = crossing
 			trimmed = true
@@ -550,39 +567,67 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 	BusStops.Render(road)
 end
 
--- The radius (studs, from the junction centre) of this junction's pad -
--- widest connected road's half-width plus the setback margin, the same
--- number TrimApproaches cuts every approach back to. nil when no connected
--- road contributes a usable width. Public so createRoadSession can match a
--- click against the pad's real physical extent (its visible footprint)
--- rather than just a fixed snap radius around the centre point, which for
--- a wide avenue's junction is far smaller than the pad itself.
-function JunctionBuilder.PadRadiusStuds(junctionId: string, settings: Settings.EasyRoadSettings): number?
-	local junctionModel = JunctionInstance.FindById(junctionId)
-	if junctionModel and junctionModel:GetAttribute("RW_JunctionKind") == "Roundabout" then
-		return nil
-	end
-	local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
-	local roads = JunctionInstance.ConnectedRoads(junctionId)
-	if #roads == 0 then
-		return nil
-	end
-	local scale = settings.MetersToStuds
+local function padEnvelopeBaseStuds(junctionId: string, settings: Settings.EasyRoadSettings): number?
 	local maxHalfWidthStuds = 0
-	for _, road in roads do
+	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
 		local profile = profileAtJunctionEnd(road, junctionId)
 		if profile then
-			maxHalfWidthStuds = math.max(maxHalfWidthStuds, RoadProfile.TotalWidthM(profile) / 2 * scale)
+			maxHalfWidthStuds =
+				math.max(maxHalfWidthStuds, RoadProfile.TotalWidthM(profile) / 2 * settings.MetersToStuds)
 		end
 	end
-	if maxHalfWidthStuds <= 0 then
+	return if maxHalfWidthStuds > 0 then maxHalfWidthStuds else nil
+end
+
+local function effectiveApproachSetbackStuds(junctionData: JunctionInstance.JunctionData, approachId: string): number
+	local global = math.clamp(junctionData.PadMarginStuds or PAD_MARGIN_STUDS, 1, 40)
+	return math.clamp(junctionData.ApproachSetbacksStuds[approachId] or global, 1, 40)
+end
+
+-- The actual trim radius for one connected endpoint. The widest-road base is
+-- intentionally shared by every approach to preserve legacy pad geometry;
+-- only the margin beyond that envelope is independently editable.
+function JunctionBuilder.ApproachTrimRadiusStuds(
+	junctionId: string,
+	approachId: string,
+	settings: Settings.EasyRoadSettings
+): number?
+	local junctionModel = JunctionInstance.FindById(junctionId)
+	local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
+	if not junctionData or junctionData.Kind == "Roundabout" then
 		return nil
 	end
-	local margin = PAD_MARGIN_STUDS
-	if junctionData and junctionData.PadMarginStuds then
-		margin = math.clamp(junctionData.PadMarginStuds, 1, 40)
+	local base = padEnvelopeBaseStuds(junctionId, settings)
+	if not base then
+		return nil
 	end
-	return maxHalfWidthStuds + margin
+	return base + effectiveApproachSetbackStuds(junctionData, approachId)
+end
+
+-- Conservative outer radius of the asymmetric pad. This is no longer the
+-- cut used for every road; createRoadSession uses it only for footprint hit
+-- testing. Actual trimming resolves ApproachTrimRadiusStuds per endpoint.
+function JunctionBuilder.PadRadiusStuds(junctionId: string, settings: Settings.EasyRoadSettings): number?
+	local junctionModel = JunctionInstance.FindById(junctionId)
+	local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
+	if not junctionData or junctionData.Kind == "Roundabout" then
+		return nil
+	end
+	local base = padEnvelopeBaseStuds(junctionId, settings)
+	if not base then
+		return nil
+	end
+	local maxSetback = 0
+	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
+		local approachId = approachIdAtJunction(road, junctionId)
+		if approachId then
+			maxSetback = math.max(maxSetback, effectiveApproachSetbackStuds(junctionData, approachId))
+		end
+	end
+	if maxSetback <= 0 then
+		maxSetback = math.clamp(junctionData.PadMarginStuds or PAD_MARGIN_STUDS, 1, 40)
+	end
+	return base + maxSetback
 end
 
 -- Layout snapshot for the node controller (viewport handles / panel).
@@ -671,6 +716,12 @@ function JunctionBuilder.GetLayout(junctionId: string, settings: Settings.EasyRo
 	table.sort(approaches, function(a, b)
 		return a.Angle < b.Angle
 	end)
+	table.sort(mouths, function(a, b)
+		if a.Angle == b.Angle then
+			return a.Id < b.Id
+		end
+		return a.Angle < b.Angle
+	end)
 	for i = 1, #approaches do
 		local nextI = if i < #approaches then i + 1 else 1
 		local span = approaches[nextI].Angle - approaches[i].Angle
@@ -708,8 +759,9 @@ end
 -- connected to the junction. Deliberately NOT called from Rebuild itself:
 -- Rebuild also runs from the road-deletion listener in main.lua (including
 -- removals driven by undo), and trimming from there would re-cut roads the
--- user is trying to restore. Idempotent per pad radius - re-running only
--- trims further when a new, wider road has grown the pad.
+-- user is trying to restore. Each rebuild resolves the endpoint's stable port
+-- override from its durable source, so both increasing and decreasing a
+-- setback are safe and non-cumulative.
 function JunctionBuilder.TrimApproaches(
 	junctionId: string,
 	style: RegionStyles.RegionStyle,
@@ -1575,7 +1627,8 @@ function JunctionBuilder.Rebuild(
 			end
 		end
 		if maxHalfWidthM > 0 then
-			local radiusStuds = maxHalfWidthM * settings.MetersToStuds + PAD_MARGIN_STUDS
+			local radiusStuds = JunctionBuilder.PadRadiusStuds(junctionId, settings)
+				or (maxHalfWidthM * settings.MetersToStuds + PAD_MARGIN_STUDS)
 			local pad = makeAsphaltPart()
 			pad.Shape = Enum.PartType.Cylinder
 			pad.Size = Vector3.new(thickness, radiusStuds * 2, radiusStuds * 2)

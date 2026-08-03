@@ -38,6 +38,12 @@ def static_faults(source):
             "Luau Turbo layer does not account for RoadBuilder's alternate lift")
     require(source, "local SHOULDER_SECTOR_INSET_RAD = math.rad(8)",
             "paired shoulder-taper mouths do not retain the measured ring-sidewalk overlap")
+    require(source, "local SOLO_SPLIT_CLEARANCE_RAD = math.rad(3)",
+            "solo one-way mouths do not retain the width-fit merge clearance")
+    require(source, "local SOLO_SPLIT_MAX_RAD = math.rad(26)",
+            "solo one-way mouths can fall back to the paired 38-degree tangent")
+    require(source, "local SOLO_SECTOR_OVERLAP_SHARE = 0.3",
+            "width-fit solo mouths can leave the ring sidewalk across the road")
     require(
         source,
         "local TURBO_MARKING_LIFT_STUDS = RoadBuilder.MarkingLiftStuds + ROADBUILDER_MARKING_ALT_STUDS + MARKING_LAYER_GAP_STUDS",
@@ -65,6 +71,14 @@ def static_faults(source):
             "buildMouth does not distinguish shoulder-taper pavement ownership")
     require(mouth, "then SHOULDER_SECTOR_INSET_RAD else SECTOR_INSET_RAD",
             "paired highway mouths still use the ordinary pavement opening")
+    require(mouth, "math.abs(sweep) * SOLO_SECTOR_OVERLAP_SHARE",
+            "solo sidewalk ownership does not scale with its fitted merge sweep")
+
+    splits = function_scope(source, "local function resolveSplits(")
+    require(splits, "local fitAngle = math.asin",
+            "solo one-way merge deflection is not fitted to actual arm width")
+    require(splits, "return soloSplit, soloSplit",
+            "solo one-way entry/exit rays still use paired-mouth split logic")
 
     turbo = function_scope(source, "local function buildTurboMarkings(")
     require(turbo, "local y = center.Y + TURBO_MARKING_LIFT_STUDS",
@@ -79,6 +93,7 @@ def geometry_faults(name):
     faults += rp.check_outboard_edge_handoffs(scene)
     faults += rp.check_visual_ownership(scene)
     faults += rp.check_ring_openings(scene)
+    faults += rp.check_solo_merges(scene)
     records = [record for record in scene["arm_marking_bounds"]
                if record["crossing"] is not None]
     if not records:

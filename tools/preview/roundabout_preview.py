@@ -36,6 +36,8 @@ from raster import Canvas
 # --- RoundaboutBuilder constants ---------------------------------------------
 SPLIT_ANGLE_RAD = math.radians(38)
 MIN_SPLIT_RAD = math.radians(14)
+SOLO_SPLIT_CLEARANCE_RAD = math.radians(3)
+SOLO_SPLIT_MAX_RAD = math.radians(26)
 MIN_KERB_GAP_RAD = math.radians(8)
 SECTOR_MARGIN_RAD = math.radians(3)
 MAX_SECTOR_HALF_RAD = math.radians(60)
@@ -50,8 +52,11 @@ SECTOR_INSET_RAD = math.radians(3)
 SHOULDER_SECTOR_INSET_RAD = math.radians(8)
 # A single tangent arm has no splitter/apron blanket under its pavement edge.
 # Keep a little more ring sidewalk than paired mouths so rigid arm quads overlap
-# the ownership ray instead of exposing one-sample outer-band spikes.
+# the ownership ray instead of exposing one-sample outer-band spikes. Width-fit
+# solo flares can be narrower than twice seven degrees, so the actual inset is
+# capped to a share of their measured sweep below.
 SOLO_SECTOR_INSET_RAD = math.radians(7)
+SOLO_SECTOR_OVERLAP_SHARE = 0.3
 ARM_HANDLE = 0.30
 ENTRY_SPLIT_SCALE = 0.8
 GORE_SAMPLES = 18
@@ -851,6 +856,18 @@ def band_exit_angle(curve, arm, from_station, away, center, outer_radius, flow):
     return math.atan2(point[1] - center[1], point[0] - center[0])
 
 
+def solo_split_angle(arm, split_budget):
+    """Fit a lone one-way merge to its width instead of the paired 38° fan."""
+    half_width = (arm["outer"] + arm["inner"]) / 2
+    ratio = max(0.0, min(0.95, half_width / max(arm["merge"], 1.0)))
+    fit = math.asin(ratio)
+    budget_cap = min(
+        SOLO_SPLIT_MAX_RAD,
+        max(MIN_SPLIT_RAD, split_budget - SECTOR_MARGIN_RAD),
+    )
+    return max(MIN_SPLIT_RAD, min(budget_cap, fit + SOLO_SPLIT_CLEARANCE_RAD))
+
+
 def turbo_spiral(center, ring_r, island_r, lanes, lane_m, drive_on_left, exits):
     """Port of RoundaboutBuilder.buildTurboMarkings.
 
@@ -1282,6 +1299,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     arm_marking_bounds = []   # exact per-offset ring ownership cuts
     arm_kinds = []            # source group vs built arm, for check_arm_kinds
     shoulder_tapers = []      # emitted polygons, measured at cut and ring
+    solo_mouths = []          # source/merge rays for one-way flare diagnostics
     angles = [d for d, _ in legs]
     for deg, spoke_profile in legs:
         a = math.radians(deg)
@@ -1298,7 +1316,6 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
         cut = (math.cos(a)*cutR, math.sin(a)*cutR)
         inward = (-math.cos(a), -math.sin(a))
         r = right_of(inward)
-        ea, xa = a + flow*esplit, a - flow*split
         rt = lambda ang: (-math.sin(ang)*flow, math.cos(ang)*flow)
 
         def arm_curve(p0, t0, p1, t1):
@@ -1333,6 +1350,10 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                         cut_shoulders=cut_shoulders)
 
         entry_arm, exit_arm = make(inbound, True), make(outbound, False)
+        if solo:
+            solo_split = solo_split_angle(entry_arm or exit_arm, budget)
+            split = esplit = solo_split
+        ea, xa = a + flow*esplit, a - flow*split
         entry = exit_ = None
         if entry_arm:
             p0 = (cut[0]+r[0]*entry_arm["lat"], cut[1]+r[1]*entry_arm["lat"])
@@ -1388,6 +1409,21 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
             # dividers, and once it did, "nearest other marking" became a
             # measurement of the line the peel STARTS on.
             exit_markings.append([p for p in emitted if p.name == "Marking"])
+
+        if solo:
+            only = entry_arm or exit_arm
+            merge_angle = ea if entry_arm else xa
+            solo_mouths.append(dict(
+                source_angle=a,
+                merge_angle=merge_angle,
+                split=abs(angle_delta(a, merge_angle)),
+                budget=budget,
+                cut=cut,
+                merge=(math.cos(merge_angle) * only["merge"],
+                       math.sin(merge_angle) * only["merge"]),
+                arm=only,
+                role="entry" if entry_arm else "exit",
+            ))
 
         if entry and exit_:
             def gore_edge(curve, sst, arm):
@@ -1520,8 +1556,14 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 only_curve, only, st, away, center, outer_radius, flow)
             sweep = angle_delta(merge_angle, edge_angle)
             center_angle = edge_angle + sweep/2
-            pavement_half = max(0, abs(sweep)/2 - SOLO_SECTOR_INSET_RAD)
+            solo_inset = min(
+                SOLO_SECTOR_INSET_RAD,
+                abs(sweep) * SOLO_SECTOR_OVERLAP_SHARE,
+            )
+            pavement_half = max(0, abs(sweep)/2 - solo_inset)
             edge_half = abs(sweep)/2
+            solo_mouths[-1]["pavement_half"] = pavement_half
+            solo_mouths[-1]["opening_sweep"] = abs(sweep)
             pavement_sectors.append((center_angle, pavement_half, pavement_half))
             edge_marking_sectors.append((center_angle, edge_half, edge_half))
         else:
@@ -1611,6 +1653,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 arm_kinds=arm_kinds,
                 arm_marking_bounds=arm_marking_bounds,
                 shoulder_tapers=shoulder_tapers,
+                solo_mouths=solo_mouths,
                 outer_ring_parts=outer_ring_parts,
                 outer_ring_sidewalk=outer_ring_sidewalk,
                 outer_ring_markings=outer_ring_markings,
@@ -1646,6 +1689,26 @@ def render(scene, outdir):
             if scene.get("island", True):
                 cv.disc(cx, cy, scene["island_r"] * S, FLAT if flat else ISLAND_C)
         name = f"{scene['tag']}_{'gaps' if flat else 'parts'}.png"
+        cv.save(os.path.join(outdir, name))
+        written.append(name)
+    if scene.get("solo_mouths"):
+        cv = Canvas(SZ, SZ, (250, 250, 250))
+        cx, cy = tx(center)
+        for p in sorted(scene["parts"], key=lambda q: q.y):
+            cv.fill_poly([tx(v) for v in p.poly], p.color)
+        for t in scene["apron"]:
+            cv.fill_poly([tx(v) for v in t], ASPHALT_C)
+        for t in scene["gore"]:
+            cv.fill_poly([tx(v) for v in t], ISLAND_C)
+        if scene.get("island", True) and scene["island_r"] > 1:
+            cv.disc(cx, cy, scene["island_r"] * S, ISLAND_C)
+        for mouth in scene["solo_mouths"]:
+            # Cyan is the source roadway axis; orange is the fitted merge ray.
+            cv.line((cx, cy), tx(mouth["cut"]), (0, 185, 230), 3)
+            cv.line((cx, cy), tx(mouth["merge"]), (232, 126, 71), 3)
+            mx, my = tx(mouth["merge"])
+            cv.disc(mx, my, 5, (232, 126, 71))
+        name = f"{scene['tag']}_controls.png"
         cv.save(os.path.join(outdir, name))
         written.append(name)
     return written
@@ -1987,6 +2050,28 @@ def cluster_gaps(holes, pitch, hairline):
     return real, thin
 
 
+def check_solo_merges(scene, tolerance=1e-8):
+    """Solo arms must use the width-fit flare rather than a paired mouth ray."""
+    faults = []
+    for index, mouth in enumerate(scene.get("solo_mouths", []), 1):
+        expected = solo_split_angle(mouth["arm"], mouth["budget"])
+        if abs(mouth["split"] - expected) > tolerance:
+            faults.append(
+                f"mouth {index} split {math.degrees(mouth['split']):.2f}° "
+                f"!= width-fit {math.degrees(expected):.2f}°"
+            )
+        if mouth["split"] > SOLO_SPLIT_MAX_RAD + tolerance:
+            faults.append(
+                f"mouth {index} still uses a {math.degrees(mouth['split']):.2f}° "
+                "paired-style tangent"
+            )
+        if mouth.get("pavement_half", 0.0) <= tolerance:
+            faults.append(
+                f"mouth {index} ring-sidewalk opening collapsed across the one-way road"
+            )
+    return faults
+
+
 def report(scene, holes, pitch, hairline):
     """Clusters thinner than `hairline` studs are reported but not failed.
 
@@ -2036,6 +2121,17 @@ def report(scene, holes, pitch, hairline):
     for fault in check_outboard_edge_handoffs(scene):
         ok = False
         print(f"    EDGE HANDOFF: {fault}")
+    solo_faults = check_solo_merges(scene)
+    if solo_faults:
+        ok = False
+        for fault in solo_faults:
+            print(f"    SOLO FLARE: {fault}")
+    elif scene.get("solo_mouths"):
+        angles = [math.degrees(mouth["split"]) for mouth in scene["solo_mouths"]]
+        print(
+            f"    solo flare: {min(angles):.2f}..{max(angles):.2f} degrees "
+            f"(paired mouth {math.degrees(SPLIT_ANGLE_RAD):.0f} degrees)"
+        )
     shoulder_widths = [width
                        for taper in scene["shoulder_tapers"]
                        for width in shoulder_taper_widths(taper)]
@@ -2178,6 +2274,14 @@ def CASE_TABLE(dol_default=True):
             (90, one_way_highway(3, False, True)),
             (180, one_way_highway(2, True, True)),
             (270, one_way_highway(3, False, True)),
+        ]),
+        # Focused one-way mouth geometry: one narrow entry, one wide exit and
+        # one ordinary two-way leg. The controls render overlays the source
+        # axes (cyan) and fitted merge rays (orange).
+        "solo_flare": case(80, 2, True, [
+            (90, one_way_highway(1, True, True)),
+            (210, one_way_highway(3, False, True)),
+            (330, two_way(2, 2, True)),
         ]),
     }
 

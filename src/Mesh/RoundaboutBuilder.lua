@@ -1095,9 +1095,12 @@ local SECTOR_INSET_RAD = math.rad(3)
 local SHOULDER_SECTOR_INSET_RAD = math.rad(8)
 -- A solo tangent arm has no splitter-side sibling pavement to cover the outer
 -- corner of its opening. The component-level reference sweep needs seven
--- degrees of pavement overlap to close that small crescent; edge paint still
+-- degrees of pavement overlap on the old wide tangent. A width-fit solo flare
+-- can be narrower than twice that, so cap the overlap to a share of the actual
+-- sweep instead of allowing the opening to collapse to zero. Edge paint still
 -- uses the exact, uninset merge ray.
 local SOLO_SECTOR_INSET_RAD = math.rad(7)
+local SOLO_SECTOR_OVERLAP_SHARE = 0.3
 
 -- Shrink sectors until each leaves MIN_KERB_GAP_RAD of kerb to its angular
 -- neighbours. Each sector may claim at most half of the gap on either side
@@ -1363,6 +1366,14 @@ end
 -- nothing extra for the arms' own width.
 local SPLIT_ANGLE_RAD = math.rad(38)
 local MIN_SPLIT_RAD = math.rad(14)
+-- A lone one-way arm has no sibling carriageway or splitter island to justify
+-- the paired mouth's full 38-degree fan. Driving it to that same ray makes the
+-- approach orbit the ring before it joins, which reads as a pasted-on slip
+-- road and leaves a bulbous kerb return. Fit the solo deflection to the arm's
+-- actual half-width at the merge circle, with a small clearance and a hard cap
+-- comfortably below the paired layout.
+local SOLO_SPLIT_CLEARANCE_RAD = math.rad(3)
+local SOLO_SPLIT_MAX_RAD = math.rad(26)
 -- Kerb reserved beyond a mouth's own split when budgeting against neighbouring
 -- legs. Distinct from SECTOR_INSET_RAD, which trims the PAVEMENT OPENING back
 -- inside the arms; this one just keeps two mouths from growing into each other.
@@ -2779,6 +2790,15 @@ local function resolveSplits(
 	flow: number,
 	settings: Settings.EasyRoadSettings
 ): (number, number, number, number)
+	local solo = (plan.Entry == nil) ~= (plan.Exit == nil)
+	if solo then
+		local arm = (plan.Entry or plan.Exit) :: MouthArm
+		local halfWidth = (arm.Profile.OuterOffsetStuds + arm.Profile.InnerOffsetStuds) / 2
+		local fitAngle = math.asin(math.clamp(halfWidth / math.max(arm.MergeRadius, 1), 0, 0.95))
+		local budgetCap = math.min(SOLO_SPLIT_MAX_RAD, math.max(MIN_SPLIT_RAD, splitBudgetRad - SECTOR_MARGIN_RAD))
+		local soloSplit = math.clamp(fitAngle + SOLO_SPLIT_CLEARANCE_RAD, MIN_SPLIT_RAD, budgetCap)
+		return soloSplit, soloSplit, plan.Angle + flow * soloSplit, plan.Angle - flow * soloSplit
+	end
 	local split =
 		math.clamp(SPLIT_ANGLE_RAD, MIN_SPLIT_RAD, math.max(MIN_SPLIT_RAD, splitBudgetRad - SECTOR_MARGIN_RAD))
 	local entrySplit = if settings.RoundaboutEntryCurve
@@ -2901,7 +2921,8 @@ local function buildMouth(
 			flow
 		)
 		local sweep = angleDelta(mergeAngle, edgeAngle)
-		local half = math.max(0, math.abs(sweep) / 2 - SOLO_SECTOR_INSET_RAD)
+		local soloInset = math.min(SOLO_SECTOR_INSET_RAD, math.abs(sweep) * SOLO_SECTOR_OVERLAP_SHARE)
+		local half = math.max(0, math.abs(sweep) / 2 - soloInset)
 		local edgeHalf = math.max(0, math.abs(sweep) / 2)
 		local soloTrace: ExitTrace? = if exit and exitCurve
 			then { Curve = exitCurve :: PolyCurve.PolyCurve, Arm = exit.Profile }

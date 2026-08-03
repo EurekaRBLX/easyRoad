@@ -1064,11 +1064,19 @@ return function(
 				CornerCount = junctionEditSession.GetCornerCount(),
 				FilletRadiusM = junctionEditSession.GetFilletRadiusM(),
 				PadMarginStuds = junctionEditSession.GetPadMarginStuds(),
+				ApproachSetbacks = junctionEditSession.GetApproachSetbacks(),
 				LinkedCornerRadii = junctionEditSession.GetLinkedCornerRadii(),
 				SelectedCornerLabel = junctionEditSession.GetSelectedCornerLabel(),
 				SelectedCornerRadiusM = junctionEditSession.GetSelectedCornerRadiusM(),
 				OnFilletRadiusChanged = junctionEditSession.SetFilletRadiusM,
 				OnPadMarginChanged = junctionEditSession.SetPadMarginStuds,
+				OnApproachSetbackChanged = function(approachId: string, value: number?)
+					if value == nil then
+						junctionEditSession.ResetApproachSetbackStuds(approachId)
+					else
+						junctionEditSession.SetApproachSetbackStuds(approachId, value)
+					end
+				end,
 				OnLinkedCornerRadiiChanged = junctionEditSession.SetLinkedCornerRadii,
 				OnSelectedCornerRadiusChanged = junctionEditSession.SetSelectedCornerRadiusM,
 				OnRebuild = junctionEditSession.RebuildSelected,

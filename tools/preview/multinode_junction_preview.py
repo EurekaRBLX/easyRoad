@@ -17,6 +17,7 @@ pad triangulation, sidewalk corner bands, and median noses.
     python3 tools/preview/multinode_junction_preview.py --check
     python3 tools/preview/multinode_junction_preview.py uk6x4 --out out
     python3 tools/preview/multinode_junction_preview.py uk6x4 --radius "A1>A2=18"
+    python3 tools/preview/multinode_junction_preview.py uk6x4 --setback "A1=18"
 """
 import argparse
 import math
@@ -79,6 +80,7 @@ FONT = {
     "9": ("111", "101", "111", "001", "111"),
     "A": ("010", "101", "111", "101", "101"),
     "M": ("10001", "11011", "10101", "10101", "10101"),
+    "S": ("111", "100", "111", "001", "111"),
     ">": ("100", "010", "001", "010", "100"),
     ".": ("0", "0", "0", "0", "1"),
     " ": ("0", "0", "0", "0", "0"),
@@ -99,8 +101,14 @@ def uk_two_way(lanes_each_way, median=True):
     return [("Sidewalk", SW_M, 0)] + left + middle + right + [("Sidewalk", SW_M, 0)]
 
 
-def case(approaches, radii=None):
-    return {"approaches": approaches, "radii": radii or {}}
+def case(approaches, radii=None, setbacks=None):
+    return {
+        "approaches": approaches,
+        "radii": radii or {},
+        # Values are the same margin, in studs, as the ordinary junction's
+        # global Setback field. Missing approach ids inherit PAD_MARGIN_STUDS.
+        "setbacks": setbacks or {},
+    }
 
 
 SIX_LANE_BOULEVARD = uk_two_way(3)
@@ -118,6 +126,19 @@ CASES = {
     ),
     "uk4x4": case(
         [(f"A{i + 1}", angle, FOUR_LANE_AVENUE) for i, angle in enumerate((0, 90, 180, 270))]
+    ),
+    # Same real component profiles as uk6x4, with deliberately asymmetric
+    # per-port setback margins. A4 is omitted on purpose: it proves an
+    # un-overridden approach keeps the legacy six-stud global value.
+    "uk6x4_setback": case(
+        [
+            ("A1", 0, SIX_LANE_BOULEVARD),
+            ("A2", 90, FOUR_LANE_AVENUE),
+            ("A3", 180, SIX_LANE_BOULEVARD),
+            ("A4", 270, FOUR_LANE_AVENUE),
+        ],
+        {"A4>A1": 6.0, "A1>A2": 12.0, "A2>A3": 8.0, "A3>A4": 10.0},
+        {"A1": 18.0, "A2": 3.0, "A3": 10.0},
     ),
 }
 
@@ -217,13 +238,19 @@ def build_scene(tag, definition, order=None):
         specs = [by_id[approach_id] for approach_id in order]
 
     widest_half = max(component_extents(components)["total_m"] * SCALE / 2 for _, _, components in specs)
-    trim = widest_half + PAD_MARGIN_STUDS
+    # Preserve the original scalar for callers that only need the legacy
+    # all-approach extent. Individual mouths may now override the MARGIN while
+    # retaining the same widest-profile base used by the shipped builder.
+    default_trim = widest_half + PAD_MARGIN_STUDS
+    configured_setbacks = definition.get("setbacks", {})
     road_parts = []
     approaches = []
     mouths = []
     all_kerb_points = []
 
     for approach_id, bearing_deg, components in specs:
+        effective_setback = configured_setbacks.get(approach_id, PAD_MARGIN_STUDS)
+        trim = widest_half + effective_setback
         bearing = math.radians(bearing_deg)
         outward = math.cos(bearing), math.sin(bearing)
         cut = mul(outward, trim)
@@ -273,6 +300,9 @@ def build_scene(tag, definition, order=None):
             "OuterRight": right_point["Outer"],
             "Components": components,
             "Median": median,
+            "SetbackStuds": effective_setback,
+            "TrimStuds": trim,
+            "SetbackOverridden": approach_id in configured_setbacks,
         }
         approaches.append(approach)
         mouths.append({"Road": approach_id, "L": left["Kerb"], "R": right_point["Kerb"]})
@@ -361,7 +391,15 @@ def build_scene(tag, definition, order=None):
         "outline": outline,
         "triangles": triangles,
         "fill_path": fill_path,
-        "trim": trim,
+        # `trim` remains the legacy common value. New consumers should use the
+        # stable-id maps, which include inherited values as well as overrides.
+        "trim": default_trim,
+        "widest_half": widest_half,
+        "effective_setbacks": {
+            approach["Id"]: approach["SetbackStuds"] for approach in approaches
+        },
+        "trims": {approach["Id"]: approach["TrimStuds"] for approach in approaches},
+        "show_setback_controls": bool(configured_setbacks),
         "drive_on_left": True,
     }
 
@@ -415,6 +453,26 @@ def scene_problems(scene, definition):
     actual_radii = {corner["Id"]: corner["RadiusM"] for corner in scene["corners"]}
     if actual_radii != expected_radii:
         problems.append(f'{scene["tag"]}: corner radii did not resolve by stable id')
+    expected_setbacks = {
+        approach_id: definition.get("setbacks", {}).get(approach_id, PAD_MARGIN_STUDS)
+        for approach_id, _bearing, _components in definition["approaches"]
+    }
+    if scene["effective_setbacks"] != expected_setbacks:
+        problems.append(f'{scene["tag"]}: setbacks did not resolve by stable approach id')
+    expected_trims = {
+        approach_id: scene["widest_half"] + setback
+        for approach_id, setback in expected_setbacks.items()
+    }
+    if any(
+        abs(scene["trims"].get(approach_id, math.inf) - trim) > 1e-6
+        for approach_id, trim in expected_trims.items()
+    ):
+        problems.append(f'{scene["tag"]}: approach trim does not include its effective setback')
+    for approach in scene["approaches"]:
+        if abs(mag(approach["Mid"]) - approach["TrimStuds"]) > 1e-6:
+            problems.append(
+                f'{scene["tag"]}: {approach["Id"]} mouth is not at its recorded trim'
+            )
     if scan_mouth_seams(scene):
         problems.append(f'{scene["tag"]}: component-width mouth seam has uncovered samples')
     if scan_pad_fill(scene):
@@ -436,6 +494,10 @@ def checks():
         shuffled = build_scene(name + "_shuffled", definition, reversed_order)
         if [corner["Id"] for corner in scene["corners"]] != [corner["Id"] for corner in shuffled["corners"]]:
             problems.append(f"{name}: connected-road enumeration changed stable corner ids")
+        if scene["effective_setbacks"] != shuffled["effective_setbacks"]:
+            problems.append(f"{name}: connected-road enumeration changed stable setback ids")
+        if scene["trims"] != shuffled["trims"]:
+            problems.append(f"{name}: connected-road enumeration changed approach trims")
 
     six = CASES["uk6x4"]["approaches"]
     boulevard = next(components for approach_id, _, components in six if approach_id == "A1")
@@ -456,11 +518,44 @@ def checks():
     adjusted_radii = {corner["Id"]: corner["RadiusM"] for corner in adjusted_scene["corners"]}
     if adjusted_radii.get("A1>A2") != 18.5 or adjusted_radii.get("A3>A4") != 4:
         problems.append("uk6x4: CLI-style independent radius overrides did not reach geometry")
+
+    # A single advanced setback override must move only that stable approach
+    # mouth. Neighbouring corners and the pad necessarily reshape, but no other
+    # road is silently retrimmed just because A1 changed.
+    baseline_scene = build_scene("uk6x4_setback_baseline", CASES["uk6x4"])
+    setback_adjusted = apply_setback_overrides(CASES["uk6x4"], ["A1=18"])
+    setback_scene = build_scene("uk6x4_setback_adjusted", setback_adjusted)
+    baseline_mids = {approach["Id"]: approach["Mid"] for approach in baseline_scene["approaches"]}
+    adjusted_mids = {approach["Id"]: approach["Mid"] for approach in setback_scene["approaches"]}
+    if abs(mag(adjusted_mids["A1"]) - mag(baseline_mids["A1"]) - 12) > 1e-6:
+        problems.append("uk6x4: A1 setback override did not move A1 by twelve studs")
+    for approach_id in ("A2", "A3", "A4"):
+        if mag(sub(adjusted_mids[approach_id], baseline_mids[approach_id])) > 1e-6:
+            problems.append(f"uk6x4: A1 setback override also moved {approach_id}")
+    if setback_scene["effective_setbacks"] != {
+        "A1": 18.0,
+        "A2": PAD_MARGIN_STUDS,
+        "A3": PAD_MARGIN_STUDS,
+        "A4": PAD_MARGIN_STUDS,
+    }:
+        problems.append("uk6x4: omitted approach setbacks do not inherit the global value")
+
+    for invalid in ("A1", "A1=nan", "A1=inf", "A1=0.99", "A1=40.01", "A9=6"):
+        try:
+            apply_setback_overrides(CASES["uk6x4"], [invalid])
+        except ValueError:
+            pass
+        else:
+            problems.append(f"uk6x4: invalid setback override {invalid!r} was accepted")
     return problems
 
 
 def apply_radius_overrides(definition, overrides):
-    adjusted = {"approaches": definition["approaches"], "radii": dict(definition["radii"])}
+    adjusted = {
+        "approaches": definition["approaches"],
+        "radii": dict(definition["radii"]),
+        "setbacks": dict(definition.get("setbacks", {})),
+    }
     ordered = sorted(definition["approaches"], key=lambda approach: approach[1])
     valid = {
         f'{ordered[index][0]}>{ordered[(index + 1) % len(ordered)][0]}'
@@ -480,6 +575,31 @@ def apply_radius_overrides(definition, overrides):
         if not math.isfinite(radius) or not 0.5 <= radius <= 40:
             raise ValueError(f'{corner_id} radius must be from 0.5m to 40m')
         adjusted["radii"][corner_id] = radius
+    return adjusted
+
+
+def apply_setback_overrides(definition, overrides):
+    """Apply repeatable CLI overrides by stable approach/port identity."""
+    adjusted = {
+        "approaches": definition["approaches"],
+        "radii": dict(definition["radii"]),
+        "setbacks": dict(definition.get("setbacks", {})),
+    }
+    valid = {approach_id for approach_id, _bearing, _components in definition["approaches"]}
+    for override in overrides:
+        if "=" not in override:
+            raise ValueError(f'setback override {override!r} must be APPROACH=STUDS')
+        approach_id, raw_setback = override.rsplit("=", 1)
+        approach_id = approach_id.strip()
+        if approach_id not in valid:
+            raise ValueError(f'unknown approach {approach_id!r}; known: {" ".join(sorted(valid))}')
+        try:
+            setback = float(raw_setback)
+        except ValueError as error:
+            raise ValueError(f'invalid setback {raw_setback!r} for {approach_id}') from error
+        if not math.isfinite(setback) or not 1 <= setback <= 40:
+            raise ValueError(f'{approach_id} setback must be from 1 to 40 studs')
+        adjusted["setbacks"][approach_id] = setback
     return adjusted
 
 
@@ -532,6 +652,50 @@ def draw_corner_controls(canvas, scene, transform, selected_corner):
         draw_text(canvas, (left + 10, top + 6), label, foreground)
 
 
+def draw_setback_controls(canvas, scene, transform):
+    """Label each independently trimmed mouth by its stable approach id."""
+    if not scene.get("show_setback_controls"):
+        return
+    for approach in scene["approaches"]:
+        overridden = approach["SetbackOverridden"]
+        colour = SELECTED_C if overridden else CONTROL_C
+        mouth = [transform(approach["Cw"]["Kerb"]), transform(approach["Ccw"]["Kerb"])]
+        canvas.polyline(mouth, CONTROL_BG, 8 if overridden else 6)
+        canvas.polyline(mouth, colour, 5 if overridden else 3)
+
+        screen_mid = transform(approach["Mid"])
+        direction = approach["Out"]
+        anchor = screen_mid[0] + direction[0] * 32, screen_mid[1] + direction[1] * 32
+        canvas.line(screen_mid, anchor, CONTROL_BG, 7)
+        canvas.line(screen_mid, anchor, colour, 4)
+
+        label = f'{approach["Id"]} {approach["SetbackStuds"]:g}S'
+        text_width, text_height = text_size(label)
+        box_width, box_height = text_width + 18, text_height + 12
+        if abs(direction[0]) >= abs(direction[1]):
+            left = anchor[0] + 8 if direction[0] >= 0 else anchor[0] - box_width - 8
+            top = anchor[1] - box_height / 2
+        else:
+            left = anchor[0] - box_width / 2
+            top = anchor[1] + 8 if direction[1] >= 0 else anchor[1] - box_height - 8
+        left = min(max(4, left), canvas.w - box_width - 4)
+        top = min(max(4, top), canvas.h - box_height - 4)
+        background = colour if overridden else CONTROL_BG
+        foreground = CONTROL_BG if overridden else CONTROL_FG
+        canvas.fill_poly(
+            [(left, top), (left + box_width, top),
+             (left + box_width, top + box_height), (left, top + box_height)],
+            background,
+        )
+        if not overridden:
+            canvas.fill_poly(
+                [(left, top), (left + 5, top),
+                 (left + 5, top + box_height), (left, top + box_height)],
+                colour,
+            )
+        draw_text(canvas, (left + 10, top + 6), label, foreground)
+
+
 def render(scene, outdir, selected_corner=SELECTED_CORNER):
     """Roundabout-style material/gap views plus the radius-control showcase."""
     points = [vertex for part in scene["parts"] for vertex in part.poly]
@@ -554,6 +718,7 @@ def render(scene, outdir, selected_corner=SELECTED_CORNER):
     controls = Canvas(width, height, (250, 250, 250))
     paint_parts(controls, scene, transform)
     draw_corner_controls(controls, scene, transform, selected_corner)
+    draw_setback_controls(controls, scene, transform)
     controls_name = f'junction_{scene["tag"]}_controls.png'
     controls.save(os.path.join(outdir, controls_name))
     written.append(controls_name)
@@ -573,6 +738,13 @@ def main():
         help='override one corner for the render; repeatable, e.g. --radius "A1>A2=18"',
     )
     parser.add_argument(
+        "--setback",
+        action="append",
+        default=[],
+        metavar="APPROACH=STUDS",
+        help='override one approach setback; repeatable, e.g. --setback "A1=18"',
+    )
+    parser.add_argument(
         "--selected-corner",
         default=SELECTED_CORNER,
         help="corner id highlighted as selected in the controls render",
@@ -587,6 +759,7 @@ def main():
                 raise SystemExit(f'unknown case {name!r}; known: {" ".join(CASES)}')
             try:
                 definition = apply_radius_overrides(CASES[name], args.radius)
+                definition = apply_setback_overrides(definition, args.setback)
             except ValueError as error:
                 raise SystemExit(str(error)) from error
             scene = build_scene(name, definition)

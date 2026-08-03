@@ -17,6 +17,16 @@ local RoadInstance = require("./RoadInstance")
 local RegionStyles = require("./RegionStyles")
 local Settings = require("./Settings")
 
+export type ApproachSetbackRow = {
+	Id: string,
+	Label: string,
+	RoadName: string,
+	RoadEnd: "Start" | "End",
+	SetbackStuds: number,
+	IsOverride: boolean,
+	Selected: boolean,
+}
+
 export type JunctionEditSession = {
 	ChangeSignal: Signal.Signal<>,
 	GetSelectedJunction: () -> Model?,
@@ -24,12 +34,15 @@ export type JunctionEditSession = {
 	GetSelectedJunctionPosition: () -> Vector3?,
 	GetFilletRadiusM: () -> number,
 	GetPadMarginStuds: () -> number,
+	GetApproachSetbacks: () -> { ApproachSetbackRow },
 	GetCornerCount: () -> number,
 	GetLinkedCornerRadii: () -> boolean,
 	GetSelectedCornerLabel: () -> string?,
 	GetSelectedCornerRadiusM: () -> number?,
 	SetFilletRadiusM: (value: number) -> (),
 	SetPadMarginStuds: (value: number) -> (),
+	SetApproachSetbackStuds: (approachId: string, value: number) -> (),
+	ResetApproachSetbackStuds: (approachId: string) -> (),
 	SetLinkedCornerRadii: (linked: boolean) -> (),
 	SetSelectedCornerRadiusM: (value: number) -> (),
 	RebuildSelected: () -> (),
@@ -49,6 +62,7 @@ local function createJunctionEditSession(
 	local selectedJunction: Model? = nil
 	local handlesFolder: Folder? = nil
 	local selectedCornerId: string? = nil
+	local selectedApproachId: string? = nil
 	local draggingCenter = false
 	local dragPlaneY = 0
 	local connections: { RBXScriptConnection } = {}
@@ -106,6 +120,18 @@ local function createJunctionEditSession(
 				selectedCornerId = nil
 			end
 		end
+		if selectedApproachId then
+			local stillExists = false
+			for _, mouth in layout.Mouths do
+				if mouth.Id == selectedApproachId then
+					stillExists = true
+					break
+				end
+			end
+			if not stillExists then
+				selectedApproachId = nil
+			end
+		end
 
 		local folder = Instance.new("Folder")
 		folder.Name = HANDLES_FOLDER_NAME
@@ -128,7 +154,11 @@ local function createJunctionEditSession(
 			local mid = (left + right) * 0.5
 			local len = (right - left).Magnitude
 			if len > 0.1 then
-				local bar = makeHandlePart(MOUTH_PREFIX .. i, Vector3.new(0.25, 0.25, len), Color3.fromRGB(255, 70, 70))
+				local selected = mouth.Id == selectedApproachId
+				local mouthColor = if selected then Color3.fromRGB(255, 165, 55) else Color3.fromRGB(255, 70, 70)
+				local bar = makeHandlePart(MOUTH_PREFIX .. i, Vector3.new(0.25, 0.25, len), mouthColor)
+				bar:SetAttribute("RW_ApproachId", mouth.Id)
+				bar:SetAttribute("RW_ApproachLabel", "A" .. i)
 				bar.CFrame = CFrame.lookAt(mid + Vector3.new(0, 0.4, 0), right + Vector3.new(0, 0.4, 0))
 				bar.Parent = folder
 				local dotL = makeHandlePart(
@@ -138,6 +168,8 @@ local function createJunctionEditSession(
 					Enum.PartType.Ball
 				)
 				dotL.CFrame = CFrame.new(left + Vector3.new(0, 0.5, 0))
+				dotL:SetAttribute("RW_ApproachId", mouth.Id)
+				dotL:SetAttribute("RW_ApproachLabel", "A" .. i)
 				dotL.Parent = folder
 				local dotR = makeHandlePart(
 					MOUTH_PREFIX .. i .. "_R",
@@ -146,6 +178,8 @@ local function createJunctionEditSession(
 					Enum.PartType.Ball
 				)
 				dotR.CFrame = CFrame.new(right + Vector3.new(0, 0.5, 0))
+				dotR:SetAttribute("RW_ApproachId", mouth.Id)
+				dotR:SetAttribute("RW_ApproachLabel", "A" .. i)
 				dotR.Parent = folder
 			end
 		end
@@ -177,7 +211,7 @@ local function createJunctionEditSession(
 		changeSignal:Fire()
 	end
 
-	local function loadSelection()
+	local function loadSelection(forceRefresh: boolean?)
 		local junction: Model? = nil
 		for _, instance in Selection:Get() do
 			local current: Instance? = instance
@@ -207,11 +241,15 @@ local function createJunctionEditSession(
 				break
 			end
 		end
-		if junction == selectedJunction then
+		local changedJunction = junction ~= selectedJunction
+		if not changedJunction and not forceRefresh then
 			return
 		end
 		selectedJunction = junction
-		selectedCornerId = nil
+		if changedJunction then
+			selectedCornerId = nil
+			selectedApproachId = nil
+		end
 		refreshHandles()
 		changeSignal:Fire()
 	end
@@ -254,7 +292,9 @@ local function createJunctionEditSession(
 	-- Roundabout without changing Studio selection. Re-read its kind after the
 	-- history operation so ordinary corner handles never remain on a ring.
 	local function refreshAfterHistory()
-		task.defer(loadSelection)
+		task.defer(function()
+			loadSelection(true)
+		end)
 	end
 	table.insert(connections, ChangeHistoryService.OnUndo:Connect(refreshAfterHistory))
 	table.insert(connections, ChangeHistoryService.OnRedo:Connect(refreshAfterHistory))
@@ -277,8 +317,17 @@ local function createJunctionEditSession(
 					local cornerId = handle:GetAttribute("RW_CornerId")
 					if typeof(cornerId) == "string" then
 						selectedCornerId = cornerId
+						selectedApproachId = nil
 						refreshHandles()
 						changeSignal:Fire()
+					else
+						local approachId = handle:GetAttribute("RW_ApproachId")
+						if typeof(approachId) == "string" then
+							selectedApproachId = approachId
+							selectedCornerId = nil
+							refreshHandles()
+							changeSignal:Fire()
+						end
 					end
 				end
 			end
@@ -360,6 +409,38 @@ local function createJunctionEditSession(
 		return if data and data.PadMarginStuds then data.PadMarginStuds else 6
 	end
 
+	function session.GetApproachSetbacks(): { ApproachSetbackRow }
+		if not selectedJunction then
+			return {}
+		end
+		local data = JunctionInstance.Read(selectedJunction)
+		local layout = if data then JunctionBuilder.GetLayout(data.Id, settings) else nil
+		if not data or not layout then
+			return {}
+		end
+		local global = math.clamp(data.PadMarginStuds or 6, 1, 40)
+		local rows: { ApproachSetbackRow } = {}
+		for index, mouth in layout.Mouths do
+			local roadData = RoadInstance.Read(mouth.Road)
+			local atStart = roadData and roadData.StartJunctionId == data.Id and roadData.StartPortId == mouth.Id
+			local roadEnd: "Start" | "End" = if atStart then "Start" else "End"
+			local profile = if roadData
+				then if atStart then roadData.ProfileStart else (roadData.ProfileEnd or roadData.ProfileStart)
+				else nil
+			local override = data.ApproachSetbacksStuds[mouth.Id]
+			table.insert(rows, {
+				Id = mouth.Id,
+				Label = string.format("A%d - %s", index, if profile then profile.Name else mouth.Road.Name),
+				RoadName = mouth.Road.Name,
+				RoadEnd = roadEnd,
+				SetbackStuds = math.clamp(override or global, 1, 40),
+				IsOverride = override ~= nil,
+				Selected = selectedApproachId == mouth.Id,
+			})
+		end
+		return rows
+	end
+
 	local function selectedLayout(): JunctionBuilder.JunctionLayout?
 		if not selectedJunction then
 			return nil
@@ -429,6 +510,42 @@ local function createJunctionEditSession(
 		if recording then
 			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
 		end
+	end
+
+	local function editApproachSetback(approachId: string, value: number?)
+		if not selectedJunction then
+			return
+		end
+		local layout = selectedLayout()
+		local connected = false
+		if layout then
+			for _, mouth in layout.Mouths do
+				if mouth.Id == approachId then
+					connected = true
+					break
+				end
+			end
+		end
+		if not connected then
+			return
+		end
+		selectedApproachId = approachId
+		selectedCornerId = nil
+		local label = if value == nil then "Reset junction approach setback" else "Junction approach setback"
+		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", label)
+		JunctionInstance.SetApproachSetbackStuds(selectedJunction, approachId, value)
+		rebuildSelected()
+		if recording then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		end
+	end
+
+	function session.SetApproachSetbackStuds(approachId: string, value: number)
+		editApproachSetback(approachId, math.clamp(value, 1, 40))
+	end
+
+	function session.ResetApproachSetbackStuds(approachId: string)
+		editApproachSetback(approachId, nil)
 	end
 
 	function session.SetLinkedCornerRadii(linked: boolean)

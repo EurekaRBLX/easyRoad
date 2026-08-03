@@ -38,6 +38,11 @@ export type JunctionData = {
 	RoundaboutSidewalk: boolean?,
 	RoundaboutIsland: boolean?,
 	PadMarginStuds: number?,
+	-- Optional per-approach replacements for PadMarginStuds, keyed by the
+	-- connected road ENDPOINT'S stable port id.  The junction still derives
+	-- its approach list from roads; this map stores editing intent only.  A
+	-- missing entry follows PadMarginStuds (or the builder default).
+	ApproachSetbacksStuds: { [string]: number },
 	-- Multinode v2 controller. Approaches are derived from connected roads;
 	-- only editing intent lives here, avoiding a second topology list that can
 	-- desynchronise. Legacy junctions read as linked with no overrides.
@@ -167,6 +172,19 @@ function JunctionInstance.Read(model: Model): JunctionData?
 	local ringWalk = model:GetAttribute("RW_RoundaboutSidewalk")
 	local ringIsland = model:GetAttribute("RW_RoundaboutIsland")
 	local linked = model:GetAttribute("RW_LinkedCornerRadii")
+	local approachSetbacks: { [string]: number } = {}
+	local rawApproachSetbacks = model:GetAttribute("RW_ApproachSetbacksJson")
+	if typeof(rawApproachSetbacks) == "string" then
+		local ok, decoded = pcall(HttpService.JSONDecode, HttpService, rawApproachSetbacks)
+		if ok and typeof(decoded) == "table" then
+			for approachId, setback in decoded do
+				local validSetback = finiteNumber(setback)
+				if typeof(approachId) == "string" and approachId ~= "" and validSetback then
+					approachSetbacks[approachId] = math.clamp(validSetback, 1, 40)
+				end
+			end
+		end
+	end
 	local cornerRadii: { [string]: number } = {}
 	local rawCornerRadii = model:GetAttribute("RW_CornerRadiiJson")
 	if typeof(rawCornerRadii) == "string" then
@@ -189,6 +207,7 @@ function JunctionInstance.Read(model: Model): JunctionData?
 		RoundaboutLaneWidthM = positiveNumber(roundaboutLaneWidth),
 		FilletRadiusM = finiteNumber(fillet),
 		PadMarginStuds = finiteNumber(margin),
+		ApproachSetbacksStuds = approachSetbacks,
 		RoundaboutMarkings = if typeof(markings) == "string" and table.find(ROUNDABOUT_MARKING_STYLES, markings)
 			then markings
 			else nil,
@@ -240,6 +259,25 @@ end
 
 function JunctionInstance.SetPadMarginStuds(model: Model, marginStuds: number?)
 	model:SetAttribute("RW_PadMarginStuds", marginStuds)
+end
+
+-- Stores one approach's setback independently of the derived topology list.
+-- Do not prune disconnected ids here: keeping the stable port key lets
+-- undo/reconnect and roundabout -> junction restoration recover the user's
+-- exact editing intent. nil explicitly returns this approach to the global
+-- PadMarginStuds value.
+function JunctionInstance.SetApproachSetbackStuds(model: Model, approachId: string, setbackStuds: number?)
+	assert(approachId ~= "", "approach id must not be empty")
+	local data = JunctionInstance.Read(model)
+	local setbacks = if data then table.clone(data.ApproachSetbacksStuds) else {}
+	if setbackStuds == nil then
+		setbacks[approachId] = nil
+	else
+		local validSetback = finiteNumber(setbackStuds)
+		assert(validSetback ~= nil, "approach setback must be a finite number")
+		setbacks[approachId] = math.clamp(validSetback :: number, 1, 40)
+	end
+	model:SetAttribute("RW_ApproachSetbacksJson", if next(setbacks) then HttpService:JSONEncode(setbacks) else nil)
 end
 
 function JunctionInstance.SetLinkedCornerRadii(model: Model, linked: boolean)
