@@ -31,6 +31,8 @@ MAX_MODULES = 2000
 MAX_PROCEDURAL_PARTS = 6000
 TUNNEL_ARCH_SEGMENTS = 9
 STRUCTURE_SURFACE_CLEARANCE_STUDS = 0.08
+PROCEDURAL_AXIAL_OVERLAP_STUDS = 0.16
+STRUCTURE_EDGE_CLEARANCE_STUDS = 0.08
 
 BASE_FINISH = (101, 126, 153)
 VIADUCT_WALL_FINISH = (178, 145, 99)
@@ -193,22 +195,25 @@ def safe_interface_overlap(requested_m, scale, road_thickness, base_thickness):
 
 def viaduct_section(road_width, scale=3.571, road_thickness=1.0,
                     interface_overlap_m=0.2, parapet_gap_m=0.0):
-    """Port of the thin base and downward-extended parapet/fascia."""
+    """Port of the visibly exposed deck and downward parapet/fascia."""
     edge_allowance = 0.45*scale
-    base_thickness = central_base_thickness(scale)
+    exposed_base_depth = central_base_thickness(scale)
     fascia_depth = max(0.55*scale, 1.5)
     barrier_thickness = max(0.35*scale, 0.8)
     barrier_height = max(1.2*scale, 2.5)
-    barrier_center = road_width/2 + parapet_gap_m*scale + barrier_thickness/2
+    barrier_center = (road_width/2 + parapet_gap_m*scale
+                      + STRUCTURE_EDGE_CLEARANCE_STUDS + barrier_thickness/2)
     deck_half = max(road_width/2+edge_allowance, barrier_center+barrier_thickness/2)
     interface_overlap = safe_interface_overlap(
-        interface_overlap_m, scale, road_thickness, base_thickness)
+        interface_overlap_m, scale, road_thickness, exposed_base_depth)
+    base_thickness = exposed_base_depth+interface_overlap
     base_top = -road_thickness+interface_overlap
     return {
         "deck_width": deck_half*2,
         "slab_bottom": base_top-base_thickness,
         "slab_top": base_top,
         "base_thickness": base_thickness,
+        "exposed_base_depth": exposed_base_depth,
         "fascia_depth": fascia_depth,
         "fascia_bottom": base_top-fascia_depth,
         "barrier_thickness": barrier_thickness,
@@ -271,6 +276,53 @@ def tunnel_section(road_width, scale=3.571, road_thickness=1.0,
     }
 
 
+def curved_edge_rectangle(centerline_radius, road_half_width, clearance,
+                          thickness, segment_arc, side):
+    """Plan footprint of one viaduct parapet using its own offset chord.
+
+    ``side`` is -1 for the inside of the bend and +1 for the outside. This is
+    the geometry contract for StructureBuilder.offsetSegmentFrame, distinct
+    from the retired centreline box with a curvature-expanded depth.
+    """
+    wall_radius = centerline_radius+side*(road_half_width+clearance+thickness/2)
+    delta = segment_arc/centerline_radius
+    q0 = (wall_radius*math.cos(-delta/2), wall_radius*math.sin(-delta/2))
+    q1 = (wall_radius*math.cos(delta/2), wall_radius*math.sin(delta/2))
+    midpoint = ((q0[0]+q1[0])/2, (q0[1]+q1[1])/2)
+    tangent = (q1[0]-q0[0], q1[1]-q0[1])
+    tangent_length = math.hypot(*tangent)
+    tangent = (tangent[0]/tangent_length, tangent[1]/tangent_length)
+    radial = (tangent[1], -tangent[0])
+    if radial[0] < 0:
+        radial = (-radial[0], -radial[1])
+    half_depth = (tangent_length+PROCEDURAL_AXIAL_OVERLAP_STUDS)/2
+    return [
+        (midpoint[0]+tangent[0]*along+radial[0]*across,
+         midpoint[1]+tangent[1]*along+radial[1]*across)
+        for along, across in ((-half_depth, -thickness/2),
+                              (-half_depth, thickness/2),
+                              (half_depth, thickness/2),
+                              (half_depth, -thickness/2))
+    ]
+
+
+def curved_viaduct_errors(centerline_radius=20.0, road_half_width=8.0,
+                          clearance=STRUCTURE_EDGE_CLEARANCE_STUDS,
+                          thickness=1.25, segment_arc=8.0):
+    errors = []
+    inner = curved_edge_rectangle(centerline_radius, road_half_width, clearance,
+                                  thickness, segment_arc, -1)
+    outer = curved_edge_rectangle(centerline_radius, road_half_width, clearance,
+                                  thickness, segment_arc, 1)
+    road_inner = centerline_radius-road_half_width
+    road_outer = centerline_radius+road_half_width
+    if max(math.hypot(*point) for point in inner) >= road_inner-1e-6:
+        errors.append("inside viaduct parapet clips the curved road envelope")
+    if min(math.hypot(*point) for point in outer) <= road_outer+1e-6:
+        errors.append("outside viaduct parapet clips the curved road envelope")
+    return errors
+
+
 def procedural_errors():
     errors = []
     road_width = 86.0
@@ -281,12 +333,15 @@ def procedural_errors():
         errors.append("invalid viaduct cross-section")
     if viaduct["slab_top"] > -STRUCTURE_SURFACE_CLEARANCE_STUDS+1e-9:
         errors.append("viaduct base can cover the road surface")
+    if viaduct["slab_bottom"] > -1.0-viaduct["exposed_base_depth"]+1e-9:
+        errors.append("viaduct slab is buried inside the road body")
     if viaduct["base_thickness"] >= viaduct["fascia_depth"]:
         errors.append("viaduct central base was not shortened")
     if viaduct["barrier_bottom"] >= viaduct["slab_bottom"]:
         errors.append("viaduct walls do not compensate below the shortened base")
-    if abs(viaduct["barrier_inner"]-road_width/2) > 1e-9:
-        errors.append("default viaduct parapet leaves an edge gap")
+    if abs(viaduct["barrier_inner"]-(road_width/2+STRUCTURE_EDGE_CLEARANCE_STUDS)) > 1e-9:
+        errors.append("default viaduct parapet lacks the structural edge clearance")
+    errors.extend(curved_viaduct_errors())
     twin = twin_support_section()
     left, right = twin["pillar_centres"]
     if abs((right-left)-twin["separation"]) > 1e-9:
@@ -331,6 +386,8 @@ def validate_parity():
         "MAX_PROCEDURAL_PARTS": MAX_PROCEDURAL_PARTS,
         "TUNNEL_ARCH_SEGMENTS": TUNNEL_ARCH_SEGMENTS,
         "STRUCTURE_SURFACE_CLEARANCE_STUDS": STRUCTURE_SURFACE_CLEARANCE_STUDS,
+        "PROCEDURAL_AXIAL_OVERLAP_STUDS": PROCEDURAL_AXIAL_OVERLAP_STUDS,
+        "STRUCTURE_EDGE_CLEARANCE_STUDS": STRUCTURE_EDGE_CLEARANCE_STUDS,
         "ARC_SAMPLES": ARC_SAMPLES,
     }
     sources = {
@@ -339,6 +396,8 @@ def validate_parity():
         "MAX_PROCEDURAL_PARTS": builder,
         "TUNNEL_ARCH_SEGMENTS": builder,
         "STRUCTURE_SURFACE_CLEARANCE_STUDS": builder,
+        "PROCEDURAL_AXIAL_OVERLAP_STUDS": builder,
+        "STRUCTURE_EDGE_CLEARANCE_STUDS": builder,
         "ARC_SAMPLES": curve_source,
     }
     for name, value in expected.items():
@@ -398,6 +457,44 @@ def render(path):
         x, y = map_plan(top, 20)
         canvas.disc(x, y, 5, (244, 196, 74))
 
+    # Tight curved viaduct plan inset. These are the actual offset-chord
+    # parapet rectangles used by the clearance regression, not decorative
+    # centreline strokes: neither parapet may enter the dark road annulus.
+    inset_center = (1050, 135)
+    inset_scale = 3.0
+    inset_radius = 20.0
+    inset_road_half = 8.0
+    inset_clearance = STRUCTURE_EDGE_CLEARANCE_STUDS
+    inset_thickness = 1.25
+    inset_angles = [(-1.0+2.0*i/60) for i in range(61)]
+
+    def inset_point(radius, angle):
+        return (inset_center[0]+math.cos(angle)*radius*inset_scale,
+                inset_center[1]+math.sin(angle)*radius*inset_scale)
+
+    road_band = [inset_point(inset_radius+inset_road_half, angle)
+                 for angle in inset_angles]
+    road_band += [inset_point(inset_radius-inset_road_half, angle)
+                  for angle in reversed(inset_angles)]
+    canvas.fill_poly(road_band, (48, 53, 60))
+
+    def rotate_point(point, angle):
+        x, y = point
+        return (x*math.cos(angle)-y*math.sin(angle),
+                x*math.sin(angle)+y*math.cos(angle))
+
+    for angle in (-0.8, -0.4, 0.0, 0.4, 0.8):
+        for side in (-1, 1):
+            rectangle = curved_edge_rectangle(
+                inset_radius, inset_road_half, inset_clearance,
+                inset_thickness, 8.0, side)
+            transformed = []
+            for point in rectangle:
+                x, y = rotate_point(point, angle)
+                transformed.append((inset_center[0]+x*inset_scale,
+                                    inset_center[1]+y*inset_scale))
+            canvas.fill_poly(transformed, VIADUCT_WALL_FINISH)
+
     # Procedural viaduct side elevation: structural slab/parapet over columns.
     def side(station, elevation):
         return 75+station*4.1, 470-elevation*5.0
@@ -435,21 +532,29 @@ def render(path):
     viaduct_cross = viaduct_section(86.0)
     twin_center_x = 285
     support_scale = 4.0
-    deck_y = 555
+    slab_top_y = 555
     road_half_px = 86.0*support_scale/2
     deck_half_px = viaduct_cross["deck_width"]*support_scale/2
     base_height_px = viaduct_cross["base_thickness"]*support_scale
+    road_surface_y = slab_top_y+viaduct_cross["slab_top"]*support_scale
+    road_bottom_y = road_surface_y+1.0*support_scale
     canvas.fill_poly([
-        (twin_center_x-deck_half_px, deck_y),
-        (twin_center_x+deck_half_px, deck_y),
-        (twin_center_x+deck_half_px, deck_y+base_height_px),
-        (twin_center_x-deck_half_px, deck_y+base_height_px),
+        (twin_center_x-deck_half_px, slab_top_y),
+        (twin_center_x+deck_half_px, slab_top_y),
+        (twin_center_x+deck_half_px, slab_top_y+base_height_px),
+        (twin_center_x-deck_half_px, slab_top_y+base_height_px),
     ], BASE_FINISH)
+    canvas.fill_poly([
+        (twin_center_x-road_half_px, road_surface_y),
+        (twin_center_x+road_half_px, road_surface_y),
+        (twin_center_x+road_half_px, road_bottom_y),
+        (twin_center_x-road_half_px, road_bottom_y),
+    ], (48, 53, 60))
     barrier_width_px = viaduct_cross["barrier_thickness"]*support_scale
-    barrier_top_y = deck_y-viaduct_cross["barrier_height"]*support_scale
-    barrier_bottom_y = deck_y-viaduct_cross["barrier_bottom"]*support_scale
+    barrier_top_y = road_surface_y-viaduct_cross["barrier_height"]*support_scale
+    barrier_bottom_y = road_surface_y-viaduct_cross["barrier_bottom"]*support_scale
     for sign in (-1, 1):
-        inner_x = twin_center_x+sign*road_half_px
+        inner_x = twin_center_x+sign*(road_half_px+STRUCTURE_EDGE_CLEARANCE_STUDS*support_scale)
         x0 = inner_x-barrier_width_px if sign < 0 else inner_x
         canvas.fill_poly([
             (x0, barrier_top_y), (x0+barrier_width_px, barrier_top_y),
@@ -457,7 +562,7 @@ def render(path):
         ], VIADUCT_WALL_FINISH)
     cap_width_px = twin["cap_width"]*support_scale
     cap_height_px = twin["cap_height"]*support_scale
-    cap_top = deck_y+base_height_px
+    cap_top = slab_top_y+base_height_px
     canvas.fill_poly([
         (twin_center_x-cap_width_px/2, cap_top),
         (twin_center_x+cap_width_px/2, cap_top),

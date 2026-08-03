@@ -21,11 +21,35 @@ def main():
     if not any("does not terminate" in error for error in errors):
         failures.append("floating pier was not detected")
 
+    # Recreate the shipped defect: interface overlap consumed effectively the
+    # whole deck, leaving no structural slab visible below the road body.
+    real_viaduct_section = preview.viaduct_section
+
+    def buried_viaduct(*args, **kwargs):
+        section = real_viaduct_section(*args, **kwargs)
+        section["slab_bottom"] = -1.0 + 0.01
+        return section
+
+    preview.viaduct_section = buried_viaduct
+    try:
+        errors = preview.procedural_errors()
+    finally:
+        preview.viaduct_section = real_viaduct_section
+    if not any("buried inside" in error for error in errors):
+        failures.append("buried viaduct deck was not detected")
+
+    errors = preview.curved_viaduct_errors(clearance=-0.5)
+    if not any("clips the curved road envelope" in error for error in errors):
+        failures.append("inward viaduct parapet was not detected")
+
     if failures:
         for failure in failures:
             print("FAILED:", failure)
         return 1
-    print("structure break-tests passed: missing tail and floating pier both detected")
+    print(
+        "structure break-tests passed: missing tail, floating pier, buried deck, "
+        "and inward parapet all detected"
+    )
     return 0
 
 

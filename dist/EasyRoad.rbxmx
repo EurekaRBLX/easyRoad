@@ -16677,6 +16677,8 @@ end
 -- silhouette belongs at the edges (viaduct fascia/parapets and tunnel walls),
 -- where extending downward cannot cover the road surface.
 local STRUCTURE_SURFACE_CLEARANCE_STUDS = 0.08
+local PROCEDURAL_AXIAL_OVERLAP_STUDS = 0.16
+local STRUCTURE_EDGE_CLEARANCE_STUDS = 0.08
 
 local function centralBaseThickness(scale: number): number
 	return math.max(0.2 * scale, 0.65)
@@ -16705,7 +16707,33 @@ local function proceduralDepth(curve: PolyCurve.PolyCurve, s0: number, s1: numbe
 	-- Match RoadBuilder's outside-edge coverage principle: a wide wall/deck
 	-- traces a longer arc than the centreline. Arc length also covers vertical
 	-- grades better than sizing from the shorter endpoint chord.
-	return nominalLength + halfWidth * curvature * nominalLength + 0.16
+	return nominalLength + halfWidth * curvature * nominalLength + PROCEDURAL_AXIAL_OVERLAP_STUDS
+end
+
+-- A parapet does not follow the centreline chord: on a bend its own lateral
+-- offset has a different chord and heading. Extending every parapet by the
+-- centreline's outside-edge allowance lets its inboard end swing across the
+-- road surface. Build each parapet between its own offset endpoints instead.
+-- The small overlap closes rectangular joints without a multi-stud overhang.
+local function offsetSegmentFrame(
+	curve: PolyCurve.PolyCurve,
+	s0: number,
+	s1: number,
+	lateralOffset: number,
+	verticalOffset: number
+): (CFrame, number)
+	local startFrame = curve:FrameAt(s0)
+	local endFrame = curve:FrameAt(s1)
+	local startPosition = curve:PosAt(s0)
+		+ startFrame.RightVector * lateralOffset
+		+ startFrame.UpVector * verticalOffset
+	local endPosition = curve:PosAt(s1) + endFrame.RightVector * lateralOffset + endFrame.UpVector * verticalOffset
+	local preferredUp = startFrame.UpVector + endFrame.UpVector
+	if preferredUp.Magnitude &lt; 1e-6 then
+		preferredUp = curve:FrameAt((s0 + s1) / 2).UpVector
+	end
+	local frame = safeLookAt((startPosition + endPosition) / 2, endPosition, preferredUp)
+	return frame, (endPosition - startPosition).Magnitude + PROCEDURAL_AXIAL_OVERLAP_STUDS
 end
 
 local function placePiers(
@@ -16728,9 +16756,13 @@ local function placePiers(
 	local capHeight = math.max(data.CapBeamHeightM * scale, 0.2)
 	local capDepth = math.max(data.CapBeamDepthM * scale, depth)
 	local capWidth = math.max(data.CapBeamWidthM * scale, separation + width)
-	local baseThickness = centralBaseThickness(scale)
+	local exposedBaseDepth = centralBaseThickness(scale)
 	local interfaceOverlap =
-		safeInterfaceOverlap(data.InterfaceOverlapM, scale, settings.RoadThicknessStuds, baseThickness)
+		safeInterfaceOverlap(data.InterfaceOverlapM, scale, settings.RoadThicknessStuds, exposedBaseDepth)
+	-- Interface overlap is additional embedment, not a subtraction from the
+	-- visible deck. Keeping it separate guarantees a real structural slab below
+	-- the asphalt even at the default 0.2 m overlap.
+	local baseThickness = exposedBaseDepth + interfaceOverlap
 	local concreteColor = StructureBuilder.ColorFromHex(data.ConcreteColorHex)
 	local baseMaterial = StructureMaterials.Resolve(data.BaseMaterial)
 	local folder = Instance.new("Folder")
@@ -16879,13 +16911,17 @@ local function placeProceduralViaduct(
 	local wallMaterial = StructureMaterials.Resolve(data.ViaductWallMaterial)
 	local parapetGap = data.ViaductParapetGapM * scale
 	local edgeAllowance = 0.45 * scale
-	local baseThickness = centralBaseThickness(scale)
+	local exposedBaseDepth = centralBaseThickness(scale)
 	local fasciaDepth = viaductFasciaDepth(scale)
 	local interfaceOverlap =
-		safeInterfaceOverlap(data.InterfaceOverlapM, scale, settings.RoadThicknessStuds, baseThickness)
+		safeInterfaceOverlap(data.InterfaceOverlapM, scale, settings.RoadThicknessStuds, exposedBaseDepth)
+	local baseThickness = exposedBaseDepth + interfaceOverlap
 	local barrierThickness = math.max(0.35 * scale, 0.8)
 	local barrierHeight = math.max(1.2 * scale, 2.5)
-	local barrierCenter = roadWidth / 2 + parapetGap + barrierThickness / 2
+	-- Even a configured zero gap means tangent contact, not overlap. Keep a
+	-- hairline structural clearance so rectangular joints on a tight bend stay
+	-- wholly outside the generated road envelope.
+	local barrierCenter = roadWidth / 2 + parapetGap + STRUCTURE_EDGE_CLEARANCE_STUDS + barrierThickness / 2
 	local deckHalfWidth = math.max(roadWidth / 2 + edgeAllowance, barrierCenter + barrierThickness / 2)
 	local deckWidth = deckHalfWidth * 2
 	local offset = data.ModuleOffsetM * scale
@@ -16926,10 +16962,12 @@ local function placeProceduralViaduct(
 			folder
 		)
 		for _, side in { -1, 1 } do
+			local barrierFrame, barrierDepth =
+				offsetSegmentFrame(curve, s0, s1, side * barrierCenter, offset + barrierY)
 			makeStructurePart(
 				string.format("Parapet_%s_%04d", if side &lt; 0 then "Left" else "Right", index),
-				Vector3.new(barrierThickness, fullBarrierHeight, depth),
-				frame * CFrame.new(side * barrierCenter, barrierY, 0),
+				Vector3.new(barrierThickness, fullBarrierHeight, barrierDepth),
+				barrierFrame,
 				wallColor,
 				wallMaterial,
 				folder
