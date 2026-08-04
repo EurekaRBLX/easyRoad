@@ -160,11 +160,9 @@ local function makePart(preview: boolean): Part
 	-- cursor while dragging a bay); CanQuery=false would make roads
 	-- invisible to those raycasts.
 	part.CanTouch = false
-	-- Plugin road geometry is visual; it should not act as a physics
-	-- collision box for avatars/vehicles. CanQuery stays true for real
-	-- parts so intentional tools can still hit them when needed - ground
-	-- placement excludes the Roads/Junctions/Roundabouts folders instead.
-	part.CanCollide = false
+	-- Final road surfaces carry avatars and vehicles. Preview geometry stays
+	-- non-collidable so the placement ghost cannot interfere with play or tools.
+	part.CanCollide = not preview
 	if preview then
 		part.Transparency = 0.55
 		part.CanQuery = false
@@ -854,6 +852,8 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			local mid = (p0 + p1) / 2
 			local part = makePart(preview)
 			part.Name = "Marking"
+			-- Paint sits just above the road and must never become a physical bump.
+			part.CanCollide = false
 			part.Material = Enum.Material.SmoothPlastic
 			part.Color = color
 			local appliedExtraLength = if optimizedStraight then 0 else extraLength

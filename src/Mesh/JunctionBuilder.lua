@@ -1306,7 +1306,7 @@ function JunctionBuilder.Rebuild(
 		local part = Instance.new("Part")
 		part.Name = "JunctionSurface"
 		part.Anchored = true
-		part.CanCollide = false
+		part.CanCollide = true
 		part.CanTouch = false
 		-- JunctionEditSession is selection-driven: Studio must be able to hit
 		-- the visible pad and walk back up to its RW_Junction model. Road

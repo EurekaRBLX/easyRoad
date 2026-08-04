@@ -101,6 +101,18 @@ def main():
     require(junction, 'part.Name = "JunctionSurface"', "junction surface factory missing", problems)
     surface_factory = junction[junction.find('part.Name = "JunctionSurface"'):]
     require(surface_factory[:900], "part.CanQuery = true", "visible junction pad is not selectable", problems)
+    require(surface_factory[:900], "part.CanCollide = true", "junction surfaces do not carry vehicles", problems)
+    require(road_builder, "part.CanCollide = not preview", "placed road surfaces are not collidable", problems)
+    marking_factory = road_builder[road_builder.find('part.Name = "Marking"'):]
+    require(marking_factory[:500], "part.CanCollide = false", "lane paint becomes a physical bump", problems)
+    structure_factory = structure[structure.find("local function makeStructurePart"):]
+    require(structure_factory[:900], "part.CanCollide = true", "procedural slabs, walls, pillars, or beams are not collidable", problems)
+    island_factory = roundabout[roundabout.find('part.Name = "Island"'):]
+    require(island_factory[:500], "part.CanCollide = true", "roundabout island is not collidable", problems)
+    roundabout_surface_factory = roundabout[roundabout.find("local function makeSurfacePart"):]
+    require(roundabout_surface_factory[:600], "part.CanCollide = true", "roundabout replacement surfaces are not collidable", problems)
+    splitter_factory = roundabout[roundabout.find("local function buildSplitterIsland"):]
+    require(splitter_factory[:1200], "part.CanCollide = true", "roundabout splitter surfaces are not collidable", problems)
     require(road_instance, 'model:SetAttribute("RW_RoadId"', "roads have no stable id for junction approach ports", problems)
     require(road_instance, 'model:SetAttribute("RW_StartPortId"', "road starts have no stable approach-port identity", problems)
     require(road_instance, 'model:SetAttribute("RW_EndPortId"', "road ends have no stable approach-port identity", problems)

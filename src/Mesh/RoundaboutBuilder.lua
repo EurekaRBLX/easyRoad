@@ -365,7 +365,7 @@ local function buildIsland(
 		local part = Instance.new("Part")
 		part.Name = "Island"
 		part.Anchored = true
-		part.CanCollide = false
+		part.CanCollide = true
 		part.CanTouch = false
 		part.CanQuery = false
 		part.CastShadow = false
@@ -2477,7 +2477,7 @@ local function buildArm(
 			local part = Instance.new("Part")
 			part.Name = name
 			part.Anchored = true
-			part.CanCollide = false
+			part.CanCollide = true
 			part.CanTouch = false
 			part.CanQuery = false
 			part.CastShadow = false
@@ -2604,7 +2604,7 @@ local function buildArm(
 				local part = Instance.new("Part")
 				part.Name = "Sidewalk"
 				part.Anchored = true
-				part.CanCollide = false
+				part.CanCollide = true
 				part.CanTouch = false
 				part.CanQuery = false
 				part.CastShadow = false
@@ -2683,7 +2683,7 @@ local function buildSplitterIsland(
 		local part = Instance.new("Part")
 		part.Name = name
 		part.Anchored = true
-		part.CanCollide = false
+		part.CanCollide = true
 		part.CanTouch = false
 		part.CanQuery = false
 		part.CastShadow = false
