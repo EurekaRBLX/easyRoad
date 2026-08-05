@@ -9,6 +9,7 @@ local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local Packages = script.Parent.Parent.Packages
 local Signal = require(Packages.Signal)
 
+local History = require("./History")
 local RoundaboutInstance = require("./RoundaboutInstance")
 local RoundaboutBuilder = require("./Mesh/RoundaboutBuilder")
 local JunctionInstance = require("./JunctionInstance")
@@ -116,19 +117,6 @@ local function createRoundaboutEditSession(
 		end
 	end
 
-	local function beginRecording(label: string)
-		return ChangeHistoryService:TryBeginRecording("EasyRoadRoundaboutEdit", label)
-	end
-
-	local function finishRecording(recording: string?, changed: boolean)
-		if recording then
-			ChangeHistoryService:FinishRecording(
-				recording,
-				if changed then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
-			)
-		end
-	end
-
 	local function connectedRoadCount(): number
 		local data = selectedData()
 		if not data then
@@ -198,34 +186,40 @@ local function createRoundaboutEditSession(
 		if not before then
 			return
 		end
-		local recording = beginRecording(label)
-		local ok, err = pcall(function()
-			mutate(model, value)
+		local editFailure: string? = nil
+		local rebuilt = false
+		local changed, historyFailure = History.Record("EasyRoadRoundaboutEdit", label, function()
+			local ok, err = pcall(function()
+				mutate(model, value)
+			end)
+			if not ok then
+				RoundaboutInstance.SetGeometry(model, before.RadiusStuds, before.LaneCount, before.LaneWidthM)
+				RoundaboutInstance.SetMarkings(model, before.Markings)
+				RoundaboutInstance.SetSidewalk(model, before.Sidewalk)
+				RoundaboutInstance.SetIsland(model, before.Island)
+				editFailure = "Roundabout edit failed: " .. tostring(err)
+				return false
+			end
+			local runtimeFailed = false
+			rebuilt, runtimeFailed = rebuild("Roundabout updated.")
+			if not rebuilt and not runtimeFailed then
+				-- CreateAtJunction preflights every connected approach before touching
+				-- topology. A normal rejection therefore rolls back the proposed owner
+				-- attributes as well, keeping metadata and visible geometry in sync.
+				RoundaboutInstance.SetGeometry(model, before.RadiusStuds, before.LaneCount, before.LaneWidthM)
+				RoundaboutInstance.SetMarkings(model, before.Markings)
+				RoundaboutInstance.SetSidewalk(model, before.Sidewalk)
+				RoundaboutInstance.SetIsland(model, before.Island)
+			end
+			-- Runtime failures may occur after mutation begins. History.Record commits
+			-- that partial state so Undo remains a recovery point.
+			return rebuilt or runtimeFailed
 		end)
-		if not ok then
-			RoundaboutInstance.SetGeometry(model, before.RadiusStuds, before.LaneCount, before.LaneWidthM)
-			RoundaboutInstance.SetMarkings(model, before.Markings)
-			RoundaboutInstance.SetSidewalk(model, before.Sidewalk)
-			RoundaboutInstance.SetIsland(model, before.Island)
-			finishRecording(recording, false)
-			setStatus("Roundabout edit failed: " .. tostring(err))
-			return
-		end
-		local rebuilt, runtimeFailed = rebuild("Roundabout updated.")
-		if not rebuilt and not runtimeFailed then
-			-- CreateAtJunction preflights every connected approach before touching
-			-- topology. A normal rejection therefore rolls back the proposed owner
-			-- attributes as well, keeping metadata and visible geometry in sync.
-			RoundaboutInstance.SetGeometry(model, before.RadiusStuds, before.LaneCount, before.LaneWidthM)
-			RoundaboutInstance.SetMarkings(model, before.Markings)
-			RoundaboutInstance.SetSidewalk(model, before.Sidewalk)
-			RoundaboutInstance.SetIsland(model, before.Island)
-		end
-		-- A runtime failure may have happened after mutation began. Preserve that
-		-- history record so Undo remains a recovery point; preflight rejections
-		-- cancel cleanly after restoring the proposal above.
-		finishRecording(recording, rebuilt or runtimeFailed)
-		if not rebuilt then
+		if editFailure then
+			setStatus(editFailure)
+		elseif historyFailure then
+			setStatus(historyFailure)
+		elseif not changed or not rebuilt then
 			changeSignal:Fire()
 		end
 	end
@@ -392,9 +386,13 @@ local function createRoundaboutEditSession(
 		if not selectedRoundabout or not canEdit() then
 			return
 		end
-		local recording = beginRecording("Rebuild roundabout")
-		local changed, runtimeFailed = rebuild("Roundabout rebuilt.")
-		finishRecording(recording, changed or runtimeFailed)
+		local historyChanged, historyFailure = History.Record("EasyRoadRoundaboutEdit", "Rebuild roundabout", function()
+			local changed, runtimeFailed = rebuild("Roundabout rebuilt.")
+			return changed or runtimeFailed
+		end)
+		if not historyChanged and historyFailure then
+			setStatus(historyFailure)
+		end
 	end
 
 	function session.ConvertToJunction()
@@ -408,27 +406,27 @@ local function createRoundaboutEditSession(
 			)
 			return
 		end
-		local recording = beginRecording("Convert roundabout to junction")
-		local ok, junction, message = pcall(function()
-			return RoundaboutBuilder.ConvertToJunction(model, getStyle(), settings)
-		end)
-		if not ok then
-			-- A runtime error after preflight may still follow a partial DataModel
-			-- mutation. Commit the recording so Studio can undo that state instead
-			-- of cancelling the only recovery point.
-			finishRecording(recording, true)
-			setStatus("Roundabout conversion failed: " .. tostring(junction))
+		local junction: Model? = nil
+		local conversionMessage: string? = nil
+		local changed, historyFailure = History.Record(
+			"EasyRoadRoundaboutEdit",
+			"Convert roundabout to junction",
+			function()
+				junction, conversionMessage = RoundaboutBuilder.ConvertToJunction(model, getStyle(), settings)
+				return junction ~= nil
+			end
+		)
+		if historyFailure then
+			setStatus(historyFailure)
 			return
 		end
-		if not junction then
-			finishRecording(recording, false)
-			setStatus(message or "Roundabout conversion failed.")
+		if not changed or not junction then
+			setStatus(conversionMessage or "Roundabout conversion failed.")
 			return
 		end
-		finishRecording(recording, true)
 		selectedRoundabout = nil
-		Selection:Set({ junction })
-		status = message
+		Selection:Set({ junction :: Model })
+		status = conversionMessage
 		changeSignal:Fire()
 	end
 
@@ -441,18 +439,23 @@ local function createRoundaboutEditSession(
 			setStatus("Connected roundabouts must be converted to a junction instead of deleted.")
 			return
 		end
-		local recording = beginRecording("Delete roundabout")
-		local data = selectedData()
-		if data and data.JunctionId then
-			local controller = JunctionInstance.FindById(data.JunctionId)
-			if controller and #JunctionInstance.ConnectedRoads(data.JunctionId) == 0 then
-				controller:Destroy()
+		local changed, historyFailure = History.Record("EasyRoadRoundaboutEdit", "Delete roundabout", function()
+			local data = selectedData()
+			if data and data.JunctionId then
+				local controller = JunctionInstance.FindById(data.JunctionId)
+				if controller and #JunctionInstance.ConnectedRoads(data.JunctionId) == 0 then
+					controller:Destroy()
+				end
 			end
+			model:Destroy()
+			selectedRoundabout = nil
+			Selection:Set({})
+			return true
+		end)
+		if not changed and historyFailure then
+			setStatus(historyFailure)
+			return
 		end
-		model:Destroy()
-		selectedRoundabout = nil
-		Selection:Set({})
-		finishRecording(recording, true)
 		status = nil
 		changeSignal:Fire()
 	end

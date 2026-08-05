@@ -9,13 +9,13 @@
 -- step - when the user applies the change.
 
 local Selection = game:GetService("Selection")
-local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local HttpService = game:GetService("HttpService")
 local UserInputService = game:GetService("UserInputService")
 
 local Packages = script.Parent.Parent.Packages
 local Signal = require(Packages.Signal)
 
+local History = require("./History")
 local RoadInstance = require("./RoadInstance")
 local RoadBuilder = require("./Mesh/RoadBuilder")
 local RoadProfile = require("./RoadProfile")
@@ -770,43 +770,50 @@ local function createRoadEditSession(
 		end
 		local road = selectedRoad
 		local data = originalData
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", historyLabel)
-		local buildOptions = {
-			Curve = data.Curve,
-			ProfileStart = editingProfile or data.ProfileStart,
-			ProfileEnd = data.ProfileEnd,
-			Style = getStyle(),
-			Settings = settings,
-			Preview = false,
-			MarkingStretches = if #markingStretches > 0 then markingStretches else nil,
-			KerbStretches = if #kerbStretches > 0 then kerbStretches else nil,
-		}
-		local built = if data.Bay
-			then RoadBuilder.BuildWithBay(buildOptions, {
-				StationStuds = data.Bay.StationStuds,
-				LengthStuds = data.Bay.LengthStuds,
-				WidthM = data.Bay.WidthM,
-				Side = data.Bay.Side,
-			})
-			else RoadBuilder.Build(buildOptions)
-		for _, child in road:GetChildren() do
-			child:Destroy()
-		end
-		for _, child in built:GetChildren() do
-			child.Parent = road
-		end
-		built:Destroy()
-		RoadInstance.StampModel(road, data.Curve, editingProfile or data.ProfileStart, data.ProfileEnd)
-		RoadInstance.StampBay(road, data.Bay)
-		RoadInstance.StampMarkingStretches(road, markingStretches)
-		RoadInstance.StampKerbStretches(road, kerbStretches)
-		RoadInstance.StampStructure(road, data.Structure)
-		StructureBuilder.Render(road, data.Curve, data.Structure or StructureBuilder.DefaultData(settings), settings)
-		BusStops.Render(road)
-		data.MarkingStretches = markingStretches
-		data.KerbStretches = kerbStretches
-		if recording then
-			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		local changed, message = History.Record("EasyRoadEdit", historyLabel, function()
+			local buildOptions = {
+				Curve = data.Curve,
+				ProfileStart = editingProfile or data.ProfileStart,
+				ProfileEnd = data.ProfileEnd,
+				Style = getStyle(),
+				Settings = settings,
+				Preview = false,
+				MarkingStretches = if #markingStretches > 0 then markingStretches else nil,
+				KerbStretches = if #kerbStretches > 0 then kerbStretches else nil,
+			}
+			local built = if data.Bay
+				then RoadBuilder.BuildWithBay(buildOptions, {
+					StationStuds = data.Bay.StationStuds,
+					LengthStuds = data.Bay.LengthStuds,
+					WidthM = data.Bay.WidthM,
+					Side = data.Bay.Side,
+				})
+				else RoadBuilder.Build(buildOptions)
+			for _, child in road:GetChildren() do
+				child:Destroy()
+			end
+			for _, child in built:GetChildren() do
+				child.Parent = road
+			end
+			built:Destroy()
+			RoadInstance.StampModel(road, data.Curve, editingProfile or data.ProfileStart, data.ProfileEnd)
+			RoadInstance.StampBay(road, data.Bay)
+			RoadInstance.StampMarkingStretches(road, markingStretches)
+			RoadInstance.StampKerbStretches(road, kerbStretches)
+			RoadInstance.StampStructure(road, data.Structure)
+			StructureBuilder.Render(
+				road,
+				data.Curve,
+				data.Structure or StructureBuilder.DefaultData(settings),
+				settings
+			)
+			BusStops.Render(road)
+			data.MarkingStretches = markingStretches
+			data.KerbStretches = kerbStretches
+			return true
+		end)
+		if not changed and message then
+			structureStatus = message
 		end
 		changeSignal:Fire()
 	end
@@ -1098,69 +1105,73 @@ local function createRoadEditSession(
 		if not selectedRoad or not editingProfile or not editingStructure or not originalData then
 			return
 		end
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Edit road")
-		-- Note: MarkingStretches reference boundaries by component index: an
-		-- edit here that reorders/removes cross-section components (not
-		-- just tweaks an existing one) can leave a stretch pointing at the
-		-- wrong boundary. Accepted as a known v1 limitation rather than
-		-- solved now - Markings.lua simply drops a stretch whose
-		-- ComponentIndex no longer resolves to a Drive/Drive boundary.
-		local buildOptions = {
-			Curve = originalData.Curve,
-			ProfileStart = editingProfile,
-			ProfileEnd = originalData.ProfileEnd,
-			Style = getStyle(),
-			Settings = settings,
-			Preview = false,
-			MarkingStretches = if #originalData.MarkingStretches > 0 then originalData.MarkingStretches else nil,
-			KerbStretches = if #originalData.KerbStretches > 0 then originalData.KerbStretches else nil,
-		}
-		-- If this road has a bus bay, rebuild it through the bay-aware
-		-- builder instead - otherwise an unrelated edit here (colour, kerb
-		-- rule, ...) would silently wipe the bay's carved-out geometry.
-		local built = if originalData.Bay
-			then RoadBuilder.BuildWithBay(buildOptions, {
-				StationStuds = originalData.Bay.StationStuds,
-				LengthStuds = originalData.Bay.LengthStuds,
-				WidthM = originalData.Bay.WidthM,
-				Side = originalData.Bay.Side,
-			})
-			else RoadBuilder.Build(buildOptions)
-		-- Bus stop markers are stored as an attribute (survives the rebuild)
-		-- but rendered as children of the model, so they'd otherwise be
-		-- wiped along with the old geometry - re-render them from the
-		-- attribute once the new geometry is in place.
-		for _, child in selectedRoad:GetChildren() do
-			child:Destroy()
-		end
-		for _, child in built:GetChildren() do
-			child.Parent = selectedRoad
-		end
-		built:Destroy()
-		RoadInstance.StampModel(selectedRoad, originalData.Curve, editingProfile, originalData.ProfileEnd)
-		RoadInstance.StampBay(selectedRoad, originalData.Bay)
-		RoadInstance.StampMarkingStretches(selectedRoad, originalData.MarkingStretches)
-		RoadInstance.StampKerbStretches(selectedRoad, originalData.KerbStretches)
-		local appliedStructure = if editingStructure.Mode == "None"
-			then nil
-			else StructureBuilder.CloneData(editingStructure)
-		RoadInstance.StampStructure(selectedRoad, appliedStructure)
-		local _, renderMessage = StructureBuilder.Render(selectedRoad, originalData.Curve, editingStructure, settings)
-		structureStatus = renderMessage
-		BusStops.Render(selectedRoad)
-		originalData = {
-			Curve = originalData.Curve,
-			ProfileStart = RoadProfile.Clone(editingProfile),
-			ProfileEnd = originalData.ProfileEnd,
-			Bay = originalData.Bay,
-			MarkingStretches = originalData.MarkingStretches,
-			KerbStretches = originalData.KerbStretches,
-			Structure = appliedStructure,
-			StartJunctionId = originalData.StartJunctionId,
-			EndJunctionId = originalData.EndJunctionId,
-		}
-		if recording then
-			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		local road = selectedRoad
+		local profile = editingProfile
+		local structure = editingStructure
+		local data = originalData
+		local changed, message = History.Record("EasyRoadEdit", "Edit road", function()
+			-- Note: MarkingStretches reference boundaries by component index: an
+			-- edit here that reorders/removes cross-section components (not
+			-- just tweaks an existing one) can leave a stretch pointing at the
+			-- wrong boundary. Accepted as a known v1 limitation rather than
+			-- solved now - Markings.lua simply drops a stretch whose
+			-- ComponentIndex no longer resolves to a Drive/Drive boundary.
+			local buildOptions = {
+				Curve = data.Curve,
+				ProfileStart = profile,
+				ProfileEnd = data.ProfileEnd,
+				Style = getStyle(),
+				Settings = settings,
+				Preview = false,
+				MarkingStretches = if #data.MarkingStretches > 0 then data.MarkingStretches else nil,
+				KerbStretches = if #data.KerbStretches > 0 then data.KerbStretches else nil,
+			}
+			-- If this road has a bus bay, rebuild it through the bay-aware
+			-- builder instead - otherwise an unrelated edit here (colour, kerb
+			-- rule, ...) would silently wipe the bay's carved-out geometry.
+			local built = if data.Bay
+				then RoadBuilder.BuildWithBay(buildOptions, {
+					StationStuds = data.Bay.StationStuds,
+					LengthStuds = data.Bay.LengthStuds,
+					WidthM = data.Bay.WidthM,
+					Side = data.Bay.Side,
+				})
+				else RoadBuilder.Build(buildOptions)
+			-- Bus stop markers are stored as an attribute (survives the rebuild)
+			-- but rendered as children of the model, so they'd otherwise be
+			-- wiped along with the old geometry - re-render them from the
+			-- attribute once the new geometry is in place.
+			for _, child in road:GetChildren() do
+				child:Destroy()
+			end
+			for _, child in built:GetChildren() do
+				child.Parent = road
+			end
+			built:Destroy()
+			RoadInstance.StampModel(road, data.Curve, profile, data.ProfileEnd)
+			RoadInstance.StampBay(road, data.Bay)
+			RoadInstance.StampMarkingStretches(road, data.MarkingStretches)
+			RoadInstance.StampKerbStretches(road, data.KerbStretches)
+			local appliedStructure = if structure.Mode == "None" then nil else StructureBuilder.CloneData(structure)
+			RoadInstance.StampStructure(road, appliedStructure)
+			local _, renderMessage = StructureBuilder.Render(road, data.Curve, structure, settings)
+			structureStatus = renderMessage
+			BusStops.Render(road)
+			originalData = {
+				Curve = data.Curve,
+				ProfileStart = RoadProfile.Clone(profile),
+				ProfileEnd = data.ProfileEnd,
+				Bay = data.Bay,
+				MarkingStretches = data.MarkingStretches,
+				KerbStretches = data.KerbStretches,
+				Structure = appliedStructure,
+				StartJunctionId = data.StartJunctionId,
+				EndJunctionId = data.EndJunctionId,
+			}
+			return true
+		end)
+		if not changed and message then
+			structureStatus = message
 		end
 		changeSignal:Fire()
 	end
@@ -1267,53 +1278,54 @@ local function createRoadEditSession(
 		if mode ~= "ConfirmingBay" or not selectedRoad or not originalData or not bayDraft or not bayStation then
 			return
 		end
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Add bus bay")
-		local bay: RoadInstance.BayData = {
-			StationStuds = bayStation,
-			LengthStuds = bayDraft.LengthStuds,
-			WidthM = bayDraft.WidthM,
-			Side = bayDraft.Side,
-		}
-		local built = RoadBuilder.BuildWithBay({
-			Curve = originalData.Curve,
-			ProfileStart = editingProfile or originalData.ProfileStart,
-			ProfileEnd = originalData.ProfileEnd,
-			Style = getStyle(),
-			Settings = settings,
-			Preview = false,
-			MarkingStretches = if #originalData.MarkingStretches > 0 then originalData.MarkingStretches else nil,
-			KerbStretches = if #originalData.KerbStretches > 0 then originalData.KerbStretches else nil,
-		}, bay)
-		for _, child in selectedRoad:GetChildren() do
-			child:Destroy()
-		end
-		for _, child in built:GetChildren() do
-			child.Parent = selectedRoad
-		end
-		built:Destroy()
-		RoadInstance.StampModel(
-			selectedRoad,
-			originalData.Curve,
-			editingProfile or originalData.ProfileStart,
-			originalData.ProfileEnd
-		)
-		RoadInstance.StampBay(selectedRoad, bay)
-		RoadInstance.StampMarkingStretches(selectedRoad, originalData.MarkingStretches)
-		RoadInstance.StampKerbStretches(selectedRoad, originalData.KerbStretches)
-		RoadInstance.StampStructure(selectedRoad, originalData.Structure)
-		StructureBuilder.Render(
-			selectedRoad,
-			originalData.Curve,
-			originalData.Structure or StructureBuilder.DefaultData(settings),
-			settings
-		)
-		BusStops.Render(selectedRoad)
-		originalData.Bay = bay
-		bayStation = nil
-		bayDraft = nil
-		mode = "SegmentMenu"
-		if recording then
-			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		local road = selectedRoad
+		local data = originalData
+		local draft = bayDraft
+		local station = bayStation
+		local changed, message = History.Record("EasyRoadEdit", "Add bus bay", function()
+			local bay: RoadInstance.BayData = {
+				StationStuds = station,
+				LengthStuds = draft.LengthStuds,
+				WidthM = draft.WidthM,
+				Side = draft.Side,
+			}
+			local built = RoadBuilder.BuildWithBay({
+				Curve = data.Curve,
+				ProfileStart = editingProfile or data.ProfileStart,
+				ProfileEnd = data.ProfileEnd,
+				Style = getStyle(),
+				Settings = settings,
+				Preview = false,
+				MarkingStretches = if #data.MarkingStretches > 0 then data.MarkingStretches else nil,
+				KerbStretches = if #data.KerbStretches > 0 then data.KerbStretches else nil,
+			}, bay)
+			for _, child in road:GetChildren() do
+				child:Destroy()
+			end
+			for _, child in built:GetChildren() do
+				child.Parent = road
+			end
+			built:Destroy()
+			RoadInstance.StampModel(road, data.Curve, editingProfile or data.ProfileStart, data.ProfileEnd)
+			RoadInstance.StampBay(road, bay)
+			RoadInstance.StampMarkingStretches(road, data.MarkingStretches)
+			RoadInstance.StampKerbStretches(road, data.KerbStretches)
+			RoadInstance.StampStructure(road, data.Structure)
+			StructureBuilder.Render(
+				road,
+				data.Curve,
+				data.Structure or StructureBuilder.DefaultData(settings),
+				settings
+			)
+			BusStops.Render(road)
+			data.Bay = bay
+			bayStation = nil
+			bayDraft = nil
+			mode = "SegmentMenu"
+			return true
+		end)
+		if not changed and message then
+			structureStatus = message
 		end
 		changeSignal:Fire()
 	end

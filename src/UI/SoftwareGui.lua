@@ -114,16 +114,17 @@ local function SoftwareGui(props: {
 			Dim = true,
 			LayoutOrder = 9,
 		}),
-		OssNote = commercial and e(Line, {
-			Text = string.format(
-				"Eureka plans to open-source easyRoad under AGPL-3.0. When published, that license supersedes this EULA for the open-source distribution. Notice: %s",
-				ProductLicense.DiscordUrl
-			),
-			Dim = true,
-			LayoutOrder = 10,
-		}),
+		OssNote = commercial
+			and e(Line, {
+				Text = string.format(
+					"Eureka plans to open-source easyRoad under AGPL-3.0. When published, that license supersedes this EULA for the open-source distribution. Notice: %s",
+					ProductLicense.DiscordUrl
+				),
+				Dim = true,
+				LayoutOrder = 10,
+			}),
 		Note = e(Line, {
-			Text = "Companion to easyRail and easyLight.",
+			Text = "Works alongside easyLight for advanced signal control.",
 			Dim = true,
 			LayoutOrder = 11,
 		}),

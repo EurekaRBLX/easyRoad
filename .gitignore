@@ -1,3 +1,5 @@
 *.rbxl
 *.rbxl.lock
 sourcemap.json
+__pycache__/
+*.py[cod]

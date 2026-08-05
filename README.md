@@ -16,13 +16,17 @@ Then drag the `.rbxm` into your Studio plugins folder (or use
 
 **No toolchain?** Two alternatives:
 
-* Download the prebuilt [`dist/EasyRoad.rbxmx`](dist/EasyRoad.rbxmx) from
-  this repo and drop it in your Studio plugins folder (Studio loads
-  `.rbxmx` the same as `.rbxm`). It is rebuilt whenever the source changes.
-* CI also builds `EasyRoad.rbxm` on every push (see the Actions tab) —
-  grab the artifact from the latest run.
+* Download the commercial/EULA [`dist/EasyRoad.rbxmx`](dist/EasyRoad.rbxmx)
+  or the [`dist/EasyRoad-OSS.rbxmx`](dist/EasyRoad-OSS.rbxmx) build from this
+  repo and drop it in your Studio plugins folder (Studio loads `.rbxmx` the
+  same as `.rbxm`). Both are rebuilt whenever the source changes.
 
-To rebuild `dist/` yourself without Rojo: `python3 tools/build_rbxmx.py`.
+To rebuild both variants yourself without Rojo:
+
+```
+python3 tools/build_rbxmx.py --license commercial
+python3 tools/build_rbxmx.py --license oss
+```
 
 ## Using it
 
@@ -85,9 +89,14 @@ inner and outer shoulder, intended for the parallel-carriageway workflow.
 The road editor edits a road's cross-section as an ordered list of
 components, left to right: **Drive**, **Sidewalk**, **Median**, **Shoulder**,
 **Bike**, **Parking**. Each has a width in meters, and traffic-carrying
-kinds have a direction (with/against the road). Built-in roads act as
-templates ("Save as Copy"); user roads persist in plugin settings across
-sessions.
+kinds have a direction (with/against the road). **Duplicate road** turns the
+current built-in or user road into a separately named, editable user type;
+user roads persist in plugin settings across sessions.
+
+Persistent Studio changes use isolated ChangeHistoryService recordings. Each
+placed segment, roundabout, junction edit, road rebuild, or asset operation is
+therefore one Ctrl+Z step; EasyRoad refuses to mutate the DataModel if Studio
+cannot open that action's recording.
 
 ### Grand settings (Settings...)
 

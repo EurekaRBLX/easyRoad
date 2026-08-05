@@ -63,6 +63,7 @@ def max_motor_lanes_per_carriageway(components):
 def main():
     problems = []
     junction = source("src/Mesh/JunctionBuilder.lua")
+    history = source("src/History.lua")
     junction_instance = source("src/JunctionInstance.lua")
     junction_session = source("src/JunctionEditSession.lua")
     junction_panel = source("src/UI/JunctionPanel.lua")
@@ -97,6 +98,23 @@ def main():
     roundabout_preview = source("tools/preview/roundabout_preview.py")
     roundabout_editor_preview = source("tools/preview/roundabout_editor_preview.py")
     dump_compare = source("tools/preview/dump_compare.py")
+
+    require(history, "ChangeHistoryService:TryBeginRecording", "history transactions never start a Studio recording", problems)
+    require(history, "if not recording then", "history transactions mutate even when Studio refuses a recording", problems)
+    require(history, "xpcall(function()", "history transactions can leak an open recording after a runtime error", problems)
+    require(history, "ChangeHistoryService:FinishRecording", "history transactions never close their Studio recording", problems)
+    require(history, "else Enum.FinishRecordingOperation.Commit", "partial runtime failures lose their Undo recovery point", problems)
+    for label, mutation_source in (
+        ("road placement", session),
+        ("road editing", road_edit_session),
+        ("junction editing", junction_session),
+        ("roundabout editing", roundabout_session),
+        ("main actions", main_source),
+    ):
+        reject(mutation_source, "TryBeginRecording", f"{label} bypasses the guarded history transaction helper", problems)
+        reject(mutation_source, "FinishRecording", f"{label} can leave a Studio history recording open", problems)
+    require(session, 'History.Record("EasyRoadPlace", "Place road"', "road placement is not one Undo transaction per segment", problems)
+    require(session, 'History.Record("EasyRoadPlace", "Place roundabout"', "roundabout placement is not an isolated Undo transaction", problems)
 
     require(junction, 'part.Name = "JunctionSurface"', "junction surface factory missing", problems)
     surface_factory = junction[junction.find('part.Name = "JunctionSurface"'):]
@@ -232,12 +250,12 @@ def main():
     require(junction, "RoadInstance.StampModel(road, outerCurve", "junction conversion leaves trimmed road metadata stale", problems)
     require(junction, "BusStops.Render(road)", "junction conversion drops bus-stop visuals", problems)
     require(roundabout_session, "Selection.SelectionChanged:Connect", "roundabout editor is not selection-driven", problems)
-    require(roundabout_session, "ChangeHistoryService:TryBeginRecording", "roundabout editor changes are not undoable", problems)
+    require(roundabout_session, "History.Record", "roundabout editor changes are not undoable", problems)
     require(roundabout_panel, 'Text = "Circulating lanes"', "roundabout editor has no lane-count control", problems)
     require(roundabout_panel, 'Text = "Convert to junction"', "roundabout editor has no reverse conversion action", problems)
     require(main_source, 'require("./RoundaboutEditSession")', "roundabout edit session is not mounted", problems)
     require(main_source, "React.createElement(RoundaboutPanel", "roundabout editor panel is unreachable", problems)
-    require(main_source, "Selection:Set({ ring })", "junction conversion does not transition selection into the roundabout editor", problems)
+    require(main_source, "Selection:Set({ ring :: Model })", "junction conversion does not transition selection into the roundabout editor", problems)
     require(roundabout_editor_preview, "import roundabout_preview as rp", "roundabout editor preview does not use the canonical component pipeline", problems)
     require(roundabout_editor_preview, 'lane_width_m=4.4', "roundabout editor preview does not exercise the Turbo width regression", problems)
     require(roundabout_editor_preview, 'rp.CASES["hw_oneway"]', "roundabout editor preview does not exercise one-way highway mouths", problems)
@@ -464,6 +482,11 @@ def main():
         )
 
     require(top_bar, 'Text = "Road Assets"', "top mode bar has no Road Assets surface", problems)
+    require(main_source, "local function duplicateRoadProfile", "Road Editor cannot duplicate its current road template", problems)
+    require(main_source, 'Text = if editing.BuiltIn then "Duplicate road" else "Save"', "built-in roads do not expose Duplicate as their primary action", problems)
+    require(main_source, 'Text = "Duplicate road"', "user roads do not expose Duplicate alongside Save", problems)
+    require(main_source, 'duplicate.Name = nextRoadCopyName(source.Name)', "duplicated road names are ambiguous", problems)
+    require(main_source, 'HttpService:GenerateGUID(false)', "duplicated roads can overwrite each other when created in the same second", problems)
     require(main_source, 'require("./UI/RoadAssetsPanel")', "Road Assets surface is not rendered", problems)
     require(asset_panel, 'Text = "Import Selection as Viaduct"', "Road Assets cannot import viaduct Models", problems)
     require(asset_panel, 'Text = "Delete Selected Asset"', "Road Assets cannot manage stored Models", problems)
@@ -478,7 +501,7 @@ def main():
         for problem in problems:
             print("FAILED:", problem)
         return 1
-    print("integration contracts passed: editable roundabouts, lane inference, one-way/highway mouths, Turbo width parity, exact caps, multinode junctions, assets, procedural structures, snap references, parallel roadways, marking boundaries, highway presets, Software dock")
+    print("integration contracts passed: isolated undo history, road duplication, editable roundabouts, lane inference, one-way/highway mouths, Turbo width parity, exact caps, multinode junctions, assets, procedural structures, snap references, parallel roadways, marking boundaries, highway presets, Software dock")
     return 0
 
 

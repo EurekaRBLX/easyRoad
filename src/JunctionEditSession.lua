@@ -11,6 +11,7 @@ local UserInputService = game:GetService("UserInputService")
 local Packages = script.Parent.Parent.Packages
 local Signal = require(Packages.Signal)
 
+local History = require("./History")
 local JunctionInstance = require("./JunctionInstance")
 local JunctionBuilder = require("./Mesh/JunctionBuilder")
 local RoadInstance = require("./RoadInstance")
@@ -66,6 +67,13 @@ local function createJunctionEditSession(
 	local draggingCenter = false
 	local dragPlaneY = 0
 	local connections: { RBXScriptConnection } = {}
+
+	local function recordEdit(label: string, action: () -> ())
+		History.Record("EasyRoadJunctionEdit", label, function()
+			action()
+			return true
+		end)
+	end
 
 	local function clearHandles()
 		if handlesFolder then
@@ -492,24 +500,20 @@ local function createJunctionEditSession(
 		if not selectedJunction then
 			return
 		end
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Junction fillet radius")
-		JunctionInstance.SetFilletRadiusM(selectedJunction, math.clamp(value, 0.5, 40))
-		rebuildSelected()
-		if recording then
-			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
-		end
+		recordEdit("Junction fillet radius", function()
+			JunctionInstance.SetFilletRadiusM(selectedJunction :: Model, math.clamp(value, 0.5, 40))
+			rebuildSelected()
+		end)
 	end
 
 	function session.SetPadMarginStuds(value: number)
 		if not selectedJunction then
 			return
 		end
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Junction setback")
-		JunctionInstance.SetPadMarginStuds(selectedJunction, math.clamp(value, 1, 40))
-		rebuildSelected()
-		if recording then
-			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
-		end
+		recordEdit("Junction setback", function()
+			JunctionInstance.SetPadMarginStuds(selectedJunction :: Model, math.clamp(value, 1, 40))
+			rebuildSelected()
+		end)
 	end
 
 	local function editApproachSetback(approachId: string, value: number?)
@@ -532,12 +536,10 @@ local function createJunctionEditSession(
 		selectedApproachId = approachId
 		selectedCornerId = nil
 		local label = if value == nil then "Reset junction approach setback" else "Junction approach setback"
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", label)
-		JunctionInstance.SetApproachSetbackStuds(selectedJunction, approachId, value)
-		rebuildSelected()
-		if recording then
-			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
-		end
+		recordEdit(label, function()
+			JunctionInstance.SetApproachSetbackStuds(selectedJunction :: Model, approachId, value)
+			rebuildSelected()
+		end)
 	end
 
 	function session.SetApproachSetbackStuds(approachId: string, value: number)
@@ -552,41 +554,33 @@ local function createJunctionEditSession(
 		if not selectedJunction then
 			return
 		end
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Link junction corner radii")
-		JunctionInstance.SetLinkedCornerRadii(selectedJunction, linked)
-		if not linked and not selectedCornerId then
-			local layout = selectedLayout()
-			if layout and layout.Corners[1] then
-				selectedCornerId = layout.Corners[1].Id
+		recordEdit("Link junction corner radii", function()
+			JunctionInstance.SetLinkedCornerRadii(selectedJunction :: Model, linked)
+			if not linked and not selectedCornerId then
+				local layout = selectedLayout()
+				if layout and layout.Corners[1] then
+					selectedCornerId = layout.Corners[1].Id
+				end
 			end
-		end
-		rebuildSelected()
-		if recording then
-			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
-		end
+			rebuildSelected()
+		end)
 	end
 
 	function session.SetSelectedCornerRadiusM(value: number)
 		if not selectedJunction or not selectedCornerId then
 			return
 		end
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Junction corner radius")
-		JunctionInstance.SetCornerRadiusM(selectedJunction, selectedCornerId, value)
-		rebuildSelected()
-		if recording then
-			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
-		end
+		recordEdit("Junction corner radius", function()
+			JunctionInstance.SetCornerRadiusM(selectedJunction :: Model, selectedCornerId :: string, value)
+			rebuildSelected()
+		end)
 	end
 
 	function session.RebuildSelected()
 		if not selectedJunction then
 			return
 		end
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Rebuild junction")
-		rebuildSelected()
-		if recording then
-			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
-		end
+		recordEdit("Rebuild junction", rebuildSelected)
 	end
 
 	function session.DeleteJunction()
@@ -597,19 +591,19 @@ local function createJunctionEditSession(
 		if not data then
 			return
 		end
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Delete junction")
-		for _, road in JunctionInstance.ConnectedRoads(data.Id) do
-			local roadData = RoadInstance.Read(road)
-			local startId = if roadData and roadData.StartJunctionId ~= data.Id then roadData.StartJunctionId else nil
-			local endId = if roadData and roadData.EndJunctionId ~= data.Id then roadData.EndJunctionId else nil
-			RoadInstance.StampJunctions(road, startId, endId)
-		end
-		clearHandles()
-		JunctionInstance.Delete(selectedJunction)
-		selectedJunction = nil
-		if recording then
-			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
-		end
+		recordEdit("Delete junction", function()
+			for _, road in JunctionInstance.ConnectedRoads(data.Id) do
+				local roadData = RoadInstance.Read(road)
+				local startId = if roadData and roadData.StartJunctionId ~= data.Id
+					then roadData.StartJunctionId
+					else nil
+				local endId = if roadData and roadData.EndJunctionId ~= data.Id then roadData.EndJunctionId else nil
+				RoadInstance.StampJunctions(road, startId, endId)
+			end
+			clearHandles()
+			JunctionInstance.Delete(selectedJunction :: Model)
+			selectedJunction = nil
+		end)
 		changeSignal:Fire()
 	end
 

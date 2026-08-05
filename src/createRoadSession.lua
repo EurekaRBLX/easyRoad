@@ -15,7 +15,6 @@
 -- Escape or middle-click cancels the current placement (and then the
 -- chain) - also rebindable, see Keybinds.lua.
 
-local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
@@ -23,6 +22,7 @@ local UserInputService = game:GetService("UserInputService")
 local Packages = script.Parent.Parent.Packages
 local Signal = require(Packages.Signal)
 
+local History = require("./History")
 local CurveSegment = require("./Geometry/CurveSegment")
 local PolyCurve = require("./Geometry/PolyCurve")
 local CurveIntersections = require("./Geometry/CurveIntersections")
@@ -1123,7 +1123,7 @@ local function createRoadSession(
 
 	-- Commit ---------------------------------------------------------------------------
 
-	local function commitRoad(segment: CurveSegment.Segment)
+	local function placeRoad(segment: CurveSegment.Segment)
 		local startSnapMatch = pointSnapMatches[1]
 		local endSnapMatch = pointSnapMatches[#points]
 		local corridorCurve = PolyCurve.new({ segment })
@@ -1137,7 +1137,6 @@ local function createRoadSession(
 		end
 		local curve = primaryPlacement.Curve
 		local crossingCandidates = findCurveCrossings(curve)
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadPlace", "Place road")
 		local primaryProfileStart, primaryProfileEnd = placementProfiles(primaryPlacement)
 		local model = RoadBuilder.Build({
 			Curve = curve,
@@ -1343,10 +1342,6 @@ local function createRoadSession(
 			structureStatus = string.format("Placed %d parallel roadways. %s", #placements, renderMessage)
 		end
 
-		if recording then
-			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
-		end
-
 		-- Chain: continue building from the end of the road just placed. A
 		-- transition segment arrives at its end profile, so the chain
 		-- continues with that profile.
@@ -1365,15 +1360,25 @@ local function createRoadSession(
 		changeSignal:Fire()
 	end
 
+	local function commitRoad(segment: CurveSegment.Segment)
+		local changed, message = History.Record("EasyRoadPlace", "Place road", function()
+			placeRoad(segment)
+			return true
+		end)
+		if not changed and message then
+			structureStatus = message
+			changeSignal:Fire()
+		end
+	end
+
 	-- Places a standalone roundabout ring centred at `center` (ground click,
 	-- grid-snapped, elevated) using the current radius/lane config - no
 	-- multi-click curve fitting involved, unlike the other tool modes.
-	local function commitRoundabout(center: Vector3)
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadPlace", "Place roundabout")
+	local function placeRoundabout(center: Vector3): boolean
 		-- Place, then auto-connect any roads already near the drop point (so a
 		-- roundabout dropped onto existing roads wires them up with feeders
 		-- instead of leaving a bare ring). No nearby roads -> just the ring.
-		local _, message = RoundaboutBuilder.Place(
+		local ring, message = RoundaboutBuilder.Place(
 			center,
 			roundaboutRadiusStuds,
 			roundaboutLaneCount,
@@ -1385,10 +1390,18 @@ local function createRoadSession(
 			structureStatus = message
 			warn("[EasyRoad] " .. message)
 		end
-		if recording then
-			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
-		end
 		changeSignal:Fire()
+		return ring ~= nil
+	end
+
+	local function commitRoundabout(center: Vector3)
+		local changed, message = History.Record("EasyRoadPlace", "Place roundabout", function()
+			return placeRoundabout(center)
+		end)
+		if not changed and message then
+			structureStatus = message
+			changeSignal:Fire()
+		end
 	end
 
 	-- Input handling ----------------------------------------------------------------------

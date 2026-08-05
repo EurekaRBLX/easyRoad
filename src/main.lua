@@ -18,7 +18,7 @@
 -- same designer bottom bar bound to that road, with Apply/Revert.
 
 local CoreGui = game:GetService("CoreGui")
-local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local HttpService = game:GetService("HttpService")
 local Selection = game:GetService("Selection")
 
 local Packages = script.Parent.Parent.Packages
@@ -26,6 +26,7 @@ local React = require(Packages.React)
 local ReactRoblox = require(Packages.ReactRoblox)
 local Signal = require(Packages.Signal)
 
+local History = require("./History")
 local Settings = require("./Settings")
 local RegionStyles = require("./RegionStyles")
 local RoadProfile = require("./RoadProfile")
@@ -578,13 +579,16 @@ return function(
 			updateUI()
 			return
 		end
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadAssetImport", "Import road asset")
-		local imported, message = StructureAssets.Import(source, kind)
-		if recording then
-			ChangeHistoryService:FinishRecording(
-				recording,
-				if imported then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
-			)
+		local imported: StructureAssets.AssetInfo? = nil
+		local message: string? = nil
+		local _, historyFailure = History.Record("EasyRoadAssetImport", "Import road asset", function()
+			imported, message = StructureAssets.Import(source, kind)
+			return imported ~= nil
+		end)
+		if historyFailure then
+			assetManagerStatus = historyFailure
+			updateUI()
+			return
 		end
 		if imported then
 			assetManagerSelectedId = imported.Id
@@ -596,26 +600,28 @@ return function(
 	end
 
 	local function renameRoadAsset(assetId: string, name: string)
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadAssetRename", "Rename road asset")
-		local ok, message = StructureAssets.Rename(assetId, name)
-		if recording then
-			ChangeHistoryService:FinishRecording(
-				recording,
-				if ok then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
-			)
+		local ok = false
+		local message: string? = nil
+		local _, historyFailure = History.Record("EasyRoadAssetRename", "Rename road asset", function()
+			ok, message = StructureAssets.Rename(assetId, name)
+			return ok
+		end)
+		if historyFailure then
+			message = historyFailure
 		end
 		assetManagerStatus = message
 		updateUI()
 	end
 
 	local function deleteRoadAsset(assetId: string)
-		local recording = ChangeHistoryService:TryBeginRecording("EasyRoadAssetDelete", "Delete road asset")
-		local ok, message = StructureAssets.Delete(assetId)
-		if recording then
-			ChangeHistoryService:FinishRecording(
-				recording,
-				if ok then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
-			)
+		local ok = false
+		local message: string? = nil
+		local _, historyFailure = History.Record("EasyRoadAssetDelete", "Delete road asset", function()
+			ok, message = StructureAssets.Delete(assetId)
+			return ok
+		end)
+		if historyFailure then
+			message = historyFailure
 		end
 		if ok then
 			assetManagerSelectedId = nil
@@ -624,9 +630,41 @@ return function(
 		updateUI()
 	end
 
+	local function newUserProfileId(): string
+		return "user_" .. HttpService:GenerateGUID(false)
+	end
+
+	local function nextRoadCopyName(sourceName: string): string
+		local used: { [string]: boolean } = {}
+		for _, profile in library.GetAll() do
+			used[profile.Name] = true
+		end
+		local base = sourceName .. " Copy"
+		if not used[base] then
+			return base
+		end
+		local suffix = 2
+		while used[string.format("%s %d", base, suffix)] do
+			suffix += 1
+		end
+		return string.format("%s %d", base, suffix)
+	end
+
+	local function duplicateRoadProfile(source: RoadProfile.RoadProfile): RoadProfile.RoadProfile
+		local duplicate = RoadProfile.Clone(source)
+		duplicate.Id = newUserProfileId()
+		duplicate.Name = nextRoadCopyName(source.Name)
+		duplicate.BuiltIn = false
+		library.SaveUserProfile(duplicate)
+		designProfile = duplicate
+		persist()
+		updateUI()
+		return duplicate
+	end
+
 	local function newRoadTemplate(): RoadProfile.RoadProfile
 		return {
-			Id = "user_" .. tostring(os.time()),
+			Id = newUserProfileId(),
 			Name = "New Road",
 			Category = "Custom",
 			BuiltIn = false,
@@ -790,20 +828,14 @@ return function(
 			local editing = designProfile :: RoadProfile.RoadProfile
 			local actions: { RoadDesigner.DesignerAction } = {
 				{
-					Text = if editing.BuiltIn then "Save as Copy" else "Save",
+					Text = if editing.BuiltIn then "Duplicate road" else "Save",
 					Selected = true,
 					OnClick = function()
-						local toSave = RoadProfile.Clone(editing)
 						if editing.BuiltIn then
-							toSave.Id = "user_" .. tostring(os.time())
-							toSave.Name = editing.Name .. " (Custom)"
-							-- Category is NOT forced to "Custom" here anymore -
-							-- the Road Editor's own Category field (see
-							-- RoadDesigner.lua) may already have been changed
-							-- to Streets/Avenues/Highways/Paths/a typed name
-							-- before Save was clicked, and that choice should
-							-- stick rather than getting silently overwritten.
+							duplicateRoadProfile(editing)
+							return
 						end
+						local toSave = RoadProfile.Clone(editing)
 						toSave.BuiltIn = false
 						library.SaveUserProfile(toSave)
 						designProfile = toSave
@@ -812,6 +844,14 @@ return function(
 					end,
 				},
 			}
+			if not editing.BuiltIn then
+				table.insert(actions, {
+					Text = "Duplicate road",
+					OnClick = function()
+						duplicateRoadProfile(editing)
+					end,
+				})
+			end
 			if not editing.BuiltIn and library.Get(editing.Id) ~= nil then
 				table.insert(actions, {
 					Text = "Delete",
@@ -843,7 +883,9 @@ return function(
 				Profile = editing,
 				RegionStyle = getStyle(),
 				Settings = settings,
-				Subtitle = if editing.BuiltIn then "Built-in template — saving creates an editable copy." else nil,
+				Subtitle = if editing.BuiltIn
+					then "Built-in template — duplicate it to create an editable road."
+					else nil,
 				Picker = {
 					Options = pickerOptions,
 					SelectedId = if library.Get(editing.Id) then editing.Id else nil,
@@ -1296,57 +1338,64 @@ return function(
 					if not junctionModel then
 						return
 					end
-					local recording = ChangeHistoryService:TryBeginRecording("EasyRoadEdit", "Make roundabout")
 					local previousData = JunctionInstance.Read(junctionModel)
-					-- Stamped BEFORE reading the junction back, because
-					-- CreateAtJunction reads the override off the junction data.
-					JunctionInstance.SetRoundaboutMarkings(junctionModel, markings)
-					JunctionInstance.SetRoundaboutSidewalk(junctionModel, sidewalk)
-					JunctionInstance.SetRoundaboutIsland(junctionModel, island)
-					local junctionData = JunctionInstance.Read(junctionModel)
-					if not junctionData then
-						if recording then
-							ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Cancel)
-						end
+					if not previousData then
+						junctionRoundaboutStatus = "The selected junction data could not be read."
+						updateUI()
 						return
 					end
-					local success, built, buildMessage = pcall(function(): (Model?, string?)
-						return RoundaboutBuilder.CreateAtJunction(
-							junctionData.Id,
-							radiusStuds,
-							laneCount,
-							laneWidthM,
-							getStyle(),
-							settings
-						)
-					end)
-					local ring = if success then built else nil
-					if ring then
-						junctionRoundaboutStatus = nil
-						Selection:Set({ ring })
-					else
-						-- A failed build must not strand a hidden roundabout controller
-						-- or partially trimmed approaches. Restore the ordinary junction
-						-- from its preserved source curves and surface the real error.
-						JunctionInstance.SetKind(junctionModel, "Intersection")
-						if previousData then
+					local ring: Model? = nil
+					local _, historyFailure = History.Record("EasyRoadEdit", "Make roundabout", function()
+						-- Stamped BEFORE reading the junction back, because
+						-- CreateAtJunction reads the override off the junction data.
+						JunctionInstance.SetRoundaboutMarkings(junctionModel, markings)
+						JunctionInstance.SetRoundaboutSidewalk(junctionModel, sidewalk)
+						JunctionInstance.SetRoundaboutIsland(junctionModel, island)
+						local junctionData = JunctionInstance.Read(junctionModel)
+						if not junctionData then
 							JunctionInstance.SetRoundaboutMarkings(junctionModel, previousData.RoundaboutMarkings)
 							JunctionInstance.SetRoundaboutSidewalk(junctionModel, previousData.RoundaboutSidewalk)
 							JunctionInstance.SetRoundaboutIsland(junctionModel, previousData.RoundaboutIsland)
+							junctionRoundaboutStatus = "The selected junction data could not be read."
+							return false
 						end
-						JunctionBuilder.TrimApproaches(junctionData.Id, getStyle(), settings)
-						JunctionBuilder.Rebuild(junctionData.Id, getStyle(), settings)
-						junctionRoundaboutStatus = if success
-							then (buildMessage or "Roundabout creation was rejected.")
-							else ("Roundabout creation failed: " .. tostring(built))
-						warn("[EasyRoad] " .. tostring(junctionRoundaboutStatus))
+						local success, built, buildMessage = pcall(function(): (Model?, string?)
+							return RoundaboutBuilder.CreateAtJunction(
+								junctionData.Id,
+								radiusStuds,
+								laneCount,
+								laneWidthM,
+								getStyle(),
+								settings
+							)
+						end)
+						ring = if success then built else nil
+						if ring then
+							junctionRoundaboutStatus = nil
+							Selection:Set({ ring :: Model })
+						else
+							-- A failed build must not strand a hidden roundabout controller
+							-- or partially trimmed approaches. Restore the ordinary junction
+							-- from its preserved source curves and surface the real error.
+							JunctionInstance.SetKind(junctionModel, "Intersection")
+							if previousData then
+								JunctionInstance.SetRoundaboutMarkings(junctionModel, previousData.RoundaboutMarkings)
+								JunctionInstance.SetRoundaboutSidewalk(junctionModel, previousData.RoundaboutSidewalk)
+								JunctionInstance.SetRoundaboutIsland(junctionModel, previousData.RoundaboutIsland)
+							end
+							JunctionBuilder.TrimApproaches(junctionData.Id, getStyle(), settings)
+							JunctionBuilder.Rebuild(junctionData.Id, getStyle(), settings)
+							junctionRoundaboutStatus = if success
+								then (buildMessage or "Roundabout creation was rejected.")
+								else ("Roundabout creation failed: " .. tostring(built))
+							warn("[EasyRoad] " .. tostring(junctionRoundaboutStatus))
+							updateUI()
+						end
+						return ring ~= nil
+					end)
+					if historyFailure then
+						junctionRoundaboutStatus = historyFailure
 						updateUI()
-					end
-					if recording then
-						ChangeHistoryService:FinishRecording(
-							recording,
-							if ring then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
-						)
 					end
 				end,
 			})
