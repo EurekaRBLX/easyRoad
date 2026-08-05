@@ -1,8 +1,11 @@
 --!strict
 -- Full-viewport EULA gate: fills Studio viewport, RGB(30,30,30), Builder Sans.
--- Body uses measured CanvasSize. Agree stays disabled until scroll reaches bottom.
+-- Body uses measured CanvasSize. Agree disabled until scroll reaches bottom.
+-- Scroll-hint sits in a reserved strip between the canvas and the footer
+-- (not overlaid on the ScrollingFrame, which was hiding it until re-layout).
 
 local TextService = game:GetService("TextService")
+local RunService = game:GetService("RunService")
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -21,15 +24,17 @@ local PAD = 24
 local TITLE_H = 32
 local META_H = 18
 local LINKS_H = 52
+local HINT_H = 20
 local GAP = 12
 local SCROLL_INNER_PAD = 28
 local TEXT_SIZE = 14
 local FOOTER_BOTTOM = 12
 local LINKS_ABOVE_BUTTONS = 8
-local FOOTER_H = FOOTER_BOTTOM + BTN_H + LINKS_ABOVE_BUTTONS + LINKS_H + 8
+local HINT_ABOVE_LINKS = 6
+-- Footer block from bottom of viewport (buttons + links + hint strip + gaps)
+local FOOTER_H = FOOTER_BOTTOM + BTN_H + LINKS_ABOVE_BUTTONS + LINKS_H + HINT_ABOVE_LINKS + HINT_H + 4
 local HEADER_H = PAD + TITLE_H + GAP + META_H + GAP
--- Pixels from bottom that count as “fully scrolled”.
-local SCROLL_BOTTOM_SLACK = 24
+local SCROLL_BOTTOM_SLACK = 32
 
 local function measureBodyHeight(widthPx: number): number
 	local textWidth = math.max(widthPx - SCROLL_INNER_PAD, 80)
@@ -51,11 +56,14 @@ end
 
 local function isScrolledToBottom(scroll: ScrollingFrame): boolean
 	local window = scroll.AbsoluteWindowSize.Y
-	local canvas = scroll.CanvasSize.Y.Offset
-	if window <= 0 then
+	-- Prefer AbsoluteCanvasSize once layout has applied CanvasSize.
+	local canvas = scroll.AbsoluteCanvasSize.Y
+	if canvas < 1 then
+		canvas = scroll.CanvasSize.Y.Offset
+	end
+	if window <= 1 then
 		return false
 	end
-	-- Content fits without scrolling → treat as fully read.
 	if canvas <= window + SCROLL_BOTTOM_SLACK then
 		return true
 	end
@@ -73,45 +81,76 @@ local function EulaOverlay(props: {
 	local canvasH, setCanvasH = React.useState(1600)
 	local canAgree, setCanAgree = React.useState(false)
 
-	local function refreshCanAgree()
-		local scroll = scrollRef.current
-		if not scroll then
-			setCanAgree(false)
-			return
-		end
-		setCanAgree(isScrolledToBottom(scroll))
-	end
-
 	React.useEffect(function()
 		local scroll = scrollRef.current
 		if not scroll then
 			return nil
 		end
+
+		local function refreshCanAgree()
+			local s = scrollRef.current
+			if not s then
+				setCanAgree(false)
+				return
+			end
+			setCanAgree(isScrolledToBottom(s))
+		end
+
 		local function remeasure()
 			local w = scroll.AbsoluteSize.X
 			if w >= 40 then
 				setCanvasH(measureBodyHeight(w))
 			end
-			-- Defer check until CanvasSize prop applies.
-			task.defer(refreshCanAgree)
 		end
-		remeasure()
-		local sizeCn = scroll:GetPropertyChangedSignal("AbsoluteSize"):Connect(remeasure)
-		local posCn = scroll:GetPropertyChangedSignal("CanvasPosition"):Connect(refreshCanAgree)
-		task.defer(remeasure)
-		task.delay(0.05, remeasure)
-		task.delay(0.2, remeasure)
-		return function()
-			sizeCn:Disconnect()
-			posCn:Disconnect()
-		end
-	end, { canvasH })
 
-	-- Re-check when canvas height updates (content taller than window).
+		remeasure()
+		refreshCanAgree()
+
+		local connections: { RBXScriptConnection } = {
+			scroll:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+				remeasure()
+				task.defer(refreshCanAgree)
+			end),
+			scroll:GetPropertyChangedSignal("CanvasPosition"):Connect(refreshCanAgree),
+			scroll:GetPropertyChangedSignal("AbsoluteCanvasSize"):Connect(refreshCanAgree),
+			scroll:GetPropertyChangedSignal("AbsoluteWindowSize"):Connect(refreshCanAgree),
+		}
+
+		-- A few frames after mount so CanvasSize / window size are real.
+		local frames = 0
+		local hb = RunService.Heartbeat:Connect(function()
+			frames += 1
+			if frames == 1 or frames == 3 or frames == 8 then
+				remeasure()
+			end
+			refreshCanAgree()
+			if frames >= 12 then
+				hb:Disconnect()
+			end
+		end)
+
+		return function()
+			for _, c in connections do
+				c:Disconnect()
+			end
+			if hb.Connected then
+				hb:Disconnect()
+			end
+		end
+	end, {})
+
+	-- After canvas height prop updates, re-check once layout applies.
 	React.useEffect(function()
-		task.defer(refreshCanAgree)
+		task.defer(function()
+			local s = scrollRef.current
+			if s then
+				setCanAgree(isScrolledToBottom(s))
+			end
+		end)
 		return nil
 	end, { canvasH })
+
+	local hintY = FOOTER_BOTTOM + BTN_H + LINKS_ABOVE_BUTTONS + LINKS_H + HINT_ABOVE_LINKS
 
 	return e("Frame", {
 		Size = UDim2.fromScale(1, 1),
@@ -152,6 +191,7 @@ local function EulaOverlay(props: {
 		Scroll = e("ScrollingFrame", {
 			ref = scrollRef,
 			Position = UDim2.new(0, PAD, 0, HEADER_H),
+			-- Leave room for hint strip + links + buttons (never draw over hint).
 			Size = UDim2.new(1, -PAD * 2, 1, -(HEADER_H + FOOTER_H)),
 			BackgroundColor3 = SECTION,
 			BackgroundTransparency = 0,
@@ -186,17 +226,19 @@ local function EulaOverlay(props: {
 			}),
 		}),
 
-		ScrollHint = not canAgree and e("TextLabel", {
-			Text = "Scroll to the bottom of the EULA to enable Agree.",
+		-- Dedicated strip BETWEEN scroll canvas and footer links (always reserved).
+		ScrollHint = e("TextLabel", {
+			Text = if canAgree then "" else "Scroll to the bottom of the EULA to enable Agree.",
 			TextColor3 = Theme.WARNING,
 			BackgroundTransparency = 1,
 			AnchorPoint = Vector2.new(0, 1),
-			Position = UDim2.new(0, PAD, 1, -(FOOTER_BOTTOM + BTN_H + LINKS_ABOVE_BUTTONS + LINKS_H + 4)),
-			Size = UDim2.new(1, -PAD * 2, 0, 16),
+			Position = UDim2.new(0, PAD, 1, -hintY),
+			Size = UDim2.new(1, -PAD * 2, 0, HINT_H),
 			Font = Theme.FONT,
 			TextSize = 12,
 			TextXAlignment = Enum.TextXAlignment.Left,
-			ZIndex = 101,
+			TextYAlignment = Enum.TextYAlignment.Center,
+			ZIndex = 103,
 		}),
 
 		Links = e("TextLabel", {
