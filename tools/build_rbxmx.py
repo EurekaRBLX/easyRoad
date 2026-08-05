@@ -14,7 +14,7 @@ uses, so the plugin can be built anywhere Python runs:
 Output is Roblox's XML model format (.rbxmx), which Studio loads from the
 local plugins folder exactly like a binary .rbxm.
 
-Usage: python3 tools/build_rbxmx.py [output-path]
+Usage: python3 tools/build_rbxmx.py [--license commercial|oss] [output-path]
 """
 
 import json
@@ -25,6 +25,7 @@ from xml.sax.saxutils import escape
 ROOT = Path(__file__).resolve().parent.parent
 
 _referent = 0
+_license_mode = "commercial"
 
 
 def next_referent() -> str:
@@ -47,7 +48,10 @@ def instance(class_name: str, name: str, source: str | None = None, children=Non
 
 
 def read_source(path: Path) -> str:
-	return path.read_text(encoding="utf-8")
+	text = path.read_text(encoding="utf-8")
+	if path.name == "ProductLicense.lua" and _license_mode == "oss":
+		return text.replace('ProductLicense.Mode = "Commercial" :: Mode', 'ProductLicense.Mode = "OSS" :: Mode')
+	return text
 
 
 def script_name(filename: str) -> str:
@@ -127,7 +131,21 @@ def build_project_node(base: Path, node: dict, name: str) -> str:
 
 
 def main() -> None:
-	output = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "dist" / "EasyRoad.rbxmx"
+	global _license_mode
+	args = [arg for arg in sys.argv[1:] if arg]
+	output = None
+	while args:
+		arg = args.pop(0)
+		if arg == "--license" and args:
+			_license_mode = args.pop(0).lower()
+		elif arg.startswith("--license="):
+			_license_mode = arg.split("=", 1)[1].lower()
+		else:
+			output = Path(arg)
+	if _license_mode not in ("commercial", "oss"):
+		raise SystemExit("Usage: build_rbxmx.py [--license commercial|oss] [output-path]")
+	if output is None:
+		output = ROOT / "dist" / ("EasyRoad-OSS.rbxmx" if _license_mode == "oss" else "EasyRoad.rbxmx")
 	project = json.loads((ROOT / "default.project.json").read_text(encoding="utf-8"))
 	root = build_project_node(ROOT, project["tree"], project.get("name", "EasyRoad"))
 	document = '<roblox version="4">%s</roblox>' % root
@@ -139,7 +157,7 @@ def main() -> None:
 	# dist file prove it contains only the source changes from this round.
 	with output.open("w", encoding="utf-8", newline="\n") as stream:
 		stream.write(document)
-	print("Wrote %s (%d bytes)" % (output, output.stat().st_size))
+	print("Wrote %s (%d bytes, license=%s)" % (output, output.stat().st_size, _license_mode))
 
 
 if __name__ == "__main__":
