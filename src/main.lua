@@ -117,43 +117,8 @@ return function(
 		end
 	end
 
-	local function closePluginFromEula()
-		rejectEula()
-		pluginOpen = false
-		destroySession()
-		designProfile = nil
-		assetManagerOpen = false
-		plugin:Deactivate()
-		setButtonActive(false)
-		destroyEulaScreen()
-		if topRoot then
-			topRoot:unmount()
-			topRoot = nil
-		end
-		if topScreenGui then
-			topScreenGui:Destroy()
-			topScreenGui = nil
-		end
-		if bottomRoot then
-			bottomRoot:unmount()
-			bottomRoot = nil
-		end
-		if bottomScreenGui then
-			bottomScreenGui:Destroy()
-			bottomScreenGui = nil
-		end
-		if pieMenuRoot then
-			pieMenuRoot:unmount()
-			pieMenuRoot = nil
-		end
-		if pieMenuScreenGui then
-			pieMenuScreenGui:Destroy()
-			pieMenuScreenGui = nil
-		end
-		regionalDock.Enabled = false
-		keybindsDock.Enabled = false
-		softwareDock.Enabled = false
-	end
+	-- closePluginFromEula is defined after destroySession / UI roots so those
+	-- locals are in scope (early def called nil destroySession on Disagree).
 
 	local session: createRoadSession.RoadSession? = nil
 	local sessionChangedCn: Signal.Connection? = nil
@@ -478,6 +443,47 @@ return function(
 		uiState.Hovered = false
 		toolModeHovered = false
 		roadLibraryHovered = false
+	end
+
+	-- Disagree / close while EULA is up: clear accept, tear down session + UI.
+	-- Must live after destroySession / topRoot / etc. so locals resolve (Luau).
+	local function closePluginFromEula()
+		rejectEula()
+		pluginOpen = false
+		destroySession()
+		designProfile = nil
+		assetManagerOpen = false
+		plugin:Deactivate()
+		setButtonActive(false)
+		destroyEulaScreen()
+		if topRoot then
+			topRoot:unmount()
+			topRoot = nil
+		end
+		if topScreenGui then
+			topScreenGui:Destroy()
+			topScreenGui = nil
+		end
+		releaseTopBarBridge()
+		if bottomRoot then
+			bottomRoot:unmount()
+			bottomRoot = nil
+		end
+		if bottomScreenGui then
+			bottomScreenGui:Destroy()
+			bottomScreenGui = nil
+		end
+		if pieMenuRoot then
+			pieMenuRoot:unmount()
+			pieMenuRoot = nil
+		end
+		if pieMenuScreenGui then
+			pieMenuScreenGui:Destroy()
+			pieMenuScreenGui = nil
+		end
+		regionalDock.Enabled = false
+		keybindsDock.Enabled = false
+		softwareDock.Enabled = false
 	end
 
 	-- profileOverride/seed power the pie menu's "Place More" action: continue
