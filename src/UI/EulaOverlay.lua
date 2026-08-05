@@ -1,8 +1,8 @@
 --!strict
 -- Full-viewport EULA gate: fills Studio viewport, RGB(30,30,30), Builder Sans.
 -- Body uses measured CanvasSize. Agree disabled until scroll reaches bottom.
--- Scroll-hint sits in a reserved strip between the canvas and the footer
--- (not overlaid on the ScrollingFrame, which was hiding it until re-layout).
+-- Footer is a stacked block (hint → links → buttons) with solid BG so
+-- link/scroll text cannot paint over the scroll-to-agree hint.
 
 local TextService = game:GetService("TextService")
 local RunService = game:GetService("RunService")
@@ -23,16 +23,16 @@ local BTN_H = 32
 local PAD = 24
 local TITLE_H = 32
 local META_H = 18
-local LINKS_H = 52
-local HINT_H = 20
+local LINKS_H = 48
+local HINT_H = 18
 local GAP = 12
 local SCROLL_INNER_PAD = 28
 local TEXT_SIZE = 14
 local FOOTER_BOTTOM = 12
-local LINKS_ABOVE_BUTTONS = 8
-local HINT_ABOVE_LINKS = 6
--- Footer block from bottom of viewport (buttons + links + hint strip + gaps)
-local FOOTER_H = FOOTER_BOTTOM + BTN_H + LINKS_ABOVE_BUTTONS + LINKS_H + HINT_ABOVE_LINKS + HINT_H + 4
+local FOOTER_STACK_PAD = 6
+-- Stacked footer: hint → links → buttons (no absolute Y overlap).
+local FOOTER_INNER_H = HINT_H + FOOTER_STACK_PAD + LINKS_H + FOOTER_STACK_PAD + BTN_H
+local FOOTER_H = FOOTER_BOTTOM + FOOTER_INNER_H + 8
 local HEADER_H = PAD + TITLE_H + GAP + META_H + GAP
 local SCROLL_BOTTOM_SLACK = 32
 
@@ -150,8 +150,6 @@ local function EulaOverlay(props: {
 		return nil
 	end, { canvasH })
 
-	local hintY = FOOTER_BOTTOM + BTN_H + LINKS_ABOVE_BUTTONS + LINKS_H + HINT_ABOVE_LINKS
-
 	return e("Frame", {
 		Size = UDim2.fromScale(1, 1),
 		BackgroundColor3 = BG,
@@ -191,7 +189,7 @@ local function EulaOverlay(props: {
 		Scroll = e("ScrollingFrame", {
 			ref = scrollRef,
 			Position = UDim2.new(0, PAD, 0, HEADER_H),
-			-- Leave room for hint strip + links + buttons (never draw over hint).
+			-- Leave full room for stacked footer (hint never under scroll or links).
 			Size = UDim2.new(1, -PAD * 2, 1, -(HEADER_H + FOOTER_H)),
 			BackgroundColor3 = SECTION,
 			BackgroundTransparency = 0,
@@ -226,91 +224,106 @@ local function EulaOverlay(props: {
 			}),
 		}),
 
-		-- Dedicated strip BETWEEN scroll canvas and footer links (always reserved).
-		ScrollHint = e("TextLabel", {
-			Text = if canAgree then "" else "Scroll to the bottom of the EULA to enable Agree.",
-			TextColor3 = Theme.WARNING,
-			BackgroundTransparency = 1,
-			AnchorPoint = Vector2.new(0, 1),
-			Position = UDim2.new(0, PAD, 1, -hintY),
-			Size = UDim2.new(1, -PAD * 2, 0, HINT_H),
-			Font = Theme.FONT,
-			TextSize = 12,
-			TextXAlignment = Enum.TextXAlignment.Left,
-			TextYAlignment = Enum.TextYAlignment.Center,
-			ZIndex = 103,
-		}),
-
-		Links = e("TextLabel", {
-			Text = string.format(
-				"Eureka Terms: %s\nPrivacy: %s\nDiscord: %s",
-				ProductLicense.TermsUrl,
-				ProductLicense.PrivacyUrl,
-				ProductLicense.DiscordUrl
-			),
-			TextColor3 = Theme.DIM,
-			BackgroundTransparency = 1,
-			AnchorPoint = Vector2.new(0, 1),
-			Position = UDim2.new(0, PAD, 1, -(FOOTER_BOTTOM + BTN_H + LINKS_ABOVE_BUTTONS)),
-			Size = UDim2.new(1, -PAD * 2, 0, LINKS_H),
-			Font = Theme.FONT,
-			TextSize = 12,
-			TextXAlignment = Enum.TextXAlignment.Left,
-			TextYAlignment = Enum.TextYAlignment.Bottom,
-			TextWrapped = true,
-			ZIndex = 101,
-		}),
-
-		Actions = e("Frame", {
+		-- One footer stack: solid BG so scroll/link text cannot paint over the hint.
+		Footer = e("Frame", {
 			AnchorPoint = Vector2.new(0, 1),
 			Position = UDim2.new(0, PAD, 1, -FOOTER_BOTTOM),
-			Size = UDim2.new(1, -PAD * 2, 0, BTN_H),
-			BackgroundTransparency = 1,
-			ZIndex = 101,
+			Size = UDim2.new(1, -PAD * 2, 0, FOOTER_INNER_H),
+			BackgroundColor3 = BG,
+			BackgroundTransparency = 0,
+			BorderSizePixel = 0,
+			ClipsDescendants = true,
+			ZIndex = 103,
 		}, {
 			Layout = e("UIListLayout", {
-				FillDirection = Enum.FillDirection.Horizontal,
-				HorizontalAlignment = Enum.HorizontalAlignment.Right,
-				VerticalAlignment = Enum.VerticalAlignment.Center,
-				Padding = UDim.new(0, 8),
+				FillDirection = Enum.FillDirection.Vertical,
+				HorizontalAlignment = Enum.HorizontalAlignment.Left,
+				VerticalAlignment = Enum.VerticalAlignment.Top,
+				Padding = UDim.new(0, FOOTER_STACK_PAD),
 				SortOrder = Enum.SortOrder.LayoutOrder,
 			}),
-			Disagree = e("TextButton", {
-				Text = props.DisagreeLabel or "Disagree",
-				TextColor3 = Theme.WHITE,
+			ScrollHint = e("TextLabel", {
+				Text = if canAgree then "" else "Scroll to the bottom of the EULA to enable Agree.",
+				TextColor3 = Theme.WARNING,
+				BackgroundTransparency = 1,
+				Size = UDim2.new(1, 0, 0, HINT_H),
 				Font = Theme.FONT,
-				TextSize = Theme.TEXT_SIZE,
-				BackgroundColor3 = SECTION,
-				BackgroundTransparency = 0,
-				BorderSizePixel = 0,
-				AutoButtonColor = true,
-				Size = UDim2.new(0, 110, 0, BTN_H),
+				TextSize = 12,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextYAlignment = Enum.TextYAlignment.Center,
+				TextTruncate = Enum.TextTruncate.AtEnd,
 				LayoutOrder = 1,
-				ZIndex = 102,
-				[React.Event.Activated] = props.OnDisagree,
-			}, {
-				Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+				ZIndex = 104,
 			}),
-			Agree = e("TextButton", {
-				Text = props.AgreeLabel or "Agree",
-				TextColor3 = Theme.WHITE,
+			Links = e("TextLabel", {
+				Text = string.format(
+					"Eureka Terms: %s\nPrivacy: %s\nDiscord: %s",
+					ProductLicense.TermsUrl,
+					ProductLicense.PrivacyUrl,
+					ProductLicense.DiscordUrl
+				),
+				TextColor3 = Theme.DIM,
+				BackgroundTransparency = 1,
+				Size = UDim2.new(1, 0, 0, LINKS_H),
 				Font = Theme.FONT,
-				TextSize = Theme.TEXT_SIZE,
-				BackgroundColor3 = if canAgree then Theme.SELECTED else Theme.BUTTON,
-				BackgroundTransparency = if canAgree then 0.1 else 0.45,
-				BorderSizePixel = 0,
-				AutoButtonColor = canAgree,
-				Active = canAgree,
-				Size = UDim2.new(0, 110, 0, BTN_H),
+				TextSize = 12,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextYAlignment = Enum.TextYAlignment.Top,
+				TextWrapped = true,
+				TextTruncate = Enum.TextTruncate.AtEnd,
 				LayoutOrder = 2,
-				ZIndex = 102,
-				[React.Event.Activated] = function()
-					if canAgree then
-						props.OnAgree()
-					end
-				end,
+				ZIndex = 104,
+			}),
+			Actions = e("Frame", {
+				Size = UDim2.new(1, 0, 0, BTN_H),
+				BackgroundTransparency = 1,
+				LayoutOrder = 3,
+				ZIndex = 104,
 			}, {
-				Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+				Layout = e("UIListLayout", {
+					FillDirection = Enum.FillDirection.Horizontal,
+					HorizontalAlignment = Enum.HorizontalAlignment.Right,
+					VerticalAlignment = Enum.VerticalAlignment.Center,
+					Padding = UDim.new(0, 8),
+					SortOrder = Enum.SortOrder.LayoutOrder,
+				}),
+				Disagree = e("TextButton", {
+					Text = props.DisagreeLabel or "Disagree",
+					TextColor3 = Theme.WHITE,
+					Font = Theme.FONT,
+					TextSize = Theme.TEXT_SIZE,
+					BackgroundColor3 = SECTION,
+					BackgroundTransparency = 0,
+					BorderSizePixel = 0,
+					AutoButtonColor = true,
+					Size = UDim2.new(0, 110, 0, BTN_H),
+					LayoutOrder = 1,
+					ZIndex = 105,
+					[React.Event.Activated] = props.OnDisagree,
+				}, {
+					Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+				}),
+				Agree = e("TextButton", {
+					Text = props.AgreeLabel or "Agree",
+					TextColor3 = Theme.WHITE,
+					Font = Theme.FONT,
+					TextSize = Theme.TEXT_SIZE,
+					BackgroundColor3 = if canAgree then Theme.SELECTED else Theme.BUTTON,
+					BackgroundTransparency = if canAgree then 0.1 else 0.45,
+					BorderSizePixel = 0,
+					AutoButtonColor = canAgree,
+					Active = canAgree,
+					Size = UDim2.new(0, 110, 0, BTN_H),
+					LayoutOrder = 2,
+					ZIndex = 105,
+					[React.Event.Activated] = function()
+						if canAgree then
+							props.OnAgree()
+						end
+					end,
+				}, {
+					Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+				}),
 			}),
 		}),
 	})
