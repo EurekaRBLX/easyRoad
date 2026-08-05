@@ -1,6 +1,7 @@
 local Theme = {}
 
-Theme.BACKGROUND = Color3.fromRGB(46, 46, 46)
+-- Match easyRail / easyLight Software dock (darker than old Studio gray).
+Theme.BACKGROUND = Color3.fromRGB(35, 35, 35)
 Theme.PANEL = Color3.fromRGB(38, 38, 38)
 Theme.FIELD = Color3.fromRGB(30, 30, 30)
 Theme.WHITE = Color3.fromRGB(255, 255, 255)
