@@ -50,6 +50,8 @@ local TopBarBridge = require("./EasyAPI/TopBarBridge")
 local RegionalPreferenceGui = require("./UI/RegionalPreferenceGui")
 local KeybindsGui = require("./UI/KeybindsGui")
 local SoftwareGui = require("./UI/SoftwareGui")
+local EulaOverlay = require("./UI/EulaOverlay")
+local ProductLicense = require("./ProductLicense")
 local Components = require("./UI/Components")
 local PieMenu = require("./UI/PieMenu")
 local BayDraftPanel = require("./UI/BayDraftPanel")
@@ -80,6 +82,78 @@ return function(
 	-- Whether the plugin UI (top bar) is shown at all; toggled by the
 	-- toolbar button.
 	local pluginOpen = false
+	local eulaReviewOpen = false
+	local eulaRoot: ReactRoblox.RootType? = nil
+	local eulaScreenGui: ScreenGui? = nil
+
+	local function eulaIsAccepted(): boolean
+		if not ProductLicense.RequiresEula() then
+			return true
+		end
+		return plugin:GetSetting(ProductLicense.SettingAccepted) == true
+			and plugin:GetSetting(ProductLicense.SettingVersion) == ProductLicense.EulaVersion
+	end
+
+	local function acceptEula()
+		plugin:SetSetting(ProductLicense.SettingAccepted, true)
+		plugin:SetSetting(ProductLicense.SettingVersion, ProductLicense.EulaVersion)
+		eulaReviewOpen = false
+	end
+
+	local function rejectEula()
+		plugin:SetSetting(ProductLicense.SettingAccepted, false)
+		plugin:SetSetting(ProductLicense.SettingVersion, "")
+		eulaReviewOpen = false
+	end
+
+	local function destroyEulaScreen()
+		if eulaRoot then
+			eulaRoot:unmount()
+			eulaRoot = nil
+		end
+		if eulaScreenGui then
+			eulaScreenGui:Destroy()
+			eulaScreenGui = nil
+		end
+	end
+
+	local function closePluginFromEula()
+		rejectEula()
+		pluginOpen = false
+		destroySession()
+		designProfile = nil
+		assetManagerOpen = false
+		plugin:Deactivate()
+		setButtonActive(false)
+		destroyEulaScreen()
+		if topRoot then
+			topRoot:unmount()
+			topRoot = nil
+		end
+		if topScreenGui then
+			topScreenGui:Destroy()
+			topScreenGui = nil
+		end
+		if bottomRoot then
+			bottomRoot:unmount()
+			bottomRoot = nil
+		end
+		if bottomScreenGui then
+			bottomScreenGui:Destroy()
+			bottomScreenGui = nil
+		end
+		if pieMenuRoot then
+			pieMenuRoot:unmount()
+			pieMenuRoot = nil
+		end
+		if pieMenuScreenGui then
+			pieMenuScreenGui:Destroy()
+			pieMenuScreenGui = nil
+		end
+		regionalDock.Enabled = false
+		keybindsDock.Enabled = false
+		softwareDock.Enabled = false
+	end
 
 	local session: createRoadSession.RoadSession? = nil
 	local sessionChangedCn: Signal.Connection? = nil
@@ -560,6 +634,67 @@ return function(
 	end
 
 	function updateUI()
+		local commercial = ProductLicense.RequiresEula()
+		local accepted = eulaIsAccepted()
+		local gateEula = pluginOpen and commercial and not accepted
+		local reviewEula = pluginOpen and commercial and eulaReviewOpen
+
+		if gateEula or reviewEula then
+			if not eulaRoot then
+				local screen = Instance.new("ScreenGui")
+				screen.Name = "EasyRoadEula"
+				screen.ResetOnSpawn = false
+				screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+				screen.DisplayOrder = 100
+				screen.Parent = CoreGui
+				eulaScreenGui = screen
+				eulaRoot = ReactRoblox.createRoot(screen)
+			end
+			assert(eulaRoot):render(React.createElement(EulaOverlay, {
+				OnAgree = function()
+					acceptEula()
+					updateUI()
+				end,
+				OnDisagree = function()
+					closePluginFromEula()
+					updateUI()
+				end,
+			}))
+		else
+			destroyEulaScreen()
+		end
+
+		if gateEula then
+			if topRoot then
+				topRoot:unmount()
+				topRoot = nil
+			end
+			if topScreenGui then
+				topScreenGui:Destroy()
+				topScreenGui = nil
+			end
+			if bottomRoot then
+				bottomRoot:unmount()
+				bottomRoot = nil
+			end
+			if bottomScreenGui then
+				bottomScreenGui:Destroy()
+				bottomScreenGui = nil
+			end
+			if pieMenuRoot then
+				pieMenuRoot:unmount()
+				pieMenuRoot = nil
+			end
+			if pieMenuScreenGui then
+				pieMenuScreenGui:Destroy()
+				pieMenuScreenGui = nil
+			end
+			regionalDock.Enabled = false
+			keybindsDock.Enabled = false
+			softwareDock.Enabled = false
+			return
+		end
+
 		-- Top mode bar --------------------------------------------------------
 		if pluginOpen then
 			ensureTopBarBridge()
@@ -568,6 +703,7 @@ return function(
 				screen.Name = "EasyRoadTopBar"
 				screen.ResetOnSpawn = false
 				screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+				screen.DisplayOrder = 10
 				-- IgnoreGuiInset deliberately left OFF (default false) - see
 				-- the EasyRoadHUD gui below for the full story; both HUD guis
 				-- follow the same convention.
@@ -1634,6 +1770,10 @@ return function(
 				OnClose = function()
 					softwareDock.Enabled = false
 				end,
+				OnViewEula = function()
+					eulaReviewOpen = true
+					updateUI()
+				end,
 			}))
 		elseif softwareRoot then
 			softwareRoot:unmount()
@@ -1644,6 +1784,8 @@ return function(
 	local clickedCn = buttonClicked:Connect(function()
 		pluginOpen = not pluginOpen
 		if not pluginOpen then
+			eulaReviewOpen = false
+			destroyEulaScreen()
 			destroySession()
 			designProfile = nil
 			assetManagerOpen = false
