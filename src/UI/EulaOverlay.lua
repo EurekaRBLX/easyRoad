@@ -3,9 +3,12 @@
 -- Body uses measured CanvasSize. Agree disabled until scroll reaches bottom.
 -- Footer is a stacked block (hint → links → buttons) with solid BG so
 -- link/scroll text cannot paint over the scroll-to-agree hint.
+--
+-- Perf: never React-setState during scroll. CanvasPosition only does cheap
+-- math against cached sizes and mutates Agree/hint instances directly.
+-- Reading Absolute* every scroll tick re-layouts the huge TextLabel.
 
 local TextService = game:GetService("TextService")
-local RunService = game:GetService("RunService")
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -14,7 +17,6 @@ local React = require(Packages.React)
 local e = React.createElement
 
 local Theme = require("./Theme")
-local Components = require("./Components")
 local ProductLicense = require("../ProductLicense")
 
 local BG = Color3.fromRGB(30, 30, 30)
@@ -35,6 +37,7 @@ local FOOTER_INNER_H = HINT_H + FOOTER_STACK_PAD + LINKS_H + FOOTER_STACK_PAD + 
 local FOOTER_H = FOOTER_BOTTOM + FOOTER_INNER_H + 8
 local HEADER_H = PAD + TITLE_H + GAP + META_H + GAP
 local SCROLL_BOTTOM_SLACK = 32
+local HINT_TEXT = "Scroll to the bottom of the EULA to enable Agree."
 
 local function measureBodyHeight(widthPx: number): number
 	local textWidth = math.max(widthPx - SCROLL_INNER_PAD, 80)
@@ -54,23 +57,6 @@ local function measureBodyHeight(widthPx: number): number
 	return math.max(1200, lines * 20)
 end
 
-local function isScrolledToBottom(scroll: ScrollingFrame): boolean
-	local window = scroll.AbsoluteWindowSize.Y
-	-- Prefer AbsoluteCanvasSize once layout has applied CanvasSize.
-	local canvas = scroll.AbsoluteCanvasSize.Y
-	if canvas < 1 then
-		canvas = scroll.CanvasSize.Y.Offset
-	end
-	if window <= 1 then
-		return false
-	end
-	if canvas <= window + SCROLL_BOTTOM_SLACK then
-		return true
-	end
-	local maxY = canvas - window
-	return scroll.CanvasPosition.Y >= maxY - SCROLL_BOTTOM_SLACK
-end
-
 local function EulaOverlay(props: {
 	OnAgree: () -> (),
 	OnDisagree: () -> (),
@@ -78,8 +64,62 @@ local function EulaOverlay(props: {
 	DisagreeLabel: string?,
 })
 	local scrollRef = React.useRef(nil :: ScrollingFrame?)
+	local agreeRef = React.useRef(nil :: TextButton?)
+	local hintRef = React.useRef(nil :: TextLabel?)
 	local canvasH, setCanvasH = React.useState(1600)
-	local canAgree, setCanAgree = React.useState(false)
+	-- Imperative gate — updated without React re-renders while scrolling.
+	local canAgreeRef = React.useRef(false)
+	local canvasHRef = React.useRef(1600)
+	local windowHRef = React.useRef(0)
+	local lastWidthRef = React.useRef(0)
+
+	local function applyCanAgree(next: boolean)
+		if canAgreeRef.current == next then
+			return
+		end
+		canAgreeRef.current = next
+		local agree = agreeRef.current
+		if agree then
+			agree.Active = next
+			agree.AutoButtonColor = next
+			agree.BackgroundColor3 = if next then Theme.SELECTED else Theme.BUTTON
+			agree.BackgroundTransparency = if next then 0.1 else 0.45
+		end
+		local hint = hintRef.current
+		if hint then
+			hint.Text = if next then "" else HINT_TEXT
+		end
+	end
+
+	local function isScrolledToBottom(scroll: ScrollingFrame): boolean
+		-- Prefer cached sizes — Absolute* during CanvasPosition forces layout.
+		local window = windowHRef.current
+		if window <= 1 then
+			window = scroll.AbsoluteWindowSize.Y
+			windowHRef.current = window
+		end
+		local canvas = canvasHRef.current
+		if canvas < 1 then
+			canvas = scroll.CanvasSize.Y.Offset
+		end
+		if window <= 1 then
+			return false
+		end
+		if canvas <= window + SCROLL_BOTTOM_SLACK then
+			return true
+		end
+		local maxY = canvas - window
+		return scroll.CanvasPosition.Y >= maxY - SCROLL_BOTTOM_SLACK
+	end
+
+	local function refreshCanAgree()
+		local s = scrollRef.current
+		if not s then
+			applyCanAgree(false)
+			return
+		end
+		applyCanAgree(isScrolledToBottom(s))
+	end
 
 	React.useEffect(function()
 		local scroll = scrollRef.current
@@ -87,68 +127,77 @@ local function EulaOverlay(props: {
 			return nil
 		end
 
-		local function refreshCanAgree()
-			local s = scrollRef.current
-			if not s then
-				setCanAgree(false)
-				return
-			end
-			setCanAgree(isScrolledToBottom(s))
-		end
-
 		local function remeasure()
 			local w = scroll.AbsoluteSize.X
-			if w >= 40 then
-				setCanvasH(measureBodyHeight(w))
+			if w < 40 then
+				return
 			end
+			-- Skip work if width unchanged (AbsoluteSize can fire for Y-only).
+			if math.abs(w - lastWidthRef.current) < 1 then
+				windowHRef.current = scroll.AbsoluteWindowSize.Y
+				refreshCanAgree()
+				return
+			end
+			lastWidthRef.current = w
+			windowHRef.current = scroll.AbsoluteWindowSize.Y
+			local h = measureBodyHeight(w)
+			canvasHRef.current = h
+			setCanvasH(function(prev)
+				if prev == h then
+					return prev
+				end
+				return h
+			end)
+			refreshCanAgree()
 		end
 
-		remeasure()
-		refreshCanAgree()
-
 		local connections: { RBXScriptConnection } = {
-			scroll:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
-				remeasure()
-				task.defer(refreshCanAgree)
-			end),
+			scroll:GetPropertyChangedSignal("AbsoluteSize"):Connect(remeasure),
+			-- Cheap path only — no Absolute* reads, no React setState.
 			scroll:GetPropertyChangedSignal("CanvasPosition"):Connect(refreshCanAgree),
-			scroll:GetPropertyChangedSignal("AbsoluteCanvasSize"):Connect(refreshCanAgree),
-			scroll:GetPropertyChangedSignal("AbsoluteWindowSize"):Connect(refreshCanAgree),
 		}
 
-		-- A few frames after mount so CanvasSize / window size are real.
-		local frames = 0
-		local hb = RunService.Heartbeat:Connect(function()
-			frames += 1
-			if frames == 1 or frames == 3 or frames == 8 then
-				remeasure()
-			end
-			refreshCanAgree()
-			if frames >= 12 then
-				hb:Disconnect()
-			end
-		end)
+		-- One deferred pass after mount so AbsoluteSize/window are real.
+		task.defer(remeasure)
+		task.delay(0.1, remeasure)
 
 		return function()
 			for _, c in connections do
 				c:Disconnect()
 			end
-			if hb.Connected then
-				hb:Disconnect()
-			end
 		end
 	end, {})
 
-	-- After canvas height prop updates, re-check once layout applies.
+	-- Keep canvas height ref + window size in sync after React applies CanvasSize.
 	React.useEffect(function()
+		canvasHRef.current = canvasH
 		task.defer(function()
 			local s = scrollRef.current
 			if s then
-				setCanAgree(isScrolledToBottom(s))
+				windowHRef.current = s.AbsoluteWindowSize.Y
+				refreshCanAgree()
 			end
 		end)
 		return nil
 	end, { canvasH })
+
+	-- React re-renders (e.g. canvas height) reset Agree/hint props — re-assert gate.
+	React.useEffect(function()
+		local next = canAgreeRef.current
+		local agree = agreeRef.current
+		if agree then
+			agree.Active = next
+			agree.AutoButtonColor = next
+			agree.BackgroundColor3 = if next then Theme.SELECTED else Theme.BUTTON
+			agree.BackgroundTransparency = if next then 0.1 else 0.45
+		end
+		local hint = hintRef.current
+		if hint then
+			hint.Text = if next then "" else HINT_TEXT
+		end
+		return nil
+	end)
+
 
 	return e("Frame", {
 		Size = UDim2.fromScale(1, 1),
@@ -189,7 +238,6 @@ local function EulaOverlay(props: {
 		Scroll = e("ScrollingFrame", {
 			ref = scrollRef,
 			Position = UDim2.new(0, PAD, 0, HEADER_H),
-			-- Leave full room for stacked footer (hint never under scroll or links).
 			Size = UDim2.new(1, -PAD * 2, 1, -(HEADER_H + FOOTER_H)),
 			BackgroundColor3 = SECTION,
 			BackgroundTransparency = 0,
@@ -224,7 +272,6 @@ local function EulaOverlay(props: {
 			}),
 		}),
 
-		-- One footer stack: solid BG so scroll/link text cannot paint over the hint.
 		Footer = e("Frame", {
 			AnchorPoint = Vector2.new(0, 1),
 			Position = UDim2.new(0, PAD, 1, -FOOTER_BOTTOM),
@@ -243,7 +290,8 @@ local function EulaOverlay(props: {
 				SortOrder = Enum.SortOrder.LayoutOrder,
 			}),
 			ScrollHint = e("TextLabel", {
-				Text = if canAgree then "" else "Scroll to the bottom of the EULA to enable Agree.",
+				ref = hintRef,
+				Text = HINT_TEXT,
 				TextColor3 = Theme.WARNING,
 				BackgroundTransparency = 1,
 				Size = UDim2.new(1, 0, 0, HINT_H),
@@ -304,20 +352,21 @@ local function EulaOverlay(props: {
 					Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
 				}),
 				Agree = e("TextButton", {
+					ref = agreeRef,
 					Text = props.AgreeLabel or "Agree",
 					TextColor3 = Theme.WHITE,
 					Font = Theme.FONT,
 					TextSize = Theme.TEXT_SIZE,
-					BackgroundColor3 = if canAgree then Theme.SELECTED else Theme.BUTTON,
-					BackgroundTransparency = if canAgree then 0.1 else 0.45,
+					BackgroundColor3 = Theme.BUTTON,
+					BackgroundTransparency = 0.45,
 					BorderSizePixel = 0,
-					AutoButtonColor = canAgree,
-					Active = canAgree,
+					AutoButtonColor = false,
+					Active = false,
 					Size = UDim2.new(0, 110, 0, BTN_H),
 					LayoutOrder = 2,
 					ZIndex = 105,
 					[React.Event.Activated] = function()
-						if canAgree then
+						if canAgreeRef.current then
 							props.OnAgree()
 						end
 					end,
