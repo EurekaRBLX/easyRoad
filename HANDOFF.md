@@ -24,6 +24,24 @@ history, and `KNOWN_ISSUES.md` confirmed bugs.
 - Log every round in `SHIPPED.md` (newest at top) and update `TODO.md`.
 - Push with `git push -u origin main`, retry up to 4× with backoff.
 
+## Latest: lane marking dropdown + portable plugin-data backup
+
+The Road Editor's marking dropdown had two coupled layout failures: its Grow
+frame still claimed a 100%-wide flex basis after the label, and its list opened
+below a control already sitting at the bottom of the screen. `Components.Dropdown`
+now uses a zero-width grow basis, supports `OpenUp`, and bounds its options in a
+vertical scrolling frame. The lane marking control opts into `OpenUp`; normal
+settings dropdowns keep expanding downward in flow.
+
+Regional Preference now contains **Back up data** and **Restore data**.
+`Settings.Export` emits the versioned `easyRoad-data` JSON envelope;
+`Settings.Import` validates and sanitizes it. Restore reconstructs both custom
+libraries, drops invalid entries through the existing deserializers, preserves
+the shared settings table identity, persists, and refreshes the UI. Roblox's
+supported Plugin API has no clipboard method, so the UI selects backup JSON for
+Ctrl+C and accepts Ctrl+V into the restore box. Restore is validate-then-confirm.
+Placed roads are outside this backup because they live in the place itself.
+
 ---
 
 ## THE standing hazard: no Luau runtime or typechecker

@@ -487,6 +487,64 @@ return function(
 		softwareDock.Enabled = false
 	end
 
+	local function restoredLibraries(restored: Settings.EasyRoadSettings)
+		local restoredRegions = createRegionLibrary(restored.UserRegions)
+		local regionExists = false
+		for _, style in restoredRegions.GetAll() do
+			if style.Id == restored.RegionId then
+				regionExists = true
+				break
+			end
+		end
+		if not regionExists then
+			restored.RegionId = "UK"
+		end
+
+		local restoredRoads = createRoadLibrary(restoredRegions.Get(restored.RegionId), restored.UserProfiles)
+		if not restoredRoads.Get(restored.DefaultProfileId) then
+			restored.DefaultProfileId = restoredRoads.GetDefault().Id
+		end
+		-- Re-serialize once so malformed individual custom entries are dropped
+		-- by their normal deserializers before anything is persisted.
+		restored.UserRegions = restoredRegions.SerializeUserRegions()
+		restored.UserProfiles = restoredRoads.SerializeUserProfiles()
+		return restoredRegions, restoredRoads
+	end
+
+	local function validateRestoreData(json: string): (boolean, string)
+		local restored, errorMessage = Settings.Import(json, HttpService)
+		if not restored then
+			return false, errorMessage
+		end
+		local _, restoredRoads = restoredLibraries(restored)
+		local restoredProfiles = restoredRoads.SerializeUserProfiles()
+		return true,
+			string.format(
+				"Valid backup: %d custom road%s and %d custom region%s. Click Restore now to replace current plugin data.",
+				#restoredProfiles,
+				if #restoredProfiles == 1 then "" else "s",
+				#restored.UserRegions,
+				if #restored.UserRegions == 1 then "" else "s"
+			)
+	end
+
+	local function restoreData(json: string): (boolean, string)
+		local restored, errorMessage = Settings.Import(json, HttpService)
+		if not restored then
+			return false, errorMessage
+		end
+
+		local restoredRegions, restoredRoads = restoredLibraries(restored)
+		destroySession()
+		designProfile = nil
+		Settings.Replace(settings, restored)
+		regionLibrary = restoredRegions
+		library = restoredRoads
+		persist()
+		updateUI()
+		return true, "Data restored. Settings and custom presets are active now."
+	end
+
 	-- profileOverride/seed power the pie menu's "Place More" action: continue
 	-- building from an exact existing road's end, with its exact profile,
 	-- rather than starting fresh with the default road.
@@ -1794,6 +1852,12 @@ return function(
 				Settings = settings,
 				RegionLibrary = regionLibrary,
 				OnSettingsChanged = onSettingsChanged,
+				OnBackupData = function(): string
+					persist()
+					return Settings.Export(settings, HttpService)
+				end,
+				OnValidateRestoreData = validateRestoreData,
+				OnRestoreData = restoreData,
 				OnClose = function()
 					regionalDock.Enabled = false
 				end,

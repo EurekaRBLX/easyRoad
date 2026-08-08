@@ -4,6 +4,27 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Lane-marking selector containment + JSON backup/restore
+
+- The Road Editor's boundary-marking dropdown now takes only the remaining
+  width beside its label. Its old 100%-wide flex basis caused the selector to
+  spill past the right edge of the lane card.
+- Because the boundary editor lives against the bottom of the viewport, its
+  choices now open upward. Dropdown choices use a bounded vertical
+  `ScrollingFrame`, so all marking types remain reachable instead of only the
+  first row being visible below the screen edge.
+- Regional Preference gained a **Data Safety** section. **Back up data** emits
+  versioned JSON containing every current grand setting plus custom road and
+  region presets. Studio plugins have no supported clipboard API, so the field
+  is selected for the ordinary Ctrl+C flow.
+- **Restore data** accepts pasted JSON, rejects malformed/wrong-format/
+  unsupported-version/oversized payloads, sanitizes settings, filters malformed
+  custom presets through the existing deserializers, and reports valid preset
+  counts. Applying it requires a separate red **Restore now** confirmation and
+  activates the restored libraries immediately.
+- Placed roads are deliberately excluded: their data already lives in the
+  place, while this backup protects plugin-global preferences and presets.
+
 ## Roundabout approach compatibility, lane advice, seam ownership, and Turbo width parity
 
 Roundabout conversion is now profile-driven rather than category-gated. Highway
@@ -1197,7 +1218,6 @@ and bunched T and X, and a 5-leg node, across three road widths.
 
 Not yet confirmed in Studio. The next live check is the shallow bend that was
 reported, plus a T and an X.
-
 ## True X intersections and visible road snapping
 
 Drawing a new road all the way across an existing road now creates a real

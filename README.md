@@ -91,7 +91,9 @@ components, left to right: **Drive**, **Sidewalk**, **Median**, **Shoulder**,
 **Bike**, **Parking**. Each has a width in meters, and traffic-carrying
 kinds have a direction (with/against the road). **Duplicate road** turns the
 current built-in or user road into a separately named, editable user type;
-user roads persist in plugin settings across sessions.
+user roads persist in plugin settings across sessions. The lane-marking
+selector stays inside the editor at narrow widths, opens upward from the
+bottom bar, and scrolls through every marking choice.
 
 Persistent Studio changes use isolated ChangeHistoryService recordings. Each
 placed segment, roundabout, junction edit, road rebuild, or asset operation is
@@ -123,6 +125,12 @@ placement session starts and Road Tools Advanced can override them.
 
 The Settings menu also includes **Software**, showing the local easyRoad build
 and product information.
+
+* **Data safety** — **Back up data** exposes portable JSON for plugin settings
+  and custom road/region presets; copy it with Ctrl+C. **Restore data** accepts
+  that JSON, validates it, previews the number of presets, and requires a
+  second confirmation before replacing the current plugin data. Placed roads
+  remain stored in the open place and are not part of this backup.
 
 ## Architecture
 

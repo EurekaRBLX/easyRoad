@@ -16029,6 +16029,9 @@ local Keybinds = require("./Keybinds")
 local StructureMaterials = require("./StructureMaterials")
 
 local kSettingsKey = "easyRoadState"
+local BACKUP_FORMAT = "easyRoad-data"
+local BACKUP_VERSION = 1
+local MAX_BACKUP_BYTES = 2 * 1024 * 1024
 
 local LANGUAGE_VARIANTS = { "British", "American" }
 local SPEED_UNITS = { "Kmh", "Mph" }
@@ -16133,43 +16136,62 @@ export type EasyRoadSettings = {
 	UserRegions: { { [string]: any } },
 }
 
-local function loadSettings(plugin: Plugin): EasyRoadSettings
-	local raw = plugin:GetSetting(kSettingsKey) or {}
+local function numberOr(raw: any, key: string, fallback: number, minimum: number, maximum: number): number
+	local value = raw[key]
+	if typeof(value) ~= "number" or value ~= value or value == math.huge or value == -math.huge then
+		return fallback
+	end
+	return math.clamp(value, minimum, maximum)
+end
+
+local function stringOr(raw: any, key: string, fallback: string): string
+	return if typeof(raw[key]) == "string" then raw[key] else fallback
+end
+
+local function booleanOr(raw: any, key: string, fallback: boolean): boolean
+	return if typeof(raw[key]) == "boolean" then raw[key] else fallback
+end
+
+local function enumOr(raw: any, key: string, allowed: { string }, fallback: string): string
+	local value = raw[key]
+	return if typeof(value) == "string" and table.find(allowed, value) then value else fallback
+end
+
+local function arrayOrEmpty(value: any): { { [string]: any } }
+	return if typeof(value) == "table" then value :: any else {}
+end
+
+-- One sanitizer owns both ordinary plugin loads and JSON restores. Besides
+-- making old settings forward-compatible, this is the trust boundary for a
+-- pasted backup: wrong types and out-of-range numbers never reach geometry.
+local function sanitizeSettings(rawValue: any): EasyRoadSettings
+	local raw = if typeof(rawValue) == "table" then rawValue else {}
 	return {
-		RegionId = raw.RegionId or "UK",
-		MetersToStuds = raw.MetersToStuds or 3.571,
-		DesignSpeedKph = raw.DesignSpeedKph or 60,
-		SuperelevationMode = raw.SuperelevationMode or "Auto",
-		ManualBankDeg = raw.ManualBankDeg or 4,
+		RegionId = stringOr(raw, "RegionId", "UK"),
+		MetersToStuds = numberOr(raw, "MetersToStuds", 3.571, 0.5, 20),
+		DesignSpeedKph = numberOr(raw, "DesignSpeedKph", 60, 10, 200),
+		SuperelevationMode = enumOr(raw, "SuperelevationMode", { "Auto", "Manual", "Off" }, "Auto") :: SuperelevationMode,
+		ManualBankDeg = numberOr(raw, "ManualBankDeg", 4, 0, 30),
 		-- Default preserves the exact prior fixed behaviour (40 studs at
 		-- the default 3.571 studs/meter scale, ~11.2m).
-		SuperelevationRunoffM = raw.SuperelevationRunoffM or 11.2,
-		AutoMarkings = if raw.AutoMarkings == nil then true else raw.AutoMarkings,
-		DriveSideOverride = raw.DriveSideOverride or "Region",
-		LanguageVariant = if typeof(raw.LanguageVariant) == "string"
-				and table.find(LANGUAGE_VARIANTS, raw.LanguageVariant)
-			then raw.LanguageVariant :: LanguageVariant
-			else "British" :: LanguageVariant,
-		SpeedUnit = if typeof(raw.SpeedUnit) == "string" and table.find(SPEED_UNITS, raw.SpeedUnit)
-			then raw.SpeedUnit :: SpeedUnit
-			else "Kmh" :: SpeedUnit,
-		LengthUnit = if typeof(raw.LengthUnit) == "string" and table.find(LENGTH_UNITS, raw.LengthUnit)
-			then raw.LengthUnit :: LengthUnit
-			else "Meters" :: LengthUnit,
-		DefaultProfileId = raw.DefaultProfileId or "builtin_two_lane",
-		SnapRadiusStuds = raw.SnapRadiusStuds or 8,
-		GridSizeStuds = raw.GridSizeStuds or 4,
-		SnapToGrid = if raw.SnapToGrid == nil then false else raw.SnapToGrid,
-		SnapToRoad = if raw.SnapToRoad == nil then true else raw.SnapToRoad,
-		SnapReference = if raw.SnapReference == "LeftRoadwayEdge" or raw.SnapReference == "RightRoadwayEdge"
-			then raw.SnapReference
-			else "Centre",
-		RoundaboutEntryCurve = if raw.RoundaboutEntryCurve == nil then true else raw.RoundaboutEntryCurve,
-		ElevationStepStuds = raw.ElevationStepStuds or 1,
-		LastElevationStuds = raw.LastElevationStuds or 0,
-		RoadThicknessStuds = raw.RoadThicknessStuds or 1,
-		MaxSegmentLengthStuds = raw.MaxSegmentLengthStuds or 8,
-		PreviewMaxSegmentLengthStuds = raw.PreviewMaxSegmentLengthStuds or 16,
+		SuperelevationRunoffM = numberOr(raw, "SuperelevationRunoffM", 11.2, 2, 30),
+		AutoMarkings = booleanOr(raw, "AutoMarkings", true),
+		DriveSideOverride = enumOr(raw, "DriveSideOverride", { "Region", "Left", "Right" }, "Region"),
+		LanguageVariant = enumOr(raw, "LanguageVariant", LANGUAGE_VARIANTS, "British") :: LanguageVariant,
+		SpeedUnit = enumOr(raw, "SpeedUnit", SPEED_UNITS, "Kmh") :: SpeedUnit,
+		LengthUnit = enumOr(raw, "LengthUnit", LENGTH_UNITS, "Meters") :: LengthUnit,
+		DefaultProfileId = stringOr(raw, "DefaultProfileId", "builtin_two_lane"),
+		SnapRadiusStuds = numberOr(raw, "SnapRadiusStuds", 8, 0, 64),
+		GridSizeStuds = numberOr(raw, "GridSizeStuds", 4, 0.5, 64),
+		SnapToGrid = booleanOr(raw, "SnapToGrid", false),
+		SnapToRoad = booleanOr(raw, "SnapToRoad", true),
+		SnapReference = enumOr(raw, "SnapReference", { "Centre", "LeftRoadwayEdge", "RightRoadwayEdge" }, "Centre") :: SnapReference,
+		RoundaboutEntryCurve = booleanOr(raw, "RoundaboutEntryCurve", true),
+		ElevationStepStuds = numberOr(raw, "ElevationStepStuds", 1, 0.25, 32),
+		LastElevationStuds = numberOr(raw, "LastElevationStuds", 0, -100000, 100000),
+		RoadThicknessStuds = numberOr(raw, "RoadThicknessStuds", 1, 0.1, 16),
+		MaxSegmentLengthStuds = numberOr(raw, "MaxSegmentLengthStuds", 8, 2, 64),
+		PreviewMaxSegmentLengthStuds = numberOr(raw, "PreviewMaxSegmentLengthStuds", 16, 2, 128),
 		StructureConcreteColorHex = if typeof(raw.StructureConcreteColorHex) == "string"
 			then raw.StructureConcreteColorHex
 			else "#696B70",
@@ -16189,33 +16211,21 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 			elseif typeof(raw.StructureConcreteColorHex) == "string" then raw.StructureConcreteColorHex
 			else "#696B70",
 		TunnelRoofMaterial = StructureMaterials.Sanitize(raw.TunnelRoofMaterial),
-		StructureInterfaceOverlapM = if typeof(raw.StructureInterfaceOverlapM) == "number"
-			then math.max(raw.StructureInterfaceOverlapM, 0)
-			else 0.2,
-		ViaductParapetGapM = if typeof(raw.ViaductParapetGapM) == "number"
-			then math.max(raw.ViaductParapetGapM, 0)
-			else 0,
-		ViaductParapetHeightM = if typeof(raw.ViaductParapetHeightM) == "number"
-			then math.max(raw.ViaductParapetHeightM, 0.2)
-			else 1.2,
-		TunnelWallClearanceM = if typeof(raw.TunnelWallClearanceM) == "number"
-			then math.max(raw.TunnelWallClearanceM, 0)
-			else 0.75,
-		TunnelVerticalClearanceM = if typeof(raw.TunnelVerticalClearanceM) == "number"
-			then math.max(raw.TunnelVerticalClearanceM, 2)
-			else 6,
-		ElevatedMedianConcrete = if raw.ElevatedMedianConcrete == nil then true else raw.ElevatedMedianConcrete,
-		ParallelRoadwayGapM = if typeof(raw.ParallelRoadwayGapM) == "number"
-			then math.max(raw.ParallelRoadwayGapM, 0)
-			else 2,
+		StructureInterfaceOverlapM = numberOr(raw, "StructureInterfaceOverlapM", 0.2, 0, 2),
+		ViaductParapetGapM = numberOr(raw, "ViaductParapetGapM", 0, 0, 5),
+		ViaductParapetHeightM = numberOr(raw, "ViaductParapetHeightM", 1.2, 0.2, 5),
+		TunnelWallClearanceM = numberOr(raw, "TunnelWallClearanceM", 0.75, 0, 10),
+		TunnelVerticalClearanceM = numberOr(raw, "TunnelVerticalClearanceM", 6, 2, 12),
+		ElevatedMedianConcrete = booleanOr(raw, "ElevatedMedianConcrete", true),
+		ParallelRoadwayGapM = numberOr(raw, "ParallelRoadwayGapM", 2, 0, 50),
 		Keybinds = Keybinds.Sanitize(raw.Keybinds),
-		UserProfiles = raw.UserProfiles or {},
-		UserRegions = raw.UserRegions or {},
+		UserProfiles = arrayOrEmpty(raw.UserProfiles),
+		UserRegions = arrayOrEmpty(raw.UserRegions),
 	}
 end
 
-local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
-	plugin:SetSetting(kSettingsKey, {
+local function serializeSettings(settings: EasyRoadSettings): { [string]: any }
+	return {
 		RegionId = settings.RegionId,
 		MetersToStuds = settings.MetersToStuds,
 		DesignSpeedKph = settings.DesignSpeedKph,
@@ -16257,12 +16267,68 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		Keybinds = settings.Keybinds,
 		UserProfiles = settings.UserProfiles,
 		UserRegions = settings.UserRegions,
+	}
+end
+
+local function loadSettings(plugin: Plugin): EasyRoadSettings
+	return sanitizeSettings(plugin:GetSetting(kSettingsKey))
+end
+
+local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
+	plugin:SetSetting(kSettingsKey, serializeSettings(settings))
+end
+
+local function exportSettings(settings: EasyRoadSettings, httpServiceOverride: HttpService?): string
+	local httpService = httpServiceOverride or game:GetService("HttpService")
+	return httpService:JSONEncode({
+		Format = BACKUP_FORMAT,
+		Version = BACKUP_VERSION,
+		Data = serializeSettings(settings),
 	})
+end
+
+local function importSettings(json: string, httpServiceOverride: HttpService?): (EasyRoadSettings?, string)
+	if json:match("^%s*$") then
+		return nil, "Paste an easyRoad backup first."
+	end
+	if #json &gt; MAX_BACKUP_BYTES then
+		return nil, "Backup is larger than the 2 MB safety limit."
+	end
+
+	local httpService = httpServiceOverride or game:GetService("HttpService")
+	local ok, decoded = pcall(httpService.JSONDecode, httpService, json)
+	if not ok or typeof(decoded) ~= "table" then
+		return nil, "That text is not valid JSON."
+	end
+	if decoded.Format ~= BACKUP_FORMAT then
+		return nil, "This is not an easyRoad data backup."
+	end
+	if decoded.Version ~= BACKUP_VERSION then
+		return nil, "This backup version is not supported by this build."
+	end
+	if typeof(decoded.Data) ~= "table" then
+		return nil, "The backup has no settings data."
+	end
+
+	return sanitizeSettings(decoded.Data), ""
+end
+
+local function replaceSettings(target: EasyRoadSettings, source: EasyRoadSettings)
+	local targetTable = target :: any
+	for key in targetTable do
+		targetTable[key] = nil
+	end
+	for key, value in source :: any do
+		targetTable[key] = value
+	end
 end
 
 return {
 	Load = loadSettings,
 	Save = saveSettings,
+	Export = exportSettings,
+	Import = importSettings,
+	Replace = replaceSettings,
 }
 </ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX38"><Properties><string name="Name">StructureAssets</string><ProtectedString name="Source">--!strict
 -- Game-owned library for rigid road structure modules imported from Studio.
@@ -18022,16 +18088,18 @@ end
 
 -- Button ------------------------------------------------------------------------
 
-function Components.Button(props: {
-	Text: string,
-	Icon: string?, -- When set, replaces the text with a centered icon image
-	OnClick: () -&gt; (),
-	Selected: boolean?,
-	Danger: boolean?,
-	LayoutOrder: number?,
-	Size: UDim2?,
-	Grow: boolean?,
-})
+function Components.Button(
+	props: {
+		Text: string,
+		Icon: string?, -- When set, replaces the text with a centered icon image
+		OnClick: () -&gt; (),
+		Selected: boolean?,
+		Danger: boolean?,
+		LayoutOrder: number?,
+		Size: UDim2?,
+		Grow: boolean?,
+	}
+)
 	local hovered, setHovered = React.useState(false)
 
 	local color = Theme.BUTTON
@@ -18198,7 +18266,9 @@ function Components.TextField(props: {
 		TextColor3 = Theme.WHITE,
 		BackgroundColor3 = Theme.FIELD,
 		BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,
-		Size = if props.Width then UDim2.new(0, props.Width, 0, Theme.ROW_HEIGHT) else UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
+		Size = if props.Width
+			then UDim2.new(0, props.Width, 0, Theme.ROW_HEIGHT)
+			else UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
 		Font = Theme.FONT,
 		TextSize = Theme.TEXT_SIZE,
 		TextTruncate = Enum.TextTruncate.AtEnd,
@@ -18743,8 +18813,13 @@ function Components.Dropdown(props: {
 	Placeholder: string?,
 	LayoutOrder: number?,
 	Grow: boolean?,
+	OpenUp: boolean?,
+	MaxVisibleOptions: number?,
 })
 	local open, setOpen = React.useState(false)
+	local optionHeight = Theme.ROW_HEIGHT - 4
+	local visibleOptionCount = math.min(#props.Options, props.MaxVisibleOptions or 5)
+	local optionsHeight = visibleOptionCount * optionHeight
 
 	local selectedText = props.Placeholder or "Select..."
 	for _, option in props.Options do
@@ -18768,7 +18843,7 @@ function Components.Dropdown(props: {
 				Text = option.Text,
 				TextColor3 = Theme.WHITE,
 				BackgroundColor3 = if option.Id == props.SelectedId then Theme.SELECTED else Theme.PANEL,
-				Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT - 4),
+				Size = UDim2.new(1, 0, 0, optionHeight),
 				Font = Theme.FONT,
 				TextSize = Theme.TEXT_SIZE,
 				TextXAlignment = Enum.TextXAlignment.Left,
@@ -18785,19 +18860,37 @@ function Components.Dropdown(props: {
 			})
 		end
 	end
+	local optionsProps = Components.ScrollBar()
+	optionsProps.Size = UDim2.new(1, 0, 0, optionsHeight)
+	if props.OpenUp then
+		optionsProps.AnchorPoint = Vector2.new(0, 1)
+		optionsProps.Position = UDim2.new(0, 0, 0, -4)
+	else
+		optionsProps.LayoutOrder = 2
+	end
+	optionsProps.BackgroundColor3 = Theme.PANEL
+	optionsProps.BorderSizePixel = 0
+	optionsProps.CanvasSize = UDim2.new(0, 0, 0, 0)
+	optionsProps.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	optionsProps.ScrollingDirection = Enum.ScrollingDirection.Y
+	optionsProps.ScrollingEnabled = #props.Options &gt; visibleOptionCount
+	optionsProps.ZIndex = 10
 
 	return e("Frame", {
-		Size = UDim2.new(if props.Grow then 1 else 0, if props.Grow then 0 else 140, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
+		-- A Grow item must start with a zero-width flex basis. A 100%-wide
+		-- basis is measured before the preceding label, so the label + gap +
+		-- dropdown exceeded the row and produced the lane-editor overflow.
+		Size = UDim2.new(0, if props.Grow then 0 else 140, 0, if props.OpenUp then Theme.ROW_HEIGHT else 0),
+		AutomaticSize = if props.OpenUp then Enum.AutomaticSize.None else Enum.AutomaticSize.Y,
 		BackgroundTransparency = 1,
 		LayoutOrder = props.LayoutOrder,
 		ZIndex = if open then 10 else 1,
 	}, {
-		Layout = e("UIListLayout", {
-			SortOrder = Enum.SortOrder.LayoutOrder,
-		}),
 		Flex = props.Grow and e("UIFlexItem", {
 			FlexMode = Enum.UIFlexMode.Grow,
+		}),
+		Layout = not props.OpenUp and e("UIListLayout", {
+			SortOrder = Enum.SortOrder.LayoutOrder,
 		}),
 		-- Chevron is a plain down arrow: Studio's SourceSans lacks the small
 		-- triangle glyphs and renders them as tofu boxes.
@@ -18824,13 +18917,11 @@ function Components.Dropdown(props: {
 				PaddingRight = UDim.new(0, 8),
 			}),
 		}),
-		Options = open and e("Frame", {
-			Size = UDim2.new(1, 0, 0, 0),
-			AutomaticSize = Enum.AutomaticSize.Y,
-			BackgroundColor3 = Theme.PANEL,
-			LayoutOrder = 2,
-			ZIndex = 10,
-		}, optionElements),
+		-- Options float over the surrounding layout instead of increasing the
+		-- row's height. The lane marking control sits against the bottom of the
+		-- viewport, so it opts into OpenUp; a bounded ScrollingFrame keeps every
+		-- selector usable even when it has many choices.
+		Options = open and e("ScrollingFrame", optionsProps, optionElements),
 	})
 end
 
@@ -21308,11 +21399,39 @@ local function RegionalPreferenceGui(props: {
 	Settings: Settings.EasyRoadSettings,
 	RegionLibrary: RegionLibrary,
 	OnSettingsChanged: () -&gt; (),
+	OnBackupData: () -&gt; string,
+	OnValidateRestoreData: (json: string) -&gt; (boolean, string),
+	OnRestoreData: (json: string) -&gt; (boolean, string),
 	OnClose: () -&gt; (),
 })
 	local settings = props.Settings
 	local regionLibrary = props.RegionLibrary
 	local editingRegion, setEditingRegion = React.useState(nil :: RegionStyles.RegionStyle?)
+	local transferMode, setTransferMode = React.useState(nil :: ("Backup" | "Restore")?)
+	local transferText, setTransferText = React.useState("")
+	local transferStatus, setTransferStatus = React.useState("")
+	local transferStatusIsError, setTransferStatusIsError = React.useState(false)
+	local restoreReady, setRestoreReady = React.useState(false)
+	local transferBoxRef = React.useRef(nil :: TextBox?)
+
+	local function focusTransferText(selectAll: boolean)
+		local box = transferBoxRef.current
+		if not box then
+			return
+		end
+		box:CaptureFocus()
+		if selectAll then
+			box.CursorPosition = 1
+			box.SelectionStart = #box.Text + 1
+		end
+	end
+
+	React.useEffect(function()
+		if transferMode then
+			focusTransferText(transferMode == "Backup")
+		end
+		return nil
+	end, { transferMode } :: { any })
 
 	-- Display-unit conversions for the fields below (see Units.lua). Bounds
 	-- convert with the value, or a field shown in mph/ft would be clamped by
@@ -21882,6 +22001,150 @@ local function RegionalPreferenceGui(props: {
 					LayoutOrder = 2,
 				}),
 			},
+		}),
+		DataSection = e(Components.Section, {
+			Text = "Data Safety",
+			LayoutOrder = 60,
+		}),
+		DataDescription = e("TextLabel", {
+			Text = "Back up plugin settings and custom road/region presets as JSON. Placed roads already live in this place and are not changed.",
+			TextColor3 = Theme.DIM,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			TextWrapped = true,
+			Font = Theme.FONT,
+			TextSize = Theme.TEXT_SIZE,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			LayoutOrder = 61,
+		}),
+		DataActions = e(Components.Row, { LayoutOrder = 62 }, {
+			Backup = e(Components.Button, {
+				Text = "Back up data",
+				OnClick = function()
+					setTransferText(props.OnBackupData())
+					setTransferStatus("JSON selected - press Ctrl+C to copy it.")
+					setTransferStatusIsError(false)
+					setRestoreReady(false)
+					setTransferMode("Backup")
+				end,
+				Selected = transferMode == "Backup",
+				LayoutOrder = 1,
+				Grow = true,
+			}),
+			Restore = e(Components.Button, {
+				Text = "Restore data",
+				OnClick = function()
+					setTransferText("")
+					setTransferStatus("Paste a backup, then validate it before restoring.")
+					setTransferStatusIsError(false)
+					setRestoreReady(false)
+					setTransferMode("Restore")
+				end,
+				Selected = transferMode == "Restore",
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		}),
+		Transfer = transferMode and e("Frame", {
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			BackgroundTransparency = 1,
+			LayoutOrder = 63,
+		}, {
+			Layout = e("UIListLayout", {
+				SortOrder = Enum.SortOrder.LayoutOrder,
+				Padding = UDim.new(0, 6),
+			}),
+			Json = e("TextBox", {
+				ref = transferBoxRef,
+				Text = transferText,
+				PlaceholderText = if transferMode == "Restore" then "Paste easyRoad backup JSON here" else "",
+				TextColor3 = Theme.OFFWHITE,
+				PlaceholderColor3 = Theme.DIM,
+				BackgroundColor3 = Theme.FIELD,
+				BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,
+				Size = UDim2.new(1, 0, 0, 132),
+				ClearTextOnFocus = false,
+				MultiLine = true,
+				TextWrapped = true,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextYAlignment = Enum.TextYAlignment.Top,
+				Font = Theme.FONT_MONO,
+				TextSize = 13,
+				LayoutOrder = 1,
+				[React.Change.Text] = function(object: TextBox)
+					setTransferText(object.Text)
+					if transferMode == "Restore" then
+						setRestoreReady(false)
+					end
+				end,
+			}, {
+				Corner = e("UICorner", { CornerRadius = UDim.new(0, 4) }),
+				Padding = e("UIPadding", {
+					PaddingLeft = UDim.new(0, 8),
+					PaddingRight = UDim.new(0, 8),
+					PaddingTop = UDim.new(0, 6),
+					PaddingBottom = UDim.new(0, 6),
+				}),
+			}),
+			Status = e("TextLabel", {
+				Text = transferStatus,
+				TextColor3 = if transferStatusIsError then Theme.DANGER else Theme.DIM,
+				BackgroundTransparency = 1,
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				TextWrapped = true,
+				Font = Theme.FONT,
+				TextSize = Theme.TEXT_SIZE,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				LayoutOrder = 2,
+			}),
+			BackupActions = transferMode == "Backup" and e(Components.Row, { LayoutOrder = 3 }, {
+				Select = e(Components.Button, {
+					Text = "Select JSON",
+					OnClick = function()
+						focusTransferText(true)
+					end,
+					LayoutOrder = 1,
+					Grow = true,
+				}),
+				Done = e(Components.Button, {
+					Text = "Done",
+					OnClick = function()
+						setTransferMode(nil)
+					end,
+					LayoutOrder = 2,
+					Grow = true,
+				}),
+			}),
+			RestoreActions = transferMode == "Restore" and e(Components.Row, { LayoutOrder = 3 }, {
+				Validate = e(Components.Button, {
+					Text = if restoreReady then "Validated" else "Validate backup",
+					Selected = restoreReady,
+					OnClick = function()
+						local valid, message = props.OnValidateRestoreData(transferText)
+						setRestoreReady(valid)
+						setTransferStatus(message)
+						setTransferStatusIsError(not valid)
+					end,
+					LayoutOrder = 1,
+					Grow = true,
+				}),
+				Confirm = restoreReady and e(Components.Button, {
+					Text = "Restore now",
+					Danger = true,
+					OnClick = function()
+						local restored, message = props.OnRestoreData(transferText)
+						setRestoreReady(false)
+						setTransferStatus(message)
+						setTransferStatusIsError(not restored)
+					end,
+					LayoutOrder = 2,
+					Grow = true,
+				}),
+			}),
 		}),
 		Close = e(Components.Button, {
 			Text = "Close",
@@ -22541,17 +22804,19 @@ end
 
 -- The lane strip card: header, tile strip, and (when a tile is selected)
 -- the edit controls for that lane. Pinned full-width along the bottom.
-local function LaneStripCard(props: {
-	Profile: RoadProfile.RoadProfile,
-	RegionStyle: RegionStyles.RegionStyle,
-	ReadOnly: boolean?,
-	SelectedIndex: number, -- 0 = none
-	OnSelect: (index: number) -&gt; (), -- 0 clears
-	OnChange: (transform: (profile: RoadProfile.RoadProfile) -&gt; ()) -&gt; (),
-	OnTileHoverChanged: ((index: number, hovered: boolean) -&gt; ())?,
-	OnStripHoverChanged: ((hovered: boolean) -&gt; ())?,
-	LayoutOrder: number,
-})
+local function LaneStripCard(
+	props: {
+		Profile: RoadProfile.RoadProfile,
+		RegionStyle: RegionStyles.RegionStyle,
+		ReadOnly: boolean?,
+		SelectedIndex: number, -- 0 = none
+		OnSelect: (index: number) -&gt; (), -- 0 clears
+		OnChange: (transform: (profile: RoadProfile.RoadProfile) -&gt; ()) -&gt; (),
+		OnTileHoverChanged: ((index: number, hovered: boolean) -&gt; ())?,
+		OnStripHoverChanged: ((hovered: boolean) -&gt; ())?,
+		LayoutOrder: number,
+	}
+)
 	local profile = props.Profile
 	local readOnly = props.ReadOnly == true
 	local count = #profile.Components
@@ -22560,8 +22825,8 @@ local function LaneStripCard(props: {
 	local showMarkings, setShowMarkings = React.useState(false)
 	local selectedBoundaryIndex, setSelectedBoundaryIndex = React.useState(0)
 	local boundaryIndex: number? = if selectedBoundaryIndex &gt;= 1
-		and selectedBoundaryIndex &lt; count
-		and Markings.IsEditableLaneBoundary(profile.Components, selectedBoundaryIndex)
+			and selectedBoundaryIndex &lt; count
+			and Markings.IsEditableLaneBoundary(profile.Components, selectedBoundaryIndex)
 		then selectedBoundaryIndex
 		else nil
 
@@ -22753,11 +23018,12 @@ local function LaneStripCard(props: {
 				OnSelected = function(id: string)
 					changeBoundary(
 						boundaryIndex :: number,
-						if id == "Auto" then nil else (id :: RoadProfile.BoundaryRule)
+						if id == "Auto" then nil else id :: RoadProfile.BoundaryRule
 					)
 				end,
 				LayoutOrder = 2,
 				Grow = true,
+				OpenUp = true,
 			}),
 		})
 	elseif selected then
@@ -22880,7 +23146,10 @@ local function ModuleTile(props: {
 		[React.Event.InputBegan] = function(_, input: InputObject)
 			if
 				props.OnDragStart
-				and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch)
+				and (
+					input.UserInputType == Enum.UserInputType.MouseButton1
+					or input.UserInputType == Enum.UserInputType.Touch
+				)
 			then
 				(props.OnDragStart :: any)(props.Kind, props.Label)
 			end
@@ -23164,9 +23433,7 @@ local function Panel(
 	end, { addingCategory } :: { any })
 
 	local function insertKind(kind: RoadProfile.ComponentKind, atIndex: number?)
-		local at = if atIndex then math.clamp(atIndex, 1, count + 1)
-			elseif sel then (sel :: number) + 1
-			else count + 1
+		local at = if atIndex then math.clamp(atIndex, 1, count + 1) elseif sel then (sel :: number) + 1 else count + 1
 		props.OnChange(function(copy)
 			table.insert(copy.Components, at, {
 				Kind = kind,
@@ -27342,6 +27609,64 @@ return function(
 		softwareDock.Enabled = false
 	end
 
+	local function restoredLibraries(restored: Settings.EasyRoadSettings)
+		local restoredRegions = createRegionLibrary(restored.UserRegions)
+		local regionExists = false
+		for _, style in restoredRegions.GetAll() do
+			if style.Id == restored.RegionId then
+				regionExists = true
+				break
+			end
+		end
+		if not regionExists then
+			restored.RegionId = "UK"
+		end
+
+		local restoredRoads = createRoadLibrary(restoredRegions.Get(restored.RegionId), restored.UserProfiles)
+		if not restoredRoads.Get(restored.DefaultProfileId) then
+			restored.DefaultProfileId = restoredRoads.GetDefault().Id
+		end
+		-- Re-serialize once so malformed individual custom entries are dropped
+		-- by their normal deserializers before anything is persisted.
+		restored.UserRegions = restoredRegions.SerializeUserRegions()
+		restored.UserProfiles = restoredRoads.SerializeUserProfiles()
+		return restoredRegions, restoredRoads
+	end
+
+	local function validateRestoreData(json: string): (boolean, string)
+		local restored, errorMessage = Settings.Import(json, HttpService)
+		if not restored then
+			return false, errorMessage
+		end
+		local _, restoredRoads = restoredLibraries(restored)
+		local restoredProfiles = restoredRoads.SerializeUserProfiles()
+		return true,
+			string.format(
+				"Valid backup: %d custom road%s and %d custom region%s. Click Restore now to replace current plugin data.",
+				#restoredProfiles,
+				if #restoredProfiles == 1 then "" else "s",
+				#restored.UserRegions,
+				if #restored.UserRegions == 1 then "" else "s"
+			)
+	end
+
+	local function restoreData(json: string): (boolean, string)
+		local restored, errorMessage = Settings.Import(json, HttpService)
+		if not restored then
+			return false, errorMessage
+		end
+
+		local restoredRegions, restoredRoads = restoredLibraries(restored)
+		destroySession()
+		designProfile = nil
+		Settings.Replace(settings, restored)
+		regionLibrary = restoredRegions
+		library = restoredRoads
+		persist()
+		updateUI()
+		return true, "Data restored. Settings and custom presets are active now."
+	end
+
 	-- profileOverride/seed power the pie menu's "Place More" action: continue
 	-- building from an exact existing road's end, with its exact profile,
 	-- rather than starting fresh with the default road.
@@ -28649,6 +28974,12 @@ return function(
 				Settings = settings,
 				RegionLibrary = regionLibrary,
 				OnSettingsChanged = onSettingsChanged,
+				OnBackupData = function(): string
+					persist()
+					return Settings.Export(settings, HttpService)
+				end,
+				OnValidateRestoreData = validateRestoreData,
+				OnRestoreData = restoreData,
 				OnClose = function()
 					regionalDock.Enabled = false
 				end,

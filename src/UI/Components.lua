@@ -70,16 +70,18 @@ end
 
 -- Button ------------------------------------------------------------------------
 
-function Components.Button(props: {
-	Text: string,
-	Icon: string?, -- When set, replaces the text with a centered icon image
-	OnClick: () -> (),
-	Selected: boolean?,
-	Danger: boolean?,
-	LayoutOrder: number?,
-	Size: UDim2?,
-	Grow: boolean?,
-})
+function Components.Button(
+	props: {
+		Text: string,
+		Icon: string?, -- When set, replaces the text with a centered icon image
+		OnClick: () -> (),
+		Selected: boolean?,
+		Danger: boolean?,
+		LayoutOrder: number?,
+		Size: UDim2?,
+		Grow: boolean?,
+	}
+)
 	local hovered, setHovered = React.useState(false)
 
 	local color = Theme.BUTTON
@@ -246,7 +248,9 @@ function Components.TextField(props: {
 		TextColor3 = Theme.WHITE,
 		BackgroundColor3 = Theme.FIELD,
 		BackgroundTransparency = Theme.GLASS_ELEMENT_TRANSPARENCY,
-		Size = if props.Width then UDim2.new(0, props.Width, 0, Theme.ROW_HEIGHT) else UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
+		Size = if props.Width
+			then UDim2.new(0, props.Width, 0, Theme.ROW_HEIGHT)
+			else UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
 		Font = Theme.FONT,
 		TextSize = Theme.TEXT_SIZE,
 		TextTruncate = Enum.TextTruncate.AtEnd,
@@ -791,8 +795,13 @@ function Components.Dropdown(props: {
 	Placeholder: string?,
 	LayoutOrder: number?,
 	Grow: boolean?,
+	OpenUp: boolean?,
+	MaxVisibleOptions: number?,
 })
 	local open, setOpen = React.useState(false)
+	local optionHeight = Theme.ROW_HEIGHT - 4
+	local visibleOptionCount = math.min(#props.Options, props.MaxVisibleOptions or 5)
+	local optionsHeight = visibleOptionCount * optionHeight
 
 	local selectedText = props.Placeholder or "Select..."
 	for _, option in props.Options do
@@ -816,7 +825,7 @@ function Components.Dropdown(props: {
 				Text = option.Text,
 				TextColor3 = Theme.WHITE,
 				BackgroundColor3 = if option.Id == props.SelectedId then Theme.SELECTED else Theme.PANEL,
-				Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT - 4),
+				Size = UDim2.new(1, 0, 0, optionHeight),
 				Font = Theme.FONT,
 				TextSize = Theme.TEXT_SIZE,
 				TextXAlignment = Enum.TextXAlignment.Left,
@@ -833,19 +842,37 @@ function Components.Dropdown(props: {
 			})
 		end
 	end
+	local optionsProps = Components.ScrollBar()
+	optionsProps.Size = UDim2.new(1, 0, 0, optionsHeight)
+	if props.OpenUp then
+		optionsProps.AnchorPoint = Vector2.new(0, 1)
+		optionsProps.Position = UDim2.new(0, 0, 0, -4)
+	else
+		optionsProps.LayoutOrder = 2
+	end
+	optionsProps.BackgroundColor3 = Theme.PANEL
+	optionsProps.BorderSizePixel = 0
+	optionsProps.CanvasSize = UDim2.new(0, 0, 0, 0)
+	optionsProps.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	optionsProps.ScrollingDirection = Enum.ScrollingDirection.Y
+	optionsProps.ScrollingEnabled = #props.Options > visibleOptionCount
+	optionsProps.ZIndex = 10
 
 	return e("Frame", {
-		Size = UDim2.new(if props.Grow then 1 else 0, if props.Grow then 0 else 140, 0, 0),
-		AutomaticSize = Enum.AutomaticSize.Y,
+		-- A Grow item must start with a zero-width flex basis. A 100%-wide
+		-- basis is measured before the preceding label, so the label + gap +
+		-- dropdown exceeded the row and produced the lane-editor overflow.
+		Size = UDim2.new(0, if props.Grow then 0 else 140, 0, if props.OpenUp then Theme.ROW_HEIGHT else 0),
+		AutomaticSize = if props.OpenUp then Enum.AutomaticSize.None else Enum.AutomaticSize.Y,
 		BackgroundTransparency = 1,
 		LayoutOrder = props.LayoutOrder,
 		ZIndex = if open then 10 else 1,
 	}, {
-		Layout = e("UIListLayout", {
-			SortOrder = Enum.SortOrder.LayoutOrder,
-		}),
 		Flex = props.Grow and e("UIFlexItem", {
 			FlexMode = Enum.UIFlexMode.Grow,
+		}),
+		Layout = not props.OpenUp and e("UIListLayout", {
+			SortOrder = Enum.SortOrder.LayoutOrder,
 		}),
 		-- Chevron is a plain down arrow: Studio's SourceSans lacks the small
 		-- triangle glyphs and renders them as tofu boxes.
@@ -872,13 +899,11 @@ function Components.Dropdown(props: {
 				PaddingRight = UDim.new(0, 8),
 			}),
 		}),
-		Options = open and e("Frame", {
-			Size = UDim2.new(1, 0, 0, 0),
-			AutomaticSize = Enum.AutomaticSize.Y,
-			BackgroundColor3 = Theme.PANEL,
-			LayoutOrder = 2,
-			ZIndex = 10,
-		}, optionElements),
+		-- Options float over the surrounding layout instead of increasing the
+		-- row's height. The lane marking control sits against the bottom of the
+		-- viewport, so it opts into OpenUp; a bounded ScrollingFrame keeps every
+		-- selector usable even when it has many choices.
+		Options = open and e("ScrollingFrame", optionsProps, optionElements),
 	})
 end
 

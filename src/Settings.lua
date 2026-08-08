@@ -10,6 +10,9 @@ local Keybinds = require("./Keybinds")
 local StructureMaterials = require("./StructureMaterials")
 
 local kSettingsKey = "easyRoadState"
+local BACKUP_FORMAT = "easyRoad-data"
+local BACKUP_VERSION = 1
+local MAX_BACKUP_BYTES = 2 * 1024 * 1024
 
 local LANGUAGE_VARIANTS = { "British", "American" }
 local SPEED_UNITS = { "Kmh", "Mph" }
@@ -114,43 +117,62 @@ export type EasyRoadSettings = {
 	UserRegions: { { [string]: any } },
 }
 
-local function loadSettings(plugin: Plugin): EasyRoadSettings
-	local raw = plugin:GetSetting(kSettingsKey) or {}
+local function numberOr(raw: any, key: string, fallback: number, minimum: number, maximum: number): number
+	local value = raw[key]
+	if typeof(value) ~= "number" or value ~= value or value == math.huge or value == -math.huge then
+		return fallback
+	end
+	return math.clamp(value, minimum, maximum)
+end
+
+local function stringOr(raw: any, key: string, fallback: string): string
+	return if typeof(raw[key]) == "string" then raw[key] else fallback
+end
+
+local function booleanOr(raw: any, key: string, fallback: boolean): boolean
+	return if typeof(raw[key]) == "boolean" then raw[key] else fallback
+end
+
+local function enumOr(raw: any, key: string, allowed: { string }, fallback: string): string
+	local value = raw[key]
+	return if typeof(value) == "string" and table.find(allowed, value) then value else fallback
+end
+
+local function arrayOrEmpty(value: any): { { [string]: any } }
+	return if typeof(value) == "table" then value :: any else {}
+end
+
+-- One sanitizer owns both ordinary plugin loads and JSON restores. Besides
+-- making old settings forward-compatible, this is the trust boundary for a
+-- pasted backup: wrong types and out-of-range numbers never reach geometry.
+local function sanitizeSettings(rawValue: any): EasyRoadSettings
+	local raw = if typeof(rawValue) == "table" then rawValue else {}
 	return {
-		RegionId = raw.RegionId or "UK",
-		MetersToStuds = raw.MetersToStuds or 3.571,
-		DesignSpeedKph = raw.DesignSpeedKph or 60,
-		SuperelevationMode = raw.SuperelevationMode or "Auto",
-		ManualBankDeg = raw.ManualBankDeg or 4,
+		RegionId = stringOr(raw, "RegionId", "UK"),
+		MetersToStuds = numberOr(raw, "MetersToStuds", 3.571, 0.5, 20),
+		DesignSpeedKph = numberOr(raw, "DesignSpeedKph", 60, 10, 200),
+		SuperelevationMode = enumOr(raw, "SuperelevationMode", { "Auto", "Manual", "Off" }, "Auto") :: SuperelevationMode,
+		ManualBankDeg = numberOr(raw, "ManualBankDeg", 4, 0, 30),
 		-- Default preserves the exact prior fixed behaviour (40 studs at
 		-- the default 3.571 studs/meter scale, ~11.2m).
-		SuperelevationRunoffM = raw.SuperelevationRunoffM or 11.2,
-		AutoMarkings = if raw.AutoMarkings == nil then true else raw.AutoMarkings,
-		DriveSideOverride = raw.DriveSideOverride or "Region",
-		LanguageVariant = if typeof(raw.LanguageVariant) == "string"
-				and table.find(LANGUAGE_VARIANTS, raw.LanguageVariant)
-			then raw.LanguageVariant :: LanguageVariant
-			else "British" :: LanguageVariant,
-		SpeedUnit = if typeof(raw.SpeedUnit) == "string" and table.find(SPEED_UNITS, raw.SpeedUnit)
-			then raw.SpeedUnit :: SpeedUnit
-			else "Kmh" :: SpeedUnit,
-		LengthUnit = if typeof(raw.LengthUnit) == "string" and table.find(LENGTH_UNITS, raw.LengthUnit)
-			then raw.LengthUnit :: LengthUnit
-			else "Meters" :: LengthUnit,
-		DefaultProfileId = raw.DefaultProfileId or "builtin_two_lane",
-		SnapRadiusStuds = raw.SnapRadiusStuds or 8,
-		GridSizeStuds = raw.GridSizeStuds or 4,
-		SnapToGrid = if raw.SnapToGrid == nil then false else raw.SnapToGrid,
-		SnapToRoad = if raw.SnapToRoad == nil then true else raw.SnapToRoad,
-		SnapReference = if raw.SnapReference == "LeftRoadwayEdge" or raw.SnapReference == "RightRoadwayEdge"
-			then raw.SnapReference
-			else "Centre",
-		RoundaboutEntryCurve = if raw.RoundaboutEntryCurve == nil then true else raw.RoundaboutEntryCurve,
-		ElevationStepStuds = raw.ElevationStepStuds or 1,
-		LastElevationStuds = raw.LastElevationStuds or 0,
-		RoadThicknessStuds = raw.RoadThicknessStuds or 1,
-		MaxSegmentLengthStuds = raw.MaxSegmentLengthStuds or 8,
-		PreviewMaxSegmentLengthStuds = raw.PreviewMaxSegmentLengthStuds or 16,
+		SuperelevationRunoffM = numberOr(raw, "SuperelevationRunoffM", 11.2, 2, 30),
+		AutoMarkings = booleanOr(raw, "AutoMarkings", true),
+		DriveSideOverride = enumOr(raw, "DriveSideOverride", { "Region", "Left", "Right" }, "Region"),
+		LanguageVariant = enumOr(raw, "LanguageVariant", LANGUAGE_VARIANTS, "British") :: LanguageVariant,
+		SpeedUnit = enumOr(raw, "SpeedUnit", SPEED_UNITS, "Kmh") :: SpeedUnit,
+		LengthUnit = enumOr(raw, "LengthUnit", LENGTH_UNITS, "Meters") :: LengthUnit,
+		DefaultProfileId = stringOr(raw, "DefaultProfileId", "builtin_two_lane"),
+		SnapRadiusStuds = numberOr(raw, "SnapRadiusStuds", 8, 0, 64),
+		GridSizeStuds = numberOr(raw, "GridSizeStuds", 4, 0.5, 64),
+		SnapToGrid = booleanOr(raw, "SnapToGrid", false),
+		SnapToRoad = booleanOr(raw, "SnapToRoad", true),
+		SnapReference = enumOr(raw, "SnapReference", { "Centre", "LeftRoadwayEdge", "RightRoadwayEdge" }, "Centre") :: SnapReference,
+		RoundaboutEntryCurve = booleanOr(raw, "RoundaboutEntryCurve", true),
+		ElevationStepStuds = numberOr(raw, "ElevationStepStuds", 1, 0.25, 32),
+		LastElevationStuds = numberOr(raw, "LastElevationStuds", 0, -100000, 100000),
+		RoadThicknessStuds = numberOr(raw, "RoadThicknessStuds", 1, 0.1, 16),
+		MaxSegmentLengthStuds = numberOr(raw, "MaxSegmentLengthStuds", 8, 2, 64),
+		PreviewMaxSegmentLengthStuds = numberOr(raw, "PreviewMaxSegmentLengthStuds", 16, 2, 128),
 		StructureConcreteColorHex = if typeof(raw.StructureConcreteColorHex) == "string"
 			then raw.StructureConcreteColorHex
 			else "#696B70",
@@ -170,33 +192,21 @@ local function loadSettings(plugin: Plugin): EasyRoadSettings
 			elseif typeof(raw.StructureConcreteColorHex) == "string" then raw.StructureConcreteColorHex
 			else "#696B70",
 		TunnelRoofMaterial = StructureMaterials.Sanitize(raw.TunnelRoofMaterial),
-		StructureInterfaceOverlapM = if typeof(raw.StructureInterfaceOverlapM) == "number"
-			then math.max(raw.StructureInterfaceOverlapM, 0)
-			else 0.2,
-		ViaductParapetGapM = if typeof(raw.ViaductParapetGapM) == "number"
-			then math.max(raw.ViaductParapetGapM, 0)
-			else 0,
-		ViaductParapetHeightM = if typeof(raw.ViaductParapetHeightM) == "number"
-			then math.max(raw.ViaductParapetHeightM, 0.2)
-			else 1.2,
-		TunnelWallClearanceM = if typeof(raw.TunnelWallClearanceM) == "number"
-			then math.max(raw.TunnelWallClearanceM, 0)
-			else 0.75,
-		TunnelVerticalClearanceM = if typeof(raw.TunnelVerticalClearanceM) == "number"
-			then math.max(raw.TunnelVerticalClearanceM, 2)
-			else 6,
-		ElevatedMedianConcrete = if raw.ElevatedMedianConcrete == nil then true else raw.ElevatedMedianConcrete,
-		ParallelRoadwayGapM = if typeof(raw.ParallelRoadwayGapM) == "number"
-			then math.max(raw.ParallelRoadwayGapM, 0)
-			else 2,
+		StructureInterfaceOverlapM = numberOr(raw, "StructureInterfaceOverlapM", 0.2, 0, 2),
+		ViaductParapetGapM = numberOr(raw, "ViaductParapetGapM", 0, 0, 5),
+		ViaductParapetHeightM = numberOr(raw, "ViaductParapetHeightM", 1.2, 0.2, 5),
+		TunnelWallClearanceM = numberOr(raw, "TunnelWallClearanceM", 0.75, 0, 10),
+		TunnelVerticalClearanceM = numberOr(raw, "TunnelVerticalClearanceM", 6, 2, 12),
+		ElevatedMedianConcrete = booleanOr(raw, "ElevatedMedianConcrete", true),
+		ParallelRoadwayGapM = numberOr(raw, "ParallelRoadwayGapM", 2, 0, 50),
 		Keybinds = Keybinds.Sanitize(raw.Keybinds),
-		UserProfiles = raw.UserProfiles or {},
-		UserRegions = raw.UserRegions or {},
+		UserProfiles = arrayOrEmpty(raw.UserProfiles),
+		UserRegions = arrayOrEmpty(raw.UserRegions),
 	}
 end
 
-local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
-	plugin:SetSetting(kSettingsKey, {
+local function serializeSettings(settings: EasyRoadSettings): { [string]: any }
+	return {
 		RegionId = settings.RegionId,
 		MetersToStuds = settings.MetersToStuds,
 		DesignSpeedKph = settings.DesignSpeedKph,
@@ -238,10 +248,66 @@ local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
 		Keybinds = settings.Keybinds,
 		UserProfiles = settings.UserProfiles,
 		UserRegions = settings.UserRegions,
+	}
+end
+
+local function loadSettings(plugin: Plugin): EasyRoadSettings
+	return sanitizeSettings(plugin:GetSetting(kSettingsKey))
+end
+
+local function saveSettings(plugin: Plugin, settings: EasyRoadSettings)
+	plugin:SetSetting(kSettingsKey, serializeSettings(settings))
+end
+
+local function exportSettings(settings: EasyRoadSettings, httpServiceOverride: HttpService?): string
+	local httpService = httpServiceOverride or game:GetService("HttpService")
+	return httpService:JSONEncode({
+		Format = BACKUP_FORMAT,
+		Version = BACKUP_VERSION,
+		Data = serializeSettings(settings),
 	})
+end
+
+local function importSettings(json: string, httpServiceOverride: HttpService?): (EasyRoadSettings?, string)
+	if json:match("^%s*$") then
+		return nil, "Paste an easyRoad backup first."
+	end
+	if #json > MAX_BACKUP_BYTES then
+		return nil, "Backup is larger than the 2 MB safety limit."
+	end
+
+	local httpService = httpServiceOverride or game:GetService("HttpService")
+	local ok, decoded = pcall(httpService.JSONDecode, httpService, json)
+	if not ok or typeof(decoded) ~= "table" then
+		return nil, "That text is not valid JSON."
+	end
+	if decoded.Format ~= BACKUP_FORMAT then
+		return nil, "This is not an easyRoad data backup."
+	end
+	if decoded.Version ~= BACKUP_VERSION then
+		return nil, "This backup version is not supported by this build."
+	end
+	if typeof(decoded.Data) ~= "table" then
+		return nil, "The backup has no settings data."
+	end
+
+	return sanitizeSettings(decoded.Data), ""
+end
+
+local function replaceSettings(target: EasyRoadSettings, source: EasyRoadSettings)
+	local targetTable = target :: any
+	for key in targetTable do
+		targetTable[key] = nil
+	end
+	for key, value in source :: any do
+		targetTable[key] = value
+	end
 end
 
 return {
 	Load = loadSettings,
 	Save = saveSettings,
+	Export = exportSettings,
+	Import = importSettings,
+	Replace = replaceSettings,
 }

@@ -8,6 +8,14 @@ Planned/requested work not yet built, roughly ordered by how developed the
 plan is. Not user-facing; internal planning only. See `SHIPPED.md` for
 what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Road Editor marking-selector overflow + data backup/restore — SHIPPED
+
+The bottom boundary editor is width-contained, opens upward, and scrolls
+through all options. Settings now exports/imports versioned JSON for plugin
+preferences and custom road/region presets with validation and explicit
+confirmation. See `SHIPPED.md`; placed-road/world backup remains correctly
+owned by the place.
+
 Performance work is tracked separately in `OPTIMIZATION.md`. The first exact-
 straight phase (2048-stud longitudinal Parts plus identical adjacent Drive-lane
 surface merging) is shipped; mixed straight/curve sub-runs, Studio benchmarks,
@@ -121,7 +129,6 @@ Parallel placement supports 2-16 curved carriageways, opposed pairs, and
 per-roadway reversal for larger groups. Parallel groups do not yet
 synthesize coordinated junction splits/connections automatically; a straight
 primary can still use the ordinary single-road crossing path.
-
 ## Roundabout split entry/exit arms — SHIPPED (see SHIPPED.md)
 
 Superseded the asymmetric-mouth-corner build, which in turn superseded the

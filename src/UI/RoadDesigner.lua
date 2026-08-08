@@ -494,17 +494,19 @@ end
 
 -- The lane strip card: header, tile strip, and (when a tile is selected)
 -- the edit controls for that lane. Pinned full-width along the bottom.
-local function LaneStripCard(props: {
-	Profile: RoadProfile.RoadProfile,
-	RegionStyle: RegionStyles.RegionStyle,
-	ReadOnly: boolean?,
-	SelectedIndex: number, -- 0 = none
-	OnSelect: (index: number) -> (), -- 0 clears
-	OnChange: (transform: (profile: RoadProfile.RoadProfile) -> ()) -> (),
-	OnTileHoverChanged: ((index: number, hovered: boolean) -> ())?,
-	OnStripHoverChanged: ((hovered: boolean) -> ())?,
-	LayoutOrder: number,
-})
+local function LaneStripCard(
+	props: {
+		Profile: RoadProfile.RoadProfile,
+		RegionStyle: RegionStyles.RegionStyle,
+		ReadOnly: boolean?,
+		SelectedIndex: number, -- 0 = none
+		OnSelect: (index: number) -> (), -- 0 clears
+		OnChange: (transform: (profile: RoadProfile.RoadProfile) -> ()) -> (),
+		OnTileHoverChanged: ((index: number, hovered: boolean) -> ())?,
+		OnStripHoverChanged: ((hovered: boolean) -> ())?,
+		LayoutOrder: number,
+	}
+)
 	local profile = props.Profile
 	local readOnly = props.ReadOnly == true
 	local count = #profile.Components
@@ -513,8 +515,8 @@ local function LaneStripCard(props: {
 	local showMarkings, setShowMarkings = React.useState(false)
 	local selectedBoundaryIndex, setSelectedBoundaryIndex = React.useState(0)
 	local boundaryIndex: number? = if selectedBoundaryIndex >= 1
-		and selectedBoundaryIndex < count
-		and Markings.IsEditableLaneBoundary(profile.Components, selectedBoundaryIndex)
+			and selectedBoundaryIndex < count
+			and Markings.IsEditableLaneBoundary(profile.Components, selectedBoundaryIndex)
 		then selectedBoundaryIndex
 		else nil
 
@@ -706,11 +708,12 @@ local function LaneStripCard(props: {
 				OnSelected = function(id: string)
 					changeBoundary(
 						boundaryIndex :: number,
-						if id == "Auto" then nil else (id :: RoadProfile.BoundaryRule)
+						if id == "Auto" then nil else id :: RoadProfile.BoundaryRule
 					)
 				end,
 				LayoutOrder = 2,
 				Grow = true,
+				OpenUp = true,
 			}),
 		})
 	elseif selected then
@@ -833,7 +836,10 @@ local function ModuleTile(props: {
 		[React.Event.InputBegan] = function(_, input: InputObject)
 			if
 				props.OnDragStart
-				and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch)
+				and (
+					input.UserInputType == Enum.UserInputType.MouseButton1
+					or input.UserInputType == Enum.UserInputType.Touch
+				)
 			then
 				(props.OnDragStart :: any)(props.Kind, props.Label)
 			end
@@ -1117,9 +1123,7 @@ local function Panel(
 	end, { addingCategory } :: { any })
 
 	local function insertKind(kind: RoadProfile.ComponentKind, atIndex: number?)
-		local at = if atIndex then math.clamp(atIndex, 1, count + 1)
-			elseif sel then (sel :: number) + 1
-			else count + 1
+		local at = if atIndex then math.clamp(atIndex, 1, count + 1) elseif sel then (sel :: number) + 1 else count + 1
 		props.OnChange(function(copy)
 			table.insert(copy.Components, at, {
 				Kind = kind,
