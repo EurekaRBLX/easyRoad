@@ -33,6 +33,11 @@ def require_count(text, needle, minimum, message, problems):
         problems.append(message)
 
 
+def require_exact_count(text, needle, expected, message, problems):
+    if text.count(needle) != expected:
+        problems.append(message)
+
+
 def max_motor_lanes_per_carriageway(components):
     """Executable contract for RoadProfile.MaxMotorLanesPerCarriageway.
 
@@ -83,10 +88,12 @@ def main():
     road_edit_session = source("src/RoadEditSession.lua")
     markings = source("src/Mesh/Markings.lua")
     road_builder = source("src/Mesh/RoadBuilder.lua")
+    superelevation = source("src/Geometry/Superelevation.lua")
     loader = source("loader.server.lua")
     main_source = source("src/main.lua")
     top_bar = source("src/UI/TopBar.lua")
     asset_panel = source("src/UI/RoadAssetsPanel.lua")
+    structure_assets = source("src/StructureAssets.lua")
     software = source("src/UI/SoftwareGui.lua")
     multinode_preview = source("tools/preview/multinode_junction_preview.py")
     preview_core = source("tools/preview/preview_core.py")
@@ -115,6 +122,118 @@ def main():
         reject(mutation_source, "FinishRecording", f"{label} can leave a Studio history recording open", problems)
     require(session, 'History.Record("EasyRoadPlace", "Place road"', "road placement is not one Undo transaction per segment", problems)
     require(session, 'History.Record("EasyRoadPlace", "Place roundabout"', "roundabout placement is not an isolated Undo transaction", problems)
+
+    require(
+        superelevation,
+        "function Superelevation.BuildProfile(",
+        "superelevation has no canonical arc-length roll profile",
+        problems,
+    )
+    require(
+        superelevation,
+        "function Superelevation.RollAtProfile(",
+        "superelevation consumers cannot share one interpolated roll profile",
+        problems,
+    )
+    require(
+        superelevation,
+        "local rawControlStations = { 0, runoffLength, length / 2, length - runoffLength, length }",
+        "short curves can lose all banking when their endpoint-taper controls are omitted",
+        problems,
+    )
+    require(
+        road_builder,
+        "function RoadBuilder.StationPlanFor(",
+        "RoadBuilder does not expose its final curved/banked station plan",
+        problems,
+    )
+    road_build_start = road_builder.find("function RoadBuilder.Build(options")
+    road_build_end = road_builder.find("function RoadBuilder.BuildWithBay", road_build_start)
+    road_build = road_builder[road_build_start:road_build_end]
+    require(
+        road_build,
+        "RoadBuilder.StationPlanFor(options)",
+        "RoadBuilder exposes StationPlanFor but Build does not consume it",
+        problems,
+    )
+    require(
+        road_builder,
+        "Superelevation.BuildProfile(",
+        "RoadBuilder still derives a private roll profile",
+        problems,
+    )
+    require(
+        road_builder,
+        "Superelevation.RollAtProfile(",
+        "RoadBuilder bypasses the canonical roll-profile interpolation path",
+        problems,
+    )
+    require(road_builder, "SuperelevationProfile: Superelevation.RollProfile?", "RoadBuilder cannot consume a shared canonical roll profile", problems)
+    require(road_builder, "SuperelevationStationOffsetStuds: number?", "RoadBuilder cannot sample a canonical profile from a sliced road offset", problems)
+    require(road_builder, "DisableSurfaceCoalescing: boolean?", "RoadBuilder slices cannot preserve canonical per-component surface ownership", problems)
+    require(road_builder, "local fullRollProfile = Superelevation.BuildProfile", "bay roads rebuild bank independently per slice", problems)
+    require_exact_count(road_builder, "SuperelevationProfile = fullRollProfile", 3, "not every bay slice consumes the full canonical roll profile", problems)
+    require_exact_count(road_builder, "DisableSurfaceCoalescing = true", 3, "bay slices can coalesce surfaces across canonical slice ownership", problems)
+    require(
+        road_builder,
+        "local overlayStations: { number } = {}",
+        "bay asphalt and displaced pavement do not share one station grid",
+        problems,
+    )
+    require(
+        road_builder,
+        "overlayStations = refineStationsForRoll(",
+        "banked bay overlays are not refined against the canonical roll profile",
+        problems,
+    )
+    require_exact_count(
+        road_builder,
+        "or math.abs(rollAt(s1) - rollAt(s0)) > ROLL_WEDGE_EPSILON",
+        2,
+        "bay asphalt or shifted pavement can remain a rigid box through bank runoff",
+        problems,
+    )
+    require(
+        road_builder,
+        "if options.ProfileEnd and options.ProfileEnd.Id ~= baseProfile.Id then",
+        "bay geometry can overlap a widening/narrowing cross-section transition",
+        problems,
+    )
+    require(
+        main_source,
+        "and not editSession.IsTransition()",
+        "Road Editor still offers an invisible bus bay on a profile transition",
+        problems,
+    )
+    require(
+        road_edit_session,
+        'or session.IsTransition() then',
+        "non-UI calls can still start bus-bay placement on a profile transition",
+        problems,
+    )
+    for offset in ("0", "taperInStart", "taperOutEnd"):
+        require(
+            road_builder,
+            f"SuperelevationStationOffsetStuds = {offset}",
+            f"bay slice is missing canonical superelevation offset {offset}",
+            problems,
+        )
+    for label, consumer in (("placement snapping", session), ("road editing", road_edit_session)):
+        require(consumer, "Superelevation.BuildProfile(", f"{label} does not cache a canonical roll profile", problems)
+        require(consumer, "Superelevation.RollAtProfile(", f"{label} does not sample the canonical roll profile", problems)
+        reject(consumer, "Superelevation.RollAt(", f"{label} still samples raw station-by-station banking", problems)
+    require(
+        road_builder,
+        '"RW_CurvedSurfaceCoalesced"',
+        "curved surface coalescing is not visible to diagnostics",
+        problems,
+    )
+    require(
+        road_builder,
+        '"RW_BankedSurfaceCoalesced"',
+        "banked surface coalescing is not visible to diagnostics",
+        problems,
+    )
 
     require(junction, 'part.Name = "JunctionSurface"', "junction surface factory missing", problems)
     surface_factory = junction[junction.find('part.Name = "JunctionSurface"'):]
@@ -425,7 +544,12 @@ def main():
     require(structure, "data.TunnelWallClearanceM * scale", "tunnel wall clearance is not configurable", problems)
     require(structure, "data.TunnelVerticalClearanceM * scale", "tunnel vertical clearance is not configurable", problems)
     require(structure, "local function makeBankedFrameAt(", "structures do not share the road superelevation frame", problems)
-    require_count(structure, "local bankedFrameAt = makeBankedFrameAt(curve, settings)", 4, "not every structure path inherits road banking", problems)
+    require_exact_count(structure, "local bankedFrameAt = makeBankedFrameAt(curve, settings)", 2, "imported structure paths no longer have the expected legacy bank-frame calls", problems)
+    require_exact_count(structure, "local bankedFrameAt = makeBankedFrameAt(curve, settings, rollProfile)", 2, "procedural viaduct/tunnel paths do not share their refined canonical roll profile", problems)
+    require(structure, "local STRUCTURE_BANK_MISMATCH_BUDGET_STUDS", "procedural structure bank mismatch has no explicit error budget", problems)
+    require(structure, "local function refinedStructureRanges(", "procedural structures do not refine rigid bays through bank runoff", problems)
+    require_exact_count(structure, 'folder:SetAttribute("RW_BankRefinementCapped", refinementCapped)', 2, "procedural structure refinement-cap diagnostics are missing", problems)
+    require_exact_count(structure, 'folder:SetAttribute("RW_BankMismatchBudgetStuds", STRUCTURE_BANK_MISMATCH_BUDGET_STUDS)', 2, "procedural structure bank-mismatch budgets are not exposed", problems)
     require(structure, "offsetSegmentFrame(curve, bankedFrameAt", "curved viaduct parapets ignore the banked road frame", problems)
     require(structure, "restyleElevatedMedian", "viaduct medians cannot be changed to concrete", problems)
     require(settings, "StructureConcreteColorHex", "settings do not persist procedural concrete colour", problems)
@@ -490,6 +614,15 @@ def main():
     require(main_source, 'require("./UI/RoadAssetsPanel")', "Road Assets surface is not rendered", problems)
     require(asset_panel, 'Text = "Import Selection as Viaduct"', "Road Assets cannot import viaduct Models", problems)
     require(asset_panel, 'Text = "Delete Selected Asset"', "Road Assets cannot manage stored Models", problems)
+    require(structure_assets, "function StructureAssets.ExportToWorkspace(assetId: string)", "stored road assets cannot be exported back to Workspace", problems)
+    require(structure_assets, "return asset:Clone()", "Road Assets export does not clone the stored library Model", problems)
+    require(structure_assets, "clone.Parent = workspace", "Road Assets export does not place its editable copy in Workspace", problems)
+    require(main_source, 'History.Record("EasyRoadAssetExport", "Export road asset"', "Road Assets export is not one undoable history transaction", problems)
+    require(main_source, "Selection:Set({ exported :: Model })", "Road Assets export does not select the new Workspace Model", problems)
+    require(main_source, "OnExport = exportRoadAsset", "Road Assets panel export action is not wired to its controller", problems)
+    require(asset_panel, 'Text = "Export Selected Asset to Workspace"', "Road Assets panel has no export button", problems)
+    require(asset_panel, "Disabled = exportId == nil", "Road Assets export remains enabled without a selected library asset", problems)
+    require(asset_panel, "props.OnExport(exportId)", "Road Assets export button does not invoke its callback", problems)
     reject(build_bar, "ImportStructureAsset", "Road Tools still owns the structure import workflow", problems)
 
     require(loader, 'createDock("EasyRoadSoftwareDock"', "Software dock is not created", problems)
@@ -501,7 +634,7 @@ def main():
         for problem in problems:
             print("FAILED:", problem)
         return 1
-    print("integration contracts passed: isolated undo history, road duplication, editable roundabouts, lane inference, one-way/highway mouths, Turbo width parity, exact caps, multinode junctions, assets, procedural structures, snap references, parallel roadways, marking boundaries, highway presets, Software dock")
+    print("integration contracts passed: isolated undo history, road duplication, curved/banked station plans, editable roundabouts, lane inference, one-way/highway mouths, Turbo width parity, exact caps, multinode junctions, assets, procedural structures, snap references, parallel roadways, marking boundaries, highway presets, Software dock")
     return 0
 
 

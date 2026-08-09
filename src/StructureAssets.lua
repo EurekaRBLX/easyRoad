@@ -113,11 +113,7 @@ local function infoFromModel(model: Model): AssetInfo?
 	local id = model:GetAttribute("ER_AssetId")
 	local kind = model:GetAttribute("ER_AssetKind")
 	local length = model:GetAttribute("ER_ModuleLengthStuds")
-	if
-		typeof(id) ~= "string"
-		or (kind ~= "Viaduct" and kind ~= "Tunnel")
-		or typeof(length) ~= "number"
-	then
+	if typeof(id) ~= "string" or (kind ~= "Viaduct" and kind ~= "Tunnel") or typeof(length) ~= "number" then
 		return nil
 	end
 	return {
@@ -182,6 +178,53 @@ function StructureAssets.UsageCount(assetId: string): number
 	return count
 end
 
+local function uniqueWorkspaceName(requestedName: string): string
+	if not workspace:FindFirstChild(requestedName) then
+		return requestedName
+	end
+
+	local base = requestedName .. " Export"
+	if not workspace:FindFirstChild(base) then
+		return base
+	end
+
+	local suffix = 2
+	while workspace:FindFirstChild(string.format("%s %d", base, suffix)) do
+		suffix += 1
+	end
+	return string.format("%s %d", base, suffix)
+end
+
+-- Creates an editable Workspace copy without changing the stored library
+-- Model. Its ER_AssetId and other metadata are deliberately preserved: the
+-- clone is an exported copy of that asset, while List() continues to read only
+-- ServerStorage/EasyRoadAssets and UsageCount() continues to count only roads.
+function StructureAssets.ExportToWorkspace(assetId: string): (Model?, string)
+	local asset = StructureAssets.Get(assetId)
+	if not asset then
+		return nil, "That road asset no longer exists."
+	end
+
+	-- Library Models are normally archivable, but users can edit them directly
+	-- in ServerStorage. Temporarily permit cloning and restore their setting so
+	-- exporting never modifies the stored asset's final state.
+	local wasArchivable = asset.Archivable
+	asset.Archivable = true
+	local okClone, cloneResult = pcall(function()
+		return asset:Clone()
+	end)
+	asset.Archivable = wasArchivable
+
+	local clone: Model? = if okClone and cloneResult and cloneResult:IsA("Model") then cloneResult else nil
+	if not clone then
+		return nil, "Roblox could not clone the selected road asset."
+	end
+
+	clone.Name = uniqueWorkspaceName(asset.Name)
+	clone.Parent = workspace
+	return clone, string.format("Exported %s to Workspace.", clone.Name)
+end
+
 function StructureAssets.Rename(assetId: string, requestedName: string): (boolean, string)
 	local asset = StructureAssets.Get(assetId)
 	if not asset then
@@ -202,11 +245,12 @@ function StructureAssets.Delete(assetId: string): (boolean, string)
 	end
 	local uses = StructureAssets.UsageCount(assetId)
 	if uses > 0 then
-		return false, string.format(
-			"This asset is used by %d placed road%s. Change those roads before deleting it.",
-			uses,
-			if uses == 1 then "" else "s"
-		)
+		return false,
+			string.format(
+				"This asset is used by %d placed road%s. Change those roads before deleting it.",
+				uses,
+				if uses == 1 then "" else "s"
+			)
 	end
 	local name = asset.Name
 	asset:Destroy()
@@ -290,9 +334,10 @@ function StructureAssets.Import(source: Model, kind: AssetKind): (AssetInfo?, st
 		Name = clone.Name,
 		Kind = kind,
 		LengthStuds = length,
-	}, if autoSockets
-		then "Imported with automatic bounding-box sockets; add EasyRoadStart/EasyRoadEnd Attachments for precise joints."
-		else "Imported using EasyRoadStart/EasyRoadEnd Attachments."
+	},
+		if autoSockets
+			then "Imported with automatic bounding-box sockets; add EasyRoadStart/EasyRoadEnd Attachments for precise joints."
+			else "Imported using EasyRoadStart/EasyRoadEnd Attachments."
 end
 
 return StructureAssets

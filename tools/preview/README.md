@@ -28,6 +28,7 @@ trap as an invariant nobody re-reads.
 | `roundabout_editor_preview.py` | Before/after bird's-eye editor showcase for a connected UK roundabout. Reuses `roundabout_preview.py` directly so adjustable radius, lane count/width, appearance toggles, mouths, and markings are rendered by the canonical component pipeline. |
 | `road_preview.py` | An ordinary road on its own - straights, arcs down to R=30, an S-curve, avenues, motorways. Bare ground inside the road, edge sawtooth, broken edge lines. |
 | `straight_optimization_preview.py` | Exact-straight 2048-stud splitting, explicit stretch breakpoints, conservative Drive-only lateral merging, source-range metadata contracts, and a before/after surface-Part render. |
+| `curved_superelevation_optimization_preview.py` | Feasibility and regression harness for conservative Drive-band merging on curves and bank runoff. Ports the density-independent roll profile (including short-curve runoff controls), roll-aware station refinement, per-interval 0.025-stud twist and curved-box overhang budgets, exact outer-edge parity, actual midpoint-box plan footprints, injected break-tests, Part counts, and a combined bird's-eye/side/cross-section render. |
 | `structure_preview.py` | Rigid imported-module socket stepping, procedural viaduct elevation, single/twin pier and cap geometry, independent finish channels, and arched tunnel cross-section; check-only or one combined PNG. |
 | `parallel_preview.py` | Curved parallel-carriageway offset/refit, an opposed pair, and independent direction choices for larger groups. |
 | `hardware_reference_check.py` | Parses the five `hardware/*.rbxmx` references and verifies their deck/base, parapet/wall, and tunnel-crown cues. |
@@ -89,6 +90,8 @@ python3 turbo_check.py                    # turbo peel + its break-tests
 python3 road_break_tests.py               # road scans + their break-tests
 python3 straight_optimization_preview.py --check
 python3 straight_optimization_preview.py --out out/straight-optimization.png
+python3 curved_superelevation_optimization_preview.py --check
+python3 curved_superelevation_optimization_preview.py --out out/curved-bank.png
 python3 structure_preview.py --check      # module coverage + pier contact
 python3 parallel_preview.py --check       # curved offsets + direction layouts
 python3 structure_break_tests.py          # prove gaps/hovering piers fail
@@ -178,6 +181,15 @@ common for roads produced by an X-split.
   are not ported at all**, so no case here says anything about them. Modelling
   them from scratch would produce a check that agrees with the model rather than
   with RoadBuilder.
+- `curved_superelevation_optimization_preview.py` is deliberately narrower than
+  a general 3D road port: it models an exact circular centreline with a
+  station-defined bank runoff and the current two-triangle top-surface
+  construction. It proves each greedy lateral merge stays inside the builder's
+  0.025-stud bank-twist bound and, for constant roll, the 0.025-stud extra
+  midpoint-box plan-overhang bound. Its bird's-eye panels draw the actual
+  curvature-padded midpoint boxes rather than ideal station-edge quads. It does
+  not certify arbitrary Bezier grade, Roblox Wedge render order, collision, or a
+  lane-width transition.
 - `Markings.lua` is not ported - `emit_road` approximates it in ~30 lines, so a
   wrong marking is largely invisible, and `scan_mouths` counts a marking Part as
   coverage.

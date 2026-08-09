@@ -45,6 +45,11 @@ placement sessions. Imported modules keep their authored appearance.
    imported asset before placing. For an existing road, select it, open **Edit
    on Road Builder**, choose the asset, then press **Apply to Road**.
 
+To edit or inspect a stored module in the world, select it in **Road Assets**
+and press **Export Selected Asset to Workspace**. EasyRoad creates and selects
+a uniquely named Workspace copy while leaving the ServerStorage library asset,
+its asset ID, and its placed-road usage count unchanged.
+
 The importer clones the Model into `ServerStorage/EasyRoadAssets`. The source
 remains untouched in Workspace and may be deleted afterward. The stored clone,
 its generated ID, and the road's configuration are saved with the Roblox place;

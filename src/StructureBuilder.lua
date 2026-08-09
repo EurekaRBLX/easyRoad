@@ -150,15 +150,24 @@ end
 -- unrolled centreline beneath it. The runoff envelope matches RoadBuilder's
 -- endpoint contract, so a viaduct/tunnel returns to zero roll wherever the
 -- road does and chained pieces still meet flush.
-local function makeBankedFrameAt(curve: PolyCurve.PolyCurve, settings: Settings.EasyRoadSettings): (number) -> CFrame
+local function buildRollProfile(
+	curve: PolyCurve.PolyCurve,
+	settings: Settings.EasyRoadSettings
+): Superelevation.RollProfile
 	local style = createRegionLibrary(settings.UserRegions).Get(settings.RegionId)
-	local runoff = math.min(settings.SuperelevationRunoffM * settings.MetersToStuds, curve.Length * 0.3)
+	return Superelevation.BuildProfile(curve.Length, function(station)
+		return curve:CurvatureAt(station)
+	end, settings, style)
+end
+
+local function makeBankedFrameAt(
+	curve: PolyCurve.PolyCurve,
+	settings: Settings.EasyRoadSettings,
+	existingProfile: Superelevation.RollProfile?
+): (number) -> CFrame
+	local rollProfile = existingProfile or buildRollProfile(curve, settings)
 	return function(station: number): CFrame
-		local roll = Superelevation.RollAt(curve:CurvatureAt(station), settings, style)
-		if runoff > 1e-3 then
-			local taper = math.min(1, station / runoff, (curve.Length - station) / runoff)
-			roll *= math.max(taper, 0)
-		end
+		local roll = Superelevation.RollAtProfile(rollProfile, station)
 		return curve:FrameAt(station, roll)
 	end
 end
@@ -316,6 +325,113 @@ end
 local STRUCTURE_SURFACE_CLEARANCE_STUDS = 0.08
 local PROCEDURAL_AXIAL_OVERLAP_STUDS = 0.16
 local STRUCTURE_EDGE_CLEARANCE_STUDS = 0.08
+-- Leave half the seating clearance for curvature/chord approximation and
+-- floating-point noise instead of spending the entire allowance on bank twist.
+local STRUCTURE_BANK_MISMATCH_BUDGET_STUDS = STRUCTURE_SURFACE_CLEARANCE_STUDS * 0.5
+
+type StructureStationRange = { number }
+
+local function firstStationAfter(stations: { number }, station: number): number
+	local low = 1
+	local high = #stations + 1
+	while low < high do
+		local middle = math.floor((low + high) / 2)
+		if stations[middle] <= station then
+			low = middle + 1
+		else
+			high = middle
+		end
+	end
+	return low
+end
+
+local function needsBankRefinement(
+	profile: Superelevation.RollProfile,
+	s0: number,
+	s1: number,
+	farEdgeOffset: number
+): boolean
+	local mid = (s0 + s1) / 2
+	local midSin = math.sin(Superelevation.RollAtProfile(profile, mid))
+	local function exceedsBudget(station: number): boolean
+		local sampleSin = math.sin(Superelevation.RollAtProfile(profile, station))
+		return farEdgeOffset * math.abs(sampleSin - midSin) > STRUCTURE_BANK_MISMATCH_BUDGET_STUDS
+	end
+	if exceedsBudget(s0) or exceedsBudget(s1) then
+		return true
+	end
+
+	-- RollAtProfile is linear between canonical controls. Superelevation stays
+	-- inside the monotonic range of sin(), so the extrema relative to this
+	-- segment's midpoint bank occur at an endpoint or at one of those controls.
+	-- Checking all controls inside the range therefore gives a real far-edge
+	-- error bound; fixed quarter probes could miss a narrow S-curve peak.
+	local stationIndex = firstStationAfter(profile.Stations, s0)
+	while stationIndex <= #profile.Stations and profile.Stations[stationIndex] < s1 do
+		if exceedsBudget(profile.Stations[stationIndex]) then
+			return true
+		end
+		stationIndex += 1
+	end
+	return false
+end
+
+-- Starts from the existing equal-length procedural ranges, then bisects only
+-- the ranges whose rigid midpoint-bank box would miss the canonical bank at
+-- the far edge. Refinement happens in breadth-wise passes so one transition
+-- cannot consume the entire Part budget before the opposite runoff is tested.
+local function refinedStructureRanges(
+	length: number,
+	step: number,
+	farEdgeOffset: number,
+	profile: Superelevation.RollProfile,
+	maximumSegments: number
+): ({ StructureStationRange }, boolean)
+	local initialCount = math.min(maximumSegments, math.max(1, math.ceil(length / step)))
+	local ranges: { StructureStationRange } = table.create(initialCount)
+	for index = 1, initialCount do
+		table.insert(ranges, { length * (index - 1) / initialCount, length * index / initialCount })
+	end
+
+	local refinementCapped = false
+	while true do
+		local needsSplit: { [number]: boolean } = {}
+		local splitCount = 0
+		for index, range in ranges do
+			local s0, s1 = range[1], range[2]
+			if s1 - s0 > 1e-6 and needsBankRefinement(profile, s0, s1, farEdgeOffset) then
+				needsSplit[index] = true
+				splitCount += 1
+			end
+		end
+		if splitCount == 0 then
+			break
+		end
+
+		local availableSplits = maximumSegments - #ranges
+		if availableSplits <= 0 then
+			refinementCapped = true
+			break
+		end
+		local nextRanges: { StructureStationRange } = table.create(#ranges + math.min(splitCount, availableSplits))
+		local usedSplits = 0
+		for index, range in ranges do
+			if needsSplit[index] and usedSplits < availableSplits then
+				local mid = (range[1] + range[2]) / 2
+				table.insert(nextRanges, { range[1], mid })
+				table.insert(nextRanges, { mid, range[2] })
+				usedSplits += 1
+			else
+				if needsSplit[index] then
+					refinementCapped = true
+				end
+				table.insert(nextRanges, range)
+			end
+		end
+		ranges = nextRanges
+	end
+	return ranges, refinementCapped
+end
 
 local function centralBaseThickness(scale: number): number
 	return math.max(0.2 * scale, 0.65)
@@ -566,17 +682,21 @@ local function placeProceduralViaduct(
 	local deckWidth = deckHalfWidth * 2
 	local offset = data.ModuleOffsetM * scale
 	local step = math.max(settings.MaxSegmentLengthStuds, 4)
-	local segmentCount = math.min(math.floor(MAX_PROCEDURAL_PARTS / 3), math.max(1, math.ceil(curve.Length / step)))
+	local maximumSegments = math.floor(MAX_PROCEDURAL_PARTS / 3)
+	local rollProfile = buildRollProfile(curve, settings)
+	local stationRanges, refinementCapped =
+		refinedStructureRanges(curve.Length, step, barrierCenter + barrierThickness / 2, rollProfile, maximumSegments)
 	local folder = Instance.new("Folder")
 	folder.Name = "ProceduralViaduct"
 	folder:SetAttribute("RW_ProceduralViaduct", true)
+	folder:SetAttribute("RW_BankRefinementCapped", refinementCapped)
+	folder:SetAttribute("RW_BankMismatchBudgetStuds", STRUCTURE_BANK_MISMATCH_BUDGET_STUDS)
 	folder.Parent = parent
-	local bankedFrameAt = makeBankedFrameAt(curve, settings)
+	local bankedFrameAt = makeBankedFrameAt(curve, settings, rollProfile)
 
 	local partCount = 0
-	for index = 1, segmentCount do
-		local s0 = curve.Length * (index - 1) / segmentCount
-		local s1 = curve.Length * index / segmentCount
+	for index, range in stationRanges do
+		local s0, s1 = range[1], range[2]
 		local p0 = curve:PosAt(s0)
 		local p1 = curve:PosAt(s1)
 		local chord = (p1 - p0).Magnitude
@@ -655,18 +775,21 @@ local function placeProceduralTunnel(
 	local offset = data.ModuleOffsetM * scale
 	local step = math.max(settings.MaxSegmentLengthStuds, 4)
 	local partsPerSegment = TUNNEL_ARCH_SEGMENTS + 3
-	local segmentCount =
-		math.min(math.floor(MAX_PROCEDURAL_PARTS / partsPerSegment), math.max(1, math.ceil(curve.Length / step)))
+	local maximumSegments = math.floor(MAX_PROCEDURAL_PARTS / partsPerSegment)
+	local rollProfile = buildRollProfile(curve, settings)
+	local stationRanges, refinementCapped =
+		refinedStructureRanges(curve.Length, step, outerWidth / 2, rollProfile, maximumSegments)
 	local folder = Instance.new("Folder")
 	folder.Name = "ProceduralTunnel"
 	folder:SetAttribute("RW_ProceduralTunnel", true)
+	folder:SetAttribute("RW_BankRefinementCapped", refinementCapped)
+	folder:SetAttribute("RW_BankMismatchBudgetStuds", STRUCTURE_BANK_MISMATCH_BUDGET_STUDS)
 	folder.Parent = parent
-	local bankedFrameAt = makeBankedFrameAt(curve, settings)
+	local bankedFrameAt = makeBankedFrameAt(curve, settings, rollProfile)
 
 	local partCount = 0
-	for index = 1, segmentCount do
-		local s0 = curve.Length * (index - 1) / segmentCount
-		local s1 = curve.Length * index / segmentCount
+	for index, range in stationRanges do
+		local s0, s1 = range[1], range[2]
 		local p0 = curve:PosAt(s0)
 		local p1 = curve:PosAt(s1)
 		local chord = (p1 - p0).Magnitude

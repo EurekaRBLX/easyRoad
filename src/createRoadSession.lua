@@ -378,6 +378,34 @@ local function createRoadSession(
 	-- offsets use the road's own stored start -> end orientation, matching the
 	-- Road Editor's left-to-right component order. The banked frame keeps an
 	-- edge snap on the actual elevated deck instead of floating beside it.
+	-- RoadInstance.Read may reconstruct a PolyCurve while the mouse moves. Weak
+	-- keys retain the useful within-search cache without pinning those transient
+	-- curve tables for the lifetime of the placement session.
+	local snapRollProfiles = setmetatable({}, { __mode = "k" }) :: {
+		[PolyCurve.PolyCurve]: { Key: string, Profile: Superelevation.RollProfile },
+	}
+	local function snapRollProfile(curve: PolyCurve.PolyCurve): Superelevation.RollProfile
+		local style = getStyle()
+		local key = string.format(
+			"%s|%.17g|%.17g|%.17g|%.17g|%.17g",
+			settings.SuperelevationMode,
+			settings.ManualBankDeg,
+			settings.DesignSpeedKph,
+			settings.SuperelevationRunoffM,
+			settings.MetersToStuds,
+			style.MaxSuperelevation
+		)
+		local cached = snapRollProfiles[curve]
+		if cached and cached.Key == key then
+			return cached.Profile
+		end
+		local profile = Superelevation.BuildProfile(curve.Length, function(station: number): number
+			return curve:CurvatureAt(station)
+		end, settings, style)
+		snapRollProfiles[curve] = { Key = key, Profile = profile }
+		return profile
+	end
+
 	local function roadSnapPosition(data: RoadInstance.RoadData, station: number): Vector3
 		local centre = data.Curve:PosAt(station)
 		if settings.SnapReference == "Centre" then
@@ -388,18 +416,10 @@ local function createRoadSession(
 			else data.ProfileStart
 		local leftM, rightM = roadwayEdgeOffsetsM(profile)
 		local offsetM = if settings.SnapReference == "LeftRoadwayEdge" then leftM else rightM
-		-- RoadBuilder tapers every segment's bank to zero at both endpoints so
-		-- chained roads meet without a height step. Apply the same runoff envelope
-		-- here; using the raw curvature roll put an edge snap above/below the real
-		-- deck at a curved endpoint. RoadBuilder additionally smooths sampled roll
-		-- noise, but this continuous envelope preserves the exact endpoint contract
-		-- and the intended bank through the body of the road.
-		local roll = Superelevation.RollAt(data.Curve:CurvatureAt(station), settings, getStyle())
-		local runoffStuds = math.min(settings.SuperelevationRunoffM * settings.MetersToStuds, data.Curve.Length * 0.3)
-		if runoffStuds > 1e-3 then
-			local taper = math.min(1, station / runoffStuds, (data.Curve.Length - station) / runoffStuds)
-			roll *= math.max(taper, 0)
-		end
+		-- Use the exact canonical profile that RoadBuilder samples. Re-deriving
+		-- raw curvature plus a local taper drifts from the smoothed deck inside a
+		-- runoff and makes lateral magnetic points float above or below it.
+		local roll = Superelevation.RollAtProfile(snapRollProfile(data.Curve), station)
 		local frame = data.Curve:FrameAt(station, roll)
 		return (frame * CFrame.new(offsetM * settings.MetersToStuds, 0, 0)).Position
 	end

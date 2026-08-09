@@ -27,20 +27,16 @@ internal planning only. See `TODO.md` for planned new features and
   Studio session (this environment can't render Studio) - leaving this
   entry open until a user confirms curves render cleanly (no gaps, no
   sawtooth, no drift) with real testing.
-- **Superelevation (banking) on curves may look worse at the final build's
-  finer station spacing than in the coarser placement preview - reported,
-  not yet root-caused.** A user compared a live placement preview against
-  the same road placed for real and said the preview looked smoother; a
-  follow-up screenshot of the *actual* final geometry (not just another
-  preview frame) was requested to confirm before diagnosing further, but
-  the conversation moved on to other bugs before one was shared. Leading
-  hypothesis: each deck strip is rolled (banked) using only its own
-  midpoint's roll angle, with no accommodation for the roll *changing*
-  between adjacent stations - on a superelevated curve this could show up
-  as a small seam at every station boundary, and finer final-build spacing
-  would mean *more* boundaries (more visible seams) rather than fewer, even
-  though each individual seam should be smaller. Unconfirmed - revisit with
-  a real "after placement" screenshot.
+- **Superelevation preview/final parity is fixed headlessly but still needs a
+  rebuilt-dist Studio check.** The previous density-dependent box average and
+  midpoint-roll hypothesis are no longer current: `Superelevation.BuildProfile`
+  now owns one arc-length-weighted roll curve independent of mesh density,
+  `RoadBuilder.StationPlanFor` supplies the final roll-refined stations to both
+  preview and final emission, and changing-roll strips use exact station-edge
+  wedges. Procedural structures consume the same profile. The Python 3D
+  contract verifies zero outer-edge displacement and a maximum accepted merged
+  facet error below 0.025 studs, but Roblox rendering and live rebuild parity
+  remain unverified until the rebuilt plugin is exercised in Studio.
 - **Hover-trap click-swallowing keeps recurring - three separate instances
   now, all fixed as found, but treat any future report of "clicking in the
   viewport does nothing" as this bug family first.** (1) The pie menu's
@@ -68,3 +64,10 @@ internal planning only. See `TODO.md` for planned new features and
   (which focused on eliminating the pavement overlap and the drag
   reliability bug) - would need the marking pass to accept the same
   per-station offset override the pavement overlay uses.
+- **Bus-bay overlays are intentionally suppressed on a road that is also
+  widening or narrowing.** A profile transition can insert matched zero-width
+  components and move the kerb offset, while the current bay overlay owns one
+  constant start-profile cross-section. `BuildWithBay` therefore emits the
+  complete transition road without the bay rather than risk excluding the wrong
+  component or producing pavement gaps/overlaps. Supporting the combination
+  needs a per-station bay/kerb profile and dedicated visual coverage.

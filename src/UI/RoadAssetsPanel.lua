@@ -37,6 +37,7 @@ local function RoadAssetsPanel(props: {
 	UsageCount: number,
 	OnSelect: (id: string?) -> (),
 	OnImport: (kind: StructureAssets.AssetKind) -> (),
+	OnExport: (id: string) -> (),
 	OnRename: (id: string, name: string) -> (),
 	OnDelete: (id: string) -> (),
 	OnClose: () -> (),
@@ -57,7 +58,7 @@ local function RoadAssetsPanel(props: {
 	RoadDesigner.DecorateCard(children)
 	children.Header = e(Components.Section, { Text = "Import / Manage Road Assets", First = true, LayoutOrder = 1 })
 	children.Help = paragraph(
-		"Select a Model in Workspace, then import it once here. Road Tools and placed-road editors only choose from this library.",
+		"Select a Model in Workspace, then import it once here. Export creates an editable Workspace copy without removing it from this library.",
 		2
 	)
 	children.Import = e(Components.Row, { LayoutOrder = 3 }, {
@@ -97,6 +98,18 @@ local function RoadAssetsPanel(props: {
 		children.Empty = paragraph("No custom road assets imported yet.", 5)
 	end
 
+	local exportId = if selected then selected.Id else nil
+	children.Export = e(Components.Button, {
+		Text = "Export Selected Asset to Workspace",
+		Disabled = exportId == nil,
+		LayoutOrder = 8,
+		OnClick = function()
+			if exportId then
+				props.OnExport(exportId)
+			end
+		end,
+	})
+
 	if selected then
 		local asset = selected :: StructureAssets.AssetInfo
 		children.Name = e(Components.Row, { LayoutOrder = 6 }, {
@@ -123,7 +136,7 @@ local function RoadAssetsPanel(props: {
 		children.Delete = e(Components.Button, {
 			Text = "Delete Selected Asset",
 			Danger = true,
-			LayoutOrder = 8,
+			LayoutOrder = 9,
 			OnClick = function()
 				props.OnDelete(asset.Id)
 			end,
@@ -131,11 +144,11 @@ local function RoadAssetsPanel(props: {
 	end
 
 	if props.Status then
-		children.Status = paragraph(props.Status, 9)
+		children.Status = paragraph(props.Status, 10)
 	end
 	children.Close = e(Components.Button, {
 		Text = "Close",
-		LayoutOrder = 10,
+		LayoutOrder = 11,
 		OnClick = props.OnClose,
 	})
 

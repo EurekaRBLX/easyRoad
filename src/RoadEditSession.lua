@@ -239,8 +239,30 @@ local function createRoadEditSession(
 	-- above the pavement or clipped inside it depending on how much bank
 	-- is in effect at that station - reported live as a stretch ghost that
 	-- "sometimes shows, sometimes not" specifically on curved sections.
+	local editRollProfiles = setmetatable({}, { __mode = "k" }) :: {
+		[PolyCurve.PolyCurve]: { Key: string, Profile: Superelevation.RollProfile },
+	}
 	local function frameAtWithRoll(curve: PolyCurve.PolyCurve, s: number): CFrame
-		return curve:FrameAt(s, Superelevation.RollAt(curve:CurvatureAt(s), settings, getStyle()))
+		local style = getStyle()
+		local key = string.format(
+			"%s|%.17g|%.17g|%.17g|%.17g|%.17g",
+			settings.SuperelevationMode,
+			settings.ManualBankDeg,
+			settings.DesignSpeedKph,
+			settings.SuperelevationRunoffM,
+			settings.MetersToStuds,
+			style.MaxSuperelevation
+		)
+		local cached = editRollProfiles[curve]
+		if not cached or cached.Key ~= key then
+			local profile = Superelevation.BuildProfile(curve.Length, function(station: number): number
+				return curve:CurvatureAt(station)
+			end, settings, style)
+			cached = { Key = key, Profile = profile }
+			editRollProfiles[curve] = cached
+		end
+		assert(cached)
+		return curve:FrameAt(s, Superelevation.RollAtProfile(cached.Profile, s))
 	end
 
 	-- Cancels either step of bay placement: before a drag is drawn
@@ -345,7 +367,7 @@ local function createRoadEditSession(
 			return nil
 		end
 		local profile = editingProfile or originalData.ProfileStart
-		local frame = originalData.Curve:FrameAt(station)
+		local frame = frameAtWithRoll(originalData.Curve, station)
 		local lateralOffsetM = (hitPosition - frame.Position):Dot(frame.RightVector) / settings.MetersToStuds
 		local offsets = RoadProfile.ComponentOffsetsM(profile)
 		local components = profile.Components
@@ -389,7 +411,7 @@ local function createRoadEditSession(
 		if #edges == 0 then
 			return nil
 		end
-		local frame = originalData.Curve:FrameAt(station)
+		local frame = frameAtWithRoll(originalData.Curve, station)
 		local lateralOffsetM = (hitPosition - frame.Position):Dot(frame.RightVector) / settings.MetersToStuds
 		local offsets = RoadProfile.ComponentOffsetsM(profile)
 		local best: number? = nil
@@ -830,7 +852,8 @@ local function createRoadEditSession(
 		currentHit: Vector3
 	): BayDraft
 		local lengthStuds = math.abs(currentStation - startStation)
-		local frame = (originalData :: RoadInstance.RoadData).Curve:FrameAt(startStation)
+		local curve = (originalData :: RoadInstance.RoadData).Curve
+		local frame = frameAtWithRoll(curve, startStation)
 		-- Signed, not absolute: positive = dragged toward the frame's right
 		-- (RoadProfile's positive-offset side), negative = left - this is
 		-- what actually determines which side the bay ends up on, not the
@@ -1239,7 +1262,7 @@ local function createRoadEditSession(
 	end
 
 	function session.StartBayPlacement()
-		if mode ~= "SegmentMenu" or not selectedRoad then
+		if mode ~= "SegmentMenu" or not selectedRoad or session.IsTransition() then
 			return
 		end
 		mode = "PlacingBay"

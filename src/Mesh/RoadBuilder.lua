@@ -55,6 +55,14 @@ export type BuildOptions = {
 	-- purpose-built surface owns the geometry immediately beyond a road end.
 	ExactStartRaisedCap: boolean?,
 	ExactEndRaisedCap: boolean?,
+	-- Internal builders that slice one authored road into several generated
+	-- ranges pass the full-road profile plus each slice's station offset so
+	-- artificial slice boundaries do not create extra zero-bank runoffs.
+	SuperelevationProfile: Superelevation.RollProfile?,
+	SuperelevationStationOffsetStuds: number?,
+	-- Moving-offset overlays (currently bus bays) retain the legacy per-source
+	-- component emitter until their own coalescing error model is validated.
+	DisableSurfaceCoalescing: boolean?,
 }
 
 local MARKING_THICKNESS = 0.05
@@ -70,6 +78,9 @@ local PREVIEW_CHORD_TOLERANCE = 0.25
 local MIN_STEP = 0.4
 local MAX_TURN_PER_STEP = 0.2 -- Radians of heading change allowed per strip
 local MAX_ROLL_PER_STEP = 0.02 -- Radians of superelevation (bank) change allowed per strip
+local MAX_ROLL_INTERPOLATION_ERROR = 0.0015 -- Radians between the canonical bank profile and one strip
+local MAX_BANKED_BAND_WARP_STUDS = 0.025 -- Max vertical error when coalescing Drive lanes through runoff
+local MAX_CURVED_BAND_OVERHANG_STUDS = 0.025 -- Max extra box overhang versus any source Drive component
 local ROLL_WEDGE_EPSILON = 1e-4 -- Roll change (radians) per strip above which a flat box would visibly kink
 local MAX_PART_AXIS_STUDS = 2048 -- Roblox BasePart axis limit
 local EXACT_STRAIGHT_EPSILON = 1e-4
@@ -85,6 +96,11 @@ local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
 }
 
 local RoadBuilder = {}
+
+export type StationPlan = {
+	Stations: { number },
+	Rolls: { number },
+}
 
 -- Exported so a builder laying its own marking parts outside Build() sits at
 -- the same height and thickness as the ones Build() emits, instead of keeping
@@ -326,7 +342,14 @@ local function transitionPlan(options: BuildOptions, scale: number, length: numb
 		RoadProfile.TotalWidthM(options.ProfileStart)
 			- RoadProfile.TotalWidthM(options.ProfileEnd :: RoadProfile.RoadProfile)
 	) * scale
-	return true, math.clamp(widthDeltaStuds * 15, 20, length)
+	return true, math.clamp(widthDeltaStuds * 15, math.min(20, length), length)
+end
+
+local function maxProfileOffsetStuds(options: BuildOptions, scale: number): number
+	return math.max(
+		RoadProfile.TotalWidthM(options.ProfileStart),
+		RoadProfile.TotalWidthM(options.ProfileEnd or options.ProfileStart)
+	) / 2 * scale
 end
 
 -- The sample stations for `options` - the ONE place that decides where this
@@ -363,11 +386,115 @@ local function stationsForOptions(
 		maxStep = math.min(maxStep, 4, math.max(maxStepForTaper, MIN_STEP))
 	end
 	local tolerance = if preview then PREVIEW_CHORD_TOLERANCE else CHORD_TOLERANCE
-	local maxOffsetStuds = math.max(
-		RoadProfile.TotalWidthM(options.ProfileStart),
-		RoadProfile.TotalWidthM(options.ProfileEnd or options.ProfileStart)
-	) / 2 * scale
+	local maxOffsetStuds = maxProfileOffsetStuds(options, scale)
 	return buildStations(options.Curve, maxStep, tolerance, maxOffsetStuds)
+end
+
+-- Refine the curve-driven station grid against the canonical bank profile.
+-- The profile is planned independently of mesh density in Superelevation, so
+-- inserting a station here cannot change the roll curve it is trying to
+-- approximate. Quarter-point probes catch a bank hump or curvature sign
+-- reversal whose two endpoint rolls happen to match.
+local function refineStationsForRoll(
+	baseStations: { number },
+	profile: Superelevation.RollProfile,
+	profileOffsetStuds: number,
+	maxOffsetStuds: number,
+	tolerance: number
+): StationPlan
+	local function rollAt(s: number): number
+		return Superelevation.RollAtProfile(profile, s + profileOffsetStuds)
+	end
+	local stations = { baseStations[1] }
+	local rolls = { rollAt(baseStations[1]) }
+
+	local function appendInterval(s0: number, roll0: number, s1: number, roll1: number, depth: number)
+		local span = s1 - s0
+		local interpolationError = 0
+		local verticalError = 0
+		local function measureAtFraction(fraction: number)
+			local sampleS = s0 + span * fraction
+			local actual = rollAt(sampleS)
+			local linear = roll0 + (roll1 - roll0) * fraction
+			interpolationError = math.max(interpolationError, math.abs(actual - linear))
+			verticalError = math.max(verticalError, maxOffsetStuds * math.abs(math.sin(actual) - math.sin(linear)))
+		end
+		for _, fraction in { 0.25, 0.5, 0.75 } do
+			measureAtFraction(fraction)
+		end
+
+		-- The canonical profile is piecewise linear. Its maximum departure from
+		-- this interval's endpoint chord therefore occurs at one of its enclosed
+		-- control stations; include every such kink so a narrow S-curve peak
+		-- cannot sit between the fixed quarter probes unnoticed.
+		local globalStart = s0 + profileOffsetStuds
+		local globalEnd = s1 + profileOffsetStuds
+		local lo = 1
+		local hi = #profile.Stations + 1
+		while lo < hi do
+			local mid = math.floor((lo + hi) / 2)
+			if profile.Stations[mid] <= globalStart + 1e-9 then
+				lo = mid + 1
+			else
+				hi = mid
+			end
+		end
+		for profileIndex = lo, #profile.Stations do
+			local profileStation = profile.Stations[profileIndex]
+			if profileStation >= globalEnd - 1e-9 then
+				break
+			end
+			measureAtFraction((profileStation - globalStart) / span)
+		end
+
+		local accepted = math.abs(roll1 - roll0) <= MAX_ROLL_PER_STEP
+			and interpolationError <= MAX_ROLL_INTERPOLATION_ERROR
+			and verticalError <= tolerance
+		if accepted or span <= MIN_STEP or depth >= 12 then
+			table.insert(stations, s1)
+			table.insert(rolls, roll1)
+			return
+		end
+
+		local mid = (s0 + s1) / 2
+		local midRoll = rollAt(mid)
+		appendInterval(s0, roll0, mid, midRoll, depth + 1)
+		appendInterval(mid, midRoll, s1, roll1, depth + 1)
+	end
+
+	for i = 1, #baseStations - 1 do
+		local s0 = baseStations[i]
+		local s1 = baseStations[i + 1]
+		appendInterval(s0, rollAt(s0), s1, rollAt(s1), 0)
+	end
+
+	return {
+		Stations = stations,
+		Rolls = rolls,
+	}
+end
+
+local function stationPlanForOptions(
+	options: BuildOptions,
+	scale: number,
+	preview: boolean,
+	isTransition: boolean,
+	taperLength: number
+): StationPlan
+	local baseStations = stationsForOptions(options, scale, preview, isTransition, taperLength)
+	local profile = options.SuperelevationProfile
+		or Superelevation.BuildProfile(options.Curve.Length, function(s: number): number
+			return options.Curve:CurvatureAt(s)
+		end, options.Settings, options.Style)
+	local profileOffsetStuds = options.SuperelevationStationOffsetStuds or 0
+	local tolerance = if preview then PREVIEW_CHORD_TOLERANCE else CHORD_TOLERANCE
+	return refineStationsForRoll(
+		baseStations,
+		profile,
+		profileOffsetStuds,
+		maxProfileOffsetStuds(options, scale),
+		tolerance
+	)
 end
 
 -- The stations `RoadBuilder.Build` would use for these exact options, without
@@ -381,14 +508,21 @@ end
 -- that edge at every chord midpoint. Deriving the station count from the
 -- adaptive rule a second time inside RoundaboutBuilder would have made the two
 -- agree only until someone retuned CHORD_TOLERANCE here.
-function RoadBuilder.StationsFor(options: BuildOptions): { number }
+function RoadBuilder.StationPlanFor(options: BuildOptions): StationPlan
 	local length = options.Curve.Length
 	if length < 1e-3 then
-		return { 0 }
+		return {
+			Stations = { 0 },
+			Rolls = { 0 },
+		}
 	end
 	local scale = options.Settings.MetersToStuds
 	local isTransition, taperLength = transitionPlan(options, scale, length)
-	return stationsForOptions(options, scale, options.Preview == true, isTransition, taperLength)
+	return stationPlanForOptions(options, scale, options.Preview == true, isTransition, taperLength)
+end
+
+function RoadBuilder.StationsFor(options: BuildOptions): { number }
+	return RoadBuilder.StationPlanFor(options).Stations
 end
 
 function RoadBuilder.Build(options: BuildOptions): Model
@@ -446,120 +580,13 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		return t * t * (3 - 2 * t)
 	end
 
-	local stations = stationsForOptions(options, scale, preview, isTransition, taperLength)
-
-	-- Per-station data ---------------------------------------------------------
-	-- Both the curvature-noise smoothing window and the end-of-segment
-	-- runoff taper below scale with this segment's own length (capped at
-	-- settings.SuperelevationRunoffM converted to studs) instead of always
-	-- using a fixed stud constant - otherwise a short segment gets
-	-- disproportionately eaten by the taper (or over-smoothed) compared to
-	-- a long one, so two curves of the same radius but different lengths
-	-- would bank to visibly different peak amounts. Capping at 30% of
-	-- length on each end always leaves at least a 40% flat "full bank"
-	-- middle zone, so short curves scale the same way long ones do instead
-	-- of being dominated by the absolute constant. Converting the runoff
-	-- distance from a user-configurable REAL-WORLD meters setting (not a
-	-- bare stud constant) means the transition covers the same real-world
-	-- distance regardless of a user's own studs-per-meter scale - a fixed
-	-- stud value made the same transition feel more abrupt for anyone
-	-- running a higher studs-per-meter ratio than the ~3.571 default.
-	local runoffLengthStuds = settings.SuperelevationRunoffM * settings.MetersToStuds
-	local runoffLength = math.min(runoffLengthStuds, length * 0.3)
-
-	local function computeRolls(stationList: { number }): { number }
-		local computed = table.create(#stationList)
-		for i, s in stationList do
-			computed[i] = Superelevation.RollAt(curve:CurvatureAt(s), settings, style)
-		end
-		computed = Superelevation.SmoothRolls(computed, stationList, runoffLength)
-		-- Superelevation is per-segment: taper the bank to zero at both ends
-		-- of the segment (runoff) so chained segments always meet flush at
-		-- joints with no height step between the two bodies.
-		if runoffLength > 1e-3 then
-			for i, s in stationList do
-				local taper = math.min(1, s / runoffLength, (length - s) / runoffLength)
-				computed[i] *= math.max(taper, 0)
-			end
-		end
-		return computed
-	end
-
-	local rolls = computeRolls(stations)
-
-	-- Piecewise-linear lookup into an arbitrary (sValues, values) sample
-	-- pair, used below to resample the already-smoothed coarse roll curve
-	-- at newly-inserted refinement stations.
-	local function interpolateAt(sValues: { number }, values: { number }, s: number): number
-		local n = #sValues
-		if s <= sValues[1] then
-			return values[1]
-		end
-		for i = 1, n - 1 do
-			if s <= sValues[i + 1] then
-				local span = sValues[i + 1] - sValues[i]
-				local f = if span > 1e-9 then (s - sValues[i]) / span else 0
-				return values[i] + (values[i + 1] - values[i]) * f
-			end
-		end
-		return values[n]
-	end
-
-	-- The station grid above is spaced purely by lateral curvature (chord
-	-- tolerance / heading change per strip) - it has no idea the bank angle
-	-- (roll) can also change quickly across a span the curve itself
-	-- considers "straight enough": most obviously the deliberate runoff
-	-- ramp to zero bank at both ends of every segment, but also wherever
-	-- SmoothRolls' box filter smears bank in from a nearby curve onto an
-	-- otherwise-flat run. Each deck strip is a single rigid, flat Part
-	-- though - a strip that twists continuously along its own length is a
-	-- non-planar ruled surface, not something FillTriangle's flat wedges
-	-- (or any single rigid Part) can represent exactly - so an under-
-	-- subdivided roll transition shows up as a visible kink at the strip
-	-- seam instead of a smooth twist. Insert extra stations wherever the
-	-- roll step between neighbours is too large, then recompute rolls once
-	-- over the final, denser grid - the same mitigation curvature already
-	-- gets via MAX_TURN_PER_STEP, just driven by bank angle instead.
-	local refined = { stations[1] }
-	for i = 1, #stations - 1 do
-		local s0, s1 = stations[i], stations[i + 1]
-		local rollDelta = math.abs(rolls[i + 1] - rolls[i])
-		local subdivisions = math.min(8, math.ceil(rollDelta / MAX_ROLL_PER_STEP))
-		for j = 1, subdivisions - 1 do
-			local s = s0 + (s1 - s0) * (j / subdivisions)
-			if s - refined[#refined] >= MIN_STEP * 0.5 then
-				table.insert(refined, s)
-			end
-		end
-		table.insert(refined, s1)
-	end
-	if #refined > #stations then
-		-- Resample the coarse grid's already-smoothed roll curve at the new
-		-- refinement stations, rather than recomputing SmoothRolls from
-		-- scratch on this denser, unevenly-spaced grid: SmoothRolls' box
-		-- filter is a plain per-sample average (not arc-length-weighted),
-		-- so it's biased toward whichever part of a smoothing window
-		-- happens to have more samples - once refinement makes density
-		-- jump sharply in some spots but not others, re-deriving the
-		-- average on that uneven grid shifted non-smoothly as the window
-		-- slid across the density boundary, producing small oscillations
-		-- in the roll curve. Dashed markings sample rollAt() at arbitrary
-		-- intermediate points (not station-anchored), so they visibly
-		-- picked up on that now-non-smooth curve as a "wobble" along
-		-- otherwise-straight dashes on superelevated curves; solid lines
-		-- and deck strips anchor exactly to station points and barely
-		-- showed it. Interpolating the coarse curve instead is
-		-- mathematically consistent by construction - same curve, just
-		-- resampled - so it can't introduce new oscillation.
-		local coarseStations = stations
-		local coarseRolls = rolls
-		local resampled = table.create(#refined)
-		for i, s in refined do
-			resampled[i] = interpolateAt(coarseStations, coarseRolls, s)
-		end
-		stations = refined
-		rolls = resampled
-	end
+	-- Curve and banking share one final station plan. Superelevation owns a
+	-- density-independent roll profile; the station planner only samples and
+	-- refines it, so preview/final meshes and downstream geometry cannot alter
+	-- the bank merely by choosing a different strip density.
+	local stationPlan = RoadBuilder.StationPlanFor(options)
+	local stations = stationPlan.Stations
+	local rolls = stationPlan.Rolls
 	local stationCount = #stations
 
 	local frames: { CFrame } = table.create(stationCount)
@@ -614,13 +641,12 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	-- different: their purpose is to end a Sidewalk/Median exactly at station
 	-- 0/Length where another builder owns the surface beyond that plane.
 	--
-	-- On an exactly straight, constant-profile run, adjacent Drive components
-	-- with the same surface signature are emitted as one wider band. Markings
-	-- are still planned from the untouched component arrays below, so the
-	-- visual lane boundaries and every editable component index remain intact.
-	local bandEndByStart: { [number]: number } = {}
-	local mergedIntoPrevious: { [number]: boolean } = {}
-	if optimizedStraight then
+	-- On a constant-profile run, adjacent Drive components with the same
+	-- surface signature may be emitted as one wider band. Curved intervals use
+	-- the same source profile and marking plan; changing-bank intervals apply a
+	-- stricter width budget below before they are allowed to coalesce.
+	local compatibleBandEndByStart: { [number]: number } = {}
+	if not isTransition and options.DisableSurfaceCoalescing ~= true then
 		local c = 1
 		while c <= componentCount do
 			local bandEnd = c
@@ -640,13 +666,16 @@ function RoadBuilder.Build(options: BuildOptions): Model
 						break
 					end
 					bandEnd = nextIndex
-					mergedIntoPrevious[nextIndex] = true
 				end
 			end
-			bandEndByStart[c] = bandEnd
+			for sourceIndex = c, bandEnd do
+				compatibleBandEndByStart[sourceIndex] = bandEnd
+			end
 			c = bandEnd + 1
 		end
 	end
+	local curvedSurfaceCoalesced = false
+	local bankedSurfaceCoalesced = false
 
 	for i = 1, stationCount - 1 do
 		local s0 = stations[i]
@@ -675,11 +704,59 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		-- against its neighbour.
 		local rollDelta = math.abs(rolls[i + 1] - rolls[i])
 
-		for c = 1, componentCount do
-			if excludedComponents[c] or mergedIntoPrevious[c] then
+		local c = 1
+		while c <= componentCount do
+			if excludedComponents[c] then
+				c += 1
 				continue
 			end
-			local componentEnd = bandEndByStart[c] or c
+
+			-- A bank transition twists the cross-section between its two exact
+			-- station edges. Coalescing several lanes changes where that ruled
+			-- surface is triangulated, so admit only as much width as keeps the
+			-- worst centre-of-quad height difference below the explicit budget:
+			-- width * |sin(roll1) - sin(roll0)| / 4.
+			local componentEnd = c
+			local compatibleEnd = compatibleBandEndByStart[c] or c
+			if compatibleEnd > c then
+				local sinDelta = math.abs(math.sin(rolls[i + 1]) - math.sin(rolls[i]))
+				local maxBandWidth = if sinDelta <= 1e-9 then math.huge else 4 * MAX_BANKED_BAND_WARP_STUDS / sinDelta
+				local bandWidth = math.max(stationWidths[i][c], stationWidths[i + 1][c])
+				local sourceLeft = stationOffsets[i][c]
+				local sourceRight = sourceLeft + stationWidths[i][c]
+				local sourceEdgeDistance = math.max(math.abs(sourceLeft), math.abs(sourceRight))
+				local minimumSourceMiter = curveMiterPad(curve, sMid, sourceEdgeDistance, nominalLength)
+				while componentEnd < compatibleEnd do
+					local nextIndex = componentEnd + 1
+					local nextWidth = math.max(stationWidths[i][nextIndex], stationWidths[i + 1][nextIndex])
+					if bandWidth + nextWidth > maxBandWidth then
+						break
+					end
+
+					-- Constant-roll curved surfaces use midpoint boxes with a
+					-- curvature-dependent length pad. A wider merged box inherits
+					-- the farthest edge's pad across every source lane; bound the
+					-- extra half-length it would add over the shortest source box.
+					local nextLeft = stationOffsets[i][nextIndex]
+					local nextRight = nextLeft + stationWidths[i][nextIndex]
+					local nextEdgeDistance = math.max(math.abs(nextLeft), math.abs(nextRight))
+					local nextSourceMiter = curveMiterPad(curve, sMid, nextEdgeDistance, nominalLength)
+					local candidateLeft = stationOffsets[i][c]
+					local candidateRight = nextRight
+					local candidateEdgeDistance = math.max(math.abs(candidateLeft), math.abs(candidateRight))
+					local candidateMiter = curveMiterPad(curve, sMid, candidateEdgeDistance, nominalLength)
+					local candidateMinimumMiter = math.min(minimumSourceMiter, nextSourceMiter)
+					if
+						rollDelta <= ROLL_WEDGE_EPSILON
+						and (candidateMiter - candidateMinimumMiter) / 2 > MAX_CURVED_BAND_OVERHANG_STUDS
+					then
+						break
+					end
+					bandWidth += nextWidth
+					minimumSourceMiter = candidateMinimumMiter
+					componentEnd = nextIndex
+				end
+			end
 			local w0 = 0
 			local w1 = 0
 			for sourceIndex = c, componentEnd do
@@ -688,11 +765,19 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			end
 			local width = (w0 + w1) / 2
 			if width < 0.05 then
+				c = componentEnd + 1
 				continue
 			end
 			local centerOffset0 = stationOffsets[i][c] + w0 / 2
 			local centerOffset1 = stationOffsets[i + 1][c] + w1 / 2
 			local centerOffset = (centerOffset0 + centerOffset1) / 2
+			if componentEnd > c then
+				if math.max(math.abs(rolls[i]), math.abs(rolls[i + 1])) > ROLL_WEDGE_EPSILON then
+					bankedSurfaceCoalesced = true
+				elseif not optimizedStraight then
+					curvedSurfaceCoalesced = true
+				end
+			end
 
 			local kind = componentsStart[c].Kind
 			local raised = RoadProfile.IsRaised(kind)
@@ -729,7 +814,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				part:SetAttribute("RW_StationEndStuds", s1)
 				part:SetAttribute(
 					"RW_SurfaceCoalesced",
-					optimizedStraight and (componentEnd > c or nominalLength > settings.MaxSegmentLengthStuds)
+					componentEnd > c or (optimizedStraight and nominalLength > settings.MaxSegmentLengthStuds)
 				)
 				return part
 			end
@@ -787,6 +872,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
 				part.Parent = model
 			end
+			c = componentEnd + 1
 		end
 	end
 
@@ -811,14 +897,24 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		-- Interpolates the roll (superelevation) already computed per
 		-- station at an arbitrary distance s between them.
 		local function rollAt(s: number): number
-			for i = 1, stationCount - 1 do
-				if s <= stations[i + 1] then
-					local span = stations[i + 1] - stations[i]
-					local f = if span > 1e-9 then (s - stations[i]) / span else 0
-					return rolls[i] + (rolls[i + 1] - rolls[i]) * f
+			if s <= stations[1] then
+				return rolls[1]
+			elseif s >= stations[stationCount] then
+				return rolls[stationCount]
+			end
+			local lo = 1
+			local hi = stationCount
+			while hi - lo > 1 do
+				local mid = math.floor((lo + hi) / 2)
+				if stations[mid] <= s then
+					lo = mid
+				else
+					hi = mid
 				end
 			end
-			return rolls[stationCount]
+			local span = stations[hi] - stations[lo]
+			local f = if span > 1e-9 then (s - stations[lo]) / span else 0
+			return rolls[lo] + (rolls[hi] - rolls[lo]) * f
 		end
 
 		-- Anchors a marking segment directly to the true curve position at
@@ -971,6 +1067,8 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	-- Metadata for endpoint snapping and later editing ---------------------------
 	RoadInstance.StampModel(model, curve, options.ProfileStart, options.ProfileEnd)
 	model:SetAttribute("RW_StraightSurfaceCoalesced", optimizedStraight)
+	model:SetAttribute("RW_CurvedSurfaceCoalesced", curvedSurfaceCoalesced)
+	model:SetAttribute("RW_BankedSurfaceCoalesced", bankedSurfaceCoalesced)
 
 	return model
 end
@@ -1009,6 +1107,16 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 	local length = curve.Length
 
 	if length < 1e-3 then
+		return RoadBuilder.Build(options)
+	end
+	-- A bay overlay currently owns one constant cross-section. On a
+	-- widening/narrowing road, MatchForTransition can insert zero-width
+	-- components (changing the nearside index) while the kerb offset itself
+	-- moves through the taper. Emitting the start-profile bay across that range
+	-- would overlap or leave holes in the real transition, so retain the complete
+	-- widening road without the unsafe overlay until bays have a dedicated
+	-- per-station transition profile.
+	if options.ProfileEnd and options.ProfileEnd.Id ~= baseProfile.Id then
 		return RoadBuilder.Build(options)
 	end
 
@@ -1051,6 +1159,13 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 	if taperOutEnd - taperInStart < 1e-3 or not nearsideComponent then
 		return RoadBuilder.Build(options)
 	end
+
+	-- Every slice below must sample the parent road's one canonical bank
+	-- profile. Building a profile per slice would incorrectly taper the roll
+	-- back to zero at the bay's artificial slice boundaries.
+	local fullRollProfile = Superelevation.BuildProfile(length, function(s: number): number
+		return curve:CurvatureAt(s)
+	end, settings, style)
 
 	-- MarkingStretches are captured in the whole road's own station space,
 	-- but each slice below is its own PolyCurve with station 0 at the
@@ -1124,11 +1239,15 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			MarkingStretches = stretchesForSlice(0, taperInStart),
 			KerbStretches = kerbStretchesForSlice(0, taperInStart),
 			ExactStartRaisedCap = options.ExactStartRaisedCap,
+			SuperelevationProfile = fullRollProfile,
+			SuperelevationStationOffsetStuds = 0,
+			DisableSurfaceCoalescing = true,
 		}))
 	end
 	mergeIn(RoadBuilder.Build({
 		Curve = curve:Slice(taperInStart, taperOutEnd),
 		ProfileStart = baseProfile,
+		ProfileEnd = options.ProfileEnd,
 		Style = style,
 		Settings = settings,
 		Preview = preview,
@@ -1137,6 +1256,9 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		KerbStretches = kerbStretchesForSlice(taperInStart, taperOutEnd),
 		ExactStartRaisedCap = if taperInStart <= 1e-3 then options.ExactStartRaisedCap else nil,
 		ExactEndRaisedCap = if length - taperOutEnd <= 1e-3 then options.ExactEndRaisedCap else nil,
+		SuperelevationProfile = fullRollProfile,
+		SuperelevationStationOffsetStuds = taperInStart,
+		DisableSurfaceCoalescing = true,
 	}))
 	if length - taperOutEnd > 1e-3 then
 		mergeIn(RoadBuilder.Build({
@@ -1149,13 +1271,20 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			MarkingStretches = stretchesForSlice(taperOutEnd, length),
 			KerbStretches = kerbStretchesForSlice(taperOutEnd, length),
 			ExactEndRaisedCap = options.ExactEndRaisedCap,
+			SuperelevationProfile = fullRollProfile,
+			SuperelevationStationOffsetStuds = taperOutEnd,
+			DisableSurfaceCoalescing = true,
 		}))
 	end
 
 	local partHeight = thickness
 
+	local function rollAt(s: number): number
+		return Superelevation.RollAtProfile(fullRollProfile, s)
+	end
+
 	local function frameAt(s: number): CFrame
-		return curve:FrameAt(s, Superelevation.RollAt(curve:CurvatureAt(s), settings, style))
+		return curve:FrameAt(s, rollAt(s))
 	end
 
 	local function makeBayPart(): Part
@@ -1186,6 +1315,30 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		return 0
 	end
 
+	local nearsideWidthStuds = nearsideComponent.WidthM * scale
+	local nearsideKind = nearsideComponent.Kind
+	local nearsideRaised = RoadProfile.IsRaised(nearsideKind)
+	local nearsidePartHeight = if nearsideRaised then thickness + curbHeight else thickness
+	local nearsideCenterY = if nearsideRaised then (curbHeight - thickness) / 2 else -thickness / 2
+	-- The bay asphalt and shifted pavement share one station grid so their
+	-- common curve-following boundary is literally the same polyline. The
+	-- farthest overlay edge drives curvature and bank refinement for both.
+	local overlayStations: { number } = {}
+	local overlaySlice = curve:Slice(taperInStart, taperOutEnd)
+	if overlaySlice.Length > 1e-3 then
+		local outermostOffset = bayOffset + outward * nearsideWidthStuds
+		local overlayMaxOffset = math.max(math.abs(kerbOffset), math.abs(outermostOffset))
+		local baseOverlayStations =
+			buildStations(overlaySlice, settings.MaxSegmentLengthStuds, CHORD_TOLERANCE, overlayMaxOffset)
+		overlayStations = refineStationsForRoll(
+			baseOverlayStations,
+			fullRollProfile,
+			taperInStart,
+			overlayMaxOffset,
+			CHORD_TOLERANCE
+		).Stations
+	end
+
 	-- Bay asphalt (dwell + both tapers): a chain of small, curve-following
 	-- intervals, not one flat dwell rectangle plus two single-triangle
 	-- tapers. The single-part version anchored the bay's inner edge
@@ -1199,8 +1352,8 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 	-- pavement shift loop and the main deck loop's transition strips use
 	-- closes it exactly: every small interval's own corners sit on the
 	-- true curve.
-	-- Station density here is driven purely by curvature tolerance (the
-	-- same formula the rest of the road uses), not an extra width-change
+	-- Station density here is driven by curvature and canonical bank tolerance
+	-- (the same formulas the rest of the road uses), not an extra width-change
 	-- cap: unlike the main loop's widen/narrow taper (a smoothstepped
 	-- ramp, which genuinely needs short strips to approximate its curved
 	-- profile with straight chords), bayAlphaAt is a plain linear ramp, so
@@ -1208,12 +1361,10 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 	-- straight road - no benefit to chopping it up further, only more
 	-- wedge parts for no visual gain. A tight curve still subdivides
 	-- fully, since that's governed by buildStations' own curvature check.
-	local baySlice = curve:Slice(taperInStart, taperOutEnd)
-	if baySlice.Length > 1e-3 then
-		local bayStations = buildStations(baySlice, settings.MaxSegmentLengthStuds, CHORD_TOLERANCE)
-		for i = 1, #bayStations - 1 do
-			local s0 = taperInStart + bayStations[i]
-			local s1 = taperInStart + bayStations[i + 1]
+	if #overlayStations > 1 then
+		for i = 1, #overlayStations - 1 do
+			local s0 = taperInStart + overlayStations[i]
+			local s1 = taperInStart + overlayStations[i + 1]
 			local outerOffset0 = kerbOffset + outward * bayWidthStuds * bayAlphaAt(s0)
 			local outerOffset1 = kerbOffset + outward * bayWidthStuds * bayAlphaAt(s1)
 			if math.abs(outerOffset0 - kerbOffset) < 1e-4 and math.abs(outerOffset1 - kerbOffset) < 1e-4 then
@@ -1223,7 +1374,10 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			local midFrame = frameAt(sMid)
 			local nominalLength = s1 - s0
 
-			if math.abs(outerOffset1 - outerOffset0) > 1e-4 then
+			if
+				math.abs(outerOffset1 - outerOffset0) > 1e-4
+				or math.abs(rollAt(s1) - rollAt(s0)) > ROLL_WEDGE_EPSILON
+			then
 				local innerStart = (frameAt(s0) * CFrame.new(kerbOffset, 0, 0)).Position
 				local outerStart = (frameAt(s0) * CFrame.new(outerOffset0, 0, 0)).Position
 				local innerEnd = (frameAt(s1) * CFrame.new(kerbOffset, 0, 0)).Position
@@ -1258,22 +1412,14 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 	-- true endpoints (instead of holding flat-and-square until the next
 	-- station) gets close enough that fine adaptive stepping reads as a
 	-- smooth slope.
-	local nearsideWidthStuds = nearsideComponent.WidthM * scale
-	local nearsideKind = nearsideComponent.Kind
-	local nearsideRaised = RoadProfile.IsRaised(nearsideKind)
-	local nearsidePartHeight = if nearsideRaised then thickness + curbHeight else thickness
-	local nearsideCenterY = if nearsideRaised then (curbHeight - thickness) / 2 else -thickness / 2
-
 	-- Same reasoning as the bay asphalt loop above: bayAlphaAt is a linear
 	-- ramp, so FillTriangle is already exact per interval regardless of
 	-- size - subdivision only needs to track curvature, not width-change
 	-- rate, so no extra cap here either.
-	local shiftSlice = curve:Slice(taperInStart, taperOutEnd)
-	if shiftSlice.Length > 1e-3 then
-		local shiftStations = buildStations(shiftSlice, settings.MaxSegmentLengthStuds, CHORD_TOLERANCE)
-		for i = 1, #shiftStations - 1 do
-			local s0 = taperInStart + shiftStations[i]
-			local s1 = taperInStart + shiftStations[i + 1]
+	if #overlayStations > 1 then
+		for i = 1, #overlayStations - 1 do
+			local s0 = taperInStart + overlayStations[i]
+			local s1 = taperInStart + overlayStations[i + 1]
 			local exactRaisedCap = nearsideRaised
 				and (
 					(s0 <= 1e-3 and options.ExactStartRaisedCap == true)
@@ -1313,7 +1459,11 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			-- Split into two triangles along the innerStart-outerEnd
 			-- diagonal instead of approximating with a rotated rectangle
 			-- (an earlier attempt left sliver gaps at the seams).
-			if exactRaisedCap or math.abs(centerOffset1 - centerOffset0) > 1e-4 then
+			if
+				exactRaisedCap
+				or math.abs(centerOffset1 - centerOffset0) > 1e-4
+				or math.abs(rollAt(s1) - rollAt(s0)) > ROLL_WEDGE_EPSILON
+			then
 				local topY = if nearsideRaised then curbHeight else 0
 				local half = nearsideWidthStuds / 2
 				local innerStart = (frameAt(s0) * CFrame.new(centerOffset0 - half, topY, 0)).Position

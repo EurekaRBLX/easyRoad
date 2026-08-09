@@ -77,6 +77,7 @@ function Components.Button(
 		OnClick: () -> (),
 		Selected: boolean?,
 		Danger: boolean?,
+		Disabled: boolean?,
 		LayoutOrder: number?,
 		Size: UDim2?,
 		Grow: boolean?,
@@ -85,7 +86,9 @@ function Components.Button(
 	local hovered, setHovered = React.useState(false)
 
 	local color = Theme.BUTTON
-	if props.Selected then
+	if props.Disabled then
+		color = Theme.BUTTON
+	elseif props.Selected then
 		color = if hovered then Theme.ACCENT_HOVER else Theme.SELECTED
 	elseif props.Danger then
 		color = if hovered then Theme.DANGER:Lerp(Theme.WHITE, 0.15) else Theme.DANGER
@@ -100,17 +103,24 @@ function Components.Button(
 	-- instead of actually sharing the row's available width.
 	return e("TextButton", {
 		Text = if props.Icon then "" else props.Text,
-		TextColor3 = Theme.WHITE,
+		TextColor3 = if props.Disabled then Theme.DIM else Theme.WHITE,
 		BackgroundColor3 = color,
-		BackgroundTransparency = if props.Selected or props.Danger then 0.1 else Theme.GLASS_ELEMENT_TRANSPARENCY,
+		BackgroundTransparency = if props.Disabled
+			then 0.55
+			elseif props.Selected or props.Danger then 0.1
+			else Theme.GLASS_ELEMENT_TRANSPARENCY,
 		Size = props.Size or UDim2.new(0, 0, 0, Theme.ROW_HEIGHT),
 		AutomaticSize = if props.Size or props.Grow then Enum.AutomaticSize.None else Enum.AutomaticSize.X,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		Font = Theme.FONT,
 		TextSize = Theme.TEXT_SIZE,
 		LayoutOrder = props.LayoutOrder,
+		Active = props.Disabled ~= true,
+		Selectable = props.Disabled ~= true,
 		[React.Event.Activated] = function()
-			props.OnClick()
+			if not props.Disabled then
+				props.OnClick()
+			end
 		end,
 		[React.Event.MouseEnter] = function()
 			setHovered(true)

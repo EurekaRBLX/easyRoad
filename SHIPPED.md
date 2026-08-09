@@ -25,6 +25,39 @@ internal planning only. See `TODO.md` for planned new features and
 - Placed roads are deliberately excluded: their data already lives in the
   place, while this backup protects plugin-global preferences and presets.
 
+## Road Asset export to Workspace
+
+The Road Assets manager can now clone a selected stored viaduct/tunnel module
+back into Workspace for inspection or editing. Export preserves the library
+asset and its metadata/usage count, chooses a non-conflicting Workspace name,
+selects the new Model, and records the operation as one Studio Undo step. The
+action remains visible but disabled until an asset is selected.
+
+## Error-bounded curved and superelevated surface optimization
+
+Curved roads now coalesce adjacent compatible Drive surfaces without touching
+the original cross-section or its marking boundaries. Flat and constant-bank
+intervals greedily merge only while their midpoint boxes stay inside a
+0.025-stud plan-overhang budget; changing-bank intervals apply a separate
+0.025-stud twist-error budget. Both fall back to the existing per-lane emitter
+when a wider band cannot be proven safe. Profile widening/narrowing and bus-bay
+slices remain on the conservative coalescing path.
+
+`Superelevation.BuildProfile` now owns one deterministic, arc-length-weighted
+roll curve independent of preview/final mesh density. `RoadBuilder.StationPlanFor`
+returns the exact final stations and rolls consumed by emission, checking both
+quarter probes and every enclosed canonical control so narrow bank humps cannot
+be skipped. Procedural viaducts and tunnels interpolate that same profile and
+refine rigid shell ranges to a structural seating-error budget; marking roll
+lookup is now logarithmic instead of scanning every station for each span.
+
+The new Python 3D contract renders bird's-eye, outside-edge side, and five
+cross-section views. Its six-lane cases measure 44.4% fewer surface Parts on a
+gentle curve and 2.7% fewer through a six-degree runoff, with zero outer-edge
+displacement, 0.0206 studs maximum bank twist, and 0.0209 studs maximum curved
+box overhang. Live Studio appearance and build-time measurements remain the
+final verification step.
+
 ## Roundabout approach compatibility, lane advice, seam ownership, and Turbo width parity
 
 Roundabout conversion is now profile-driven rather than category-gated. Highway

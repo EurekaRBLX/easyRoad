@@ -671,6 +671,32 @@ return function(
 		updateUI()
 	end
 
+	local function exportRoadAsset(assetId: string)
+		local exported: Model? = nil
+		local message: string? = nil
+		local _, historyFailure = History.Record("EasyRoadAssetExport", "Export road asset", function()
+			exported, message = StructureAssets.ExportToWorkspace(assetId)
+			return exported ~= nil
+		end)
+		if historyFailure then
+			assetManagerStatus = historyFailure
+		elseif exported then
+			local selected, selectionFailure = pcall(function()
+				Selection:Set({ exported :: Model })
+			end)
+			assetManagerStatus = if selected
+				then message
+				else string.format(
+					"%s Studio could not select the exported Model: %s",
+					message or "The road asset was exported.",
+					tostring(selectionFailure)
+				)
+		else
+			assetManagerStatus = message
+		end
+		updateUI()
+	end
+
 	local function deleteRoadAsset(assetId: string)
 		local ok = false
 		local message: string? = nil
@@ -1003,6 +1029,7 @@ return function(
 					updateUI()
 				end,
 				OnImport = importRoadAsset,
+				OnExport = exportRoadAsset,
 				OnRename = renameRoadAsset,
 				OnDelete = deleteRoadAsset,
 				OnClose = closeAssetManager,
@@ -1654,8 +1681,10 @@ return function(
 					})
 				elseif editSession.IsShowingSegmentMenu() then
 					local profile = editSession.GetProfile()
-					-- Highways don't have bus bays in real life.
-					local canAddBay = profile == nil or profile.Category ~= "Highways"
+					-- Highways do not offer bus bays, and the current bay overlay owns
+					-- one constant cross-section rather than a widening transition.
+					local canAddBay = (profile == nil or profile.Category ~= "Highways")
+						and not editSession.IsTransition()
 					local hasStretches = #editSession.GetMarkingStretches() > 0 or #editSession.GetKerbStretches() > 0
 					pieMenuElement = React.createElement(PieMenu, {
 						WorldPosition = anchor,
