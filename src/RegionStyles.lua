@@ -61,6 +61,7 @@ export type RegionStyle = {
 	CenterLine: MarkingSpec, -- Divides opposing traffic
 	LaneLine: MarkingSpec, -- Divides same-direction lanes
 	EdgeLine: MarkingSpec, -- Roadway outer edge
+	TrafficLeftEdgeLine: MarkingSpec?, -- Left edge relative to travel; nil = EdgeLine
 	MarkingWidthM: number,
 	DashLengthM: number, -- Fallback dash geometry
 	DashGapM: number,
@@ -257,6 +258,7 @@ local Styles: { RegionStyle } = {
 		CenterLine = doubleSolid(US_YELLOW),
 		LaneLine = dashed(WHITE, 3.0, 9.0),
 		EdgeLine = solid(WHITE),
+		TrafficLeftEdgeLine = solid(US_YELLOW),
 		MarkingWidthM = 0.12,
 		DashLengthM = 3.0,
 		DashGapM = 9.0,
@@ -397,6 +399,7 @@ function RegionStyles.Clone(style: RegionStyle): RegionStyle
 		CenterLine = cloneMarking(style.CenterLine),
 		LaneLine = cloneMarking(style.LaneLine),
 		EdgeLine = cloneMarking(style.EdgeLine),
+		TrafficLeftEdgeLine = if style.TrafficLeftEdgeLine then cloneMarking(style.TrafficLeftEdgeLine) else nil,
 		MarkingWidthM = style.MarkingWidthM,
 		DashLengthM = style.DashLengthM,
 		DashGapM = style.DashGapM,
@@ -476,6 +479,7 @@ function RegionStyles.Serialize(style: RegionStyle): { [string]: any }
 		CenterLine = serializeMarking(style.CenterLine),
 		LaneLine = serializeMarking(style.LaneLine),
 		EdgeLine = serializeMarking(style.EdgeLine),
+		TrafficLeftEdgeLine = if style.TrafficLeftEdgeLine then serializeMarking(style.TrafficLeftEdgeLine) else nil,
 		MarkingWidthM = style.MarkingWidthM,
 		DashLengthM = style.DashLengthM,
 		DashGapM = style.DashGapM,
@@ -519,6 +523,9 @@ function RegionStyles.Deserialize(raw: any): RegionStyle?
 		CenterLine = deserializeMarking(raw.CenterLine, fallback.CenterLine),
 		LaneLine = deserializeMarking(raw.LaneLine, fallback.LaneLine),
 		EdgeLine = deserializeMarking(raw.EdgeLine, fallback.EdgeLine),
+		TrafficLeftEdgeLine = if typeof(raw.TrafficLeftEdgeLine) == "table"
+			then deserializeMarking(raw.TrafficLeftEdgeLine, fallback.TrafficLeftEdgeLine or fallback.EdgeLine)
+			else if fallback.TrafficLeftEdgeLine then cloneMarking(fallback.TrafficLeftEdgeLine) else nil,
 		MarkingWidthM = num(raw.MarkingWidthM, fallback.MarkingWidthM),
 		DashLengthM = num(raw.DashLengthM, fallback.DashLengthM),
 		DashGapM = num(raw.DashGapM, fallback.DashGapM),

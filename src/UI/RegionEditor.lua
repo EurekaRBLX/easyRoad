@@ -348,6 +348,19 @@ local function RegionEditor(props: {
 	end
 	order = afterEdge
 
+	local trafficLeftEdgeFields, afterTrafficLeftEdge = MarkingFields({
+		Label = "Traffic-left edge line",
+		Spec = style.TrafficLeftEdgeLine or style.EdgeLine,
+		StartOrder = order,
+		OnChanged = function(spec: RegionStyles.MarkingSpec)
+			set("TrafficLeftEdgeLine", spec)
+		end,
+	})
+	for key, child in trafficLeftEdgeFields do
+		children["TrafficLeft" .. key] = child
+	end
+	order = afterTrafficLeftEdge
+
 	children.MarkingWidth = e(LabeledRow, {
 		Label = "Marking width (m)",
 		LayoutOrder = order,

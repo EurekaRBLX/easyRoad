@@ -87,6 +87,8 @@ def main():
     road_designer = source("src/UI/RoadDesigner.lua")
     road_edit_session = source("src/RoadEditSession.lua")
     markings = source("src/Mesh/Markings.lua")
+    region_styles = source("src/RegionStyles.lua")
+    region_editor = source("src/UI/RegionEditor.lua")
     road_builder = source("src/Mesh/RoadBuilder.lua")
     superelevation = source("src/Geometry/Superelevation.lua")
     loader = source("loader.server.lua")
@@ -597,6 +599,22 @@ def main():
     require(road_designer, '"Boundary between %s %s and %s %s"', "Road Editor does not identify both lanes around a selected boundary", problems)
     reject(road_designer, 'Text = "Lane marking"', "Road Editor still presents a boundary as a selected-lane property", problems)
 
+    require(region_styles, "TrafficLeftEdgeLine: MarkingSpec?", "regional styles cannot distinguish the traffic-left roadway edge", problems)
+    require(region_styles, "TrafficLeftEdgeLine = solid(US_YELLOW)", "the US preset does not default its traffic-left edge line to yellow", problems)
+    require(region_styles, "cloneMarking(style.TrafficLeftEdgeLine)", "custom region copies lose their traffic-left edge rule", problems)
+    require(region_styles, "serializeMarking(style.TrafficLeftEdgeLine)", "traffic-left edge rules are not persisted", problems)
+    require(region_styles, "deserializeMarking(raw.TrafficLeftEdgeLine", "saved traffic-left edge rules cannot be restored", problems)
+    require(markings, "local function collectTrafficLeftEdges(", "marking generation does not classify semantic traffic-left edges", problems)
+    require(markings, "startEdge and style.TrafficLeftEdgeLine", "non-US regions cannot retain their legacy edge-line behavior", problems)
+    require(markings, 'neighbor == nil or neighbor.Kind ~= "Drive"', "traffic-left edge detection can paint same-direction lane boundaries yellow", problems)
+    require(markings, "endTrafficLeftForStartEdge[startEdge.EdgeIndex] = endEdge", "topology-changing transitions match yellow edges by raw component index", problems)
+    require(markings, "if endTrafficEdge then endTrafficEdge.BoundaryOffsetM else boundaryEnd", "internal traffic-left separators ignore their semantic transition destination", problems)
+    require(markings, 'restriction == "NoLine" and (not plainIsTrafficLeft or not keepTrafficLeftForNoLine)', "highway NoLine still suppresses the required US median-side yellow line", problems)
+    same_direction_start = markings.find("-- Same-direction boundary: apply the component's rule")
+    same_direction_end = markings.find('elseif (a.Kind == "Drive") ~= (b.Kind == "Drive")', same_direction_start)
+    require(markings[same_direction_start:same_direction_end], "style.LaneLine.Color", "US same-direction lane separators no longer remain white", problems)
+    require(region_editor, 'Label = "Traffic-left edge line"', "custom regional preferences cannot edit the traffic-left edge rule", problems)
+
     for lane_count in range(1, 6):
         require(
             profiles,
@@ -634,7 +652,7 @@ def main():
         for problem in problems:
             print("FAILED:", problem)
         return 1
-    print("integration contracts passed: isolated undo history, road duplication, curved/banked station plans, editable roundabouts, lane inference, one-way/highway mouths, Turbo width parity, exact caps, multinode junctions, assets, procedural structures, snap references, parallel roadways, marking boundaries, highway presets, Software dock")
+    print("integration contracts passed: isolated undo history, road duplication, curved/banked station plans, editable roundabouts, lane inference, one-way/highway mouths, Turbo width parity, exact caps, multinode junctions, assets, procedural structures, snap references, parallel roadways, marking boundaries, regional edge markings, highway presets, Software dock")
     return 0
 
 

@@ -4,6 +4,20 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## US traffic-left edge markings
+
+- The United States regional preset now gives each directional carriageway a
+  solid yellow traffic-left edge line. This covers both median-facing edges of
+  divided highways and the inner-shoulder edge of one-way highway presets.
+- Same-direction lane separators remain dashed white, and an undivided
+  opposing-flow centre remains double yellow. Regions without the new optional
+  rule—including the UK—retain their existing edge colours exactly.
+- Custom regional presets can edit and persist the traffic-left edge rule.
+  The Windows Python preview compares US and UK undivided, divided, one-way,
+  and 2x2-to-3x3 transition layouts. It also verifies UK highway `NoLine`
+  suppression and an explicit local `NoLine` span, with nine injected
+  colour/ownership regressions.
+
 ## Lane-marking selector containment + JSON backup/restore
 
 - The Road Editor's boundary-marking dropdown now takes only the remaining

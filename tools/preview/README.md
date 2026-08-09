@@ -31,6 +31,7 @@ trap as an invariant nobody re-reads.
 | `curved_superelevation_optimization_preview.py` | Feasibility and regression harness for conservative Drive-band merging on curves and bank runoff. Ports the density-independent roll profile (including short-curve runoff controls), roll-aware station refinement, per-interval 0.025-stud twist and curved-box overhang budgets, exact outer-edge parity, actual midpoint-box plan footprints, injected break-tests, Part counts, and a combined bird's-eye/side/cross-section render. |
 | `structure_preview.py` | Rigid imported-module socket stepping, procedural viaduct elevation, single/twin pier and cap geometry, independent finish channels, and arched tunnel cross-section; check-only or one combined PNG. |
 | `parallel_preview.py` | Curved parallel-carriageway offset/refit, an opposed pair, and independent direction choices for larger groups. |
+| `regional_marking_preview.py` | Bird's-eye US/UK marking-colour contract: yellow US opposing-flow centre and divided-carriageway traffic-left edges, white same-direction/traffic-right lines, global highway `NoLine` suppression for UK median edges, exactly one yellow line at a one-way highway's Drive/inner-shoulder boundary, and direction-stable 2x2↔3x3 yellow-edge mapping. The bottom US panel also shows an explicit local `NoLine` span. Includes nine injected semantic break-tests. |
 | `hardware_reference_check.py` | Parses the five `hardware/*.rbxmx` references and verifies their deck/base, parapet/wall, and tunnel-crown cues. |
 | `junction_pad_preview.py`, `corner_preview.py` | Junction pad and curb-return shapes. Not yet wired into `validate.py`. |
 | `turbo_check.py`, `road_break_tests.py`, `structure_break_tests.py` | Break-tests: reintroduce a defect and confirm the relevant scan catches it. |
@@ -94,6 +95,8 @@ python3 curved_superelevation_optimization_preview.py --check
 python3 curved_superelevation_optimization_preview.py --out out/curved-bank.png
 python3 structure_preview.py --check      # module coverage + pier contact
 python3 parallel_preview.py --check       # curved offsets + direction layouts
+python3 regional_marking_preview.py --check
+python3 regional_marking_preview.py --out out/regional-marking-colours.png
 python3 structure_break_tests.py          # prove gaps/hovering piers fail
 python3 hardware_reference_check.py       # inspect rbxmx structural references
 python3 structure_preview.py --out out/structures.png

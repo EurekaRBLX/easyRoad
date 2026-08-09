@@ -15,11 +15,12 @@
 --       "DashSolid"   the mirror case
 --   * Drive next to Bike/Parking/Shoulder -> solid separator
 --   * Roadway outer edges         -> region edge line
+--   * Traffic-left carriageway edge -> optional regional line (US yellow)
 --   * Kerb restrictions (UK/HK/SG): single or double yellow lines painted
 --     just inside any roadway edge that meets a kerb (raised component or
 --     the edge of the road) - the no-parking / no-stopping vocabulary
 --
--- The profile may also force all centre/lane lines white or yellow.
+-- The profile may also force centre/lane/traffic-left lines white or yellow.
 --
 -- Because component widths can differ at the two ends of a transition
 -- segment, every line stores a start offset and an end offset (meters from
@@ -102,6 +103,13 @@ export type KerbStretch = {
 	FromStationStuds: number,
 	ToStationStuds: number,
 	Restriction: string, -- "None" | "SingleYellow" | "DoubleYellow" | "NoLine"
+}
+
+type TrafficLeftEdge = {
+	EdgeIndex: number,
+	Direction: number,
+	BoundaryIsProfileLeft: boolean,
+	BoundaryOffsetM: number,
 }
 
 local Markings = {}
@@ -236,8 +244,9 @@ function Markings.Compute(
 
 	local inset = style.MarkingWidthM * 1.5
 
-	-- Colour override applies to centre and lane lines only; kerb lines are
-	-- always yellow, edge lines keep their spec colour.
+	-- Colour override applies to centre/lane lines and the traffic-left edge
+	-- line (which carries the same opposing-flow meaning). Kerb lines are
+	-- always yellow; ordinary roadway edge lines keep their spec colour.
 	local function trafficLineColor(specColor: Color3): Color3
 		if colorOverride == "White" then
 			return style.WhiteMarking
@@ -245,6 +254,85 @@ function Markings.Compute(
 			return style.YellowMarking
 		end
 		return specColor
+	end
+
+	-- North-American-style divided and one-way carriageways use a yellow
+	-- line on the LEFT edge relative to traffic flow. The profile is laid out
+	-- left-to-right while looking along +station, so that is profile-left for
+	-- Direction +1 and profile-right for Direction -1. Collect semantic edge
+	-- identities at BOTH transition ends: component indices can move when a
+	-- 2x2 highway widens to 3x3, but the traffic-left edge of each direction
+	-- must still connect to the traffic-left edge of that same direction.
+	local function collectTrafficLeftEdges(
+		components: { RoadProfile.ProfileComponent },
+		offsets: { { Left: number, Right: number } }
+	): { TrafficLeftEdge }
+		local result: { TrafficLeftEdge } = {}
+		for componentIndex, component in components do
+			if component.Kind == "Drive" and component.Direction ~= 0 then
+				local boundaryIsProfileLeft = component.Direction > 0
+				local neighbor = components[if boundaryIsProfileLeft then componentIndex - 1 else componentIndex + 1]
+				-- Another Drive owns an ordinary lane/centre boundary. A shoulder,
+				-- median, pavement, or the profile edge makes this the carriageway
+				-- edge. This also avoids painting the far rim of an inner shoulder.
+				if neighbor == nil or neighbor.Kind ~= "Drive" then
+					table.insert(result, {
+						EdgeIndex = if boundaryIsProfileLeft then componentIndex - 1 else componentIndex,
+						Direction = component.Direction,
+						BoundaryIsProfileLeft = boundaryIsProfileLeft,
+						BoundaryOffsetM = if boundaryIsProfileLeft
+							then offsets[componentIndex].Left
+							else offsets[componentIndex].Right,
+					})
+				end
+			end
+		end
+		return result
+	end
+
+	local startEdgesByDirection: { [number]: { TrafficLeftEdge } } = {}
+	local endEdgesByDirection: { [number]: { TrafficLeftEdge } } = {}
+	local startTrafficLeftByEdgeIndex: { [number]: TrafficLeftEdge } = {}
+	local endTrafficLeftForStartEdge: { [number]: TrafficLeftEdge } = {}
+	for _, edge in collectTrafficLeftEdges(componentsStart, startOffsets) do
+		local list = startEdgesByDirection[edge.Direction]
+		if not list then
+			list = {}
+			startEdgesByDirection[edge.Direction] = list
+		end
+		table.insert(list, edge)
+		startTrafficLeftByEdgeIndex[edge.EdgeIndex] = edge
+	end
+	for _, edge in collectTrafficLeftEdges(componentsEnd, endOffsets) do
+		local list = endEdgesByDirection[edge.Direction]
+		if not list then
+			list = {}
+			endEdgesByDirection[edge.Direction] = list
+		end
+		table.insert(list, edge)
+	end
+	for direction, startEdges in startEdgesByDirection do
+		local endEdges = endEdgesByDirection[direction]
+		if endEdges then
+			for ordinal, startEdge in startEdges do
+				local endEdge = endEdges[ordinal]
+				if endEdge then
+					endTrafficLeftForStartEdge[startEdge.EdgeIndex] = endEdge
+				end
+			end
+		end
+	end
+
+	local function edgeSpecForBoundary(edgeIndex: number): (RegionStyles.MarkingSpec, boolean, TrafficLeftEdge?)
+		local startEdge = startTrafficLeftByEdgeIndex[edgeIndex]
+		if startEdge and style.TrafficLeftEdgeLine then
+			return style.TrafficLeftEdgeLine, true, endTrafficLeftForStartEdge[edgeIndex]
+		end
+		return style.EdgeLine, false, nil
+	end
+
+	local function edgeSpecColor(spec: RegionStyles.MarkingSpec, isTrafficLeft: boolean): Color3
+		return if isTrafficLeft then trafficLineColor(spec.Color) else spec.Color
 	end
 
 	local function addSpec(offsetStart: number, offsetEnd: number, spec: RegionStyles.MarkingSpec, color: Color3)
@@ -395,7 +483,10 @@ function Markings.Compute(
 		kerbOffsetEnd: number,
 		fromStationStuds: number?,
 		toStationStuds: number?,
-		restriction: string?
+		restriction: string?,
+		plainSpec: RegionStyles.MarkingSpec,
+		plainIsTrafficLeft: boolean,
+		keepTrafficLeftForNoLine: boolean
 	)
 		local lineType = kerbLineTypeFor(restriction)
 		if lineType then
@@ -409,16 +500,16 @@ function Markings.Compute(
 				fromStationStuds,
 				toStationStuds
 			)
-		elseif restriction == "NoLine" then
+		elseif restriction == "NoLine" and (not plainIsTrafficLeft or not keepTrafficLeftForNoLine) then
 			-- no marking at all
 		else
 			addLine(
 				plainOffsetStart,
 				plainOffsetEnd,
-				style.EdgeLine.Line,
-				style.EdgeLine.Color,
-				style.EdgeLine.DashLengthM,
-				style.EdgeLine.DashGapM,
+				plainSpec.Line,
+				edgeSpecColor(plainSpec, plainIsTrafficLeft),
+				plainSpec.DashLengthM,
+				plainSpec.DashGapM,
 				fromStationStuds,
 				toStationStuds
 			)
@@ -438,11 +529,24 @@ function Markings.Compute(
 		plainOffsetStart: number,
 		plainOffsetEnd: number,
 		kerbOffsetStart: number,
-		kerbOffsetEnd: number
+		kerbOffsetEnd: number,
+		plainSpec: RegionStyles.MarkingSpec,
+		plainIsTrafficLeft: boolean
 	)
 		local stretches = kerbStretchesByEdge[edgeIndex]
 		if not stretches or #stretches == 0 then
-			emitKerbEdge(plainOffsetStart, plainOffsetEnd, kerbOffsetStart, kerbOffsetEnd, nil, nil, kerbRestriction)
+			emitKerbEdge(
+				plainOffsetStart,
+				plainOffsetEnd,
+				kerbOffsetStart,
+				kerbOffsetEnd,
+				nil,
+				nil,
+				kerbRestriction,
+				plainSpec,
+				plainIsTrafficLeft,
+				true
+			)
 			return
 		end
 		local sorted = table.clone(stretches)
@@ -458,7 +562,10 @@ function Markings.Compute(
 				kerbOffsetEnd,
 				cursor,
 				stretch.FromStationStuds,
-				kerbRestriction
+				kerbRestriction,
+				plainSpec,
+				plainIsTrafficLeft,
+				true
 			)
 			emitKerbEdge(
 				plainOffsetStart,
@@ -467,11 +574,25 @@ function Markings.Compute(
 				kerbOffsetEnd,
 				stretch.FromStationStuds,
 				stretch.ToStationStuds,
-				stretch.Restriction
+				stretch.Restriction,
+				plainSpec,
+				plainIsTrafficLeft,
+				false
 			)
 			cursor = stretch.ToStationStuds
 		end
-		emitKerbEdge(plainOffsetStart, plainOffsetEnd, kerbOffsetStart, kerbOffsetEnd, cursor, nil, kerbRestriction)
+		emitKerbEdge(
+			plainOffsetStart,
+			plainOffsetEnd,
+			kerbOffsetStart,
+			kerbOffsetEnd,
+			cursor,
+			nil,
+			kerbRestriction,
+			plainSpec,
+			plainIsTrafficLeft,
+			true
+		)
 	end
 
 	for i = 1, n do
@@ -483,6 +604,28 @@ function Markings.Compute(
 		local previousIsRoadway = previousComponent and RoadProfile.IsRoadway(previousComponent.Kind)
 
 		if isRoadway then
+			local leftEdgeSpec, leftEdgeIsTrafficLeft, leftEndTrafficEdge = edgeSpecForBoundary(i - 1)
+			local rightEdgeSpec, rightEdgeIsTrafficLeft, rightEndTrafficEdge = edgeSpecForBoundary(i)
+			local leftPlainOffsetEnd = if leftEndTrafficEdge
+				then leftEndTrafficEdge.BoundaryOffsetM + (if leftEndTrafficEdge.BoundaryIsProfileLeft
+					then inset
+					else -inset)
+				else endOffsets[i].Left + inset
+			local leftKerbOffsetEnd = if leftEndTrafficEdge
+				then leftEndTrafficEdge.BoundaryOffsetM + (if leftEndTrafficEdge.BoundaryIsProfileLeft
+					then kerbInset
+					else -kerbInset)
+				else endOffsets[i].Left + kerbInset
+			local rightPlainOffsetEnd = if rightEndTrafficEdge
+				then rightEndTrafficEdge.BoundaryOffsetM + (if rightEndTrafficEdge.BoundaryIsProfileLeft
+					then inset
+					else -inset)
+				else endOffsets[i].Right - inset
+			local rightKerbOffsetEnd = if rightEndTrafficEdge
+				then rightEndTrafficEdge.BoundaryOffsetM + (if rightEndTrafficEdge.BoundaryIsProfileLeft
+					then kerbInset
+					else -kerbInset)
+				else endOffsets[i].Right - kerbInset
 			local leftIsKerb = previousComponent == nil or RoadProfile.IsRaised(previousComponent.Kind)
 			local rightIsKerb = nextComponent == nil or RoadProfile.IsRaised(nextComponent.Kind)
 			-- A zero-width Shoulder is a semantic marker used by roundabout arms:
@@ -504,8 +647,10 @@ function Markings.Compute(
 			-- a no-parking line already marks the roadway edge). Applies to
 			-- any roadway kind at the outer edge (Drive, Parking, Bay, ...) -
 			-- kerb lines matter most exactly where parking/bay lanes meet
-			-- the kerb. "NoLine" suppresses both entirely at a genuine kerb
-			-- boundary (leftIsKerb/rightIsKerb) - "None" ("No restriction")
+			-- the kerb. "NoLine" suppresses both at a genuine kerb boundary,
+			-- except for a region-mandated traffic-left edge line; an explicit
+			-- local NoLine stretch can still suppress that line. "None"
+			-- ("No restriction")
 			-- still falls back to the plain edge line, since that's a
 			-- separate concept (no *parking* restriction, not no marking at
 			-- all); a non-kerb roadway edge (e.g. a median boundary) always
@@ -515,16 +660,20 @@ function Markings.Compute(
 					emitKerbEdgeAt(
 						i - 1,
 						startOffsets[i].Left + inset,
-						endOffsets[i].Left + inset,
+						leftPlainOffsetEnd,
 						startOffsets[i].Left + kerbInset,
-						endOffsets[i].Left + kerbInset
+						leftKerbOffsetEnd,
+						leftEdgeSpec,
+						leftEdgeIsTrafficLeft
 					)
 				else
-					addSpec(
+					addLine(
 						startOffsets[i].Left + inset,
-						endOffsets[i].Left + inset,
-						style.EdgeLine,
-						style.EdgeLine.Color
+						leftPlainOffsetEnd,
+						leftEdgeSpec.Line,
+						edgeSpecColor(leftEdgeSpec, leftEdgeIsTrafficLeft),
+						leftEdgeSpec.DashLengthM,
+						leftEdgeSpec.DashGapM
 					)
 				end
 			end
@@ -534,16 +683,20 @@ function Markings.Compute(
 					emitKerbEdgeAt(
 						i,
 						startOffsets[i].Right - inset,
-						endOffsets[i].Right - inset,
+						rightPlainOffsetEnd,
 						startOffsets[i].Right - kerbInset,
-						endOffsets[i].Right - kerbInset
+						rightKerbOffsetEnd,
+						rightEdgeSpec,
+						rightEdgeIsTrafficLeft
 					)
 				else
-					addSpec(
+					addLine(
 						startOffsets[i].Right - inset,
-						endOffsets[i].Right - inset,
-						style.EdgeLine,
-						style.EdgeLine.Color
+						rightPlainOffsetEnd,
+						rightEdgeSpec.Line,
+						edgeSpecColor(rightEdgeSpec, rightEdgeIsTrafficLeft),
+						rightEdgeSpec.DashLengthM,
+						rightEdgeSpec.DashGapM
 					)
 				end
 			end
@@ -607,8 +760,20 @@ function Markings.Compute(
 					end
 				end
 			elseif (a.Kind == "Drive") ~= (b.Kind == "Drive") then
-				-- Drive next to bike/parking/shoulder: solid separator
-				addLine(boundaryStart, boundaryEnd, "Solid", style.EdgeLine.Color)
+				-- Drive next to bike/parking/shoulder: normally a solid white
+				-- separator, except at the traffic-left edge in regions which
+				-- define a dedicated (US yellow) edge-line rule.
+				local trafficLeftSpec, isTrafficLeft, endTrafficEdge = edgeSpecForBoundary(i)
+				if isTrafficLeft then
+					addSpec(
+						boundaryStart,
+						if endTrafficEdge then endTrafficEdge.BoundaryOffsetM else boundaryEnd,
+						trafficLeftSpec,
+						trafficLineColor(trafficLeftSpec.Color)
+					)
+				else
+					addLine(boundaryStart, boundaryEnd, "Solid", style.EdgeLine.Color)
+				end
 			end
 		end
 	end
