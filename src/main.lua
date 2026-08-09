@@ -52,6 +52,7 @@ local RegionalPreferenceGui = require("./UI/RegionalPreferenceGui")
 local KeybindsGui = require("./UI/KeybindsGui")
 local SoftwareGui = require("./UI/SoftwareGui")
 local EulaOverlay = require("./UI/EulaOverlay")
+local SetupWizard = require("./UI/SetupWizard")
 local ProductLicense = require("./ProductLicense")
 local Components = require("./UI/Components")
 local PieMenu = require("./UI/PieMenu")
@@ -63,10 +64,25 @@ local KerbStretchPanel = require("./UI/KerbStretchPanel")
 local JunctionPanel = require("./UI/JunctionPanel")
 local RoundaboutPanel = require("./UI/RoundaboutPanel")
 
+type SetupResult = SetupWizard.SetupResult
+type SetupRegionOption = SetupWizard.RegionOption
+
 -- RoadDesigner reserves 190 px for the lane strip. At 360 px total the two
 -- upper cards received only 162 px, less than the library's own 170 px list
 -- before its tabs/padding, so both columns visibly overflowed into the strip.
 local ROAD_DESIGNER_HEIGHT = 440
+
+local function styleWithDriveSideOverride(
+	style: RegionStyles.RegionStyle,
+	driveSideOverride: string
+): RegionStyles.RegionStyle
+	if driveSideOverride == "Region" then
+		return style
+	end
+	local effective = RegionStyles.Clone(style)
+	effective.DriveOnLeft = driveSideOverride == "Left"
+	return effective
+end
 
 return function(
 	plugin: Plugin,
@@ -78,14 +94,20 @@ return function(
 )
 	local settings = Settings.Load(plugin)
 	local regionLibrary = createRegionLibrary(settings.UserRegions)
-	local library = createRoadLibrary(regionLibrary.Get(settings.RegionId), settings.UserProfiles)
+	local library = createRoadLibrary(
+		styleWithDriveSideOverride(regionLibrary.Get(settings.RegionId), settings.DriveSideOverride),
+		settings.UserProfiles
+	)
 
 	-- Whether the plugin UI (top bar) is shown at all; toggled by the
 	-- toolbar button.
 	local pluginOpen = false
 	local eulaReviewOpen = false
+	local setupReviewOpen = false
 	local eulaRoot: ReactRoblox.RootType? = nil
 	local eulaScreenGui: ScreenGui? = nil
+	local setupRoot: ReactRoblox.RootType? = nil
+	local setupScreenGui: ScreenGui? = nil
 
 	local function eulaIsAccepted(): boolean
 		if not ProductLicense.RequiresEula() then
@@ -115,6 +137,21 @@ return function(
 		if eulaScreenGui then
 			eulaScreenGui:Destroy()
 			eulaScreenGui = nil
+		end
+	end
+
+	local function setupIsComplete(): boolean
+		return settings.OnboardingVersion >= Settings.OnboardingVersion
+	end
+
+	local function destroySetupScreen()
+		if setupRoot then
+			setupRoot:unmount()
+			setupRoot = nil
+		end
+		if setupScreenGui then
+			setupScreenGui:Destroy()
+			setupScreenGui = nil
 		end
 	end
 
@@ -196,7 +233,7 @@ return function(
 	end
 
 	local function getStyle(): RegionStyles.RegionStyle
-		return regionLibrary.Get(settings.RegionId)
+		return styleWithDriveSideOverride(regionLibrary.Get(settings.RegionId), settings.DriveSideOverride)
 	end
 
 	-- Selection-based road editing: always listening (independent of the
@@ -450,6 +487,7 @@ return function(
 	-- Must live after destroySession / topRoot / etc. so locals resolve (Luau).
 	local function closePluginFromEula()
 		rejectEula()
+		setupReviewOpen = false
 		pluginOpen = false
 		destroySession()
 		designProfile = nil
@@ -457,6 +495,7 @@ return function(
 		plugin:Deactivate()
 		setButtonActive(false)
 		destroyEulaScreen()
+		destroySetupScreen()
 		if topRoot then
 			topRoot:unmount()
 			topRoot = nil
@@ -500,7 +539,10 @@ return function(
 			restored.RegionId = "UK"
 		end
 
-		local restoredRoads = createRoadLibrary(restoredRegions.Get(restored.RegionId), restored.UserProfiles)
+		local restoredRoads = createRoadLibrary(
+			styleWithDriveSideOverride(restoredRegions.Get(restored.RegionId), restored.DriveSideOverride),
+			restored.UserProfiles
+		)
 		if not restoredRoads.Get(restored.DefaultProfileId) then
 			restored.DefaultProfileId = restoredRoads.GetDefault().Id
 		end
@@ -766,6 +808,8 @@ return function(
 		local accepted = eulaIsAccepted()
 		local gateEula = pluginOpen and commercial and not accepted
 		local reviewEula = pluginOpen and commercial and eulaReviewOpen
+		local gateSetup = pluginOpen and not gateEula and not reviewEula and not setupIsComplete()
+		local reviewSetup = pluginOpen and not gateEula and not reviewEula and setupReviewOpen
 
 		if gateEula or reviewEula then
 			if not eulaRoot then
@@ -792,7 +836,76 @@ return function(
 			destroyEulaScreen()
 		end
 
-		if gateEula then
+		if gateSetup or reviewSetup then
+			if not setupRoot then
+				local screen = Instance.new("ScreenGui")
+				screen.Name = "EasyRoadSetup"
+				screen.ResetOnSpawn = false
+				screen.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+				screen.DisplayOrder = 100
+				screen.Parent = CoreGui
+				setupScreenGui = screen
+				setupRoot = ReactRoblox.createRoot(screen)
+			end
+
+			local regionOptions: { SetupRegionOption } = {}
+			for _, style in regionLibrary.GetAll() do
+				table.insert(regionOptions, {
+					Id = style.Id,
+					Text = style.Name .. (if style.BuiltIn then "" else " (custom)"),
+					Description = string.format(
+						"%s-hand traffic, %.2f m default lanes, %s centre line.",
+						if style.DriveOnLeft then "Left" else "Right",
+						style.DefaultLaneWidthM,
+						string.lower(style.CenterLine.Line)
+					),
+				})
+			end
+
+			local unitsPreset = if settings.LengthUnit == "Studs" or settings.SpeedUnit == "StudsPerSecond"
+				then "Roblox"
+				else if settings.LengthUnit == "Feet" or settings.SpeedUnit == "Mph" then "Imperial" else "Metric"
+
+			assert(setupRoot):render(React.createElement(SetupWizard, {
+				RegionOptions = regionOptions,
+				InitialValues = {
+					RegionId = settings.RegionId,
+					LanguageVariant = settings.LanguageVariant,
+					DriveSideOverride = settings.DriveSideOverride,
+					UnitsPreset = unitsPreset,
+				},
+				OnComplete = function(result: SetupResult)
+					settings.RegionId = result.RegionId
+					settings.LanguageVariant = result.LanguageVariant
+					settings.DriveSideOverride = result.DriveSideOverride
+					if result.UnitsPreset == "Roblox" then
+						settings.LengthUnit = "Studs"
+						settings.SpeedUnit = "StudsPerSecond"
+					elseif result.UnitsPreset == "Imperial" then
+						settings.LengthUnit = "Feet"
+						settings.SpeedUnit = "Mph"
+					else
+						settings.LengthUnit = "Meters"
+						settings.SpeedUnit = "Kmh"
+					end
+					settings.OnboardingVersion = Settings.OnboardingVersion
+					setupReviewOpen = false
+					library.SetStyle(getStyle())
+					persist()
+					updateUI()
+				end,
+				OnSkip = function()
+					settings.OnboardingVersion = Settings.OnboardingVersion
+					setupReviewOpen = false
+					persist()
+					updateUI()
+				end,
+			}))
+		else
+			destroySetupScreen()
+		end
+
+		if gateEula or gateSetup then
 			if topRoot then
 				topRoot:unmount()
 				topRoot = nil
@@ -1095,6 +1208,10 @@ return function(
 						SetEndProfileId = function(id: string?)
 							currentSession.SetEndProfile(if id then library.Get(id) else nil)
 						end,
+						TransitionAnchor = currentSession.GetTransitionAnchor(),
+						SetTransitionAnchor = function(anchor: RoadInstance.TransitionAnchor)
+							currentSession.SetTransitionAnchor(anchor)
+						end,
 						Settings = settings,
 						OnSettingsChanged = function()
 							library.SetStyle(getStyle())
@@ -1169,6 +1286,7 @@ return function(
 			local draft = editSession.GetBayDraft()
 			if draft then
 				bottomContent = React.createElement(BayDraftPanel, {
+					Settings = settings,
 					LengthStuds = draft.LengthStuds,
 					WidthM = draft.WidthM,
 					OnLengthChanged = editSession.SetBayDraftLength,
@@ -1184,6 +1302,7 @@ return function(
 			local draft = editSession.GetMarkingStretchDraft()
 			if draft then
 				bottomContent = React.createElement(MarkingStretchPanel, {
+					Settings = settings,
 					FromStationStuds = draft.FromStationStuds,
 					ToStationStuds = draft.ToStationStuds,
 					Line = draft.Line,
@@ -1281,6 +1400,7 @@ return function(
 			}
 		elseif roundaboutEditSession.GetSelectedRoundabout() then
 			bottomContent = React.createElement(RoundaboutPanel, {
+				Settings = settings,
 				ConnectedRoadCount = roundaboutEditSession.GetConnectedRoadCount(),
 				LegacyConnected = roundaboutEditSession.IsLegacyConnected(),
 				RadiusStuds = roundaboutEditSession.GetRadiusStuds(),
@@ -1369,6 +1489,7 @@ return function(
 				return result.Minimum, result.Suggested
 			end
 			bottomContent = React.createElement(JunctionPanel, {
+				Settings = settings,
 				JunctionId = selectedJunctionId,
 				ConnectedRoadCount = junctionEditSession.GetConnectedRoadCount(),
 				CornerCount = junctionEditSession.GetCornerCount(),
@@ -1640,6 +1761,7 @@ return function(
 									startSession({
 										Position = continuation.Position,
 										Tangent = continuation.Tangent,
+										ProfileOffsetM = continuation.ProfileOffsetM,
 									}, continuation.Profile)
 								end
 							end,
@@ -1653,6 +1775,7 @@ return function(
 									startSession({
 										Position = continuation.Position,
 										Tangent = continuation.Tangent,
+										ProfileOffsetM = continuation.ProfileOffsetM,
 									}, continuation.Profile)
 								end
 							end,
@@ -1919,7 +2042,25 @@ return function(
 					softwareDock.Enabled = false
 				end,
 				OnViewEula = function()
+					setupReviewOpen = false
 					eulaReviewOpen = true
+					updateUI()
+				end,
+				OnRunSetup = function()
+					-- Setup can change the active region and therefore regenerate every
+					-- built-in profile. Stop any placement/editor workflow first so it
+					-- cannot keep a stale profile object after the wizard finishes.
+					destroySession()
+					editSession.CancelBayPlacement()
+					editSession.CancelMarkingStretchPlacement()
+					editSession.CancelKerbStretchPlacement()
+					designProfile = nil
+					assetManagerOpen = false
+					plugin:Deactivate()
+					pluginOpen = true
+					setButtonActive(true)
+					eulaReviewOpen = false
+					setupReviewOpen = true
 					updateUI()
 				end,
 			}))
@@ -1933,7 +2074,9 @@ return function(
 		pluginOpen = not pluginOpen
 		if not pluginOpen then
 			eulaReviewOpen = false
+			setupReviewOpen = false
 			destroyEulaScreen()
+			destroySetupScreen()
 			destroySession()
 			designProfile = nil
 			assetManagerOpen = false
@@ -1964,6 +2107,8 @@ return function(
 
 	plugin.Unloading:Connect(function()
 		destroySession()
+		destroyEulaScreen()
+		destroySetupScreen()
 		if regionalRoot then
 			regionalRoot:unmount()
 			regionalRoot = nil

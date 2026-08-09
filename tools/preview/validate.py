@@ -118,7 +118,7 @@ def main():
         print("roundabout:", " ".join(cases))
         import road_preview as rd
         print("road:      ", " ".join(rd.CASES))
-        print("scripts:    turbo_check.py roundabout_parity_contract.py roundabout_editor_preview.py --check road_break_tests.py straight_optimization_preview.py --check curved_superelevation_optimization_preview.py --check structure_preview.py --check parallel_preview.py --check multinode_junction_preview.py --check marking_boundary_preview.py --check regional_marking_preview.py --check structure_break_tests.py hardware_reference_check.py integration_contracts.py check_parity.py")
+        print("scripts:    turbo_check.py roundabout_parity_contract.py roundabout_editor_preview.py --check road_break_tests.py straight_optimization_preview.py --check curved_superelevation_optimization_preview.py --check structure_preview.py --check parallel_preview.py --check transition_anchor_preview.py --check setup_wizard_preview.py --check multinode_junction_preview.py --check marking_boundary_preview.py --check regional_marking_preview.py --check structure_break_tests.py hardware_reference_check.py integration_contracts.py check_parity.py")
         return 0
 
     problems, stale = [], []
@@ -140,6 +140,8 @@ def main():
             ("curved_superelevation_optimization_preview.py", ("--check",)),
             ("structure_preview.py", ("--check",)),
             ("parallel_preview.py", ("--check",)),
+            ("transition_anchor_preview.py", ("--check",)),
+            ("setup_wizard_preview.py", ("--check",)),
             ("multinode_junction_preview.py", ("--check",)),
             ("marking_boundary_preview.py", ("--check",)),
             ("regional_marking_preview.py", ("--check",)),
@@ -174,8 +176,11 @@ LIMITS - what a green run here does NOT mean:
     roundabout contract models its two explicit marking top planes and the
     structure preview models elevation, but other z-fighting and actual Roblox
     raycasts remain Studio-only.
-  * lane-width transitions and bus bays are not ported at all, so no case here
-    says anything about them.
+  * transition_anchor_preview.py proves only the whole-profile Centre/LeftEdge/
+    RightEdge datum math for 3->4 and 4->3, its constant-width chain join, and
+    the legacy zero-offset fallback. General emitted transition strips,
+    component matching, and bus bays are not ported, so it cannot certify their
+    Part-level seams or topology.
   * imported Roblox Models are represented by their start/end socket chord;
     mesh contents, collisions and attachment orientation still need Studio.""")
     return 1 if (problems or stale) else 0

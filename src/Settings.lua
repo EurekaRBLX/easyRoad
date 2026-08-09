@@ -12,11 +12,12 @@ local StructureMaterials = require("./StructureMaterials")
 local kSettingsKey = "easyRoadState"
 local BACKUP_FORMAT = "easyRoad-data"
 local BACKUP_VERSION = 1
+local ONBOARDING_VERSION = 1
 local MAX_BACKUP_BYTES = 2 * 1024 * 1024
 
 local LANGUAGE_VARIANTS = { "British", "American" }
-local SPEED_UNITS = { "Kmh", "Mph" }
-local LENGTH_UNITS = { "Meters", "Feet" }
+local SPEED_UNITS = { "Kmh", "Mph", "StudsPerSecond" }
+local LENGTH_UNITS = { "Meters", "Feet", "Studs" }
 
 export type SuperelevationMode = "Auto" | "Manual" | "Off"
 export type SnapReference = "Centre" | "LeftRoadwayEdge" | "RightRoadwayEdge"
@@ -30,10 +31,14 @@ export type LanguageVariant = "British" | "American"
 -- Display-only measurement units (see Units.lua). Storage stays canonically
 -- metric regardless: DesignSpeedKph and every *M field keep their values, so
 -- switching these never changes the geometry that gets built.
-export type SpeedUnit = "Kmh" | "Mph"
-export type LengthUnit = "Meters" | "Feet"
+export type SpeedUnit = "Kmh" | "Mph" | "StudsPerSecond"
+export type LengthUnit = "Meters" | "Feet" | "Studs"
 
 export type EasyRoadSettings = {
+	-- First-run setup is versioned so future releases can introduce a new,
+	-- materially different setup without showing the same wizard repeatedly.
+	OnboardingVersion: number,
+
 	-- Grand style settings
 	RegionId: string,
 	MetersToStuds: number, -- 1 stud = 0.28m -> 3.571 studs per meter
@@ -148,6 +153,7 @@ end
 local function sanitizeSettings(rawValue: any): EasyRoadSettings
 	local raw = if typeof(rawValue) == "table" then rawValue else {}
 	return {
+		OnboardingVersion = math.floor(numberOr(raw, "OnboardingVersion", 0, 0, ONBOARDING_VERSION)),
 		RegionId = stringOr(raw, "RegionId", "UK"),
 		MetersToStuds = numberOr(raw, "MetersToStuds", 3.571, 0.5, 20),
 		DesignSpeedKph = numberOr(raw, "DesignSpeedKph", 60, 10, 200),
@@ -207,6 +213,7 @@ end
 
 local function serializeSettings(settings: EasyRoadSettings): { [string]: any }
 	return {
+		OnboardingVersion = settings.OnboardingVersion,
 		RegionId = settings.RegionId,
 		MetersToStuds = settings.MetersToStuds,
 		DesignSpeedKph = settings.DesignSpeedKph,
@@ -305,6 +312,7 @@ local function replaceSettings(target: EasyRoadSettings, source: EasyRoadSetting
 end
 
 return {
+	OnboardingVersion = ONBOARDING_VERSION,
 	Load = loadSettings,
 	Save = saveSettings,
 	Export = exportSettings,

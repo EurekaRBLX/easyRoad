@@ -19,6 +19,7 @@ local Components = require("./Components")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
 local Locale = require("../Locale")
+local Units = require("../Units")
 
 local LINE_TYPE_OPTIONS: { Components.DropdownOption } = {
 	{ Id = "None", Text = "None" },
@@ -55,6 +56,7 @@ end
 local function MarkingFields(props: {
 	Label: string,
 	Spec: RegionStyles.MarkingSpec,
+	Settings: Settings.EasyRoadSettings,
 	StartOrder: number,
 	OnChanged: (spec: RegionStyles.MarkingSpec) -> (),
 }): ({ [string]: any }, number)
@@ -111,33 +113,36 @@ local function MarkingFields(props: {
 	order += 1
 
 	if isDashedLine(spec.Line) then
+		local dashLength, dashLengthMin, dashLengthMax =
+			Units.LengthField(props.Settings, spec.DashLengthM or 2, 0.1, 20)
 		children["DashLength" .. order] = e(LabeledRow, {
-			Label = "Dash length (m)",
+			Label = "Dash length (" .. Units.LengthSuffix(props.Settings) .. ")",
 			LayoutOrder = order,
 			children = {
 				Field = e(Components.NumberField, {
-					Value = spec.DashLengthM or 2,
-					Min = 0.1,
-					Max = 20,
+					Value = dashLength,
+					Min = dashLengthMin,
+					Max = dashLengthMax,
 					LayoutOrder = 2,
 					OnChanged = function(value: number)
-						patch({ DashLengthM = value })
+						patch({ DashLengthM = Units.LengthToM(props.Settings, value) })
 					end,
 				}),
 			},
 		})
 		order += 1
+		local dashGap, dashGapMin, dashGapMax = Units.LengthField(props.Settings, spec.DashGapM or 4, 0.1, 20)
 		children["DashGap" .. order] = e(LabeledRow, {
-			Label = "Dash gap (m)",
+			Label = "Dash gap (" .. Units.LengthSuffix(props.Settings) .. ")",
 			LayoutOrder = order,
 			children = {
 				Field = e(Components.NumberField, {
-					Value = spec.DashGapM or 4,
-					Min = 0.1,
-					Max = 20,
+					Value = dashGap,
+					Min = dashGapMin,
+					Max = dashGapMax,
 					LayoutOrder = 2,
 					OnChanged = function(value: number)
-						patch({ DashGapM = value })
+						patch({ DashGapM = Units.LengthToM(props.Settings, value) })
 					end,
 				}),
 			},
@@ -195,7 +200,10 @@ local function RegionEditor(props: {
 	})
 	order += 1
 
-	children.DimensionsSection = e(Components.Section, { Text = "Dimensions (meters)", LayoutOrder = order })
+	children.DimensionsSection = e(Components.Section, {
+		Text = "Dimensions (" .. Units.LengthSuffix(props.Settings) .. ")",
+		LayoutOrder = order,
+	})
 	order += 1
 
 	local dimensionFields: { { Label: string, Key: string, Min: number, Max: number } } = {
@@ -208,17 +216,19 @@ local function RegionEditor(props: {
 		{ Label = Locale.Term(props.Settings, "KerbHeight"), Key = "CurbHeightM", Min = 0, Max = 0.5 },
 	}
 	for _, field in dimensionFields do
+		local shown, shownMin, shownMax =
+			Units.LengthField(props.Settings, (style :: any)[field.Key], field.Min, field.Max)
 		children[field.Key] = e(LabeledRow, {
 			Label = field.Label,
 			LayoutOrder = order,
 			children = {
 				Field = e(Components.NumberField, {
-					Value = (style :: any)[field.Key],
-					Min = field.Min,
-					Max = field.Max,
+					Value = shown,
+					Min = shownMin,
+					Max = shownMax,
 					LayoutOrder = 2,
 					OnChanged = function(value: number)
-						set(field.Key, value)
+						set(field.Key, Units.LengthToM(props.Settings, value))
 					end,
 				}),
 			},
@@ -289,17 +299,18 @@ local function RegionEditor(props: {
 		},
 	})
 	order += 1
+	local designSpeed, designSpeedMin, designSpeedMax = Units.SpeedField(props.Settings, style.DesignSpeedKph, 10, 200)
 	children.DesignSpeed = e(LabeledRow, {
-		Label = "Design speed (km/h)",
+		Label = "Design speed (" .. Units.SpeedSuffix(props.Settings) .. ")",
 		LayoutOrder = order,
 		children = {
 			Field = e(Components.NumberField, {
-				Value = style.DesignSpeedKph,
-				Min = 10,
-				Max = 200,
+				Value = designSpeed,
+				Min = designSpeedMin,
+				Max = designSpeedMax,
 				LayoutOrder = 2,
 				OnChanged = function(value: number)
-					set("DesignSpeedKph", value)
+					set("DesignSpeedKph", Units.SpeedToKph(props.Settings, value))
 				end,
 			}),
 		},
@@ -312,6 +323,7 @@ local function RegionEditor(props: {
 	local centerFields, afterCenter = MarkingFields({
 		Label = "Center line (opposing traffic)",
 		Spec = style.CenterLine,
+		Settings = props.Settings,
 		StartOrder = order,
 		OnChanged = function(spec: RegionStyles.MarkingSpec)
 			set("CenterLine", spec)
@@ -325,6 +337,7 @@ local function RegionEditor(props: {
 	local laneFields, afterLane = MarkingFields({
 		Label = "Lane line (same-direction lanes)",
 		Spec = style.LaneLine,
+		Settings = props.Settings,
 		StartOrder = order,
 		OnChanged = function(spec: RegionStyles.MarkingSpec)
 			set("LaneLine", spec)
@@ -338,6 +351,7 @@ local function RegionEditor(props: {
 	local edgeFields, afterEdge = MarkingFields({
 		Label = "Edge line (roadway outer edge)",
 		Spec = style.EdgeLine,
+		Settings = props.Settings,
 		StartOrder = order,
 		OnChanged = function(spec: RegionStyles.MarkingSpec)
 			set("EdgeLine", spec)
@@ -351,6 +365,7 @@ local function RegionEditor(props: {
 	local trafficLeftEdgeFields, afterTrafficLeftEdge = MarkingFields({
 		Label = "Traffic-left edge line",
 		Spec = style.TrafficLeftEdgeLine or style.EdgeLine,
+		Settings = props.Settings,
 		StartOrder = order,
 		OnChanged = function(spec: RegionStyles.MarkingSpec)
 			set("TrafficLeftEdgeLine", spec)
@@ -362,48 +377,48 @@ local function RegionEditor(props: {
 	order = afterTrafficLeftEdge
 
 	children.MarkingWidth = e(LabeledRow, {
-		Label = "Marking width (m)",
+		Label = "Marking width (" .. Units.LengthSuffix(props.Settings) .. ")",
 		LayoutOrder = order,
 		children = {
 			Field = e(Components.NumberField, {
-				Value = style.MarkingWidthM,
-				Min = 0.02,
-				Max = 0.5,
+				Value = Units.LengthFromM(props.Settings, style.MarkingWidthM),
+				Min = Units.LengthFromM(props.Settings, 0.02),
+				Max = Units.LengthFromM(props.Settings, 0.5),
 				LayoutOrder = 2,
 				OnChanged = function(value: number)
-					set("MarkingWidthM", value)
+					set("MarkingWidthM", Units.LengthToM(props.Settings, value))
 				end,
 			}),
 		},
 	})
 	order += 1
 	children.FallbackDashLength = e(LabeledRow, {
-		Label = "Fallback dash length (m)",
+		Label = "Fallback dash length (" .. Units.LengthSuffix(props.Settings) .. ")",
 		LayoutOrder = order,
 		children = {
 			Field = e(Components.NumberField, {
-				Value = style.DashLengthM,
-				Min = 0.1,
-				Max = 20,
+				Value = Units.LengthFromM(props.Settings, style.DashLengthM),
+				Min = Units.LengthFromM(props.Settings, 0.1),
+				Max = Units.LengthFromM(props.Settings, 20),
 				LayoutOrder = 2,
 				OnChanged = function(value: number)
-					set("DashLengthM", value)
+					set("DashLengthM", Units.LengthToM(props.Settings, value))
 				end,
 			}),
 		},
 	})
 	order += 1
 	children.FallbackDashGap = e(LabeledRow, {
-		Label = "Fallback dash gap (m)",
+		Label = "Fallback dash gap (" .. Units.LengthSuffix(props.Settings) .. ")",
 		LayoutOrder = order,
 		children = {
 			Field = e(Components.NumberField, {
-				Value = style.DashGapM,
-				Min = 0.1,
-				Max = 20,
+				Value = Units.LengthFromM(props.Settings, style.DashGapM),
+				Min = Units.LengthFromM(props.Settings, 0.1),
+				Max = Units.LengthFromM(props.Settings, 20),
 				LayoutOrder = 2,
 				OnChanged = function(value: number)
-					set("DashGapM", value)
+					set("DashGapM", Units.LengthToM(props.Settings, value))
 				end,
 			}),
 		},

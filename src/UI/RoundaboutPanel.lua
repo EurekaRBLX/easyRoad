@@ -11,8 +11,11 @@ local e = React.createElement
 local Theme = require("./Theme")
 local Components = require("./Components")
 local RoadDesigner = require("./RoadDesigner")
+local Settings = require("../Settings")
+local Units = require("../Units")
 
 export type RoundaboutPanelProps = {
+	Settings: Settings.EasyRoadSettings,
 	ConnectedRoadCount: number,
 	LegacyConnected: boolean,
 	RadiusStuds: number,
@@ -137,16 +140,19 @@ local function RoundaboutPanel(props: RoundaboutPanelProps)
 	children.LaneWidth = e(Components.Row, { LayoutOrder = 6 }, {
 		Label = e(Components.Label, { Text = "Lane width", Width = 92, LayoutOrder = 1 }),
 		Field = if readOnly
-			then staticValue(string.format("%g m", props.LaneWidthM), 2)
+			then staticValue(Units.FormatLength(props.Settings, props.LaneWidthM, 2), 2)
 			else e(Components.NumberField, {
-				Value = props.LaneWidthM,
-				Min = 1,
-				Max = 10,
+				Value = Units.LengthFromM(props.Settings, props.LaneWidthM),
+				Min = Units.LengthFromM(props.Settings, 1),
+				Max = Units.LengthFromM(props.Settings, 10),
 				Width = 64,
-				OnChanged = props.OnLaneWidthChanged,
+				OnChanged = function(value: number)
+					props.OnLaneWidthChanged(Units.LengthToM(props.Settings, value))
+				end,
 				LayoutOrder = 2,
 			}),
-		Unit = not readOnly and e(Components.Label, { Text = "m", Dim = true, LayoutOrder = 3 }),
+		Unit = not readOnly
+			and e(Components.Label, { Text = Units.LengthSuffix(props.Settings), Dim = true, LayoutOrder = 3 }),
 	})
 
 	if props.MinimumRadiusStuds > 0 then

@@ -12,6 +12,8 @@ local e = React.createElement
 local Theme = require("./Theme")
 local Components = require("./Components")
 local RoadDesigner = require("./RoadDesigner")
+local Settings = require("../Settings")
+local Units = require("../Units")
 
 local DEFAULT_RADIUS_STUDS = 30
 local DEFAULT_LANE_COUNT = 1
@@ -28,6 +30,7 @@ export type ApproachSetbackRow = {
 
 local function JunctionPanel(
 	props: {
+		Settings: Settings.EasyRoadSettings,
 		JunctionId: string,
 		ConnectedRoadCount: number,
 		CornerCount: number,
@@ -146,26 +149,30 @@ local function JunctionPanel(
 			Width = 104,
 		}),
 		Field = e(Components.NumberField, {
-			Value = props.FilletRadiusM,
-			Min = 0.5,
-			Max = 40,
-			OnChanged = props.OnFilletRadiusChanged,
+			Value = Units.LengthFromM(props.Settings, props.FilletRadiusM),
+			Min = Units.LengthFromM(props.Settings, 0.5),
+			Max = Units.LengthFromM(props.Settings, 40),
+			OnChanged = function(value: number)
+				props.OnFilletRadiusChanged(Units.LengthToM(props.Settings, value))
+			end,
 			LayoutOrder = 2,
 		}),
-		Unit = e(Components.Label, { Text = "m", Dim = true, LayoutOrder = 3 }),
+		Unit = e(Components.Label, { Text = Units.LengthSuffix(props.Settings), Dim = true, LayoutOrder = 3 }),
 	})
 	if not props.LinkedCornerRadii then
 		if props.SelectedCornerRadiusM and props.SelectedCornerLabel then
 			children.SelectedCorner = e(Components.Row, { LayoutOrder = 7 }, {
 				Label = e(Components.Label, { Text = props.SelectedCornerLabel, LayoutOrder = 1, Width = 104 }),
 				Field = e(Components.NumberField, {
-					Value = props.SelectedCornerRadiusM,
-					Min = 0.5,
-					Max = 40,
-					OnChanged = props.OnSelectedCornerRadiusChanged,
+					Value = Units.LengthFromM(props.Settings, props.SelectedCornerRadiusM),
+					Min = Units.LengthFromM(props.Settings, 0.5),
+					Max = Units.LengthFromM(props.Settings, 40),
+					OnChanged = function(value: number)
+						props.OnSelectedCornerRadiusChanged(Units.LengthToM(props.Settings, value))
+					end,
 					LayoutOrder = 2,
 				}),
-				Unit = e(Components.Label, { Text = "m", Dim = true, LayoutOrder = 3 }),
+				Unit = e(Components.Label, { Text = Units.LengthSuffix(props.Settings), Dim = true, LayoutOrder = 3 }),
 			})
 		else
 			children.SelectedCornerHint = e(Components.Label, {
@@ -298,12 +305,14 @@ local function JunctionPanel(
 		children.RoundaboutLaneWidth = e(Components.Row, { LayoutOrder = 23 }, {
 			Label = e(Components.Label, { Text = "Lane width", LayoutOrder = 1, Width = 60 }),
 			Field = e(Components.NumberField, {
-				Value = laneWidthM,
-				Min = 1,
-				OnChanged = setLaneWidthM,
+				Value = Units.LengthFromM(props.Settings, laneWidthM),
+				Min = Units.LengthFromM(props.Settings, 1),
+				OnChanged = function(value: number)
+					setLaneWidthM(Units.LengthToM(props.Settings, value))
+				end,
 				LayoutOrder = 2,
 			}),
-			Unit = e(Components.Label, { Text = "meters", Dim = true, LayoutOrder = 3 }),
+			Unit = e(Components.Label, { Text = Units.LengthSuffix(props.Settings), Dim = true, LayoutOrder = 3 }),
 		})
 		children.RoundaboutMarkings = e(Components.Row, { LayoutOrder = 24 }, {
 			Label = e(Components.Label, { Text = "Markings", LayoutOrder = 1, Width = 60 }),

@@ -192,6 +192,9 @@ function RoadSplit.SplitMany(
 		local piece = RoadBuilder.Build({
 			Curve = pieceCurve,
 			ProfileStart = data.ProfileStart,
+			TransitionAnchor = data.TransitionAnchor,
+			ProfileOffsetStartM = data.ProfileOffsetStartM,
+			ProfileOffsetEndM = data.ProfileOffsetEndM,
 			Style = style,
 			Settings = settings,
 			Preview = false,
@@ -249,13 +252,17 @@ function RoadSplit.SplitAt(
 	road: Model,
 	stationStuds: number,
 	style: RegionStyles.RegionStyle,
-	settings: Settings.EasyRoadSettings
+	settings: Settings.EasyRoadSettings,
+	junctionPosition: Vector3?
 ): (Model?, Model?, string?)
 	local data = RoadInstance.Read(road)
 	if not data or not RoadSplit.CanSplitAt(road, stationStuds) then
 		return nil, nil, nil
 	end
-	local splitPos = data.Curve:PosAt(stationStuds)
+	-- Centre snapping can target a persisted profile-centre offset rather than
+	-- the authored curve itself. Callers may provide that physical join point;
+	-- ordinary callers retain the historical curve-position behaviour.
+	local splitPos = junctionPosition or data.Curve:PosAt(stationStuds)
 	local junctionModel = JunctionInstance.Create(splitPos)
 	local junctionData = JunctionInstance.Read(junctionModel)
 	if not junctionData then

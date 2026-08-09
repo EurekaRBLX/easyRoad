@@ -74,7 +74,13 @@ def road_builder_contracts():
         "component range end": 'part:SetAttribute("RW_ComponentEndIndex", componentEnd)',
         "station range start": 'part:SetAttribute("RW_StationStartStuds", s0)',
         "station range end": 'part:SetAttribute("RW_StationEndStuds", s1)',
-        "raw road metadata": "RoadInstance.StampModel(model, curve, options.ProfileStart, options.ProfileEnd)",
+        "raw road metadata": (
+            "RoadInstance.StampModel(\n"
+            "\t\tmodel,\n"
+            "\t\tcurve,\n"
+            "\t\toptions.ProfileStart,\n"
+            "\t\toptions.ProfileEnd,"
+        ),
         "markings use raw components": "Markings.Compute(componentsStart, componentsEnd, style",
     }
     missing = [label for label, needle in required.items() if needle not in source]

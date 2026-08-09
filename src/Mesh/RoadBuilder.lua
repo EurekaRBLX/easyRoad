@@ -25,6 +25,14 @@ export type BuildOptions = {
 	Curve: PolyCurve.PolyCurve,
 	ProfileStart: RoadProfile.RoadProfile,
 	ProfileEnd: RoadProfile.RoadProfile?, -- Widening/narrowing transition target
+	-- Datum kept fixed while the cross-section changes width. Nil preserves
+	-- the historical centreline-anchored behaviour.
+	TransitionAnchor: RoadInstance.TransitionAnchor?,
+	-- Profile-centre position relative to Curve at each end. Callers normally
+	-- provide only Start; End then derives from TransitionAnchor. Rebuild paths
+	-- pass both persisted values so unrelated edits cannot recenter the road.
+	ProfileOffsetStartM: number?,
+	ProfileOffsetEndM: number?,
 	Style: RegionStyles.RegionStyle,
 	Settings: Settings.EasyRoadSettings,
 	Preview: boolean?,
@@ -109,6 +117,36 @@ export type StationPlan = {
 -- mouth angles, which are not known until after the ring exists.
 RoadBuilder.MarkingLiftStuds = MARKING_LIFT
 RoadBuilder.MarkingThicknessStuds = MARKING_THICKNESS
+
+-- Lateral shift added to the usual centred profile coordinates. Keeping this
+-- tiny datum calculation public gives structure/preview tooling one canonical
+-- definition instead of letting sign conventions drift between renderers.
+function RoadBuilder.TransitionAnchorOffsetM(
+	anchor: RoadInstance.TransitionAnchor?,
+	startWidthM: number,
+	currentWidthM: number
+): number
+	local normalized = RoadInstance.NormalizeTransitionAnchor(anchor)
+	if normalized == "LeftEdge" then
+		-- -current/2 + shift == -start/2
+		return (currentWidthM - startWidthM) / 2
+	elseif normalized == "RightEdge" then
+		-- current/2 + shift == start/2
+		return (startWidthM - currentWidthM) / 2
+	end
+	return 0
+end
+
+function RoadBuilder.ProfileOffsetsMFor(options: BuildOptions): (number, number)
+	local startOffsetM = RoadInstance.NormalizeProfileOffsetM(options.ProfileOffsetStartM)
+	if options.ProfileOffsetEndM ~= nil then
+		return startOffsetM, RoadInstance.NormalizeProfileOffsetM(options.ProfileOffsetEndM)
+	end
+	local startWidthM = RoadProfile.TotalWidthM(options.ProfileStart)
+	local endWidthM = RoadProfile.TotalWidthM(options.ProfileEnd or options.ProfileStart)
+	return startOffsetM,
+		startOffsetM + RoadBuilder.TransitionAnchorOffsetM(options.TransitionAnchor, startWidthM, endWidthM)
+end
 
 local function colorForKind(kind: RoadProfile.ComponentKind, style: RegionStyles.RegionStyle): Color3
 	if kind == "Drive" then
@@ -346,10 +384,12 @@ local function transitionPlan(options: BuildOptions, scale: number, length: numb
 end
 
 local function maxProfileOffsetStuds(options: BuildOptions, scale: number): number
-	return math.max(
-		RoadProfile.TotalWidthM(options.ProfileStart),
-		RoadProfile.TotalWidthM(options.ProfileEnd or options.ProfileStart)
-	) / 2 * scale
+	local startWidthM = RoadProfile.TotalWidthM(options.ProfileStart)
+	local endWidthM = RoadProfile.TotalWidthM(options.ProfileEnd or options.ProfileStart)
+	local startOffsetM, endOffsetM = RoadBuilder.ProfileOffsetsMFor(options)
+	local leftM = math.min(-startWidthM / 2 + startOffsetM, -endWidthM / 2 + endOffsetM)
+	local rightM = math.max(startWidthM / 2 + startOffsetM, endWidthM / 2 + endOffsetM)
+	return math.max(math.abs(leftM), math.abs(rightM)) * scale
 end
 
 -- The sample stations for `options` - the ONE place that decides where this
@@ -562,6 +602,8 @@ function RoadBuilder.Build(options: BuildOptions): Model
 
 	local isTransition, taperLength = transitionPlan(options, scale, length)
 	local optimizedStraight = not isTransition and isExactStraightCurve(curve)
+	local transitionAnchor = RoadInstance.NormalizeTransitionAnchor(options.TransitionAnchor)
+	local profileOffsetStartM, profileOffsetEndM = RoadBuilder.ProfileOffsetsMFor(options)
 	-- 0 before the taper begins, then 0 -> 1 across the taper zone.
 	-- Smoothstepped (3t^2 - 2t^3) rather than a plain linear ramp: a linear
 	-- ramp has a derivative of 0 in the flat zone before it and a nonzero
@@ -609,7 +651,8 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			total += w
 		end
 		local offsets = table.create(componentCount)
-		local x = -total / 2
+		local profileOffsetM = profileOffsetStartM + (profileOffsetEndM - profileOffsetStartM) * u
+		local x = -total / 2 + profileOffsetM * scale
 		for c = 1, componentCount do
 			offsets[c] = x
 			x += widths[c]
@@ -965,7 +1008,9 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			local separation = markingWidth * 0.9
 
 			local function offsetAt(s: number): number
-				return offset0 + (offset1 - offset0) * transitionAlpha(s)
+				local u = transitionAlpha(s)
+				local profileOffsetM = profileOffsetStartM + (profileOffsetEndM - profileOffsetStartM) * u
+				return offset0 + (offset1 - offset0) * u + profileOffsetM * scale
 			end
 
 			-- A "stretch" override (see Markings.emitBoundaryLine) restricts
@@ -1065,7 +1110,15 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	end
 
 	-- Metadata for endpoint snapping and later editing ---------------------------
-	RoadInstance.StampModel(model, curve, options.ProfileStart, options.ProfileEnd)
+	RoadInstance.StampModel(
+		model,
+		curve,
+		options.ProfileStart,
+		options.ProfileEnd,
+		transitionAnchor,
+		profileOffsetStartM,
+		profileOffsetEndM
+	)
 	model:SetAttribute("RW_StraightSurfaceCoalesced", optimizedStraight)
 	model:SetAttribute("RW_CurvedSurfaceCoalesced", curvedSurfaceCoalesced)
 	model:SetAttribute("RW_BankedSurfaceCoalesced", bankedSurfaceCoalesced)
@@ -1105,6 +1158,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 	local curbHeight = style.CurbHeightM * scale
 	local preview = options.Preview == true
 	local length = curve.Length
+	local profileOffsetStartM = RoadBuilder.ProfileOffsetsMFor(options)
 
 	if length < 1e-3 then
 		return RoadBuilder.Build(options)
@@ -1141,6 +1195,7 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		kerbOffset = if componentOffsetsM[n] then componentOffsetsM[n].Left * scale else totalWidthStuds / 2
 		nearsideIndex = n
 	end
+	kerbOffset += profileOffsetStartM * scale
 	local nearsideComponent = baseProfile.Components[nearsideIndex]
 	local bayWidthStuds = bay.WidthM * scale
 	local bayOffset = kerbOffset + outward * bayWidthStuds
@@ -1233,6 +1288,9 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			Curve = curve:Slice(0, taperInStart),
 			ProfileStart = baseProfile,
 			ProfileEnd = options.ProfileEnd,
+			TransitionAnchor = options.TransitionAnchor,
+			ProfileOffsetStartM = options.ProfileOffsetStartM,
+			ProfileOffsetEndM = options.ProfileOffsetEndM,
 			Style = style,
 			Settings = settings,
 			Preview = preview,
@@ -1248,6 +1306,9 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		Curve = curve:Slice(taperInStart, taperOutEnd),
 		ProfileStart = baseProfile,
 		ProfileEnd = options.ProfileEnd,
+		TransitionAnchor = options.TransitionAnchor,
+		ProfileOffsetStartM = options.ProfileOffsetStartM,
+		ProfileOffsetEndM = options.ProfileOffsetEndM,
 		Style = style,
 		Settings = settings,
 		Preview = preview,
@@ -1265,6 +1326,9 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			Curve = curve:Slice(taperOutEnd, length),
 			ProfileStart = baseProfile,
 			ProfileEnd = options.ProfileEnd,
+			TransitionAnchor = options.TransitionAnchor,
+			ProfileOffsetStartM = options.ProfileOffsetStartM,
+			ProfileOffsetEndM = options.ProfileOffsetEndM,
 			Style = style,
 			Settings = settings,
 			Preview = preview,

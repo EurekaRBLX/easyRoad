@@ -13,6 +13,8 @@ local e = React.createElement
 local Theme = require("./Theme")
 local Components = require("./Components")
 local RoadDesigner = require("./RoadDesigner")
+local Settings = require("../Settings")
+local Units = require("../Units")
 
 local LINE_OPTIONS = {
 	{ Id = "Solid", Text = "Solid" },
@@ -34,6 +36,7 @@ local LINE_HAS_DASH: { [string]: boolean } = {
 }
 
 local function MarkingStretchPanel(props: {
+	Settings: Settings.EasyRoadSettings,
 	FromStationStuds: number,
 	ToStationStuds: number,
 	Line: string,
@@ -82,24 +85,28 @@ local function MarkingStretchPanel(props: {
 		children.DashLength = e(Components.Row, { LayoutOrder = 5 }, {
 			Label = e(Components.Label, { Text = "Dash length", LayoutOrder = 1, Width = 90 }),
 			Field = e(Components.NumberField, {
-				Value = props.DashLengthM,
-				Min = 0.1,
-				Max = 20,
-				OnChanged = props.OnDashLengthChanged,
+				Value = Units.LengthFromM(props.Settings, props.DashLengthM),
+				Min = Units.LengthFromM(props.Settings, 0.1),
+				Max = Units.LengthFromM(props.Settings, 20),
+				OnChanged = function(value: number)
+					props.OnDashLengthChanged(Units.LengthToM(props.Settings, value))
+				end,
 				LayoutOrder = 2,
 			}),
-			Unit = e(Components.Label, { Text = "m", Dim = true, LayoutOrder = 3 }),
+			Unit = e(Components.Label, { Text = Units.LengthSuffix(props.Settings), Dim = true, LayoutOrder = 3 }),
 		})
 		children.DashGap = e(Components.Row, { LayoutOrder = 6 }, {
 			Label = e(Components.Label, { Text = "Dash gap", LayoutOrder = 1, Width = 90 }),
 			Field = e(Components.NumberField, {
-				Value = props.DashGapM,
-				Min = 0.1,
-				Max = 20,
-				OnChanged = props.OnDashGapChanged,
+				Value = Units.LengthFromM(props.Settings, props.DashGapM),
+				Min = Units.LengthFromM(props.Settings, 0.1),
+				Max = Units.LengthFromM(props.Settings, 20),
+				OnChanged = function(value: number)
+					props.OnDashGapChanged(Units.LengthToM(props.Settings, value))
+				end,
 				LayoutOrder = 2,
 			}),
-			Unit = e(Components.Label, { Text = "m", Dim = true, LayoutOrder = 3 }),
+			Unit = e(Components.Label, { Text = Units.LengthSuffix(props.Settings), Dim = true, LayoutOrder = 3 }),
 		})
 	end
 	children.Hint = e(Components.Label, {

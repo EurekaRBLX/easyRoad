@@ -4,6 +4,33 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Widening anchors, seamless continuation, and first-run setup
+
+- Widening and narrowing transitions now expose a **Lane placement** choice:
+  keep the profile centre, left edge, or right edge fixed. The selected datum
+  drives the road surface, markings, raised components, snapping, junction
+  mouths, rebuilds, and both procedural and imported structures.
+- Profile-centre offsets persist at both road endpoints. A 3-to-4 or 4-to-3
+  transition therefore continues into the next constant-width segment without
+  snapping back to the authored curve centre. **Place More**, reversed
+  continuations, and reversed parallel carriageways preserve that alignment;
+  old roads safely default to centre/zero offset.
+- The Windows bird's-eye contract covers Centre/Left/Right for one-way 3-to-4
+  and 4-to-3 transitions. All six cases hold their chosen reference with zero
+  measured drift and join the following segment with zero lateral error;
+  twelve injected regressions are caught.
+- First launch now opens a full-viewport, six-step quick setup after the EULA:
+  region, British/American terminology, traffic-side preference, Roblox/
+  metric/imperial display units, and an **Enjoy!** summary. A source-linked
+  orange progress bar advances from 1/6 to 6/6, completion is versioned and
+  persisted, and Software settings can replay the wizard later.
+- Roblox units are real display conversions (`studs`, `studs/s`), not labels
+  pasted over metric values. Editable road widths, region dimensions, marking
+  spacing, structure clearances, parallel gaps, bays, junction corner radii,
+  and roundabout lane widths now follow the selected unit preset while stored
+  geometry remains canonically metric. Native topology/station fields remain
+  in studs deliberately.
+
 ## US traffic-left edge markings
 
 - The United States regional preset now gives each directional carriageway a

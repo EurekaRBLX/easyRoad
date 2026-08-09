@@ -31,6 +31,7 @@ export type BayData = {
 
 export type StructureMode = "None" | "Viaduct" | "Tunnel"
 export type PillarLayout = "Single" | "Twin"
+export type TransitionAnchor = "Centre" | "LeftEdge" | "RightEdge"
 
 export type StructureData = {
 	Mode: StructureMode,
@@ -77,6 +78,15 @@ export type RoadData = {
 	Curve: PolyCurve.PolyCurve,
 	ProfileStart: RoadProfile.RoadProfile,
 	ProfileEnd: RoadProfile.RoadProfile?,
+	-- Lateral datum held fixed while ProfileStart transitions to ProfileEnd.
+	-- Always populated by Read; roads stamped before this feature default to
+	-- Centre so their existing geometry remains byte-for-byte compatible.
+	TransitionAnchor: TransitionAnchor,
+	-- Persistent lateral position of the profile centre relative to the
+	-- authored curve at each endpoint. These keep a subsequent constant-width
+	-- road on the destination alignment after an edge-anchored transition.
+	ProfileOffsetStartM: number,
+	ProfileOffsetEndM: number,
 	Bay: BayData?,
 	MarkingStretches: { Markings.MarkingStretch },
 	KerbStretches: { Markings.KerbStretch },
@@ -88,6 +98,61 @@ export type RoadData = {
 }
 
 local RoadInstance = {}
+
+function RoadInstance.NormalizeTransitionAnchor(value: any): TransitionAnchor
+	if value == "LeftEdge" or value == "RightEdge" then
+		return value
+	end
+	return "Centre"
+end
+
+function RoadInstance.NormalizeProfileOffsetM(value: any): number
+	if typeof(value) == "number" and value == value and math.abs(value) < math.huge then
+		return value
+	end
+	return 0
+end
+
+-- Canonical read-side widening progress. Ordinary offset-only segments blend
+-- across their full length, while a real profile transition holds its start
+-- profile until the end taper begins, matching RoadBuilder.Build.
+function RoadInstance.ProfileTransitionAlphaAtStation(
+	data: RoadData,
+	stationStuds: number,
+	metersToStuds: number
+): number
+	local length = data.Curve.Length
+	if length <= 1e-6 then
+		return 0
+	end
+	local profileEnd = data.ProfileEnd
+	local isTransition = profileEnd ~= nil and (profileEnd :: RoadProfile.RoadProfile).Id ~= data.ProfileStart.Id
+	local t: number
+	if isTransition then
+		local widthDeltaStuds = math.abs(
+			RoadProfile.TotalWidthM(data.ProfileStart) - RoadProfile.TotalWidthM(profileEnd :: RoadProfile.RoadProfile)
+		) * math.max(metersToStuds, 0)
+		local taperLength = math.clamp(widthDeltaStuds * 15, math.min(20, length), length)
+		t = math.clamp((stationStuds - (length - taperLength)) / taperLength, 0, 1)
+	else
+		t = math.clamp(stationStuds / length, 0, 1)
+	end
+	return t * t * (3 - 2 * t)
+end
+
+-- Returns the persisted profile-centre translation at a station. Keeping this
+-- here lets editor hit tests, snapping, and structures follow the exact same
+-- datum without reconstructing it from an anchor (which loses a chained
+-- continuation's already-accumulated offset).
+function RoadInstance.ProfileOffsetAtStationM(data: RoadData, stationStuds: number, metersToStuds: number): number
+	local startOffsetM = RoadInstance.NormalizeProfileOffsetM(data.ProfileOffsetStartM)
+	local endOffsetM = RoadInstance.NormalizeProfileOffsetM(data.ProfileOffsetEndM)
+	if math.abs(endOffsetM - startOffsetM) <= 1e-12 then
+		return startOffsetM
+	end
+	local alpha = RoadInstance.ProfileTransitionAlphaAtStation(data, stationStuds, metersToStuds)
+	return startOffsetM + (endOffsetM - startOffsetM) * alpha
+end
 
 function RoadInstance.IsRoad(instance: Instance?): boolean
 	return instance ~= nil and instance:IsA("Model") and instance:GetAttribute("RW_Road") == true
@@ -111,7 +176,10 @@ function RoadInstance.StampModel(
 	model: Model,
 	curve: PolyCurve.PolyCurve,
 	profileStart: RoadProfile.RoadProfile,
-	profileEnd: RoadProfile.RoadProfile?
+	profileEnd: RoadProfile.RoadProfile?,
+	transitionAnchor: TransitionAnchor?,
+	profileOffsetStartM: number?,
+	profileOffsetEndM: number?
 )
 	model:SetAttribute("RW_Road", true)
 	if typeof(model:GetAttribute("RW_RoadId")) ~= "string" then
@@ -152,6 +220,9 @@ function RoadInstance.StampModel(
 	)
 	model:SetAttribute("RW_ProfileStartId", profileStart.Id)
 	model:SetAttribute("RW_ProfileEndId", if profileEnd then profileEnd.Id else profileStart.Id)
+	model:SetAttribute("RW_TransitionAnchor", RoadInstance.NormalizeTransitionAnchor(transitionAnchor))
+	model:SetAttribute("RW_ProfileOffsetStartM", RoadInstance.NormalizeProfileOffsetM(profileOffsetStartM))
+	model:SetAttribute("RW_ProfileOffsetEndM", RoadInstance.NormalizeProfileOffsetM(profileOffsetEndM))
 	-- Cheap Vector3 reads for endpoint-snap lookups elsewhere (no JSON decode)
 	model:SetAttribute("RW_StartPos", curve:PosAt(0))
 	model:SetAttribute("RW_EndPos", curve:PosAt(curve.Length))
@@ -516,6 +587,9 @@ function RoadInstance.Read(model: Model): RoadData?
 		Curve = curve,
 		ProfileStart = profileStart,
 		ProfileEnd = profileEnd,
+		TransitionAnchor = RoadInstance.NormalizeTransitionAnchor(model:GetAttribute("RW_TransitionAnchor")),
+		ProfileOffsetStartM = RoadInstance.NormalizeProfileOffsetM(model:GetAttribute("RW_ProfileOffsetStartM")),
+		ProfileOffsetEndM = RoadInstance.NormalizeProfileOffsetM(model:GetAttribute("RW_ProfileOffsetEndM")),
 		Bay = bayFromModel(model),
 		MarkingStretches = stretchesFromModel(model),
 		KerbStretches = kerbStretchesFromModel(model),

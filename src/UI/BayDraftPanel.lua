@@ -13,8 +13,11 @@ local e = React.createElement
 local Theme = require("./Theme")
 local Components = require("./Components")
 local RoadDesigner = require("./RoadDesigner")
+local Settings = require("../Settings")
+local Units = require("../Units")
 
 local function BayDraftPanel(props: {
+	Settings: Settings.EasyRoadSettings,
 	LengthStuds: number,
 	WidthM: number,
 	OnLengthChanged: (value: number) -> (),
@@ -36,12 +39,14 @@ local function BayDraftPanel(props: {
 	children.Width = e(Components.Row, { LayoutOrder = 3 }, {
 		Label = e(Components.Label, { Text = "Width", LayoutOrder = 1, Width = 60 }),
 		Field = e(Components.NumberField, {
-			Value = props.WidthM,
-			Min = 0.5,
-			OnChanged = props.OnWidthChanged,
+			Value = Units.LengthFromM(props.Settings, props.WidthM),
+			Min = Units.LengthFromM(props.Settings, 0.5),
+			OnChanged = function(value: number)
+				props.OnWidthChanged(Units.LengthToM(props.Settings, value))
+			end,
 			LayoutOrder = 2,
 		}),
-		Unit = e(Components.Label, { Text = "meters", Dim = true, LayoutOrder = 3 }),
+		Unit = e(Components.Label, { Text = Units.LengthSuffix(props.Settings), Dim = true, LayoutOrder = 3 }),
 	})
 	children.Hint = e(Components.Label, {
 		Text = "From your drag - fine-tune here, or Add Bay above to accept as-is.",

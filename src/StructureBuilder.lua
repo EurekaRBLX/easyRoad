@@ -175,23 +175,27 @@ end
 -- Finds the next station whose straight chord from `startStation` matches the
 -- rigid module's socket length. On a curve this is slightly farther than one
 -- module of arc length, which is exactly what prevents socket gaps.
-local function advanceByChord(curve: PolyCurve.PolyCurve, startStation: number, chordLength: number): number
-	local length = curve.Length
+local function advanceByChord(
+	length: number,
+	positionAt: (number) -> Vector3,
+	startStation: number,
+	chordLength: number
+): number
 	if startStation >= length then
 		return length
 	end
-	local startPos = curve:PosAt(startStation)
+	local startPos = positionAt(startStation)
 	local lo = startStation
 	local hi = math.min(length, startStation + chordLength * 1.25 + 2)
-	while hi < length and (curve:PosAt(hi) - startPos).Magnitude < chordLength do
+	while hi < length and (positionAt(hi) - startPos).Magnitude < chordLength do
 		hi = math.min(length, startStation + (hi - startStation) * 1.75)
 	end
-	if (curve:PosAt(hi) - startPos).Magnitude < chordLength then
+	if (positionAt(hi) - startPos).Magnitude < chordLength then
 		return length
 	end
 	for _ = 1, 28 do
 		local mid = (lo + hi) / 2
-		if (curve:PosAt(mid) - startPos).Magnitude < chordLength then
+		if (positionAt(mid) - startPos).Magnitude < chordLength then
 			lo = mid
 		else
 			hi = mid
@@ -200,19 +204,19 @@ local function advanceByChord(curve: PolyCurve.PolyCurve, startStation: number, 
 	return hi
 end
 
-local function retreatByChord(curve: PolyCurve.PolyCurve, endStation: number, chordLength: number): number
-	local endPos = curve:PosAt(endStation)
+local function retreatByChord(positionAt: (number) -> Vector3, endStation: number, chordLength: number): number
+	local endPos = positionAt(endStation)
 	local lo = math.max(0, endStation - chordLength * 1.75 - 2)
 	local hi = endStation
-	while lo > 0 and (endPos - curve:PosAt(lo)).Magnitude < chordLength do
+	while lo > 0 and (endPos - positionAt(lo)).Magnitude < chordLength do
 		lo = math.max(0, endStation - (endStation - lo) * 1.75)
 	end
-	if (endPos - curve:PosAt(lo)).Magnitude < chordLength then
+	if (endPos - positionAt(lo)).Magnitude < chordLength then
 		return 0
 	end
 	for _ = 1, 28 do
 		local mid = (lo + hi) / 2
-		if (endPos - curve:PosAt(mid)).Magnitude > chordLength then
+		if (endPos - positionAt(mid)).Magnitude > chordLength then
 			lo = mid
 		else
 			hi = mid
@@ -221,27 +225,27 @@ local function retreatByChord(curve: PolyCurve.PolyCurve, endStation: number, ch
 	return hi
 end
 
-local function moduleRanges(curve: PolyCurve.PolyCurve, moduleLength: number): { { number } }
+local function moduleRanges(length: number, positionAt: (number) -> Vector3, moduleLength: number): { { number } }
 	local ranges: { { number } } = {}
-	if curve.Length < EPSILON then
+	if length < EPSILON then
 		return ranges
 	end
-	if (curve:PosAt(curve.Length) - curve:PosAt(0)).Magnitude < moduleLength and curve.Length < moduleLength * 1.1 then
-		return { { 0, curve.Length } }
+	if (positionAt(length) - positionAt(0)).Magnitude < moduleLength and length < moduleLength * 1.1 then
+		return { { 0, length } }
 	end
 	local station = 0
-	while station < curve.Length - EPSILON and #ranges < MAX_MODULES do
-		local nextStation = advanceByChord(curve, station, moduleLength)
+	while station < length - EPSILON and #ranges < MAX_MODULES do
+		local nextStation = advanceByChord(length, positionAt, station, moduleLength)
 		if nextStation <= station + EPSILON then
 			break
 		end
-		if nextStation >= curve.Length - EPSILON then
-			local lastStart = retreatByChord(curve, curve.Length, moduleLength)
+		if nextStation >= length - EPSILON then
+			local lastStart = retreatByChord(positionAt, length, moduleLength)
 			local previousStart = if #ranges > 0 then ranges[#ranges][1] else -math.huge
 			if lastStart > previousStart + EPSILON then
-				table.insert(ranges, { lastStart, curve.Length })
+				table.insert(ranges, { lastStart, length })
 			elseif #ranges == 0 then
-				table.insert(ranges, { 0, curve.Length })
+				table.insert(ranges, { 0, length })
 			end
 			break
 		end
@@ -260,6 +264,7 @@ end
 
 local function placeModules(
 	parent: Model,
+	road: Model,
 	curve: PolyCurve.PolyCurve,
 	template: Model,
 	offsetStuds: number,
@@ -278,18 +283,25 @@ local function placeModules(
 	end
 	local sourceFrame = safeLookAt(sourceStart, sourceEnd, startSocket.WorldCFrame.UpVector)
 	local pivotRelative = sourceFrame:ToObjectSpace(template:GetPivot())
-	local ranges = moduleRanges(curve, moduleLength)
+	local roadData = RoadInstance.Read(road)
+	local bankedFrameAt = makeBankedFrameAt(curve, settings)
+	local function targetPositionAt(station: number): Vector3
+		local frame = bankedFrameAt(station)
+		local profileOffsetStuds = if roadData
+			then RoadInstance.ProfileOffsetAtStationM(roadData, station, settings.MetersToStuds) * settings.MetersToStuds
+			else 0
+		return curve:PosAt(station) + frame.RightVector * profileOffsetStuds + frame.UpVector * offsetStuds
+	end
+	local ranges = moduleRanges(curve.Length, targetPositionAt, moduleLength)
 	local modules = Instance.new("Folder")
 	modules.Name = "Modules"
 	modules.Parent = parent
-	local bankedFrameAt = makeBankedFrameAt(curve, settings)
 
 	for index, range in ranges do
 		local s0, s1 = range[1], range[2]
-		local p0, p1 = curve:PosAt(s0), curve:PosAt(s1)
+		local p0, p1 = targetPositionAt(s0), targetPositionAt(s1)
 		local middleFrame = bankedFrameAt((s0 + s1) / 2)
 		local targetFrame = safeLookAt(p0, p1, middleFrame.UpVector)
-		targetFrame = targetFrame + middleFrame.UpVector * offsetStuds
 		local clone = template:Clone()
 		clone.Name = string.format("Module_%04d", index)
 		for _, descendant in clone:GetDescendants() do
@@ -523,6 +535,7 @@ local function placePiers(
 	folder.Name = "Piers"
 	folder.Parent = parent
 	local bankedFrameAt = makeBankedFrameAt(curve, settings)
+	local roadData = RoadInstance.Read(road)
 
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
@@ -540,7 +553,11 @@ local function placePiers(
 	for index = 1, targetCount do
 		local station = curve.Length * index / (targetCount + 1)
 		local frame = bankedFrameAt(station)
+		local profileOffsetStuds = if roadData
+			then RoadInstance.ProfileOffsetAtStationM(roadData, station, scale) * scale
+			else 0
 		local top = curve:PosAt(station)
+			+ frame.RightVector * profileOffsetStuds
 			+ frame.UpVector
 				* (data.ModuleOffsetM * scale - settings.RoadThicknessStuds + interfaceOverlap - baseThickness)
 		local supportFrame = flatFrameAt(top, frame.LookVector)
@@ -608,16 +625,20 @@ local function placePiers(
 	return count
 end
 
-local function roadWidthStuds(road: Model, settings: Settings.EasyRoadSettings): number
+-- Full lateral envelope occupied by both endpoint profiles. Procedural shells
+-- remain constant-width today, but their centre must follow an edge-anchored
+-- widening instead of silently staying centred on the authored curve.
+local function roadEnvelopeStuds(road: Model, settings: Settings.EasyRoadSettings): (number, number)
 	local roadData = RoadInstance.Read(road)
 	if not roadData then
-		return 10 * settings.MetersToStuds
+		return 10 * settings.MetersToStuds, 0
 	end
-	local widthM = RoadProfile.TotalWidthM(roadData.ProfileStart)
-	if roadData.ProfileEnd then
-		widthM = math.max(widthM, RoadProfile.TotalWidthM(roadData.ProfileEnd))
-	end
-	return math.max(widthM * settings.MetersToStuds, 4)
+	local startWidthM = RoadProfile.TotalWidthM(roadData.ProfileStart)
+	local endWidthM = RoadProfile.TotalWidthM(roadData.ProfileEnd or roadData.ProfileStart)
+	local leftM = math.min(-startWidthM / 2 + roadData.ProfileOffsetStartM, -endWidthM / 2 + roadData.ProfileOffsetEndM)
+	local rightM = math.max(startWidthM / 2 + roadData.ProfileOffsetStartM, endWidthM / 2 + roadData.ProfileOffsetEndM)
+	local scale = settings.MetersToStuds
+	return math.max((rightM - leftM) * scale, 4), (leftM + rightM) / 2 * scale
 end
 
 local function makeStructurePart(
@@ -659,7 +680,7 @@ local function placeProceduralViaduct(
 		return 0
 	end
 	local scale = settings.MetersToStuds
-	local roadWidth = roadWidthStuds(road, settings)
+	local roadWidth, roadCenterOffset = roadEnvelopeStuds(road, settings)
 	local concreteColor = StructureBuilder.ColorFromHex(data.ConcreteColorHex)
 	local baseMaterial = StructureMaterials.Resolve(data.BaseMaterial)
 	local wallColor = StructureBuilder.ColorFromHex(data.ViaductWallColorHex)
@@ -680,12 +701,18 @@ local function placeProceduralViaduct(
 	-- face hides the downward fascia and can visibly protrude beyond it.
 	local deckHalfWidth = barrierCenter - barrierThickness / 2
 	local deckWidth = deckHalfWidth * 2
+	local deckMaxOffset = math.abs(roadCenterOffset) + deckHalfWidth
 	local offset = data.ModuleOffsetM * scale
 	local step = math.max(settings.MaxSegmentLengthStuds, 4)
 	local maximumSegments = math.floor(MAX_PROCEDURAL_PARTS / 3)
 	local rollProfile = buildRollProfile(curve, settings)
-	local stationRanges, refinementCapped =
-		refinedStructureRanges(curve.Length, step, barrierCenter + barrierThickness / 2, rollProfile, maximumSegments)
+	local stationRanges, refinementCapped = refinedStructureRanges(
+		curve.Length,
+		step,
+		math.abs(roadCenterOffset) + barrierCenter + barrierThickness / 2,
+		rollProfile,
+		maximumSegments
+	)
 	local folder = Instance.new("Folder")
 	folder.Name = "ProceduralViaduct"
 	folder:SetAttribute("RW_ProceduralViaduct", true)
@@ -707,7 +734,7 @@ local function placeProceduralViaduct(
 		local roadFrame = bankedFrameAt((s0 + s1) * 0.5)
 		local frame = safeLookAt(middle, middle + (p1 - p0), roadFrame.UpVector)
 		frame = frame + roadFrame.UpVector * offset
-		local depth = proceduralDepth(curve, s0, s1, deckHalfWidth)
+		local depth = proceduralDepth(curve, s0, s1, deckMaxOffset)
 		local baseTopY = -settings.RoadThicknessStuds + interfaceOverlap
 		local baseY = baseTopY - baseThickness / 2
 		local barrierBottom = baseTopY - fasciaDepth
@@ -717,14 +744,20 @@ local function placeProceduralViaduct(
 		makeStructurePart(
 			string.format("DeckSlab_%04d", index),
 			Vector3.new(deckWidth, baseThickness, depth),
-			frame * CFrame.new(0, baseY, 0),
+			frame * CFrame.new(roadCenterOffset, baseY, 0),
 			concreteColor,
 			baseMaterial,
 			folder
 		)
 		for _, side in { -1, 1 } do
-			local barrierFrame, barrierDepth =
-				offsetSegmentFrame(curve, bankedFrameAt, s0, s1, side * barrierCenter, offset + barrierY)
+			local barrierFrame, barrierDepth = offsetSegmentFrame(
+				curve,
+				bankedFrameAt,
+				s0,
+				s1,
+				roadCenterOffset + side * barrierCenter,
+				offset + barrierY
+			)
 			makeStructurePart(
 				string.format("Parapet_%s_%04d", if side < 0 then "Left" else "Right", index),
 				Vector3.new(barrierThickness, fullBarrierHeight, barrierDepth),
@@ -756,7 +789,7 @@ local function placeProceduralTunnel(
 		return 0
 	end
 	local scale = settings.MetersToStuds
-	local roadWidth = roadWidthStuds(road, settings)
+	local roadWidth, roadCenterOffset = roadEnvelopeStuds(road, settings)
 	local concreteColor = StructureBuilder.ColorFromHex(data.ConcreteColorHex)
 	local baseMaterial = StructureMaterials.Resolve(data.BaseMaterial)
 	local wallColor = StructureBuilder.ColorFromHex(data.TunnelWallColorHex)
@@ -777,8 +810,13 @@ local function placeProceduralTunnel(
 	local partsPerSegment = TUNNEL_ARCH_SEGMENTS + 3
 	local maximumSegments = math.floor(MAX_PROCEDURAL_PARTS / partsPerSegment)
 	local rollProfile = buildRollProfile(curve, settings)
-	local stationRanges, refinementCapped =
-		refinedStructureRanges(curve.Length, step, outerWidth / 2, rollProfile, maximumSegments)
+	local stationRanges, refinementCapped = refinedStructureRanges(
+		curve.Length,
+		step,
+		math.abs(roadCenterOffset) + outerWidth / 2,
+		rollProfile,
+		maximumSegments
+	)
 	local folder = Instance.new("Folder")
 	folder.Name = "ProceduralTunnel"
 	folder:SetAttribute("RW_ProceduralTunnel", true)
@@ -800,7 +838,7 @@ local function placeProceduralTunnel(
 		local roadFrame = bankedFrameAt((s0 + s1) * 0.5)
 		local frame = safeLookAt(middle, middle + (p1 - p0), roadFrame.UpVector)
 		frame = frame + roadFrame.UpVector * offset
-		local depth = proceduralDepth(curve, s0, s1, outerWidth / 2)
+		local depth = proceduralDepth(curve, s0, s1, math.abs(roadCenterOffset) + outerWidth / 2)
 		local floorTop = -settings.RoadThicknessStuds + interfaceOverlap
 		local wallBottom = floorTop - thickness
 		local fullWallHeight = wallTop - wallBottom
@@ -809,7 +847,7 @@ local function placeProceduralTunnel(
 		makeStructurePart(
 			string.format("Base_%04d", index),
 			Vector3.new(outerWidth, baseThickness, depth),
-			frame * CFrame.new(0, floorTop - baseThickness / 2, 0),
+			frame * CFrame.new(roadCenterOffset, floorTop - baseThickness / 2, 0),
 			concreteColor,
 			baseMaterial,
 			folder
@@ -817,7 +855,7 @@ local function placeProceduralTunnel(
 		makeStructurePart(
 			string.format("WallLeft_%04d", index),
 			Vector3.new(thickness, fullWallHeight, depth),
-			frame * CFrame.new(-innerHalfWidth - thickness / 2, wallY, 0),
+			frame * CFrame.new(roadCenterOffset - innerHalfWidth - thickness / 2, wallY, 0),
 			wallColor,
 			wallMaterial,
 			folder
@@ -825,7 +863,7 @@ local function placeProceduralTunnel(
 		makeStructurePart(
 			string.format("WallRight_%04d", index),
 			Vector3.new(thickness, fullWallHeight, depth),
-			frame * CFrame.new(innerHalfWidth + thickness / 2, wallY, 0),
+			frame * CFrame.new(roadCenterOffset + innerHalfWidth + thickness / 2, wallY, 0),
 			wallColor,
 			wallMaterial,
 			folder
@@ -842,7 +880,7 @@ local function placeProceduralTunnel(
 			makeStructurePart(
 				string.format("Vault_%02d_%04d", archIndex, index),
 				Vector3.new(panelWidth, thickness, depth),
-				frame * CFrame.new((x0 + x1) / 2, (y0 + y1) / 2, 0) * CFrame.Angles(0, 0, panelAngle),
+				frame * CFrame.new(roadCenterOffset + (x0 + x1) / 2, (y0 + y1) / 2, 0) * CFrame.Angles(0, 0, panelAngle),
 				roofColor,
 				roofMaterial,
 				folder
@@ -905,7 +943,8 @@ function StructureBuilder.Render(
 			generated:Destroy()
 			return false, "The selected asset belongs to the " .. tostring(assetKind) .. " library."
 		end
-		local count, err = placeModules(generated, curve, asset, data.ModuleOffsetM * settings.MetersToStuds, settings)
+		local count, err =
+			placeModules(generated, road, curve, asset, data.ModuleOffsetM * settings.MetersToStuds, settings)
 		if err then
 			generated:Destroy()
 			return false, err

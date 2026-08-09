@@ -31,6 +31,8 @@ trap as an invariant nobody re-reads.
 | `curved_superelevation_optimization_preview.py` | Feasibility and regression harness for conservative Drive-band merging on curves and bank runoff. Ports the density-independent roll profile (including short-curve runoff controls), roll-aware station refinement, per-interval 0.025-stud twist and curved-box overhang budgets, exact outer-edge parity, actual midpoint-box plan footprints, injected break-tests, Part counts, and a combined bird's-eye/side/cross-section render. |
 | `structure_preview.py` | Rigid imported-module socket stepping, procedural viaduct elevation, single/twin pier and cap geometry, independent finish channels, and arched tunnel cross-section; check-only or one combined PNG. |
 | `parallel_preview.py` | Curved parallel-carriageway offset/refit, an opposed pair, and independent direction choices for larger groups. |
+| `transition_anchor_preview.py` | Bird's-eye one-way 3-to-4 and 4-to-3 transition datum contract. Shows Centre / Left edge / Right edge side by side, checks the selected reference remains numerically fixed throughout the smoothstep taper and into a chained constant-width segment, verifies legacy offsets default to zero, and includes twelve injected break-tests. |
+| `setup_wizard_preview.py` | Source-linked first-run setup QA: representative Welcome, Units, and Enjoy screens, the actual six-step progress fractions, easyRoad's theme accent, full-host sizing, unit choices, and five injected break-tests. |
 | `regional_marking_preview.py` | Bird's-eye US/UK marking-colour contract: yellow US opposing-flow centre and divided-carriageway traffic-left edges, white same-direction/traffic-right lines, global highway `NoLine` suppression for UK median edges, exactly one yellow line at a one-way highway's Drive/inner-shoulder boundary, and direction-stable 2x2↔3x3 yellow-edge mapping. The bottom US panel also shows an explicit local `NoLine` span. Includes nine injected semantic break-tests. |
 | `hardware_reference_check.py` | Parses the five `hardware/*.rbxmx` references and verifies their deck/base, parapet/wall, and tunnel-crown cues. |
 | `junction_pad_preview.py`, `corner_preview.py` | Junction pad and curb-return shapes. Not yet wired into `validate.py`. |
@@ -95,6 +97,10 @@ python3 curved_superelevation_optimization_preview.py --check
 python3 curved_superelevation_optimization_preview.py --out out/curved-bank.png
 python3 structure_preview.py --check      # module coverage + pier contact
 python3 parallel_preview.py --check       # curved offsets + direction layouts
+python3 transition_anchor_preview.py --check
+python3 transition_anchor_preview.py --out out/transition-anchors.png
+python3 setup_wizard_preview.py --check
+python3 setup_wizard_preview.py --out out/setup-wizard.png
 python3 regional_marking_preview.py --check
 python3 regional_marking_preview.py --out out/regional-marking-colours.png
 python3 structure_break_tests.py          # prove gaps/hovering piers fail
@@ -180,10 +186,14 @@ common for roads produced by an X-split.
 - Mostly Part **footprints in plan**. The roundabout parity contract models the
   two explicit marking top planes, but general heights, render order, dash phase
   and z-fighting still require a live check.
-- **Lane-width transitions (`MatchForTransition`) and bus bays (`BuildWithBay`)
-  are not ported at all**, so no case here says anything about them. Modelling
-  them from scratch would produce a check that agrees with the model rather than
-  with RoadBuilder.
+- `transition_anchor_preview.py` deliberately ports only the cross-section datum
+  translation: Centre remains at zero, Left edge remains at the source left
+  coordinate, or Right edge remains at the source right coordinate. It checks
+  both one-way 3-to-4 widening and 4-to-3 narrowing, then carries the resulting
+  profile-centre offset into a constant-width continuation and requires both
+  edges and the centre to meet with zero join error. General emitted transition
+  strips, `MatchForTransition` topology, and bus bays (`BuildWithBay`) are not
+  ported, so this does not certify their Part-level seams.
 - `curved_superelevation_optimization_preview.py` is deliberately narrower than
   a general 3D road port: it models an exact circular centreline with a
   station-defined bank runoff and the current two-triangle top-surface

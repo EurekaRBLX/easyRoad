@@ -117,6 +117,7 @@ local function RoadInspector(props: {
 		OnRemoveMarkingStretch = session.RemoveMarkingStretch,
 		ExtraProperties = structure and e(StructureControls, {
 			Structure = structure,
+			Settings = props.Settings,
 			Assets = session.GetStructureAssets(structureKind),
 			Status = session.GetStructureStatus(),
 			OnChange = session.SetStructure,

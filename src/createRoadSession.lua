@@ -64,6 +64,8 @@ export type RoadSession = {
 	GetProfile: () -> RoadProfile.RoadProfile,
 	SetEndProfile: (profile: RoadProfile.RoadProfile?) -> (),
 	GetEndProfile: () -> RoadProfile.RoadProfile?,
+	SetTransitionAnchor: (anchor: RoadInstance.TransitionAnchor) -> (),
+	GetTransitionAnchor: () -> RoadInstance.TransitionAnchor,
 	GetElevation: () -> number,
 	AdjustElevation: (delta: number) -> (),
 	SetElevation: (value: number) -> (),
@@ -108,10 +110,11 @@ type PreparedCrossing = {
 	JunctionModel: Model,
 }
 
--- A magnetic placement point and the centreline identity it belongs to are
--- deliberately separate. Left/right roadway-edge snapping moves the visible
--- endpoint laterally, but a split or junction must still be made at the
--- target road's real centreline station.
+-- A magnetic placement point and the topology datum it belongs to are
+-- deliberately separate. Centre snapping follows the visible profile centre
+-- (which can be offset from the authored curve after a widening transition),
+-- while left/right roadway-edge snapping remains alignment-only and keeps the
+-- authored curve as its junction/split datum.
 type SnapMatch = {
 	Kind: "RoadEndpoint" | "RoadMidSpan" | "Junction" | "Roundabout",
 	Position: Vector3,
@@ -130,6 +133,7 @@ type SnapMatch = {
 export type SessionSeed = {
 	Position: Vector3,
 	Tangent: Vector3,
+	ProfileOffsetM: number?,
 }
 
 local function createRoadSession(
@@ -145,6 +149,8 @@ local function createRoadSession(
 	local toolMode: ToolMode = "Curve"
 	local profile = initialProfile
 	local endProfile: RoadProfile.RoadProfile? = nil
+	local transitionAnchor: RoadInstance.TransitionAnchor = "Centre"
+	local profileOffsetM = RoadInstance.NormalizeProfileOffsetM(if seed then seed.ProfileOffsetM else nil)
 
 	local points: { Vector3 } = if seed then { seed.Position } else {}
 	local pointSnapMatches: { [number]: SnapMatch } = {}
@@ -231,6 +237,43 @@ local function createRoadSession(
 			return endProfile :: RoadProfile.RoadProfile, profile
 		end
 		return profile, endProfile
+	end
+
+	-- Left/right are physical sides of the user-drawn corridor. A secondary
+	-- carriageway whose own curve/profile run in reverse sees those sides in
+	-- the opposite local frame, so swap the datum as well as the profiles.
+	local function transitionAnchorForPlacement(placement: ParallelPlacement): RoadInstance.TransitionAnchor
+		if not placement.Reverse then
+			return transitionAnchor
+		elseif transitionAnchor == "LeftEdge" then
+			return "RightEdge"
+		elseif transitionAnchor == "RightEdge" then
+			return "LeftEdge"
+		end
+		return "Centre"
+	end
+
+	local function corridorProfileOffsetsM(): (number, number)
+		local endOffsetM = profileOffsetM
+		if endProfile then
+			endOffsetM += RoadBuilder.TransitionAnchorOffsetM(
+				transitionAnchor,
+				RoadProfile.TotalWidthM(profile),
+				RoadProfile.TotalWidthM(endProfile :: RoadProfile.RoadProfile)
+			)
+		end
+		return profileOffsetM, endOffsetM
+	end
+
+	-- A reversed placement starts at the corridor's authored end and its local
+	-- RightVector points toward the corridor's physical left. Swap endpoints
+	-- and negate both offsets to describe the same world-space alignment.
+	local function profileOffsetsForPlacement(placement: ParallelPlacement): (number, number)
+		local startOffsetM, endOffsetM = corridorProfileOffsetsM()
+		if placement.Reverse then
+			return -endOffsetM, -startOffsetM
+		end
+		return startOffsetM, endOffsetM
 	end
 
 	-- Config for the "Roundabout" tool mode's single-click placement -
@@ -374,6 +417,34 @@ local function createRoadSession(
 		return offsets[firstRoadway].Left, offsets[lastRoadway].Right
 	end
 
+	local function roadwayEdgeOffsetsAtStationM(data: RoadInstance.RoadData, station: number): (number, number)
+		local profileEnd = data.ProfileEnd
+		if not profileEnd or profileEnd.Id == data.ProfileStart.Id then
+			return roadwayEdgeOffsetsM(data.ProfileStart)
+		end
+		local startComponents, endComponents = RoadProfile.MatchForTransition(data.ProfileStart, profileEnd)
+		local alpha = RoadInstance.ProfileTransitionAlphaAtStation(data, station, settings.MetersToStuds)
+		local widths: { number } = table.create(#startComponents)
+		local totalWidthM = 0
+		for index, startComponent in startComponents do
+			local widthM = startComponent.WidthM + (endComponents[index].WidthM - startComponent.WidthM) * alpha
+			widths[index] = widthM
+			totalWidthM += widthM
+		end
+		local x = -totalWidthM / 2
+		local leftM: number? = nil
+		local rightM: number? = nil
+		for index, startComponent in startComponents do
+			local nextX = x + widths[index]
+			if RoadProfile.IsRoadway(startComponent.Kind) or RoadProfile.IsRoadway(endComponents[index].Kind) then
+				leftM = leftM or x
+				rightM = nextX
+			end
+			x = nextX
+		end
+		return leftM or -totalWidthM / 2, rightM or totalWidthM / 2
+	end
+
 	-- Returns the visible magnetic point for one centreline station. Profile
 	-- offsets use the road's own stored start -> end orientation, matching the
 	-- Road Editor's left-to-right component order. The banked frame keeps an
@@ -408,14 +479,17 @@ local function createRoadSession(
 
 	local function roadSnapPosition(data: RoadInstance.RoadData, station: number): Vector3
 		local centre = data.Curve:PosAt(station)
-		if settings.SnapReference == "Centre" then
+		local leftM, rightM = roadwayEdgeOffsetsAtStationM(data, station)
+		local profileOffsetM = RoadInstance.ProfileOffsetAtStationM(data, station, settings.MetersToStuds)
+		leftM += profileOffsetM
+		rightM += profileOffsetM
+		local offsetM = if settings.SnapReference == "Centre"
+			then profileOffsetM
+			elseif settings.SnapReference == "LeftRoadwayEdge" then leftM
+			else rightM
+		if math.abs(offsetM) < 1e-9 then
 			return centre
 		end
-		local profile = if data.ProfileEnd and station >= data.Curve.Length - 1e-4
-			then data.ProfileEnd :: RoadProfile.RoadProfile
-			else data.ProfileStart
-		local leftM, rightM = roadwayEdgeOffsetsM(profile)
-		local offsetM = if settings.SnapReference == "LeftRoadwayEdge" then leftM else rightM
 		-- Use the exact canonical profile that RoadBuilder samples. Re-deriving
 		-- raw curvature plus a local taper drifts from the smoothed deck inside a
 		-- runoff and makes lateral magnetic points float above or below it.
@@ -442,8 +516,10 @@ local function createRoadSession(
 					continue
 				end
 				local endStation = data.Curve.Length
-				local endTopologyPos = data.Curve:PosAt(endStation)
 				local endPos = roadSnapPosition(data, endStation)
+				local endTopologyPos = if settings.SnapReference == "Centre"
+					then endPos
+					else data.Curve:PosAt(endStation)
 				local endTan = data.Curve:TangentAt(endStation)
 				do
 					local d = (endPos - pos).Magnitude
@@ -461,8 +537,10 @@ local function createRoadSession(
 					end
 				end
 				do
-					local startTopologyPos = data.Curve:PosAt(0)
 					local startPos = roadSnapPosition(data, 0)
+					local startTopologyPos = if settings.SnapReference == "Centre"
+						then startPos
+						else data.Curve:PosAt(0)
 					local startTan = data.Curve:TangentAt(0)
 					local d = (startPos - pos).Magnitude
 					if isAtGrade(startPos, pos) and d < bestDistance then
@@ -669,7 +747,9 @@ local function createRoadSession(
 			-- ClosestS searches the centreline. On a tight curve the closest
 			-- point of an offset roadway edge can be at a slightly different
 			-- station, so refine against the actual selected lateral reference.
-			if settings.SnapReference ~= "Centre" then
+			local refineSelectedReference = settings.SnapReference ~= "Centre"
+				or math.abs(RoadInstance.ProfileOffsetAtStationM(data, station, settings.MetersToStuds)) > 1e-9
+			if refineSelectedReference then
 				local window = math.max(data.Curve.Length / 40, settings.SnapRadiusStuds * 2)
 				for _ = 1, 8 do
 					local lo = math.max(0, station - window)
@@ -688,8 +768,10 @@ local function createRoadSession(
 					window /= 2
 				end
 			end
-			local topologyPosition = data.Curve:PosAt(station)
 			local snapPosition = roadSnapPosition(data, station)
+			local topologyPosition = if settings.SnapReference == "Centre"
+				then snapPosition
+				else data.Curve:PosAt(station)
 			local distance = (snapPosition - pos).Magnitude
 			local tolerance = if settings.SnapReference == "Centre"
 				then RoadProfile.TotalWidthM(data.ProfileStart) / 2 * settings.MetersToStuds + settings.SnapRadiusStuds
@@ -711,8 +793,14 @@ local function createRoadSession(
 
 	-- Splits `road` at `station` and links `model`'s given end to the fresh
 	-- junction created there - the mid-span counterpart of connectAt above.
-	local function connectAtSplit(road: Model, station: number, model: Model, modelEnd: "Start" | "End"): boolean
-		local _, _, junctionId = RoadSplit.SplitAt(road, station, getStyle(), settings)
+	local function connectAtSplit(
+		road: Model,
+		station: number,
+		topologyPosition: Vector3,
+		model: Model,
+		modelEnd: "Start" | "End"
+	): boolean
+		local _, _, junctionId = RoadSplit.SplitAt(road, station, getStyle(), settings, topologyPosition)
 		if not junctionId then
 			return false
 		end
@@ -1106,10 +1194,14 @@ local function createRoadSession(
 		local ok, model = pcall(function()
 			if #placements == 1 then
 				local previewStart, previewEnd = placementProfiles(placements[1])
+				local previewOffsetStartM, previewOffsetEndM = profileOffsetsForPlacement(placements[1])
 				return RoadBuilder.Build({
 					Curve = placements[1].Curve,
 					ProfileStart = previewStart,
 					ProfileEnd = previewEnd,
+					TransitionAnchor = transitionAnchorForPlacement(placements[1]),
+					ProfileOffsetStartM = previewOffsetStartM,
+					ProfileOffsetEndM = previewOffsetEndM,
 					Style = getStyle(),
 					Settings = settings,
 					Preview = true,
@@ -1119,10 +1211,14 @@ local function createRoadSession(
 			container.Name = "ParallelRoadPreview"
 			for _, placement in placements do
 				local previewStart, previewEnd = placementProfiles(placement)
+				local previewOffsetStartM, previewOffsetEndM = profileOffsetsForPlacement(placement)
 				local roadPreview = RoadBuilder.Build({
 					Curve = placement.Curve,
 					ProfileStart = previewStart,
 					ProfileEnd = previewEnd,
+					TransitionAnchor = transitionAnchorForPlacement(placement),
+					ProfileOffsetStartM = previewOffsetStartM,
+					ProfileOffsetEndM = previewOffsetEndM,
 					Style = getStyle(),
 					Settings = settings,
 					Preview = true,
@@ -1158,10 +1254,14 @@ local function createRoadSession(
 		local curve = primaryPlacement.Curve
 		local crossingCandidates = findCurveCrossings(curve)
 		local primaryProfileStart, primaryProfileEnd = placementProfiles(primaryPlacement)
+		local primaryOffsetStartM, primaryOffsetEndM = profileOffsetsForPlacement(primaryPlacement)
 		local model = RoadBuilder.Build({
 			Curve = curve,
 			ProfileStart = primaryProfileStart,
 			ProfileEnd = primaryProfileEnd,
+			TransitionAnchor = transitionAnchorForPlacement(primaryPlacement),
+			ProfileOffsetStartM = primaryOffsetStartM,
+			ProfileOffsetEndM = primaryOffsetEndM,
 			Style = getStyle(),
 			Settings = settings,
 			Preview = false,
@@ -1277,7 +1377,15 @@ local function createRoadSession(
 					and snapMatch.Road.Parent
 					and snapMatch.Station
 				then
-					if connectAtSplit(snapMatch.Road, snapMatch.Station, targetModel, whichEnd) then
+					if
+						connectAtSplit(
+							snapMatch.Road,
+							snapMatch.Station,
+							snapMatch.TopologyPosition,
+							targetModel,
+							whichEnd
+						)
+					then
 						return
 					end
 				elseif snapMatch.Kind == "Junction" and snapMatch.Junction and snapMatch.Junction.Parent then
@@ -1316,7 +1424,13 @@ local function createRoadSession(
 			end
 			local midSpanMatch = findMidSpanMatch(pos, targetModel)
 			if midSpanMatch and midSpanMatch.Road and midSpanMatch.Station then
-				connectAtSplit(midSpanMatch.Road, midSpanMatch.Station, targetModel, whichEnd)
+				connectAtSplit(
+					midSpanMatch.Road,
+					midSpanMatch.Station,
+					midSpanMatch.TopologyPosition,
+					targetModel,
+					whichEnd
+				)
 			end
 		end
 
@@ -1344,10 +1458,14 @@ local function createRoadSession(
 			end
 			local secondaryCurve = placement.Curve
 			local secondaryStart, secondaryEnd = placementProfiles(placement)
+			local secondaryOffsetStartM, secondaryOffsetEndM = profileOffsetsForPlacement(placement)
 			local secondary = RoadBuilder.Build({
 				Curve = secondaryCurve,
 				ProfileStart = secondaryStart,
 				ProfileEnd = secondaryEnd,
+				TransitionAnchor = transitionAnchorForPlacement(placement),
+				ProfileOffsetStartM = secondaryOffsetStartM,
+				ProfileOffsetEndM = secondaryOffsetEndM,
 				Style = getStyle(),
 				Settings = settings,
 				Preview = false,
@@ -1366,6 +1484,8 @@ local function createRoadSession(
 		-- transition segment arrives at its end profile, so the chain
 		-- continues with that profile.
 		if endProfile then
+			local _, nextProfileOffsetM = corridorProfileOffsetsM()
+			profileOffsetM = nextProfileOffsetM
 			profile = endProfile
 			endProfile = nil
 		end
@@ -1582,6 +1702,19 @@ local function createRoadSession(
 
 	function session.GetEndProfile(): RoadProfile.RoadProfile?
 		return endProfile
+	end
+
+	function session.SetTransitionAnchor(newAnchor: RoadInstance.TransitionAnchor)
+		local normalized = RoadInstance.NormalizeTransitionAnchor(newAnchor)
+		if transitionAnchor ~= normalized then
+			transitionAnchor = normalized
+			previewDirty = true
+			changeSignal:Fire()
+		end
+	end
+
+	function session.GetTransitionAnchor(): RoadInstance.TransitionAnchor
+		return transitionAnchor
 	end
 
 	function session.GetElevation(): number

@@ -30,8 +30,10 @@ python3 tools/build_rbxmx.py --license oss
 
 ## Using it
 
-1. Click the **EasyRoad** toolbar button. The panel opens and the placement
-   tool activates.
+1. Click the **EasyRoad** toolbar button. On first launch, Quick Setup walks
+   through region, terminology, traffic side, and Roblox/metric/imperial units;
+   its choices remain editable under Settings. The panel then opens and the
+   placement tool activates.
 2. Pick a tool:
    * **Straight** — click start, click end.
    * **Curve** — click start, click a guide point (controls the tangent),
@@ -57,8 +59,10 @@ python3 tools/build_rbxmx.py --license oss
    second road profile. The segment you place transitions from the current
    profile at its start to the target profile at its end — lane widths (and
    the markings between them) interpolate along the segment, extra lanes
-   taper in/out. After placing a transition, the chain continues with the
-   target profile.
+   taper in/out. **Lane placement** chooses whether the centre, left edge, or
+   right edge stays fixed, so the new lane appears on the intended side. After
+   placing a transition, the chain continues with the target profile on that
+   same alignment.
 6. **Viaducts and tunnels**: in Road Tools choose the structure mode before
    placing. Viaduct mode generates a structural slab, edge parapets, and
    terrain-projected concrete piers; Tunnel mode generates a base, tall walls,

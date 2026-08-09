@@ -75,11 +75,10 @@ above is considered region-compatible:
    type, width, colour, peel/setback rules, and future stop/give-way/crossing
    defaults into the region or a dedicated `RoundaboutMarkingStandard`. Keep
    per-roundabout overrides without losing the regional default.
-3. **Resolve traffic hand once.** `Settings.DriveSideOverride` is serialized
-   but currently has no runtime consumer. Either wire an explicit
-   Region/Left/Right resolver into every builder and preview, or remove and
-   migrate the dead setting; do not allow settings and `DriveOnLeft` to
-   disagree silently.
+3. **~~Resolve traffic hand once.~~ SHIPPED.** Quick Setup and Regional
+   Preference now resolve Region/Left/Right into the effective cloned style
+   consumed by the builders. Keep future renderers on that effective style;
+   do not read the raw region default and silently ignore the override.
 4. **Respect the global marking switch.** Turbo peels must obey
    `settings.AutoMarkings`, just like RoadBuilder's ordinary markings, and the
    preview needs an AutoMarkings-off regression.
@@ -622,27 +621,15 @@ the circle) and either raise the radius automatically or surface it in the
 Road Tool panel as a suggested minimum. Needs a UX decision - silently
 overriding a user-set radius is worse than telling them - so not built.
 
-## Units: remaining length fields (follow-up)
+## Units: remaining length fields - SHIPPED
 
-`Units.lua` + the Speed/Length unit settings shipped (see `SHIPPED.md`) and
-are wired at every field that had `settings` in scope: design speed (both the
-Road Tool panel and Regional Preference), superelevation transition length,
-marking dash length/gap, and the roundabout lane width. Two surfaces still
-display hardcoded metres because they have no `Settings` in scope:
-
-- **`UI/RoadDesigner.lua`** — the lane-width `NumberField`, the per-tile
-  `"%g m"` width caption, and the `"Road Layout - %.1f m"` header. Both
-  `LaneStripCard` and the tile component take no `Settings` prop, so this
-  needs the prop threaded from the parent (which does have it) before the
-  `Units` calls can go in. This is the most-used width field in the plugin,
-  so it's the important one.
-- **`UI/RegionEditor.lua`** — the region-style dimension rows (pavement
-  width, kerb height, marking width, fallback dash length/gap). Table-driven
-  (`{ Label, Key, Min, Max }`), so it wants a small unit-aware row helper
-  rather than per-row edits.
-
-Nothing is wrong with what shipped - these two just still read in metres
-while the rest of the UI follows the setting.
+Roblox, metric, and imperial display units now reach the Road Designer,
+Region Editor, structure controls, bays, marking stretches, parallel roads,
+junction corner radii, and roundabout lane widths. Values and bounds convert
+together through `Units.lua`; stored geometry remains metric. Fields whose
+actual canonical meaning is Roblox space (stations, setbacks, placement
+elevation, snap/grid radii, and imported module lengths) intentionally remain
+labelled in studs.
 
 ## Roundabout feeder blend with BezierCorner (robustness follow-up)
 
@@ -877,6 +864,11 @@ Deliberately still out of scope, in rough priority order:
   `createRoadSession.lua`; `Settings.SnapToGrid` already existed but had
   no Road Tools surface, only the Regional Preference dock. Both now have
   checkboxes in `BuildBar.lua` next to the tool buttons.
+- **Shifted-profile edge-snap topology policy.** Centre snapping now places an
+  endpoint or mid-span junction on the visible, offset carriageway centre.
+  Left/right edge snapping deliberately remains alignment-only and retains the
+  authored curve as its topology datum; decide whether a future explicit edge
+  connection mode should instead create an off-centre junction node.
 - **No box-junction ("keep clear") markings.** Real intersections
   (reference: Google Maps screenshots of live HK/TW intersections)
   commonly paint a yellow cross-hatch box over the intersection interior
@@ -974,7 +966,9 @@ any road drawn to cross it afterwards won't auto-connect.
   conversion currently rejects widening/narrowing transitions, bus bays, and
   marking/kerb stretches before mutation. Implement source-space profile
   interpolation plus durable feature partitioning before allowing these road
-  types to be trimmed or split around a ring.
+  types to be trimmed or split around a ring. The same source-station metadata
+  is needed before trimming an existing transition can preserve its original
+  taper parameterization instead of remapping it across the shortened curve.
 - **Winding direction (which way traffic circulates for `DriveOnLeft`)
   is reasoned through, not verified live.** Flip
   `RoundaboutBuilder`'s `circleSegments` ternary if it reads backwards

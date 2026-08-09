@@ -96,6 +96,7 @@ export type Continuation = {
 	Position: Vector3,
 	Tangent: Vector3,
 	Profile: RoadProfile.RoadProfile,
+	ProfileOffsetM: number,
 }
 
 export type RoadEditSession = {
@@ -265,6 +266,10 @@ local function createRoadEditSession(
 		return curve:FrameAt(s, Superelevation.RollAtProfile(cached.Profile, s))
 	end
 
+	local function profileOffsetAtStationM(data: RoadInstance.RoadData, station: number): number
+		return RoadInstance.ProfileOffsetAtStationM(data, station, settings.MetersToStuds)
+	end
+
 	-- Cancels either step of bay placement: before a drag is drawn
 	-- (PlacingBay, still listening for a click-drag) or after
 	-- (ConfirmingBay, adjusting length/width) - both just return to
@@ -369,6 +374,7 @@ local function createRoadEditSession(
 		local profile = editingProfile or originalData.ProfileStart
 		local frame = frameAtWithRoll(originalData.Curve, station)
 		local lateralOffsetM = (hitPosition - frame.Position):Dot(frame.RightVector) / settings.MetersToStuds
+			- profileOffsetAtStationM(originalData, station)
 		local offsets = RoadProfile.ComponentOffsetsM(profile)
 		local components = profile.Components
 		local bestIndex: number? = nil
@@ -413,6 +419,7 @@ local function createRoadEditSession(
 		end
 		local frame = frameAtWithRoll(originalData.Curve, station)
 		local lateralOffsetM = (hitPosition - frame.Position):Dot(frame.RightVector) / settings.MetersToStuds
+			- profileOffsetAtStationM(originalData, station)
 		local offsets = RoadProfile.ComponentOffsetsM(profile)
 		local best: number? = nil
 		local bestDistance = math.huge
@@ -487,14 +494,15 @@ local function createRoadEditSession(
 		for _, boundaryIndex in indices do
 			local boundary = offsets[boundaryIndex]
 			if boundary then
-				local offsetStuds = boundary.Right * scale
 				for i = 0, segments - 1 do
 					local segLo = lo + (hi - lo) * (i / segments)
 					local segHi = lo + (hi - lo) * ((i + 1) / segments)
 					local frameA = frameAtWithRoll(curve, segLo)
 					local frameB = frameAtWithRoll(curve, segHi)
-					local pA = (frameA * CFrame.new(offsetStuds, y, 0)).Position
-					local pB = (frameB * CFrame.new(offsetStuds, y, 0)).Position
+					local offsetA = (boundary.Right + profileOffsetAtStationM(originalData, segLo)) * scale
+					local offsetB = (boundary.Right + profileOffsetAtStationM(originalData, segHi)) * scale
+					local pA = (frameA * CFrame.new(offsetA, y, 0)).Position
+					local pB = (frameB * CFrame.new(offsetB, y, 0)).Position
 					local segLength = (pB - pA).Magnitude
 					if segLength > 1e-3 then
 						local ghost = Instance.new("Part")
@@ -664,15 +672,16 @@ local function createRoadEditSession(
 		local y = 0.15
 		local width = math.max(style.MarkingWidthM * scale, 0.3)
 		local offsetM = kerbEdgeOffsetM(offsets, edgeIndex)
-		local offsetStuds = offsetM * scale
 		local segments = math.min(GHOST_MAX_SEGMENTS, math.max(1, math.floor((hi - lo) / 4)))
 		for i = 0, segments - 1 do
 			local segLo = lo + (hi - lo) * (i / segments)
 			local segHi = lo + (hi - lo) * ((i + 1) / segments)
 			local frameA = frameAtWithRoll(curve, segLo)
 			local frameB = frameAtWithRoll(curve, segHi)
-			local pA = (frameA * CFrame.new(offsetStuds, y, 0)).Position
-			local pB = (frameB * CFrame.new(offsetStuds, y, 0)).Position
+			local offsetA = (offsetM + profileOffsetAtStationM(originalData, segLo)) * scale
+			local offsetB = (offsetM + profileOffsetAtStationM(originalData, segHi)) * scale
+			local pA = (frameA * CFrame.new(offsetA, y, 0)).Position
+			local pB = (frameB * CFrame.new(offsetB, y, 0)).Position
 			local segLength = (pB - pA).Magnitude
 			if segLength > 1e-3 then
 				local ghost = Instance.new("Part")
@@ -797,6 +806,9 @@ local function createRoadEditSession(
 				Curve = data.Curve,
 				ProfileStart = editingProfile or data.ProfileStart,
 				ProfileEnd = data.ProfileEnd,
+				TransitionAnchor = data.TransitionAnchor,
+				ProfileOffsetStartM = data.ProfileOffsetStartM,
+				ProfileOffsetEndM = data.ProfileOffsetEndM,
 				Style = getStyle(),
 				Settings = settings,
 				Preview = false,
@@ -818,7 +830,15 @@ local function createRoadEditSession(
 				child.Parent = road
 			end
 			built:Destroy()
-			RoadInstance.StampModel(road, data.Curve, editingProfile or data.ProfileStart, data.ProfileEnd)
+			RoadInstance.StampModel(
+				road,
+				data.Curve,
+				editingProfile or data.ProfileStart,
+				data.ProfileEnd,
+				data.TransitionAnchor,
+				data.ProfileOffsetStartM,
+				data.ProfileOffsetEndM
+			)
 			RoadInstance.StampBay(road, data.Bay)
 			RoadInstance.StampMarkingStretches(road, markingStretches)
 			RoadInstance.StampKerbStretches(road, kerbStretches)
@@ -902,8 +922,8 @@ local function createRoadEditSession(
 		-- the ghost anywhere they overlapped instead of the ghost reading
 		-- as an indicator on top of the road.
 		local ghostY = style.CurbHeightM * scale + 0.15
-		local pA = (frameA * CFrame.new(centerOffset, ghostY, 0)).Position
-		local pB = (frameB * CFrame.new(centerOffset, ghostY, 0)).Position
+		local pA = (frameA * CFrame.new(centerOffset + profileOffsetAtStationM(originalData, s0) * scale, ghostY, 0)).Position
+		local pB = (frameB * CFrame.new(centerOffset + profileOffsetAtStationM(originalData, s1) * scale, ghostY, 0)).Position
 		local segLength = (pB - pA).Magnitude
 		if segLength < 1e-3 then
 			return
@@ -1143,6 +1163,9 @@ local function createRoadEditSession(
 				Curve = data.Curve,
 				ProfileStart = profile,
 				ProfileEnd = data.ProfileEnd,
+				TransitionAnchor = data.TransitionAnchor,
+				ProfileOffsetStartM = data.ProfileOffsetStartM,
+				ProfileOffsetEndM = data.ProfileOffsetEndM,
 				Style = getStyle(),
 				Settings = settings,
 				Preview = false,
@@ -1171,7 +1194,15 @@ local function createRoadEditSession(
 				child.Parent = road
 			end
 			built:Destroy()
-			RoadInstance.StampModel(road, data.Curve, profile, data.ProfileEnd)
+			RoadInstance.StampModel(
+				road,
+				data.Curve,
+				profile,
+				data.ProfileEnd,
+				data.TransitionAnchor,
+				data.ProfileOffsetStartM,
+				data.ProfileOffsetEndM
+			)
 			RoadInstance.StampBay(road, data.Bay)
 			RoadInstance.StampMarkingStretches(road, data.MarkingStretches)
 			RoadInstance.StampKerbStretches(road, data.KerbStretches)
@@ -1181,9 +1212,15 @@ local function createRoadEditSession(
 			structureStatus = renderMessage
 			BusStops.Render(road)
 			originalData = {
+				Id = data.Id,
+				StartPortId = data.StartPortId,
+				EndPortId = data.EndPortId,
 				Curve = data.Curve,
 				ProfileStart = RoadProfile.Clone(profile),
 				ProfileEnd = data.ProfileEnd,
+				TransitionAnchor = data.TransitionAnchor,
+				ProfileOffsetStartM = data.ProfileOffsetStartM,
+				ProfileOffsetEndM = data.ProfileOffsetEndM,
 				Bay = data.Bay,
 				MarkingStretches = data.MarkingStretches,
 				KerbStretches = data.KerbStretches,
@@ -1316,6 +1353,9 @@ local function createRoadEditSession(
 				Curve = data.Curve,
 				ProfileStart = editingProfile or data.ProfileStart,
 				ProfileEnd = data.ProfileEnd,
+				TransitionAnchor = data.TransitionAnchor,
+				ProfileOffsetStartM = data.ProfileOffsetStartM,
+				ProfileOffsetEndM = data.ProfileOffsetEndM,
 				Style = getStyle(),
 				Settings = settings,
 				Preview = false,
@@ -1329,7 +1369,15 @@ local function createRoadEditSession(
 				child.Parent = road
 			end
 			built:Destroy()
-			RoadInstance.StampModel(road, data.Curve, editingProfile or data.ProfileStart, data.ProfileEnd)
+			RoadInstance.StampModel(
+				road,
+				data.Curve,
+				editingProfile or data.ProfileStart,
+				data.ProfileEnd,
+				data.TransitionAnchor,
+				data.ProfileOffsetStartM,
+				data.ProfileOffsetEndM
+			)
 			RoadInstance.StampBay(road, bay)
 			RoadInstance.StampMarkingStretches(road, data.MarkingStretches)
 			RoadInstance.StampKerbStretches(road, data.KerbStretches)
@@ -1692,6 +1740,7 @@ local function createRoadEditSession(
 				Position = curve:PosAt(0),
 				Tangent = -curve:TangentAt(0),
 				Profile = RoadProfile.Clone(profile),
+				ProfileOffsetM = -originalData.ProfileOffsetStartM,
 			}
 		end
 		local profile = originalData.ProfileEnd or originalData.ProfileStart
@@ -1699,6 +1748,7 @@ local function createRoadEditSession(
 			Position = curve:PosAt(curve.Length),
 			Tangent = curve:TangentAt(curve.Length),
 			Profile = RoadProfile.Clone(profile),
+			ProfileOffsetM = originalData.ProfileOffsetEndM,
 		}
 	end
 

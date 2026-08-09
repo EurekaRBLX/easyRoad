@@ -891,6 +891,9 @@ local function rebuildRoadFromSource(
 		Curve = curve,
 		ProfileStart = data.ProfileStart,
 		ProfileEnd = data.ProfileEnd,
+		TransitionAnchor = data.TransitionAnchor,
+		ProfileOffsetStartM = data.ProfileOffsetStartM,
+		ProfileOffsetEndM = data.ProfileOffsetEndM,
 		Style = style,
 		Settings = settings,
 		Preview = false,
@@ -931,7 +934,15 @@ local function rebuildRoadFromSource(
 	end
 	rebuilt:Destroy()
 
-	RoadInstance.StampModel(road, curve, data.ProfileStart, data.ProfileEnd)
+	RoadInstance.StampModel(
+		road,
+		curve,
+		data.ProfileStart,
+		data.ProfileEnd,
+		data.TransitionAnchor,
+		data.ProfileOffsetStartM,
+		data.ProfileOffsetEndM
+	)
 	RoadInstance.StampJunctions(road, data.StartJunctionId, data.EndJunctionId)
 	RoadSource.WriteSegment(road, source)
 	local hasStoredFeatures = data.Bay ~= nil or #data.MarkingStretches > 0 or #data.KerbStretches > 0

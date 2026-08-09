@@ -134,8 +134,22 @@ local function RegionalPreferenceGui(props: {
 	-- km/h/metre limits.
 	local speedShown, speedMin, speedMax = Units.SpeedField(settings, settings.DesignSpeedKph, 10, 200)
 	local runoffShown, runoffMin, runoffMax = Units.LengthField(settings, settings.SuperelevationRunoffM, 2, 30)
+	local structureOverlapShown, structureOverlapMin, structureOverlapMax =
+		Units.LengthField(settings, settings.StructureInterfaceOverlapM, 0, 2)
+	local parapetGapShown, parapetGapMin, parapetGapMax = Units.LengthField(settings, settings.ViaductParapetGapM, 0, 5)
+	local parapetHeightShown, parapetHeightMin, parapetHeightMax =
+		Units.LengthField(settings, settings.ViaductParapetHeightM, 0.2, 5)
+	local tunnelClearanceShown, tunnelClearanceMin, tunnelClearanceMax =
+		Units.LengthField(settings, settings.TunnelWallClearanceM, 0, 10)
+	local tunnelHeightShown, tunnelHeightMin, tunnelHeightMax =
+		Units.LengthField(settings, settings.TunnelVerticalClearanceM, 2, 12)
+	local parallelGapShown, parallelGapMin, parallelGapMax =
+		Units.LengthField(settings, settings.ParallelRoadwayGapM, 0, 50)
 
 	local activeStyle = regionLibrary.Get(settings.RegionId)
+	local effectiveDriveOnLeft = if settings.DriveSideOverride == "Region"
+		then activeStyle.DriveOnLeft
+		else settings.DriveSideOverride == "Left"
 
 	if editingRegion then
 		local editing = editingRegion :: RegionStyles.RegionStyle
@@ -236,9 +250,10 @@ local function RegionalPreferenceGui(props: {
 		}),
 		RegionInfo = e(Components.Label, {
 			Text = string.format(
-				"Drives on the %s • %.2fm lanes • %s center line",
-				if activeStyle.DriveOnLeft then "left" else "right",
-				activeStyle.DefaultLaneWidthM,
+				"Drives on the %s • %.2f %s lanes • %s center line",
+				if effectiveDriveOnLeft then "left" else "right",
+				Units.LengthFromM(settings, activeStyle.DefaultLaneWidthM),
+				Units.LengthSuffix(settings),
 				string.lower(activeStyle.CenterLine.Line)
 			),
 			Dim = true,
@@ -311,18 +326,43 @@ local function RegionalPreferenceGui(props: {
 				}),
 			},
 		}),
+		DrivingSide = e(LabeledRow, {
+			Label = "Traffic side",
+			LabelWidth = 120,
+			LayoutOrder = 8,
+			children = {
+				Dropdown = e(Components.Dropdown, {
+					Options = {
+						{
+							Id = "Region",
+							Text = "Region default (" .. (if activeStyle.DriveOnLeft then "left" else "right") .. ")",
+						},
+						{ Id = "Left", Text = "Drive on the left" },
+						{ Id = "Right", Text = "Drive on the right" },
+					},
+					SelectedId = settings.DriveSideOverride,
+					OnSelected = function(id: string)
+						settings.DriveSideOverride = id
+						props.OnSettingsChanged()
+					end,
+					LayoutOrder = 2,
+					Grow = true,
+				}),
+			},
+		}),
 
 		-- Display-only units. Storage stays metric (see Units.lua), so
 		-- switching these never changes the geometry that gets built.
 		SpeedUnit = e(LabeledRow, {
 			Label = "Speed units",
 			LabelWidth = 120,
-			LayoutOrder = 8,
+			LayoutOrder = 9,
 			children = {
 				Dropdown = e(Components.Dropdown, {
 					Options = {
 						{ Id = "Kmh", Text = "km/h" },
 						{ Id = "Mph", Text = "mph" },
+						{ Id = "StudsPerSecond", Text = "Roblox studs/s" },
 					},
 					SelectedId = settings.SpeedUnit,
 					OnSelected = function(id: string)
@@ -337,12 +377,13 @@ local function RegionalPreferenceGui(props: {
 		LengthUnit = e(LabeledRow, {
 			Label = "Length units",
 			LabelWidth = 120,
-			LayoutOrder = 9,
+			LayoutOrder = 10,
 			children = {
 				Dropdown = e(Components.Dropdown, {
 					Options = {
 						{ Id = "Meters", Text = "Metres (m)" },
 						{ Id = "Feet", Text = "Feet (ft)" },
+						{ Id = "Studs", Text = "Roblox studs" },
 					},
 					SelectedId = settings.LengthUnit,
 					OnSelected = function(id: string)
@@ -357,12 +398,12 @@ local function RegionalPreferenceGui(props: {
 
 		BankSection = e(Components.Section, {
 			Text = "Superelevation (Banking)",
-			LayoutOrder = 10,
+			LayoutOrder = 11,
 		}),
 		BankMode = e(LabeledRow, {
 			Label = "Mode",
 			LabelWidth = 120,
-			LayoutOrder = 11,
+			LayoutOrder = 12,
 			children = {
 				Dropdown = e(Components.Dropdown, {
 					Options = superelevationOptions,
@@ -378,7 +419,7 @@ local function RegionalPreferenceGui(props: {
 		}),
 		DesignSpeed = settings.SuperelevationMode == "Auto" and e(LabeledRow, {
 			Label = "Design speed (" .. Units.SpeedSuffix(settings) .. ")",
-			LayoutOrder = 12,
+			LayoutOrder = 13,
 			children = {
 				Field = e(Components.NumberField, {
 					Value = speedShown,
@@ -394,7 +435,7 @@ local function RegionalPreferenceGui(props: {
 		}),
 		ManualBank = settings.SuperelevationMode == "Manual" and e(LabeledRow, {
 			Label = "Bank angle (deg)",
-			LayoutOrder = 13,
+			LayoutOrder = 14,
 			children = {
 				Field = e(Components.NumberField, {
 					Value = settings.ManualBankDeg,
@@ -418,7 +459,7 @@ local function RegionalPreferenceGui(props: {
 		TransitionLength = settings.SuperelevationMode ~= "Off" and e(LabeledRow, {
 			Label = "Transition (" .. Units.LengthSuffix(settings) .. ")",
 			LabelWidth = 120,
-			LayoutOrder = 14,
+			LayoutOrder = 15,
 			children = {
 				Slider = e(Components.Slider, {
 					Value = runoffShown,
@@ -594,15 +635,15 @@ local function RegionalPreferenceGui(props: {
 			end,
 		}),
 		StructureOverlap = e(LabeledRow, {
-			Label = "Road overlap (m)",
+			Label = "Road overlap (" .. Units.LengthSuffix(settings) .. ")",
 			LayoutOrder = 45,
 			children = {
 				Field = e(Components.NumberField, {
-					Value = settings.StructureInterfaceOverlapM,
-					Min = 0,
-					Max = 2,
+					Value = structureOverlapShown,
+					Min = structureOverlapMin,
+					Max = structureOverlapMax,
 					OnChanged = function(value: number)
-						settings.StructureInterfaceOverlapM = value
+						settings.StructureInterfaceOverlapM = Units.LengthToM(settings, value)
 						props.OnSettingsChanged()
 					end,
 					LayoutOrder = 2,
@@ -610,15 +651,15 @@ local function RegionalPreferenceGui(props: {
 			},
 		}),
 		ParapetGap = e(LabeledRow, {
-			Label = "Viaduct wall gap (m)",
+			Label = "Viaduct wall gap (" .. Units.LengthSuffix(settings) .. ")",
 			LayoutOrder = 46,
 			children = {
 				Field = e(Components.NumberField, {
-					Value = settings.ViaductParapetGapM,
-					Min = 0,
-					Max = 5,
+					Value = parapetGapShown,
+					Min = parapetGapMin,
+					Max = parapetGapMax,
 					OnChanged = function(value: number)
-						settings.ViaductParapetGapM = value
+						settings.ViaductParapetGapM = Units.LengthToM(settings, value)
 						props.OnSettingsChanged()
 					end,
 					LayoutOrder = 2,
@@ -626,15 +667,15 @@ local function RegionalPreferenceGui(props: {
 			},
 		}),
 		ParapetHeight = e(LabeledRow, {
-			Label = "Viaduct wall height (m)",
+			Label = "Viaduct wall height (" .. Units.LengthSuffix(settings) .. ")",
 			LayoutOrder = 47,
 			children = {
 				Field = e(Components.NumberField, {
-					Value = settings.ViaductParapetHeightM,
-					Min = 0.2,
-					Max = 5,
+					Value = parapetHeightShown,
+					Min = parapetHeightMin,
+					Max = parapetHeightMax,
 					OnChanged = function(value: number)
-						settings.ViaductParapetHeightM = value
+						settings.ViaductParapetHeightM = Units.LengthToM(settings, value)
 						props.OnSettingsChanged()
 					end,
 					LayoutOrder = 2,
@@ -642,15 +683,15 @@ local function RegionalPreferenceGui(props: {
 			},
 		}),
 		TunnelClearance = e(LabeledRow, {
-			Label = "Tunnel side gap (m)",
+			Label = "Tunnel side gap (" .. Units.LengthSuffix(settings) .. ")",
 			LayoutOrder = 48,
 			children = {
 				Field = e(Components.NumberField, {
-					Value = settings.TunnelWallClearanceM,
-					Min = 0,
-					Max = 10,
+					Value = tunnelClearanceShown,
+					Min = tunnelClearanceMin,
+					Max = tunnelClearanceMax,
 					OnChanged = function(value: number)
-						settings.TunnelWallClearanceM = value
+						settings.TunnelWallClearanceM = Units.LengthToM(settings, value)
 						props.OnSettingsChanged()
 					end,
 					LayoutOrder = 2,
@@ -658,15 +699,15 @@ local function RegionalPreferenceGui(props: {
 			},
 		}),
 		TunnelVerticalClearance = e(LabeledRow, {
-			Label = "Tunnel height (m)",
+			Label = "Tunnel height (" .. Units.LengthSuffix(settings) .. ")",
 			LayoutOrder = 49,
 			children = {
 				Field = e(Components.NumberField, {
-					Value = settings.TunnelVerticalClearanceM,
-					Min = 2,
-					Max = 12,
+					Value = tunnelHeightShown,
+					Min = tunnelHeightMin,
+					Max = tunnelHeightMax,
 					OnChanged = function(value: number)
-						settings.TunnelVerticalClearanceM = value
+						settings.TunnelVerticalClearanceM = Units.LengthToM(settings, value)
 						props.OnSettingsChanged()
 					end,
 					LayoutOrder = 2,
@@ -683,15 +724,15 @@ local function RegionalPreferenceGui(props: {
 			end,
 		}),
 		ParallelGap = e(LabeledRow, {
-			Label = "Parallel road gap (m)",
+			Label = "Parallel road gap (" .. Units.LengthSuffix(settings) .. ")",
 			LayoutOrder = 51,
 			children = {
 				Field = e(Components.NumberField, {
-					Value = settings.ParallelRoadwayGapM,
-					Min = 0,
-					Max = 50,
+					Value = parallelGapShown,
+					Min = parallelGapMin,
+					Max = parallelGapMax,
 					OnChanged = function(value: number)
-						settings.ParallelRoadwayGapM = value
+						settings.ParallelRoadwayGapM = Units.LengthToM(settings, value)
 						props.OnSettingsChanged()
 					end,
 					LayoutOrder = 2,

@@ -11,6 +11,8 @@ local e = React.createElement
 
 local Components = require("./Components")
 local Theme = require("./Theme")
+local Settings = require("../Settings")
+local Units = require("../Units")
 
 export type ParallelConfig = {
 	Enabled: boolean,
@@ -32,6 +34,7 @@ end
 
 local function ParallelControls(props: {
 	Config: ParallelConfig,
+	Settings: Settings.EasyRoadSettings,
 	OnChange: (config: ParallelConfig) -> (),
 	LayoutOrder: number?,
 })
@@ -98,16 +101,19 @@ local function ParallelControls(props: {
 		order += 1
 		if advancedOpen then
 			children.Gap = e(Components.Row, { LayoutOrder = order }, {
-				Label = e(Components.Label, { Text = "Edge gap (m)", LayoutOrder = 1 }),
+				Label = e(Components.Label, {
+					Text = "Edge gap (" .. Units.LengthSuffix(props.Settings) .. ")",
+					LayoutOrder = 1,
+				}),
 				Field = e(Components.NumberField, {
-					Value = config.GapM,
-					Min = 0,
-					Max = 50,
+					Value = Units.LengthFromM(props.Settings, config.GapM),
+					Min = Units.LengthFromM(props.Settings, 0),
+					Max = Units.LengthFromM(props.Settings, 50),
 					Width = 62,
 					LayoutOrder = 2,
 					OnChanged = function(value: number)
 						local copy = cloneConfig(config)
-						copy.GapM = math.max(value, 0)
+						copy.GapM = math.max(Units.LengthToM(props.Settings, value), 0)
 						props.OnChange(copy)
 					end,
 				}),

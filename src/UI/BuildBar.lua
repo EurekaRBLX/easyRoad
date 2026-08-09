@@ -109,6 +109,8 @@ local function BuildBar(props: {
 	Library: RoadLibrary,
 	EndProfileId: string?,
 	SetEndProfileId: (id: string?) -> (),
+	TransitionAnchor: RoadInstance.TransitionAnchor,
+	SetTransitionAnchor: (anchor: RoadInstance.TransitionAnchor) -> (),
 	Settings: Settings.EasyRoadSettings,
 	OnSettingsChanged: () -> (),
 	Hint: string,
@@ -274,6 +276,23 @@ local function BuildBar(props: {
 			Grow = true,
 		}),
 	})
+	children.TransitionAnchor = props.EndProfileId
+		and e(Components.Row, { LayoutOrder = 10 }, {
+			Label = e(Components.Label, { Text = "Lane placement", LayoutOrder = 1, Width = 96 }),
+			Dropdown = e(Components.Dropdown, {
+				Options = {
+					{ Id = "Centre", Text = "Keep centre fixed" },
+					{ Id = "LeftEdge", Text = "Keep left edge fixed" },
+					{ Id = "RightEdge", Text = "Keep right edge fixed" },
+				},
+				SelectedId = props.TransitionAnchor,
+				OnSelected = function(id: string)
+					props.SetTransitionAnchor(id :: RoadInstance.TransitionAnchor)
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		})
 	children.BankToggle = e(Components.Checkbox, {
 		Label = "Superelevation (banking)",
 		Checked = props.Settings.SuperelevationMode ~= "Off",
@@ -281,11 +300,11 @@ local function BuildBar(props: {
 			props.Settings.SuperelevationMode = if checked then "Auto" else "Off"
 			props.OnSettingsChanged()
 		end,
-		LayoutOrder = 10,
+		LayoutOrder = 11,
 	})
 	local speedShown, speedMin, speedMax = Units.SpeedField(props.Settings, props.Settings.DesignSpeedKph, 10, 200)
 	children.Speed = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 11 }, {
+		and e(Components.Row, { LayoutOrder = 12 }, {
 			Label = e(Components.Label, {
 				Text = "Speed (" .. Units.SpeedSuffix(props.Settings) .. ")",
 				LayoutOrder = 1,
@@ -311,7 +330,7 @@ local function BuildBar(props: {
 	local runoffShown, runoffMin, runoffMax =
 		Units.LengthField(props.Settings, props.Settings.SuperelevationRunoffM, 2, 30)
 	children.BankTransition = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 12 }, {
+		and e(Components.Row, { LayoutOrder = 13 }, {
 			Label = e(Components.Label, {
 				Text = "Transition (" .. Units.LengthSuffix(props.Settings) .. ")",
 				LayoutOrder = 1,
@@ -329,7 +348,7 @@ local function BuildBar(props: {
 				LayoutOrder = 2,
 			}),
 		})
-	children.Elevation = e(Components.Row, { LayoutOrder = 13 }, {
+	children.Elevation = e(Components.Row, { LayoutOrder = 14 }, {
 		Label = e(Components.Label, { Text = "Elevation", LayoutOrder = 1, Width = 64 }),
 		Down = e(Components.Button, {
 			Text = "",
@@ -364,7 +383,7 @@ local function BuildBar(props: {
 	-- CS2-style step adjustment: how far each R/F press or arrow click
 	-- moves the elevation, editable right next to the elevation control
 	-- instead of buried in a separate settings dock.
-	children.ElevationStep = e(Components.Row, { LayoutOrder = 14 }, {
+	children.ElevationStep = e(Components.Row, { LayoutOrder = 15 }, {
 		Label = e(Components.Label, { Text = "Step", Dim = true, LayoutOrder = 1, Width = 64 }),
 		Field = e(Components.NumberField, {
 			Value = props.Settings.ElevationStepStuds,
@@ -385,7 +404,7 @@ local function BuildBar(props: {
 			keyHint(props.Settings.Keybinds.ElevationDown)
 		),
 		Dim = true,
-		LayoutOrder = 15,
+		LayoutOrder = 16,
 	})
 	-- Keep the mode visible directly below the tool picker. This is the main
 	-- placement workflow, so hiding it below every snapping/banking/elevation
@@ -393,6 +412,7 @@ local function BuildBar(props: {
 	-- only implementation. Roundabouts do not use RoadInstance structures.
 	children.Structure = props.ToolMode ~= "Roundabout"
 		and e(StructureControls, {
+			Settings = props.Settings,
 			Structure = props.Structure,
 			Assets = props.StructureAssets,
 			Status = props.StructureStatus,
@@ -401,6 +421,7 @@ local function BuildBar(props: {
 		})
 	children.Parallel = props.ToolMode ~= "Roundabout"
 		and e(ParallelControls, {
+			Settings = props.Settings,
 			Config = props.Parallel,
 			OnChange = props.SetParallel,
 			LayoutOrder = 4,
@@ -415,13 +436,13 @@ local function BuildBar(props: {
 		TextSize = Theme.TEXT_SIZE,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = true,
-		LayoutOrder = 17,
+		LayoutOrder = 18,
 	})
 	children.Stop = e(Components.Button, {
 		Text = "Stop Building",
 		Danger = true,
 		OnClick = props.OnStop,
-		LayoutOrder = 18,
+		LayoutOrder = 19,
 	})
 
 	local scrollProps = Components.ScrollBar()

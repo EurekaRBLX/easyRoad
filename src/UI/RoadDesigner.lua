@@ -44,6 +44,7 @@ local RoadProfile = require("../RoadProfile")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
 local Markings = require("../Mesh/Markings")
+local Units = require("../Units")
 
 export type DesignerAction = {
 	Text: string,
@@ -325,6 +326,7 @@ end
 
 local function LaneTile(props: {
 	Component: RoadProfile.ProfileComponent,
+	Settings: Settings.EasyRoadSettings,
 	Index: number,
 	Selected: boolean,
 	ReadOnly: boolean,
@@ -385,7 +387,7 @@ local function LaneTile(props: {
 			LayoutOrder = 2,
 		}),
 		WidthText = e("TextLabel", {
-			Text = string.format("%g m", component.WidthM),
+			Text = Units.FormatLength(props.Settings, component.WidthM, 2),
 			TextColor3 = Theme.OFFWHITE,
 			BackgroundTransparency = 1,
 			Size = UDim2.new(1, 0, 0, 14),
@@ -498,6 +500,7 @@ local function LaneStripCard(
 	props: {
 		Profile: RoadProfile.RoadProfile,
 		RegionStyle: RegionStyles.RegionStyle,
+		Settings: Settings.EasyRoadSettings,
 		ReadOnly: boolean?,
 		SelectedIndex: number, -- 0 = none
 		OnSelect: (index: number) -> (), -- 0 clears
@@ -580,7 +583,9 @@ local function LaneStripCard(
 		LayoutOrder = 1,
 	}, {
 		Title = e("TextLabel", {
-			Text = string.upper(string.format("Road Layout - %.1f m", RoadProfile.TotalWidthM(profile))),
+			Text = string.upper(
+				"Road Layout - " .. Units.FormatLength(props.Settings, RoadProfile.TotalWidthM(profile), 1)
+			),
 			TextColor3 = Theme.DIM,
 			BackgroundTransparency = 1,
 			Size = UDim2.new(1, -150, 1, 0),
@@ -622,6 +627,7 @@ local function LaneStripCard(
 	for index, component in profile.Components do
 		tiles["Tile" .. index] = e(LaneTile, {
 			Component = component,
+			Settings = props.Settings,
 			Index = index,
 			Selected = sel == index,
 			ReadOnly = readOnly,
@@ -725,14 +731,14 @@ local function LaneStripCard(
 				Width = 62,
 			}),
 			WidthField = e(Components.NumberField, {
-				Value = selectedComponent.WidthM,
-				Min = 0.1,
-				Max = 30,
+				Value = Units.LengthFromM(props.Settings, selectedComponent.WidthM),
+				Min = Units.LengthFromM(props.Settings, 0.1),
+				Max = Units.LengthFromM(props.Settings, 30),
 				OnChanged = function(value: number)
 					changeSelected(function(component)
 						return {
 							Kind = component.Kind,
-							WidthM = value,
+							WidthM = Units.LengthToM(props.Settings, value),
 							Direction = component.Direction,
 							RightBoundary = component.RightBoundary,
 						}
@@ -1404,6 +1410,7 @@ local function Panel(
 			StripCard = e(LaneStripCard, {
 				Profile = profile,
 				RegionStyle = props.RegionStyle,
+				Settings = props.Settings,
 				ReadOnly = readOnly,
 				SelectedIndex = selectedIndex,
 				OnSelect = setSelectedIndex,

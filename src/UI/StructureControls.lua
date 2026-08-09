@@ -12,9 +12,11 @@ local e = React.createElement
 local Components = require("./Components")
 local Theme = require("./Theme")
 local RoadInstance = require("../RoadInstance")
+local Settings = require("../Settings")
 local StructureAssets = require("../StructureAssets")
 local StructureBuilder = require("../StructureBuilder")
 local StructureMaterials = require("../StructureMaterials")
+local Units = require("../Units")
 
 local materialOptions: { Components.DropdownOption } = {}
 for _, entry in StructureMaterials.Entries do
@@ -39,12 +41,17 @@ end
 
 local function StructureControls(props: {
 	Structure: RoadInstance.StructureData,
+	Settings: Settings.EasyRoadSettings,
 	Assets: { StructureAssets.AssetInfo },
 	Status: string?,
 	OnChange: (structure: RoadInstance.StructureData) -> (),
 	LayoutOrder: number?,
 })
 	local structure = props.Structure
+	local unit = Units.LengthSuffix(props.Settings)
+	local function lengthLabel(label: string): string
+		return label .. " (" .. unit .. ")"
+	end
 	local advancedOpen, setAdvancedOpen = React.useState(false)
 	local function change(transform: (copy: RoadInstance.StructureData) -> ())
 		local copy = StructureBuilder.CloneData(structure)
@@ -169,29 +176,29 @@ local function StructureControls(props: {
 			children.FitSection = e(Components.Section, { Text = "Position and fit", LayoutOrder = order })
 			order += 1
 			children.Offset = e(Components.Row, { LayoutOrder = order }, {
-				Label = e(Components.Label, { Text = "Y offset (m)", LayoutOrder = 1 }),
+				Label = e(Components.Label, { Text = lengthLabel("Y offset"), LayoutOrder = 1 }),
 				Field = e(Components.NumberField, {
-					Value = structure.ModuleOffsetM,
+					Value = Units.LengthFromM(props.Settings, structure.ModuleOffsetM),
 					Width = 62,
 					LayoutOrder = 2,
 					OnChanged = function(value: number)
 						change(function(copy)
-							copy.ModuleOffsetM = value
+							copy.ModuleOffsetM = Units.LengthToM(props.Settings, value)
 						end)
 					end,
 				}),
 			})
 			order += 1
 			children.InterfaceOverlap = e(Components.Row, { LayoutOrder = order }, {
-				Label = e(Components.Label, { Text = "Road overlap (m)", LayoutOrder = 1 }),
+				Label = e(Components.Label, { Text = lengthLabel("Road overlap"), LayoutOrder = 1 }),
 				Field = e(Components.NumberField, {
-					Value = structure.InterfaceOverlapM,
-					Min = 0,
+					Value = Units.LengthFromM(props.Settings, structure.InterfaceOverlapM),
+					Min = Units.LengthFromM(props.Settings, 0),
 					Width = 62,
 					LayoutOrder = 2,
 					OnChanged = function(value: number)
 						change(function(copy)
-							copy.InterfaceOverlapM = value
+							copy.InterfaceOverlapM = Units.LengthToM(props.Settings, value)
 						end)
 					end,
 				}),
@@ -252,31 +259,31 @@ local function StructureControls(props: {
 			})
 			order += 1
 			children.ParapetGap = e(Components.Row, { LayoutOrder = order }, {
-				Label = e(Components.Label, { Text = "Parapet gap (m)", LayoutOrder = 1 }),
+				Label = e(Components.Label, { Text = lengthLabel("Parapet gap"), LayoutOrder = 1 }),
 				Field = e(Components.NumberField, {
-					Value = structure.ViaductParapetGapM,
-					Min = 0,
+					Value = Units.LengthFromM(props.Settings, structure.ViaductParapetGapM),
+					Min = Units.LengthFromM(props.Settings, 0),
 					Width = 62,
 					LayoutOrder = 2,
 					OnChanged = function(value: number)
 						change(function(copy)
-							copy.ViaductParapetGapM = value
+							copy.ViaductParapetGapM = Units.LengthToM(props.Settings, value)
 						end)
 					end,
 				}),
 			})
 			order += 1
 			children.ParapetHeight = e(Components.Row, { LayoutOrder = order }, {
-				Label = e(Components.Label, { Text = "Parapet height (m)", LayoutOrder = 1 }),
+				Label = e(Components.Label, { Text = lengthLabel("Parapet height"), LayoutOrder = 1 }),
 				Field = e(Components.NumberField, {
-					Value = structure.ViaductParapetHeightM,
-					Min = 0.2,
-					Max = 5,
+					Value = Units.LengthFromM(props.Settings, structure.ViaductParapetHeightM),
+					Min = Units.LengthFromM(props.Settings, 0.2),
+					Max = Units.LengthFromM(props.Settings, 5),
 					Width = 62,
 					LayoutOrder = 2,
 					OnChanged = function(value: number)
 						change(function(copy)
-							copy.ViaductParapetHeightM = value
+							copy.ViaductParapetHeightM = Units.LengthToM(props.Settings, value)
 						end)
 					end,
 				}),
@@ -326,48 +333,48 @@ local function StructureControls(props: {
 				})
 				order += 1
 				local fields = {
-					{ Key = "PillarSpacingM", Label = "Spacing (m)", Value = structure.PillarSpacingM, Min = 0.5 },
-					{ Key = "PillarWidthM", Label = "Pillar width (m)", Value = structure.PillarWidthM, Min = 0.1 },
-					{ Key = "PillarDepthM", Label = "Pillar depth (m)", Value = structure.PillarDepthM, Min = 0.1 },
-					{ Key = "MaxPillarHeightM", Label = "Max drop (m)", Value = structure.MaxPillarHeightM, Min = 0.5 },
+					{ Key = "PillarSpacingM", Label = "Spacing", Value = structure.PillarSpacingM, Min = 0.5 },
+					{ Key = "PillarWidthM", Label = "Pillar width", Value = structure.PillarWidthM, Min = 0.1 },
+					{ Key = "PillarDepthM", Label = "Pillar depth", Value = structure.PillarDepthM, Min = 0.1 },
+					{ Key = "MaxPillarHeightM", Label = "Max drop", Value = structure.MaxPillarHeightM, Min = 0.5 },
 				}
 				if structure.PillarLayout == "Twin" then
 					table.insert(fields, {
 						Key = "PillarSeparationM",
-						Label = "Pillar centres (m)",
+						Label = "Pillar centres",
 						Value = structure.PillarSeparationM,
 						Min = 0.1,
 					})
 					table.insert(fields, {
 						Key = "CapBeamWidthM",
-						Label = "Cap width (m)",
+						Label = "Cap width",
 						Value = structure.CapBeamWidthM,
 						Min = 0.1,
 					})
 					table.insert(fields, {
 						Key = "CapBeamHeightM",
-						Label = "Cap height (m)",
+						Label = "Cap height",
 						Value = structure.CapBeamHeightM,
 						Min = 0.1,
 					})
 					table.insert(fields, {
 						Key = "CapBeamDepthM",
-						Label = "Cap depth (m)",
+						Label = "Cap depth",
 						Value = structure.CapBeamDepthM,
 						Min = 0.1,
 					})
 				end
 				for _, field in fields do
 					children[field.Key] = e(Components.Row, { LayoutOrder = order }, {
-						Label = e(Components.Label, { Text = field.Label, LayoutOrder = 1 }),
+						Label = e(Components.Label, { Text = lengthLabel(field.Label), LayoutOrder = 1 }),
 						Field = e(Components.NumberField, {
-							Value = field.Value,
-							Min = field.Min,
+							Value = Units.LengthFromM(props.Settings, field.Value),
+							Min = Units.LengthFromM(props.Settings, field.Min),
 							Width = 62,
 							LayoutOrder = 2,
 							OnChanged = function(value: number)
 								change(function(copy)
-									(copy :: any)[field.Key] = value
+									(copy :: any)[field.Key] = Units.LengthToM(props.Settings, value)
 								end)
 							end,
 						}),
@@ -382,31 +389,31 @@ local function StructureControls(props: {
 			})
 			order += 1
 			children.TunnelClearance = e(Components.Row, { LayoutOrder = order }, {
-				Label = e(Components.Label, { Text = "Side clearance (m)", LayoutOrder = 1 }),
+				Label = e(Components.Label, { Text = lengthLabel("Side clearance"), LayoutOrder = 1 }),
 				Field = e(Components.NumberField, {
-					Value = structure.TunnelWallClearanceM,
-					Min = 0,
+					Value = Units.LengthFromM(props.Settings, structure.TunnelWallClearanceM),
+					Min = Units.LengthFromM(props.Settings, 0),
 					Width = 62,
 					LayoutOrder = 2,
 					OnChanged = function(value: number)
 						change(function(copy)
-							copy.TunnelWallClearanceM = value
+							copy.TunnelWallClearanceM = Units.LengthToM(props.Settings, value)
 						end)
 					end,
 				}),
 			})
 			order += 1
 			children.TunnelVerticalClearance = e(Components.Row, { LayoutOrder = order }, {
-				Label = e(Components.Label, { Text = "Vertical clearance (m)", LayoutOrder = 1 }),
+				Label = e(Components.Label, { Text = lengthLabel("Vertical clearance"), LayoutOrder = 1 }),
 				Field = e(Components.NumberField, {
-					Value = structure.TunnelVerticalClearanceM,
-					Min = 2,
-					Max = 12,
+					Value = Units.LengthFromM(props.Settings, structure.TunnelVerticalClearanceM),
+					Min = Units.LengthFromM(props.Settings, 2),
+					Max = Units.LengthFromM(props.Settings, 12),
 					Width = 62,
 					LayoutOrder = 2,
 					OnChanged = function(value: number)
 						change(function(copy)
-							copy.TunnelVerticalClearanceM = value
+							copy.TunnelVerticalClearanceM = Units.LengthToM(props.Settings, value)
 						end)
 					end,
 				}),

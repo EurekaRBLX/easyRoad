@@ -36,6 +36,7 @@ end
 local function SoftwareGui(props: {
 	OnClose: () -> (),
 	OnViewEula: (() -> ())?,
+	OnRunSetup: (() -> ())?,
 })
 	local commercial = ProductLicense.RequiresEula()
 
@@ -128,16 +129,22 @@ local function SoftwareGui(props: {
 			Dim = true,
 			LayoutOrder = 11,
 		}),
+		RunSetup = props.OnRunSetup and e(Components.Button, {
+			Text = "Run Quick Setup",
+			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
+			LayoutOrder = 12,
+			OnClick = props.OnRunSetup :: () -> (),
+		}),
 		ViewEula = commercial and props.OnViewEula and e(Components.Button, {
 			Text = "View EULA",
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 12,
+			LayoutOrder = 13,
 			OnClick = props.OnViewEula :: () -> (),
 		}),
 		Close = e(Components.Button, {
 			Text = "Close",
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 13,
+			LayoutOrder = 14,
 			OnClick = props.OnClose,
 		}),
 	})

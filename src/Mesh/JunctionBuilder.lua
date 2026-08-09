@@ -134,6 +134,18 @@ local function profileAtJunctionEnd(road: Model, junctionId: string): RoadProfil
 	return data.ProfileStart
 end
 
+-- Profile offsets are authored around the road curve. At a transition's far
+-- end the whole destination profile may be translated to hold one outer edge
+-- fixed, so every mouth/median point must carry that same datum translation.
+local function profileOffsetAtJunctionM(data: RoadInstance.RoadData, junctionId: string): number
+	if data.EndJunctionId == junctionId then
+		return data.ProfileOffsetEndM
+	elseif data.StartJunctionId == junctionId then
+		return data.ProfileOffsetStartM
+	end
+	return 0
+end
+
 -- Stable endpoint-port identity for this road's approach to `junctionId`.
 -- This deliberately mirrors edgePointsForRoad's start-first convention.
 local function approachIdAtJunction(road: Model, junctionId: string): string?
@@ -247,6 +259,11 @@ local function edgePointsForRoad(road: Model, junctionId: string, settings: Sett
 	end
 	local kerbLeftM, kerbRightM = roadwayEdgeOffsetsM(profile)
 	local outerLeftM, outerRightM = offsets[1].Left, offsets[#offsets].Right
+	local profileOffsetM = profileOffsetAtJunctionM(data, junctionId)
+	kerbLeftM += profileOffsetM
+	kerbRightM += profileOffsetM
+	outerLeftM += profileOffsetM
+	outerRightM += profileOffsetM
 	local frame = data.Curve:FrameAt(station)
 	local scale = settings.MetersToStuds
 	local function worldPoint(offsetM: number): Vector3
@@ -519,6 +536,9 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 		Curve = outerCurve,
 		ProfileStart = data.ProfileStart,
 		ProfileEnd = data.ProfileEnd,
+		TransitionAnchor = data.TransitionAnchor,
+		ProfileOffsetStartM = data.ProfileOffsetStartM,
+		ProfileOffsetEndM = data.ProfileOffsetEndM,
 		Style = style,
 		Settings = settings,
 		Preview = false,
@@ -557,7 +577,15 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 		child.Parent = road
 	end
 	rebuilt:Destroy()
-	RoadInstance.StampModel(road, outerCurve, data.ProfileStart, data.ProfileEnd)
+	RoadInstance.StampModel(
+		road,
+		outerCurve,
+		data.ProfileStart,
+		data.ProfileEnd,
+		data.TransitionAnchor,
+		data.ProfileOffsetStartM,
+		data.ProfileOffsetEndM
+	)
 	RoadSource.WriteSegment(road, source)
 	local hasStoredFeatures = data.Bay ~= nil or #data.MarkingStretches > 0 or #data.KerbStretches > 0
 	road:SetAttribute("RW_FeatureSourceOffsetStuds", if hasStoredFeatures then featureOffset else startStation)
@@ -570,10 +598,14 @@ end
 local function padEnvelopeBaseStuds(junctionId: string, settings: Settings.EasyRoadSettings): number?
 	local maxHalfWidthStuds = 0
 	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
+		local data = RoadInstance.Read(road)
 		local profile = profileAtJunctionEnd(road, junctionId)
-		if profile then
-			maxHalfWidthStuds =
-				math.max(maxHalfWidthStuds, RoadProfile.TotalWidthM(profile) / 2 * settings.MetersToStuds)
+		if profile and data then
+			local shiftM = profileOffsetAtJunctionM(data, junctionId)
+			maxHalfWidthStuds = math.max(
+				maxHalfWidthStuds,
+				(RoadProfile.TotalWidthM(profile) / 2 + math.abs(shiftM)) * settings.MetersToStuds
+			)
 		end
 	end
 	return if maxHalfWidthStuds > 0 then maxHalfWidthStuds else nil
@@ -1383,6 +1415,9 @@ function JunctionBuilder.Rebuild(
 					if prof and data then
 						local mLeft, mRight = medianOffsetsM(prof)
 						if mLeft and mRight then
+							local profileOffsetM = profileOffsetAtJunctionM(data, junctionId)
+							mLeft += profileOffsetM
+							mRight += profileOffsetM
 							local station = if data.StartJunctionId == junctionId then 0 else data.Curve.Length
 							local frame = data.Curve:FrameAt(station)
 							local function wp(offsetM: number): Vector3

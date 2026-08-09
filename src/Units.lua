@@ -20,16 +20,23 @@ local Settings = require("./Settings")
 local Units = {}
 
 local KPH_PER_MPH = 1.609344
+local KPH_PER_MPS = 3.6
 local M_PER_FT = 0.3048
 
 -- Speed ----------------------------------------------------------------------
 
 function Units.SpeedSuffix(settings: Settings.EasyRoadSettings): string
+	if settings.SpeedUnit == "StudsPerSecond" then
+		return "studs/s"
+	end
 	return if settings.SpeedUnit == "Mph" then "mph" else "km/h"
 end
 
 -- Canonical km/h -> the number to show in the field.
 function Units.SpeedFromKph(settings: Settings.EasyRoadSettings, kph: number): number
+	if settings.SpeedUnit == "StudsPerSecond" then
+		return kph / KPH_PER_MPS * settings.MetersToStuds
+	end
 	if settings.SpeedUnit == "Mph" then
 		return kph / KPH_PER_MPH
 	end
@@ -38,6 +45,9 @@ end
 
 -- A number the user typed in the field -> canonical km/h for storage.
 function Units.SpeedToKph(settings: Settings.EasyRoadSettings, shown: number): number
+	if settings.SpeedUnit == "StudsPerSecond" then
+		return shown / settings.MetersToStuds * KPH_PER_MPS
+	end
 	if settings.SpeedUnit == "Mph" then
 		return shown * KPH_PER_MPH
 	end
@@ -59,11 +69,17 @@ end
 -- Length ---------------------------------------------------------------------
 
 function Units.LengthSuffix(settings: Settings.EasyRoadSettings): string
+	if settings.LengthUnit == "Studs" then
+		return "studs"
+	end
 	return if settings.LengthUnit == "Feet" then "ft" else "m"
 end
 
 -- Canonical metres -> the number to show in the field.
 function Units.LengthFromM(settings: Settings.EasyRoadSettings, meters: number): number
+	if settings.LengthUnit == "Studs" then
+		return meters * settings.MetersToStuds
+	end
 	if settings.LengthUnit == "Feet" then
 		return meters / M_PER_FT
 	end
@@ -72,6 +88,9 @@ end
 
 -- A number the user typed in the field -> canonical metres for storage.
 function Units.LengthToM(settings: Settings.EasyRoadSettings, shown: number): number
+	if settings.LengthUnit == "Studs" then
+		return shown / settings.MetersToStuds
+	end
 	if settings.LengthUnit == "Feet" then
 		return shown * M_PER_FT
 	end
