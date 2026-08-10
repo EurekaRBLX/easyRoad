@@ -1,0 +1,15 @@
+#!/bin/sh
+# easyRoad pre-push check.
+#
+# Git for Windows runs hooks under its own sh, so this is a shim that hands
+# straight over to tools/ci.ps1 - the checks themselves live there, in one
+# place, runnable on its own.
+#
+# Installed by tools/install-hooks.ps1. Bypass once with `git push --no-verify`
+# if you genuinely need to (a WIP branch, a docs-only fix), but never for main:
+# the dist/ freshness check is the whole reason this hook exists, and a stale
+# dist is what everyone installing without a toolchain actually gets.
+
+root=$(git rev-parse --show-toplevel) || exit 1
+
+exec powershell -NoProfile -ExecutionPolicy Bypass -File "$root/tools/ci.ps1"
