@@ -5,7 +5,7 @@ These do not execute Luau. They protect the exact contracts that previously
 made a feature look shipped while remaining unreachable in Studio: queryable
 junction geometry, placement-time structure controls/rendering, lateral road
 snap references, dedicated asset management, procedural viaduct/tunnel
-fallbacks, and the Software dock.
+fallbacks, and the independent Settings docks.
 """
 
 from pathlib import Path
@@ -97,6 +97,7 @@ def main():
     asset_panel = source("src/UI/RoadAssetsPanel.lua")
     structure_assets = source("src/StructureAssets.lua")
     software = source("src/UI/SoftwareGui.lua")
+    backups = source("src/UI/BackupsGui.lua")
     multinode_preview = source("tools/preview/multinode_junction_preview.py")
     preview_core = source("tools/preview/preview_core.py")
     roundabout = source("src/Mesh/RoundaboutBuilder.lua")
@@ -873,12 +874,24 @@ def main():
     require(main_source, 'require("./UI/SoftwareGui")', "Software dock content is not rendered", problems)
     require(top_bar, 'Text = "Software"', "Settings menu has no Software entry", problems)
     reject(software.lower(), "easyrail", "Software dock still links or advertises easyRail", problems)
+    require(loader, 'createDock("EasyRoadBackupsDock"', "Backups dock is not created", problems)
+    require(main_source, 'local BackupsGui = require("./UI/BackupsGui")', "Backups dock has no renderer", problems)
+    require(main_source, "BackupsOpen = backupsDock.Enabled", "Settings menu cannot show the active Backups dock", problems)
+    require(top_bar, 'Text = "Backups"', "Settings menu has no Backups entry", problems)
+    require(top_bar, "props.OnOpenBackups()", "Backups submenu entry is not wired", problems)
+    require(backups, 'Text = "Backups"', "Backups dock has no task heading", problems)
+    require(backups, 'Text = "Back up data"', "Backups dock cannot export plugin data", problems)
+    require(backups, 'Text = "Restore data"', "Backups dock cannot begin a restore", problems)
+    require(backups, "props.OnValidateRestoreData(transferText)", "Backups restore bypasses validation", problems)
+    require(backups, 'Text = "Restore now"', "Backups dock has no explicit destructive confirmation", problems)
+    reject(regional_preferences, 'Text = "Data Safety"', "backup controls remain embedded in Regional Preference", problems)
+    reject(regional_preferences, "OnBackupData", "Regional Preference still owns backup behavior", problems)
 
     if problems:
         for problem in problems:
             print("FAILED:", problem)
         return 1
-    print("integration contracts passed: isolated undo history, road duplication, curved/banked station plans, widening anchors, first-run setup, editable roundabouts, lane inference, one-way/highway mouths, Turbo width parity, exact caps, multinode junctions, assets, procedural structures, snap references, parallel roadways, marking boundaries, regional edge markings, highway presets, Software dock")
+    print("integration contracts passed: isolated undo history, road duplication, curved/banked station plans, widening anchors, first-run setup, editable roundabouts, lane inference, one-way/highway mouths, Turbo width parity, exact caps, multinode junctions, assets, procedural structures, snap references, parallel roadways, marking boundaries, regional edge markings, highway presets, independent Settings docks")
     return 0
 
 

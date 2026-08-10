@@ -11,10 +11,10 @@ what's already built and `KNOWN_ISSUES.md` for confirmed bugs.
 ## Road Editor marking-selector overflow + data backup/restore — SHIPPED
 
 The bottom boundary editor is width-contained, opens upward, and scrolls
-through all options. Settings now exports/imports versioned JSON for plugin
-preferences and custom road/region presets with validation and explicit
-confirmation. See `SHIPPED.md`; placed-road/world backup remains correctly
-owned by the place.
+through all options. Settings > Backups now exports/imports versioned JSON for
+plugin preferences and custom road/region presets with validation and explicit
+confirmation, in its own dock rather than Regional Preference. See
+`SHIPPED.md`; placed-road/world backup remains correctly owned by the place.
 
 Performance work is tracked separately in `OPTIMIZATION.md`. The first exact-
 straight phase (2048-stud longitudinal Parts plus identical adjacent Drive-lane

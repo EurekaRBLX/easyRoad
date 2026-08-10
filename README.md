@@ -136,10 +136,11 @@ road/structure overlap, viaduct parapet gap, tunnel wall clearance, elevated
 concrete median, and the parallel-roadway gap. A road copies these when its
 placement session starts and Road Tools Advanced can override them.
 
-The Settings menu also includes **Software**, showing the local easyRoad build
-and product information.
+The Settings submenu also includes dedicated **Software** and **Backups** docks.
+Software shows the local easyRoad build and product information; Backups keeps
+portable data operations separate from regional and engineering preferences.
 
-* **Data safety** — **Back up data** exposes portable JSON for plugin settings
+* **Backups** — **Back up data** exposes portable JSON for plugin settings
   and custom road/region presets; copy it with Ctrl+C. **Restore data** accepts
   that JSON, validates it, previews the number of presets, and requires a
   second confirmation before replacing the current plugin data. Placed roads

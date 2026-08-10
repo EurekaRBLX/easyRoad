@@ -11,8 +11,7 @@
 --                  (properties | lane strip | modules palette)
 --   Road Assets  - import/manage reusable Roblox structure Models
 --   Settings     - grand settings, as separate docks named by function
---                  (Regional Preference, Keybinds) rather than tabs in
---                  one panel - toggled together by the Settings button
+--                  (Regional Preference, Keybinds, Software, Backups)
 --
 -- Selecting an already-placed road (outside of a build session) opens the
 -- same designer bottom bar bound to that road, with Apply/Revert.
@@ -51,6 +50,7 @@ local TopBarBridge = require("./EasyAPI/TopBarBridge")
 local RegionalPreferenceGui = require("./UI/RegionalPreferenceGui")
 local KeybindsGui = require("./UI/KeybindsGui")
 local SoftwareGui = require("./UI/SoftwareGui")
+local BackupsGui = require("./UI/BackupsGui")
 local EulaOverlay = require("./UI/EulaOverlay")
 local SetupWizard = require("./UI/SetupWizard")
 local ProductLicense = require("./ProductLicense")
@@ -89,6 +89,7 @@ return function(
 	regionalDock: DockWidgetPluginGui,
 	keybindsDock: DockWidgetPluginGui,
 	softwareDock: DockWidgetPluginGui,
+	backupsDock: DockWidgetPluginGui,
 	buttonClicked: Signal.Signal<>,
 	setButtonActive: (active: boolean) -> ()
 )
@@ -186,6 +187,7 @@ return function(
 	local regionalRoot: ReactRoblox.RootType? = nil
 	local keybindsRoot: ReactRoblox.RootType? = nil
 	local softwareRoot: ReactRoblox.RootType? = nil
+	local backupsRoot: ReactRoblox.RootType? = nil
 	local topRoot: ReactRoblox.RootType? = nil
 	local topScreenGui: ScreenGui? = nil
 	local bottomRoot: ReactRoblox.RootType? = nil
@@ -524,6 +526,7 @@ return function(
 		regionalDock.Enabled = false
 		keybindsDock.Enabled = false
 		softwareDock.Enabled = false
+		backupsDock.Enabled = false
 	end
 
 	local function restoredLibraries(restored: Settings.EasyRoadSettings)
@@ -933,6 +936,7 @@ return function(
 			regionalDock.Enabled = false
 			keybindsDock.Enabled = false
 			softwareDock.Enabled = false
+			backupsDock.Enabled = false
 			return
 		end
 
@@ -959,6 +963,7 @@ return function(
 				RegionalOpen = regionalDock.Enabled,
 				KeybindsOpen = keybindsDock.Enabled,
 				SoftwareOpen = softwareDock.Enabled,
+				BackupsOpen = backupsDock.Enabled,
 				TopOffset = topBarOffset,
 				OnTools = function()
 					if session then
@@ -976,10 +981,9 @@ return function(
 					end
 				end,
 				-- Settings are separate docks, named by function, rather than
-				-- tabs in one panel - opened one at a time from the Settings
-				-- home menu instead of both together (which used to stack
-				-- both docks at the same default float position, making the
-				-- second one impossible to find).
+				-- tabs in one panel - opened independently from the Settings
+				-- home menu so regional preferences, shortcuts, product info,
+				-- and destructive backup/restore tasks stay distinct.
 				OnOpenRegional = function()
 					regionalDock.Enabled = not regionalDock.Enabled
 				end,
@@ -995,6 +999,9 @@ return function(
 				end,
 				OnOpenSoftware = function()
 					softwareDock.Enabled = not softwareDock.Enabled
+				end,
+				OnOpenBackups = function()
+					backupsDock.Enabled = not backupsDock.Enabled
 				end,
 				OnHoverChanged = function(hovered: boolean)
 					uiState.Hovered = hovered
@@ -2006,12 +2013,6 @@ return function(
 				Settings = settings,
 				RegionLibrary = regionLibrary,
 				OnSettingsChanged = onSettingsChanged,
-				OnBackupData = function(): string
-					persist()
-					return Settings.Export(settings, HttpService)
-				end,
-				OnValidateRestoreData = validateRestoreData,
-				OnRestoreData = restoreData,
 				OnClose = function()
 					regionalDock.Enabled = false
 				end,
@@ -2070,6 +2071,26 @@ return function(
 			softwareRoot:unmount()
 			softwareRoot = nil
 		end
+
+		if backupsDock.Enabled then
+			if not backupsRoot then
+				backupsRoot = ReactRoblox.createRoot(backupsDock)
+			end
+			assert(backupsRoot):render(React.createElement(BackupsGui, {
+				OnBackupData = function(): string
+					persist()
+					return Settings.Export(settings, HttpService)
+				end,
+				OnValidateRestoreData = validateRestoreData,
+				OnRestoreData = restoreData,
+				OnClose = function()
+					backupsDock.Enabled = false
+				end,
+			}))
+		elseif backupsRoot then
+			backupsRoot:unmount()
+			backupsRoot = nil
+		end
 	end
 
 	local clickedCn = buttonClicked:Connect(function()
@@ -2097,6 +2118,9 @@ return function(
 	softwareDock:GetPropertyChangedSignal("Enabled"):Connect(function()
 		updateUI()
 	end)
+	backupsDock:GetPropertyChangedSignal("Enabled"):Connect(function()
+		updateUI()
+	end)
 
 	-- Initial UI show in the case where a dock starts enabled
 	updateUI()
@@ -2122,6 +2146,10 @@ return function(
 		if softwareRoot then
 			softwareRoot:unmount()
 			softwareRoot = nil
+		end
+		if backupsRoot then
+			backupsRoot:unmount()
+			backupsRoot = nil
 		end
 		if topRoot then
 			topRoot:unmount()

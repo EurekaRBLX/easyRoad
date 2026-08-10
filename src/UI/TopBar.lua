@@ -6,8 +6,8 @@
 --   Road Tools   - placement: compact tool panel bottom-left
 --   Road Editor  - create / edit road types: full designer bottom bar
 --   Road Assets  - import / rename / remove custom structure Models
---   Settings     - grand settings (region profile, scale, banking, ...)
---                  docked in the Studio sidebar panel
+--   Settings     - separate docks for Regional Preference, Keybinds,
+--                  Software, and Backups
 
 local Plugin = script.Parent.Parent.Parent
 local Packages = Plugin.Packages
@@ -18,31 +18,39 @@ local e = React.createElement
 local Theme = require("./Theme")
 local Components = require("./Components")
 
-local function TopBar(props: {
-	ToolsActive: boolean,
-	EditorActive: boolean,
-	AssetsActive: boolean,
-	RegionalOpen: boolean,
-	KeybindsOpen: boolean,
-	SoftwareOpen: boolean,
-	OnTools: () -> (),
-	OnEditor: () -> (),
-	OnAssets: () -> (),
-	OnOpenRegional: () -> (),
-	OnOpenKeybinds: () -> (),
-	OnOpenSoftware: () -> (),
-	OnHoverChanged: ((hovered: boolean) -> ())?,
-	-- Y offset from EasyAPI TopBarBridge so multiple easy* bars stack
-	-- instead of overlapping. Defaults to 8 (single-plugin position).
-	TopOffset: number?,
-})
+local function TopBar(
+	props: {
+		ToolsActive: boolean,
+		EditorActive: boolean,
+		AssetsActive: boolean,
+		RegionalOpen: boolean,
+		KeybindsOpen: boolean,
+		SoftwareOpen: boolean,
+		BackupsOpen: boolean,
+		OnTools: () -> (),
+		OnEditor: () -> (),
+		OnAssets: () -> (),
+		OnOpenRegional: () -> (),
+		OnOpenKeybinds: () -> (),
+		OnOpenSoftware: () -> (),
+		OnOpenBackups: () -> (),
+		OnHoverChanged: ((hovered: boolean) -> ())?,
+		-- Y offset from EasyAPI TopBarBridge so multiple easy* bars stack
+		-- instead of overlapping. Defaults to 8 (single-plugin position).
+		TopOffset: number?,
+	}
+)
 	-- Settings has no single dock of its own any more - clicking it opens a
-	-- small home menu to choose Regional Preference or Keybinds, each its
+	-- small home menu to choose a dedicated settings surface, each its
 	-- own independently-toggled dock, instead of forcing both open/closed
 	-- together (which used to stack them at the same default float
 	-- position with no way to tell the second one was even there).
 	local menuOpen, setMenuOpen = React.useState(false)
-	local settingsSelected = props.RegionalOpen or props.KeybindsOpen or props.SoftwareOpen or menuOpen
+	local settingsSelected = props.RegionalOpen
+		or props.KeybindsOpen
+		or props.SoftwareOpen
+		or props.BackupsOpen
+		or menuOpen
 	local topY = props.TopOffset or 8
 
 	return e(React.Fragment, nil, {
@@ -121,8 +129,8 @@ local function TopBar(props: {
 				LayoutOrder = 5,
 			}),
 		}),
-		-- Settings home menu: pick Regional Preference or Keybinds, each its
-		-- own dock, opened one at a time instead of both together.
+		-- Settings home menu: each task gets its own independently dockable
+		-- surface instead of mixing unrelated controls into one long panel.
 		SettingsMenu = menuOpen and e("Frame", {
 			AnchorPoint = Vector2.new(0.5, 0),
 			Position = UDim2.new(0.5, 0, 0, topY + 48),
@@ -178,6 +186,16 @@ local function TopBar(props: {
 				end,
 				Size = UDim2.new(1, 0, 0, 32),
 				LayoutOrder = 3,
+			}),
+			Backups = e(Components.Button, {
+				Text = "Backups",
+				Selected = props.BackupsOpen,
+				OnClick = function()
+					setMenuOpen(false)
+					props.OnOpenBackups()
+				end,
+				Size = UDim2.new(1, 0, 0, 32),
+				LayoutOrder = 4,
 			}),
 		}),
 	})

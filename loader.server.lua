@@ -23,13 +23,13 @@ end)
 
 -- Settings are a few separate docks, named by function, rather than one
 -- panel with internal tabs - each is independently dockable/movable.
-local function createDock(id: string, title: string): DockWidgetPluginGui
+local function createDock(id: string, title: string, width: number?, height: number?): DockWidgetPluginGui
 	local params = DockWidgetPluginGuiInfo.new(
 		Enum.InitialDockState.Float,
 		false, -- Is it initially enabled
 		false, -- Override the previous state
-		280, -- Default width
-		420, -- Default height
+		width or 280, -- Default width
+		height or 420, -- Default height
 		260, -- Minimum width
 		320 -- Minimum height
 	)
@@ -42,11 +42,20 @@ end
 local regionalDock = createDock("EasyRoadRegionalDock", "easyRoad - Regional Preference")
 local keybindsDock = createDock("EasyRoadKeybindsDock", "easyRoad - Keybinds")
 local softwareDock = createDock("EasyRoadSoftwareDock", "easyRoad - Software")
+local backupsDock = createDock("EasyRoadBackupsDock", "easyRoad - Backups", 320, 520)
 
 local loaded = false
 local function doInitialLoad()
 	loaded = true
-	require(script.Parent.Src.main)(plugin, regionalDock, keybindsDock, softwareDock, buttonClicked, setButtonActive)
+	require(script.Parent.Src.main)(
+		plugin,
+		regionalDock,
+		keybindsDock,
+		softwareDock,
+		backupsDock,
+		buttonClicked,
+		setButtonActive
+	)
 end
 
 -- Lazy load the main plugin on first click
@@ -58,7 +67,7 @@ local clickedCn = buttonClicked:Connect(function()
 	end
 end)
 
-if regionalDock.Enabled or keybindsDock.Enabled or softwareDock.Enabled then
+if regionalDock.Enabled or keybindsDock.Enabled or softwareDock.Enabled or backupsDock.Enabled then
 	doInitialLoad()
 end
 

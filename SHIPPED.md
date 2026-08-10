@@ -114,8 +114,10 @@ rigid repeat-to-fit path. The check is part of the Windows validation runner.
   choices now open upward. Dropdown choices use a bounded vertical
   `ScrollingFrame`, so all marking types remain reachable instead of only the
   first row being visible below the screen edge.
-- Regional Preference gained a **Data Safety** section. **Back up data** emits
-  versioned JSON containing every current grand setting plus custom road and
+- The Settings submenu now opens a dedicated **Backups** dock, matching
+  easyRail, instead of embedding data transfer at the bottom of Regional
+  Preference. **Back up data** emits
+  versioned JSON containing every current plugin setting plus custom road and
   region presets. Studio plugins have no supported clipboard API, so the field
   is selected for the ordinary Ctrl+C flow.
 - **Restore data** accepts pasted JSON, rejects malformed/wrong-format/
