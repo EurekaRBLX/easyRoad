@@ -94,26 +94,32 @@ socket/attribute contract EasyLight can depend on. Then render stop/crossing
 markings in the Python junction preview and add break-tests for approach-side
 mirroring, line setback, and zig-zag clipping.
 
-## Model-backed and procedural viaducts/tunnels - WORKFLOW SHIPPED
+## Model-backed ground roads and procedural/custom structures - WORKFLOW SHIPPED
 
 The selected-Model ownership and rigid-module path now exists; see
 `STRUCTURES.md` and `SHIPPED.md`. A Workspace Model is copied into
 `ServerStorage/EasyRoadAssets`, explicit `EasyRoadStart` / `EasyRoadEnd`
 Attachments define its socket chord (or the importer creates bounding-box
 sockets), and the dedicated Road Assets surface imports, lists, renames, and
-deletes unused assets. Road Tools exposes only structure selection/config before placement.
-Every committed road serializes it immediately. Viaduct mode
+deletes unused assets. Ground assets now replace the ordinary generated surface
+only after their rigid modules build successfully; the editable profile remains
+their topology/snapping envelope. Road Tools exposes road/structure selection
+before placement. Every committed road serializes it immediately. Viaduct mode
 generates a structural slab and parapets, tiles an optional custom model, and
 raycasts generic concrete piers down to Terrain/world parts. Tunnel mode tiles
 an optional custom model or generates a base, sidewalls, and segmented arched vault without
-destructively editing Terrain. Road edits, bus
-bays, splits, junction trimming, and roundabout trimming regenerate structures.
+destructively editing Terrain. Road edits, bus bays, junction trimming, and
+roundabout trimming regenerate structures. Automatic splitting is currently
+blocked on structured roads so rigid modules and piers cannot restart their
+spacing phase independently on each piece.
 
 Follow-ups still open:
 
 - start/middle/end modules for portals, abutments, and expansion joints;
 - user-provided pier models and explicit pier socket Attachments;
 - turn/grade warnings for a rigid module that is too long for the curve;
+- a persisted longitudinal structure phase so structured roads can be split
+  without restarting rigid modules or duplicating pier stations;
 - replace/update-in-place for an existing game-owned asset;
 - an explicit undoable Terrain excavation/restoration phase for tunnels;
 - live Studio validation of selection UX, sockets, collisions, and raycasts.
@@ -869,6 +875,12 @@ Deliberately still out of scope, in rough priority order:
   Left/right edge snapping deliberately remains alignment-only and retains the
   authored curve as its topology datum; decide whether a future explicit edge
   connection mode should instead create an off-centre junction node.
+- **Cross-section merge envelope.** The topology-free Cross-section mode now
+  gives the new road a persistent G1 tangent lead-in, but it keeps the authored
+  road at full width. A true on/off-ramp gore needs serialized start/end
+  connection-envelope fields that taper surface components and markings without
+  pretending the Road Editor profile itself is zero-width. That model must also
+  define RoadSplit and custom Ground-module behaviour before it ships.
 - **No box-junction ("keep clear") markings.** Real intersections
   (reference: Google Maps screenshots of live HK/TW intersections)
   commonly paint a yellow cross-hatch box over the intersection interior
@@ -923,19 +935,13 @@ any road drawn to cross it afterwards won't auto-connect.
   mouth fillets. True deflected spoke centreline feed-in remains future work
   (edit the spoke curve; do not add ring-owned feed roads again).
 - **Ring pavement/sidewalk notch at the trim point - fixed.** The spoke
-  trim cuts the whole cross-section at a flat perpendicular station, but
-  the ring boundary is curved, so a sidewalk's laterally-offset outer edge
-  used to end up inside or outside the ring's actual radius at that same
-  station (confirmed live with a screenshot: visible rectangular notches
-  where each spoke's sidewalk cut into the ring). `trimSpokeToRing` now
-  searches for the crossing at a Pythagorean-adjusted centerline radius
-  (`sqrt(radius^2 - halfWidth^2)`, minus `RING_TRIM_MARGIN_STUDS`) instead
-  of the ring's raw radius, so the spoke's widest cross-section point (its
-  outer sidewalk edge, not just the centerline) lands just inside the
-  ring's true boundary rather than poking through it. Still not a proper
-  `JunctionBuilder`-style corner-fill bridging each spoke's sidewalk into
-  the ring's own edge - there's a small margin gap by design, not a
-  seamless join - but the notch itself is gone.
+  trim originally cut the whole cross-section at a flat perpendicular station,
+  leaving rectangular notches or padded ring Parts outside the true curve.
+  The current builder emits exact ring-sidewalk station quads and subtracts
+  each paired/solo mouth roadway footprint before creating Parts. One-way arms
+  carry independent left/right pavement widths and taper only their real
+  traffic-inboard footway to zero at the ring kerb. LHT/RHT headless close-ups
+  now assert no ring/mouth holes and a flush approach seam.
 - **If a fan of thin shards ever reappears inside a roundabout's island**
   (reported live once, see `SHIPPED.md`'s "defensive stale-pad cleanup"
   entry): the leading but UNCONFIRMED theory is a stale `JunctionBuilder`

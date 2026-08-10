@@ -255,6 +255,41 @@ local function BuildBar(props: {
 				Grow = true,
 			}),
 		})
+	children.SnapConnectionMode = props.Settings.SnapToRoad
+		and props.ToolMode ~= "Roundabout"
+		and e(Components.Row, { LayoutOrder = 8 }, {
+			Label = e(Components.Label, { Text = "Connection", LayoutOrder = 1, Width = 76 }),
+			Dropdown = e(Components.Dropdown, {
+				Options = {
+					{ Id = "AutomaticJunction", Text = "Build junction" },
+					{ Id = "CrossSection", Text = "Cross-section only" },
+				},
+				SelectedId = props.Settings.SnapConnectionMode,
+				OnSelected = function(id: string)
+					props.Settings.SnapConnectionMode = id :: Settings.SnapConnectionMode
+					props.OnSettingsChanged()
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		})
+	children.SnapConnectionHint = props.Settings.SnapToRoad
+		and props.ToolMode ~= "Roundabout"
+		and props.Settings.SnapConnectionMode == "CrossSection"
+		and e("TextLabel", {
+			Text = if props.Parallel.Enabled
+				then "Tangential lead-in: the primary carriageway meets the cross-section; no junction pad is generated."
+				else "Tangential lead-in: the target road stays intact and no junction pad is generated.",
+			TextColor3 = Theme.DIM,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Font = Theme.FONT,
+			TextSize = 12,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextWrapped = true,
+			LayoutOrder = 9,
+		})
 	children.SnapToGridToggle = e(Components.Checkbox, {
 		Label = "Snap to grid",
 		Checked = props.Settings.SnapToGrid,
@@ -262,9 +297,9 @@ local function BuildBar(props: {
 			props.Settings.SnapToGrid = checked
 			props.OnSettingsChanged()
 		end,
-		LayoutOrder = 8,
+		LayoutOrder = 10,
 	})
-	children.Transition = e(Components.Row, { LayoutOrder = 9 }, {
+	children.Transition = e(Components.Row, { LayoutOrder = 11 }, {
 		Label = e(Components.Label, { Text = "Widen to", LayoutOrder = 1, Width = 60 }),
 		Dropdown = e(Components.Dropdown, {
 			Options = endProfileOptions,
@@ -277,7 +312,7 @@ local function BuildBar(props: {
 		}),
 	})
 	children.TransitionAnchor = props.EndProfileId
-		and e(Components.Row, { LayoutOrder = 10 }, {
+		and e(Components.Row, { LayoutOrder = 12 }, {
 			Label = e(Components.Label, { Text = "Lane placement", LayoutOrder = 1, Width = 96 }),
 			Dropdown = e(Components.Dropdown, {
 				Options = {
@@ -300,11 +335,11 @@ local function BuildBar(props: {
 			props.Settings.SuperelevationMode = if checked then "Auto" else "Off"
 			props.OnSettingsChanged()
 		end,
-		LayoutOrder = 11,
+		LayoutOrder = 13,
 	})
 	local speedShown, speedMin, speedMax = Units.SpeedField(props.Settings, props.Settings.DesignSpeedKph, 10, 200)
 	children.Speed = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 12 }, {
+		and e(Components.Row, { LayoutOrder = 14 }, {
 			Label = e(Components.Label, {
 				Text = "Speed (" .. Units.SpeedSuffix(props.Settings) .. ")",
 				LayoutOrder = 1,
@@ -330,7 +365,7 @@ local function BuildBar(props: {
 	local runoffShown, runoffMin, runoffMax =
 		Units.LengthField(props.Settings, props.Settings.SuperelevationRunoffM, 2, 30)
 	children.BankTransition = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 13 }, {
+		and e(Components.Row, { LayoutOrder = 15 }, {
 			Label = e(Components.Label, {
 				Text = "Transition (" .. Units.LengthSuffix(props.Settings) .. ")",
 				LayoutOrder = 1,
@@ -348,7 +383,7 @@ local function BuildBar(props: {
 				LayoutOrder = 2,
 			}),
 		})
-	children.Elevation = e(Components.Row, { LayoutOrder = 14 }, {
+	children.Elevation = e(Components.Row, { LayoutOrder = 16 }, {
 		Label = e(Components.Label, { Text = "Elevation", LayoutOrder = 1, Width = 64 }),
 		Down = e(Components.Button, {
 			Text = "",
@@ -383,7 +418,7 @@ local function BuildBar(props: {
 	-- CS2-style step adjustment: how far each R/F press or arrow click
 	-- moves the elevation, editable right next to the elevation control
 	-- instead of buried in a separate settings dock.
-	children.ElevationStep = e(Components.Row, { LayoutOrder = 15 }, {
+	children.ElevationStep = e(Components.Row, { LayoutOrder = 17 }, {
 		Label = e(Components.Label, { Text = "Step", Dim = true, LayoutOrder = 1, Width = 64 }),
 		Field = e(Components.NumberField, {
 			Value = props.Settings.ElevationStepStuds,
@@ -404,7 +439,7 @@ local function BuildBar(props: {
 			keyHint(props.Settings.Keybinds.ElevationDown)
 		),
 		Dim = true,
-		LayoutOrder = 16,
+		LayoutOrder = 18,
 	})
 	-- Keep the mode visible directly below the tool picker. This is the main
 	-- placement workflow, so hiding it below every snapping/banking/elevation
@@ -436,13 +471,13 @@ local function BuildBar(props: {
 		TextSize = Theme.TEXT_SIZE,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = true,
-		LayoutOrder = 18,
+		LayoutOrder = 20,
 	})
 	children.Stop = e(Components.Button, {
 		Text = "Stop Building",
 		Danger = true,
 		OnClick = props.OnStop,
-		LayoutOrder = 19,
+		LayoutOrder = 21,
 	})
 
 	local scrollProps = Components.ScrollBar()

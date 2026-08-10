@@ -30,8 +30,10 @@ trap as an invariant nobody re-reads.
 | `straight_optimization_preview.py` | Exact-straight 2048-stud splitting, explicit stretch breakpoints, conservative Drive-only lateral merging, source-range metadata contracts, and a before/after surface-Part render. |
 | `curved_superelevation_optimization_preview.py` | Feasibility and regression harness for conservative Drive-band merging on curves and bank runoff. Ports the density-independent roll profile (including short-curve runoff controls), roll-aware station refinement, per-interval 0.025-stud twist and curved-box overhang budgets, exact outer-edge parity, actual midpoint-box plan footprints, injected break-tests, Part counts, and a combined bird's-eye/side/cross-section render. |
 | `structure_preview.py` | Rigid imported-module socket stepping, procedural viaduct elevation, single/twin pier and cap geometry, independent finish channels, and arched tunnel cross-section; check-only or one combined PNG. |
+| `ground_asset_preview.py` | Source-linked custom Ground asset contract: strict/recoverable socket validation, safe procedural-surface replacement ordering, shared rigid repeat-to-fit coverage, injected failures, and a combined plan/cross-section PNG. |
 | `parallel_preview.py` | Curved parallel-carriageway offset/refit, an opposed pair, and independent direction choices for larger groups. |
 | `transition_anchor_preview.py` | Bird's-eye one-way 3-to-4 and 4-to-3 transition datum contract. Shows Centre / Left edge / Right edge side by side, checks the selected reference remains numerically fixed throughout the smoothstep taper and into a chained constant-width segment, verifies legacy offsets default to zero, and includes twelve injected break-tests. |
+| `cross_section_connection_preview.py` | Bird's-eye connection-mode contract across left / centre / right snap references. Contrasts the default split-and-build-junction workflow with target-preserving tangential lead-ins, covers distance-ranked endpoint/mid-span selection, parallel carriageway anchoring, carried/transition profile-offset alignment, live preview refresh, and feature-bearing targets, and includes 26 injected break-tests. |
 | `setup_wizard_preview.py` | Source-linked first-run setup QA: representative Welcome, Units, and Enjoy screens, the actual six-step progress fractions, easyRoad's theme accent, full-host sizing, unit choices, and five injected break-tests. |
 | `regional_marking_preview.py` | Bird's-eye US/UK marking-colour contract: yellow US opposing-flow centre and divided-carriageway traffic-left edges, white same-direction/traffic-right lines, global highway `NoLine` suppression for UK median edges, exactly one yellow line at a one-way highway's Drive/inner-shoulder boundary, and direction-stable 2x2↔3x3 yellow-edge mapping. The bottom US panel also shows an explicit local `NoLine` span. Includes nine injected semantic break-tests. |
 | `hardware_reference_check.py` | Parses the five `hardware/*.rbxmx` references and verifies their deck/base, parapet/wall, and tunnel-crown cues. |
@@ -96,9 +98,12 @@ python3 straight_optimization_preview.py --out out/straight-optimization.png
 python3 curved_superelevation_optimization_preview.py --check
 python3 curved_superelevation_optimization_preview.py --out out/curved-bank.png
 python3 structure_preview.py --check      # module coverage + pier contact
+python3 ground_asset_preview.py --check   # Ground import, sockets + replacement ownership
 python3 parallel_preview.py --check       # curved offsets + direction layouts
 python3 transition_anchor_preview.py --check
 python3 transition_anchor_preview.py --out out/transition-anchors.png
+python3 cross_section_connection_preview.py --check
+python3 cross_section_connection_preview.py --out out/cross-section-connections.png
 python3 setup_wizard_preview.py --check
 python3 setup_wizard_preview.py --out out/setup-wizard.png
 python3 regional_marking_preview.py --check
@@ -106,6 +111,7 @@ python3 regional_marking_preview.py --out out/regional-marking-colours.png
 python3 structure_break_tests.py          # prove gaps/hovering piers fail
 python3 hardware_reference_check.py       # inspect rbxmx structural references
 python3 structure_preview.py --out out/structures.png
+python3 ground_asset_preview.py --out out/ground-road-assets.png
 python3 parallel_preview.py --out out/parallel-roadways.png
 ```
 

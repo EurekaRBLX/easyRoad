@@ -118,7 +118,7 @@ def main():
         print("roundabout:", " ".join(cases))
         import road_preview as rd
         print("road:      ", " ".join(rd.CASES))
-        print("scripts:    turbo_check.py roundabout_parity_contract.py roundabout_editor_preview.py --check road_break_tests.py straight_optimization_preview.py --check curved_superelevation_optimization_preview.py --check structure_preview.py --check parallel_preview.py --check transition_anchor_preview.py --check setup_wizard_preview.py --check multinode_junction_preview.py --check marking_boundary_preview.py --check regional_marking_preview.py --check structure_break_tests.py hardware_reference_check.py integration_contracts.py check_parity.py")
+        print("scripts:    turbo_check.py roundabout_parity_contract.py roundabout_editor_preview.py --check road_break_tests.py straight_optimization_preview.py --check curved_superelevation_optimization_preview.py --check structure_preview.py --check ground_asset_preview.py --check parallel_preview.py --check transition_anchor_preview.py --check cross_section_connection_preview.py --check setup_wizard_preview.py --check multinode_junction_preview.py --check marking_boundary_preview.py --check regional_marking_preview.py --check structure_break_tests.py hardware_reference_check.py integration_contracts.py check_parity.py")
         return 0
 
     problems, stale = [], []
@@ -139,8 +139,10 @@ def main():
             ("straight_optimization_preview.py", ("--check",)),
             ("curved_superelevation_optimization_preview.py", ("--check",)),
             ("structure_preview.py", ("--check",)),
+            ("ground_asset_preview.py", ("--check",)),
             ("parallel_preview.py", ("--check",)),
             ("transition_anchor_preview.py", ("--check",)),
+            ("cross_section_connection_preview.py", ("--check",)),
             ("setup_wizard_preview.py", ("--check",)),
             ("multinode_junction_preview.py", ("--check",)),
             ("marking_boundary_preview.py", ("--check",)),
@@ -181,6 +183,8 @@ LIMITS - what a green run here does NOT mean:
     the legacy zero-offset fallback. General emitted transition strips,
     component matching, and bus bays are not ported, so it cannot certify their
     Part-level seams or topology.
+  * cross_section_connection_preview.py proves the connection-mode contract and
+    selected lateral datum, not Roblox mouse raycasts or live junction rebuilds.
   * imported Roblox Models are represented by their start/end socket chord;
     mesh contents, collisions and attachment orientation still need Studio.""")
     return 1 if (problems or stale) else 0

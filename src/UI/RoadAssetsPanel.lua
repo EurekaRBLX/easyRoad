@@ -1,5 +1,5 @@
 --!strict
--- Dedicated import/management surface for literal Roblox road structure
+-- Dedicated import/management surface for literal Roblox road/structure
 -- Models. Placement and placed-road inspectors only choose an existing asset;
 -- ownership operations live here so building remains focused on alignment.
 
@@ -58,10 +58,17 @@ local function RoadAssetsPanel(props: {
 	RoadDesigner.DecorateCard(children)
 	children.Header = e(Components.Section, { Text = "Import / Manage Road Assets", First = true, LayoutOrder = 1 })
 	children.Help = paragraph(
-		"Select a Model in Workspace, then import it once here. Export creates an editable Workspace copy without removing it from this library.",
+		"Select a Workspace Model, then choose how EasyRoad should use it. Ground road modules replace the generated surface; viaduct and tunnel modules accompany their matching structure mode.",
 		2
 	)
-	children.Import = e(Components.Row, { LayoutOrder = 3 }, {
+	children.ImportGround = e(Components.Button, {
+		Text = "Import Selection as Ground Road",
+		LayoutOrder = 3,
+		OnClick = function()
+			props.OnImport("Ground")
+		end,
+	})
+	children.ImportStructure = e(Components.Row, { LayoutOrder = 4 }, {
 		Viaduct = e(Components.Button, {
 			Text = "Import Selection as Viaduct",
 			Grow = true,
@@ -79,10 +86,10 @@ local function RoadAssetsPanel(props: {
 			end,
 		}),
 	})
-	children.Library = e(Components.Section, { Text = "Asset Library", LayoutOrder = 4 })
+	children.Library = e(Components.Section, { Text = "Asset Library", LayoutOrder = 5 })
 
 	if #options > 0 then
-		children.Picker = e(Components.Row, { LayoutOrder = 5 }, {
+		children.Picker = e(Components.Row, { LayoutOrder = 6 }, {
 			Label = e(Components.Label, { Text = "Asset", Width = 54, LayoutOrder = 1 }),
 			Field = e(Components.Dropdown, {
 				Options = options,
@@ -95,14 +102,14 @@ local function RoadAssetsPanel(props: {
 			}),
 		})
 	else
-		children.Empty = paragraph("No custom road assets imported yet.", 5)
+		children.Empty = paragraph("No custom road assets imported yet.", 6)
 	end
 
 	local exportId = if selected then selected.Id else nil
 	children.Export = e(Components.Button, {
 		Text = "Export Selected Asset to Workspace",
 		Disabled = exportId == nil,
-		LayoutOrder = 8,
+		LayoutOrder = 10,
 		OnClick = function()
 			if exportId then
 				props.OnExport(exportId)
@@ -112,7 +119,7 @@ local function RoadAssetsPanel(props: {
 
 	if selected then
 		local asset = selected :: StructureAssets.AssetInfo
-		children.Name = e(Components.Row, { LayoutOrder = 6 }, {
+		children.Name = e(Components.Row, { LayoutOrder = 7 }, {
 			Label = e(Components.Label, { Text = "Name", Width = 54, LayoutOrder = 1 }),
 			Field = e(Components.TextField, {
 				Value = asset.Name,
@@ -125,18 +132,36 @@ local function RoadAssetsPanel(props: {
 		})
 		children.Meta = paragraph(
 			string.format(
-				"%s module  |  %.1f studs socket length  |  used by %d placed road%s",
-				asset.Kind,
+				"%s  |  %.1f stud socket chord  |  %.1f x %.1f x %.1f stud bounds  |  %s sockets  |  used by %d placed road%s",
+				if asset.Kind == "Ground" then "Ground road module" else asset.Kind .. " module",
 				asset.LengthStuds,
+				asset.WidthStuds,
+				asset.HeightStuds,
+				asset.DepthStuds,
+				asset.SocketMode:lower(),
 				props.UsageCount,
 				if props.UsageCount == 1 then "" else "s"
 			),
-			7
+			8
 		)
+		if asset.Warnings then
+			children.Warning = e("TextLabel", {
+				Text = "Check: " .. asset.Warnings,
+				TextColor3 = Theme.WARNING,
+				BackgroundTransparency = 1,
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				Font = Theme.FONT,
+				TextSize = Theme.TEXT_SIZE,
+				TextWrapped = true,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				LayoutOrder = 9,
+			})
+		end
 		children.Delete = e(Components.Button, {
 			Text = "Delete Selected Asset",
 			Danger = true,
-			LayoutOrder = 9,
+			LayoutOrder = 11,
 			OnClick = function()
 				props.OnDelete(asset.Id)
 			end,
@@ -144,11 +169,11 @@ local function RoadAssetsPanel(props: {
 	end
 
 	if props.Status then
-		children.Status = paragraph(props.Status, 10)
+		children.Status = paragraph(props.Status, 12)
 	end
 	children.Close = e(Components.Button, {
 		Text = "Close",
-		LayoutOrder = 11,
+		LayoutOrder = 13,
 		OnClick = props.OnClose,
 	})
 

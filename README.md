@@ -51,6 +51,12 @@ python3 tools/build_rbxmx.py --license oss
    * Finishing near an existing road shows a blue **SNAPPED** marker. In Road
      Tools, **Snap point** chooses its centreline, left roadway edge, or right
      roadway edge; the choice is remembered between sessions.
+   * **Connection** chooses what that magnetic point means. **Build junction**
+     keeps the topology-aware default and can split a road even when its other
+     end is already owned by a junction or roundabout. **Cross-section only**
+     aligns either end of a ramp, flyover, or custom connection and bends the
+     new road into a smooth tangent lead-in without splitting the target or
+     creating a junction pad.
    * Drawing completely across another road shows a green **X INTERSECTION**
      marker and splits both roads into one real junction when placed. Red
      markers explain crossings that cannot safely be split; roads at a
@@ -63,11 +69,14 @@ python3 tools/build_rbxmx.py --license oss
    right edge stays fixed, so the new lane appears on the intended side. After
    placing a transition, the chain continues with the target profile on that
    same alignment.
-6. **Viaducts and tunnels**: in Road Tools choose the structure mode before
-   placing. Viaduct mode generates a structural slab, edge parapets, and
-   terrain-projected concrete piers; Tunnel mode generates a base, tall walls,
-   and a segmented arched vault. To replace either procedural structure, open
-   **Road Assets**, import a Workspace Model, then choose it from Road Tools.
+6. **Literal ground roads, viaducts, and tunnels**: in Road Tools choose the
+   road/structure mode before placing. A custom Ground asset replaces generated
+   lanes, markings, kerbs, and pavements with a repeated Roblox Model while the
+   editable profile remains its alignment/snapping envelope. Viaduct mode
+   generates a structural slab, edge parapets, and terrain-projected concrete
+   piers; Tunnel mode generates a base, tall walls, and a segmented arched
+   vault. Open **Road Assets**, import a Workspace Model for any of those three
+   roles, then choose it from Road Tools.
    See [`STRUCTURES.md`](STRUCTURES.md).
 7. **Parallel roadways**: enable the option in Road Tools, choose 2-16
    carriageways, and set the edge-to-edge gap under Advanced. A pair can be
@@ -152,8 +161,8 @@ src/
   RoundaboutInstance.lua   Selectable ring metadata linked to its controller
   RoundaboutEditSession.lua Selection, undo, rebuild, and conversion lifecycle
   RoadSource.lua           Durable untrimmed one-segment road source metadata
-  StructureAssets.lua      Imports game-owned custom bridge/tunnel Models
-  StructureBuilder.lua     Tiles modules; builds viaducts, tunnels, and piers
+  StructureAssets.lua      Validates/imports game-owned road/structure Models
+  StructureBuilder.lua     Tiles Ground/viaduct/tunnel modules; builds structures
   Geometry/
     CurveSegment.lua       Line / quadratic / cubic segments, arc-length tables,
                            signed ground-plane curvature

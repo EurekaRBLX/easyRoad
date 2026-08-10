@@ -92,7 +92,9 @@ local function RoadInspector(props: {
 	local structure = session.GetStructure()
 	local structureKind: StructureAssets.AssetKind? = if structure and structure.Mode == "Viaduct"
 		then "Viaduct"
-		else if structure and structure.Mode == "Tunnel" then "Tunnel" else nil
+		else if structure and structure.Mode == "Tunnel"
+			then "Tunnel"
+			else if structure and structure.Mode == "Ground" then "Ground" else nil
 	return e(RoadDesigner.Panel, {
 		PluginObj = props.PluginObj,
 		Profile = profile,

@@ -13,6 +13,7 @@ import roundabout_preview as rp
 
 ROOT = Path(__file__).resolve().parents[2]
 ROUNDABOUT = ROOT / "src" / "Mesh" / "RoundaboutBuilder.lua"
+PREVIEW = ROOT / "tools" / "preview" / "roundabout_preview.py"
 
 
 def function_scope(source, declaration, next_declaration="\nlocal function "):
@@ -88,14 +89,38 @@ def static_faults(source):
             "solo cutters omit the exact shoulder-taper quad")
     require(build_arm, "return model, roadwayFootprints",
             "buildArm drops its captured roadway cutters")
+    require(build_arm, "cutPavementLeftM: number",
+            "buildArm still collapses source pavement to one shared width")
+    require(build_arm, "cutPavementRightM: number",
+            "buildArm cannot preserve the right source pavement independently")
+    require(build_arm,
+            "local cutPavementM = if leftSide then cutPavementLeftM else cutPavementRightM",
+            "arm pavement emission does not select the source width by physical side")
+    require(build_arm, "local function zeroWidthTerminalU(",
+            "inboard solo pavement still tapers through circulating lanes")
+    require(build_arm, "radiusAt(current) <= ringKerbRadiusStuds",
+            "zero-width pavement termination is not bounded by the ring kerb")
 
-    footprint_open = function_scope(
-        source, "local function openRingSidewalkByFootprints("
+    exact_ring = function_scope(
+        source, "buildExactRingSidewalk = function(",
+        "\n\n-- Remove only the top-plane overlap",
     )
-    require(footprint_open, "subtractConvexFootprint(fragment, cutter.Polygon)",
-            "solo sidewalk opening does not subtract exact cutter polygons")
-    require(footprint_open, "replaceWithClippedPolygons(part, fragments)",
-            "solo sidewalk opening does not retain exact surviving fragments")
+    require(exact_ring, "subtractConvexFootprint(fragment, cutter.Polygon)",
+            "exact ring pavement does not subtract mouth ownership polygons")
+    require(exact_ring, "for _, cutter in roadwayCutters do",
+            "solo roadway footprints are not fed into exact ring pavement")
+    require(exact_ring, "addCutter(cutter)",
+            "solo roadway footprints are collected but never applied")
+    require(exact_ring, "local frame0, frame1 = curve:FrameAt(s0), curve:FrameAt(s1)",
+            "ring pavement has regressed to padded midpoint boxes")
+    require(exact_ring, 'part:SetAttribute("RW_ExactRoundaboutPavement", true)',
+            "exact ring pavement parts are not source-identifiable")
+    require(source, "ExcludeComponentIndices = ringSidewalkComponentIndices(profile)",
+            "RoadBuilder still emits the padded ring sidewalk under the exact strip")
+    require(source, "LeftPavementM: number",
+            "LaneGroup does not preserve left-side source pavement")
+    require(source, "RightPavementM: number",
+            "LaneGroup does not preserve right-side source pavement")
 
     crossing = function_scope(source, "local function bandEdgeExitAngle(")
     require(crossing, "signedOffsetStuds: number",
@@ -148,18 +173,8 @@ def static_faults(source):
             "nil solo pavement sectors cannot be excluded from mouthSectors")
     require(source, "table.insert(mouthSectors, sector)",
             "paired pavement sectors are no longer collected")
-    footprint_call = source.find(
-        "openRingSidewalkByFootprints(ringSidewalk, soloRoadwayCutters)"
-    )
-    paired_call = source.find(
-        "openRingPavement(ringSidewalk, center, mouthSectors, 0)"
-    )
-    if footprint_call < 0:
-        faults.append("solo roadway cutters are never applied to ring sidewalk")
-    if paired_call < 0:
-        faults.append("paired angular sidewalk sectors are never applied")
-    if footprint_call >= 0 and paired_call >= 0 and footprint_call > paired_call:
-        faults.append("solo footprint subtraction must precede paired sector opening")
+    require(source, "\t\tmouthSectors,\n\t\tsoloRoadwayCutters\n\t)",
+            "Rebuild does not pass paired and solo ownership to exact ring pavement")
 
     splits = function_scope(source, "local function resolveSplits(")
     require(splits, "local fitAngle = math.asin",
@@ -170,6 +185,32 @@ def static_faults(source):
     turbo = function_scope(source, "local function buildTurboMarkings(")
     require(turbo, "local y = center.Y + TURBO_MARKING_LIFT_STUDS",
             "Turbo markings still share the ordinary marking top plane")
+    return faults
+
+
+def preview_static_faults(source):
+    """Source guards for Python-only parity regressions.
+
+    These are intentionally separate from the Luau contract above: the live
+    builder was correct when centroid variable shadowing made only the Python
+    reference collapse LHT pavement at the source seam.
+    """
+    faults = []
+    start = source.find("def emit_arm(")
+    end = source.find("\n\n# --- roundabout", start)
+    emit_arm = source[start:end] if start >= 0 and end >= 0 else ""
+    if "if components[index][1] <= 1e-6:" not in emit_arm:
+        faults.append("Python cap replacement can steal real pavement for a zero-width component")
+    if "part_center = (sum(p[0] for p in poly)" not in emit_arm:
+        faults.append("Python arm Parts have no centroid local distinct from the roundabout centre")
+    if "\n                center = (sum(p[0] for p in poly)" in emit_arm:
+        faults.append("Python arm emission mutates the roundabout centre with a Part centroid")
+    if "def seam_step_faults(" not in source:
+        faults.append("Python parity has no failing approach/arm seam invariant")
+    if "if worst > SEAM_STEP_TOLERANCE:\n            ok = False" not in source:
+        faults.append("Python CLI can report STEPPED while still returning success")
+    if '"solo_pavement_identity"' not in source or '"solo_pavement_identity_us"' not in source:
+        faults.append("Python parity omits exact-width asymmetric pavement regressions")
     return faults
 
 
@@ -300,7 +341,7 @@ def visible_ring_gap_faults(scene, hairline=0.15, rings=96):
     ]
 
 
-def break_tests(source):
+def break_tests(source, preview_source):
     results = []
 
     without_clip = source.replace("\tclipArmMarkingLinesAtRing(\n", "\t-- removed by break-test\n", 1)
@@ -330,8 +371,8 @@ def break_tests(source):
                     bool(static_faults(angular_solo))))
 
     without_footprint_open = source.replace(
-        "\topenRingSidewalkByFootprints(ringSidewalk, soloRoadwayCutters)",
-        "\t-- removed by break-test",
+        "\tfor _, cutter in roadwayCutters do\n\t\taddCutter(cutter)\n\tend",
+        "\t-- solo cutters removed by break-test",
         1,
     )
     results.append(("skipped solo footprint subtraction",
@@ -456,19 +497,53 @@ def break_tests(source):
     over_opened["outer_ring_sidewalk"] = []
     results.append(("deleted solo curb-return sidewalk",
                     bool(visible_ring_gap_faults(over_opened))))
+
+    mutable_center = preview_source.replace("part_center", "center")
+    results.append(("mutated roundabout centre to Part centroid",
+                    bool(preview_static_faults(mutable_center))))
+
+    zero_identity = preview_source.replace(
+        "                if components[index][1] <= 1e-6:\n"
+        "                    continue\n",
+        "",
+        1,
+    )
+    results.append(("processed zero-width sidewalk cap",
+                    bool(preview_static_faults(zero_identity))))
+
+    non_failing_seam = preview_source.replace(
+        "        if worst > SEAM_STEP_TOLERANCE:\n"
+        "            ok = False\n",
+        "",
+        1,
+    )
+    results.append(("reported stepped seam as success",
+                    bool(preview_static_faults(non_failing_seam))))
     return results
 
 
 def main():
     source = ROUNDABOUT.read_text(encoding="utf-8")
+    preview_source = PREVIEW.read_text(encoding="utf-8")
     faults = static_faults(source)
+    faults += preview_static_faults(preview_source)
     scenes = {}
     for name in ("uk4", "us4", "turbo4", "turbo3x", "turbo_width",
                  "hw4", "hw4us", "hw_oneway", "solo_flare", "stress",
-                 "stress_us", "solo_bay", "solo_bay_us"):
+                 "stress_us", "solo_bay", "solo_bay_us",
+                 "solo_pavement_sides", "solo_pavement_sides_us",
+                 "solo_pavement_identity", "solo_pavement_identity_us"):
         scene, case_faults = geometry_faults(name)
         scenes[name] = scene
         for fault in case_faults:
+            faults.append(f"{name}: {fault}")
+
+    # Seam measurement is intentionally focused: it is expensive because it
+    # probes every emitted polygon, and these four layouts cover the original
+    # LHT centre-shadowing bug plus both no-taper component orders.
+    for name in ("stress", "stress_us", "solo_pavement_identity",
+                 "solo_pavement_identity_us"):
+        for fault in rp.seam_step_faults(scenes[name]):
             faults.append(f"{name}: {fault}")
     # The shoulder-specific sector ownership exists for one concrete reason:
     # rigid shoulder/kerb taper facets otherwise leave outer-band crescents in
@@ -484,12 +559,13 @@ def main():
     # both traffic hands, and the mixed stress layouts. A bounded probe count
     # keeps this dynamic parity guard materially cheaper than the full CLI scan.
     for name in ("solo_flare", "hw_oneway", "solo_bay", "solo_bay_us",
+                 "solo_pavement_sides", "solo_pavement_sides_us",
                  "stress", "stress_us"):
         for fault in visible_ring_gap_faults(scenes[name]):
             faults.append(f"{name}: {fault}")
 
     print("break-tests (each MUST be caught):")
-    for name, caught in break_tests(source):
+    for name, caught in break_tests(source, preview_source):
         print(f"  {name:36s} {'caught' if caught else 'NOT CAUGHT'}")
         if not caught:
             faults.append(f"break-test escaped: {name}")

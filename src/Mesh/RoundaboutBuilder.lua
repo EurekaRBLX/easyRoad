@@ -279,6 +279,22 @@ local function ringSidewalkWidthM(style: RegionStyles.RegionStyle): number
 	return if style.RoundaboutSidewalk == false then 0 else style.SidewalkWidthM
 end
 
+local function ringSidewalkComponentIndices(profile: RoadProfile.RoadProfile): { number }
+	local indices: { number } = {}
+	for index, component in profile.Components do
+		if component.Kind == "Sidewalk" and component.WidthM > 1e-6 then
+			table.insert(indices, index)
+		end
+	end
+	return indices
+end
+
+-- Assigned after the convex-polygon helpers are declared. Create/Rebuild are
+-- called only after this module has finished loading, so both use the same
+-- exact station-quad pavement path without moving the public Create API below
+-- several thousand lines of roundabout implementation.
+local buildExactRingSidewalk: any
+
 -- Centreline to the ring's INNER edge, i.e. the side the central island is on -
 -- the opposite side from the pavement (see ringComponents).
 local function ringInnerHalfWidthM(profile: RoadProfile.RoadProfile, style: RegionStyles.RegionStyle): number
@@ -579,15 +595,18 @@ function RoundaboutBuilder.Create(
 		Style = style,
 		Settings = flatSettings(settings),
 		Preview = false,
+		ExcludeComponentIndices = ringSidewalkComponentIndices(profile),
 		MarkingLines = roundaboutMarkingLines(profile, style, style.RoundaboutMarkings == "SolidLanes"),
 		MarkingDashStartsAtZero = true,
 	}
 	local model = RoadBuilder.Build(ringOptions)
+	local stations = RoadBuilder.StationsFor(ringOptions)
+	local halfW = RoadProfile.TotalWidthM(profile) / 2 * settings.MetersToStuds
+	buildExactRingSidewalk(model, curve, profile, center, radiusStuds + halfW, style, settings, stations, {}, {})
 	model:SetAttribute("RW_Road", nil)
 	model.Name = "Roundabout"
-	local halfW = RoadProfile.TotalWidthM(profile) / 2 * settings.MetersToStuds
 	stampRingMeta(model, center, radiusStuds, radiusStuds + halfW, laneCount, laneWidthM, nil)
-	buildIsland(model, center, radiusStuds, profile, style, settings, curve, RoadBuilder.StationsFor(ringOptions))
+	buildIsland(model, center, radiusStuds, profile, style, settings, curve, stations)
 	packGeneratedGeometry(model, true)
 	model.Parent = getRoundaboutsFolder()
 	return model
@@ -1500,6 +1519,138 @@ local function replaceWithClippedPolygon(part: BasePart, polygon: ConvexFootprin
 	replaceWithClippedPolygons(part, { polygon })
 end
 
+-- Ring pavement is a true annular strip, not a chain of padded midpoint boxes.
+-- The ordinary RoadBuilder boxes deliberately overlap to hide curve gaps; on a
+-- raised outer strip those padded corners are visible as the sidewalk stepping
+-- outward at every seam. Emit exact station quads instead, subtracting mouth
+-- ownership in polygon space before any Roblox Parts exist. This also avoids
+-- trying to infer the top triangle of a clipped WedgePart later.
+buildExactRingSidewalk = function(
+	model: Model,
+	curve: PolyCurve.PolyCurve,
+	profile: RoadProfile.RoadProfile,
+	center: Vector3,
+	outerRadiusStuds: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings,
+	stations: { number },
+	rawSectors: { MouthSector },
+	roadwayCutters: { ConvexFootprint }
+)
+	local componentIndices = ringSidewalkComponentIndices(profile)
+	if #componentIndices == 0 or #stations < 2 then
+		return
+	end
+
+	local boundedCutters: { BoundedFootprint } = {}
+	local function addCutter(polygon: ConvexFootprint)
+		if #polygon < 3 or math.abs(signedAreaXZ(polygon)) <= POLYGON_AREA_EPSILON then
+			return
+		end
+		local minX, maxX, minZ, maxZ = polygonBoundsXZ(polygon)
+		table.insert(boundedCutters, {
+			Polygon = polygon,
+			MinX = minX,
+			MaxX = maxX,
+			MinZ = minZ,
+			MaxZ = maxZ,
+		})
+	end
+
+	-- Paired mouths own a bounded angular wedge of the ring pavement. The
+	-- radius is deliberately beyond every ring corner, making this triangle an
+	-- exact half-ray sector over the only band we ever subtract from.
+	local cutterRadius = math.max(outerRadiusStuds * 3, outerRadiusStuds + 100)
+	for _, sector in clampSectors(rawSectors) do
+		local behindAngle = sector.Angle - sector.Behind
+		local aheadAngle = sector.Angle + sector.Ahead
+		addCutter({
+			center,
+			center + Vector3.new(math.cos(behindAngle) * cutterRadius, 0, math.sin(behindAngle) * cutterRadius),
+			center + Vector3.new(math.cos(aheadAngle) * cutterRadius, 0, math.sin(aheadAngle) * cutterRadius),
+		})
+	end
+	-- A solo curved arm is not an angular sector. Its generated roadway blocks
+	-- and shoulder taper quads are the ownership mask, preserving concrete only
+	-- where the road does not actually drive.
+	for _, cutter in roadwayCutters do
+		addCutter(cutter)
+	end
+
+	local scale = settings.MetersToStuds
+	local curbHeight = style.CurbHeightM * scale
+	local depth = settings.RoadThicknessStuds + curbHeight
+	local offsets = RoadProfile.ComponentOffsetsM(profile)
+	for _, componentIndex in componentIndices do
+		local edge = offsets[componentIndex]
+		local leftStuds = edge.Left * scale
+		local rightStuds = edge.Right * scale
+		for stationIndex = 1, #stations - 1 do
+			local s0, s1 = stations[stationIndex], stations[stationIndex + 1]
+			local frame0, frame1 = curve:FrameAt(s0), curve:FrameAt(s1)
+			local fragments: { ConvexFootprint } = {
+				{
+					(frame0 * CFrame.new(leftStuds, curbHeight, 0)).Position,
+					(frame0 * CFrame.new(rightStuds, curbHeight, 0)).Position,
+					(frame1 * CFrame.new(rightStuds, curbHeight, 0)).Position,
+					(frame1 * CFrame.new(leftStuds, curbHeight, 0)).Position,
+				},
+			}
+			for _, cutter in boundedCutters do
+				local nextFragments: { ConvexFootprint } = {}
+				for _, fragment in fragments do
+					local minX, maxX, minZ, maxZ = polygonBoundsXZ(fragment)
+					if maxX < cutter.MinX or minX > cutter.MaxX or maxZ < cutter.MinZ or minZ > cutter.MaxZ then
+						table.insert(nextFragments, fragment)
+					else
+						local survivors = subtractConvexFootprint(fragment, cutter.Polygon)
+						for _, survivor in survivors do
+							table.insert(nextFragments, survivor)
+						end
+					end
+				end
+				fragments = nextFragments
+				if #fragments == 0 then
+					break
+				end
+			end
+			fragments = coalesceConvexFootprints(fragments)
+			local function makePart(): Part
+				local part = Instance.new("Part")
+				part.Name = "Sidewalk"
+				part.Anchored = true
+				part.CanCollide = true
+				part.CanTouch = false
+				part.CastShadow = false
+				part.TopSurface = Enum.SurfaceType.Smooth
+				part.BottomSurface = Enum.SurfaceType.Smooth
+				part.Material = Enum.Material.Concrete
+				part.Color = style.SidewalkColor
+				part:SetAttribute("RW_ComponentStartIndex", componentIndex)
+				part:SetAttribute("RW_ComponentEndIndex", componentIndex)
+				part:SetAttribute("RW_StationStartStuds", s0)
+				part:SetAttribute("RW_StationEndStuds", s1)
+				part:SetAttribute("RW_ExactRoundaboutPavement", true)
+				return part
+			end
+			local down = -curve:FrameAt((s0 + s1) / 2).UpVector
+			for _, polygon in fragments do
+				for triangleIndex = 2, #polygon - 1 do
+					FillTriangle(
+						polygon[1],
+						polygon[triangleIndex],
+						polygon[triangleIndex + 1],
+						depth,
+						down,
+						makePart,
+						model
+					)
+				end
+			end
+		end
+	end
+end
+
 -- Remove only the top-plane overlap between the ring's original Sidewalk
 -- strips and solo one-way roadway footprints. A polar sector cannot describe a
 -- curved finite-width arm: making it wide enough to clear the inboard edge also
@@ -2084,7 +2235,16 @@ type LaneSpec = { Kind: RoadProfile.ComponentKind, WidthM: number, Directional: 
 -- The lanes of an approach travelling one way, and the span they occupy in the
 -- approach profile's own frame. `Lanes` is in the approach's own left-to-right
 -- order; `armProfileFor` reverses it when the arm's frame is mirrored.
-type LaneGroup = { Lanes: { LaneSpec }, LeftM: number, RightM: number, PavementM: number }
+type LaneGroup = {
+	Lanes: { LaneSpec },
+	LeftM: number,
+	RightM: number,
+	-- Source footway widths are directional data. A custom one-way profile may
+	-- have pavement on either side, both sides, or neither; collapsing that to a
+	-- single number made buildArm recreate the same pavement on both sides.
+	LeftPavementM: number,
+	RightPavementM: number,
+}
 
 -- One direction's worth of an approach, as a one-way road: the lanes that
 -- actually travel that way, plus a single pavement on the arm's OUTER side. A
@@ -2234,7 +2394,13 @@ local function splitApproachLanes(
 		-- Zero means the approach genuinely has no pavement (a motorway). The
 		-- arm still receives the ring-side width in `armProfileFor`; `buildArm`
 		-- tapers between the two instead of pretending the approach had one.
-		return { Lanes = {}, LeftM = math.huge, RightM = -math.huge, PavementM = 0 }
+		return {
+			Lanes = {},
+			LeftM = math.huge,
+			RightM = -math.huge,
+			LeftPavementM = 0,
+			RightPavementM = 0,
+		}
 	end
 	local inbound, outbound = newGroup(), newGroup()
 	-- Indices, not widths, and sorted into cross-section order at the end. The
@@ -2295,8 +2461,11 @@ local function splitApproachLanes(
 				continue
 			end
 			local edge = offsets[i]
-			if math.abs(edge.Right - group.LeftM) < 1e-6 or math.abs(edge.Left - group.RightM) < 1e-6 then
-				group.PavementM = component.WidthM
+			if math.abs(edge.Right - group.LeftM) < 1e-6 then
+				group.LeftPavementM = math.max(group.LeftPavementM, component.WidthM)
+			end
+			if math.abs(edge.Left - group.RightM) < 1e-6 then
+				group.RightPavementM = math.max(group.RightPavementM, component.WidthM)
 			end
 		end
 	end
@@ -2344,10 +2513,16 @@ local function splitUndirected(
 		local index = onlyDriveIndex :: number
 		local component = profile.Components[index]
 		local edge = componentOffsets[index]
-		local pavement = style.SidewalkWidthM
-		for _, candidate in profile.Components do
+		local leftPavementM, rightPavementM = 0, 0
+		for i, candidate in profile.Components do
 			if candidate.Kind == "Sidewalk" then
-				pavement = math.max(pavement, candidate.WidthM)
+				local candidateEdge = componentOffsets[i]
+				if math.abs(candidateEdge.Right - edge.Left) < 1e-6 then
+					leftPavementM = math.max(leftPavementM, candidate.WidthM)
+				end
+				if math.abs(candidateEdge.Left - edge.Right) < 1e-6 then
+					rightPavementM = math.max(rightPavementM, candidate.WidthM)
+				end
 			end
 		end
 		local function sharedGroup(): LaneGroup
@@ -2357,7 +2532,8 @@ local function splitUndirected(
 				},
 				LeftM = edge.Left,
 				RightM = edge.Right,
-				PavementM = pavement,
+				LeftPavementM = leftPavementM,
+				RightPavementM = rightPavementM,
 			}
 		end
 		return sharedGroup(), sharedGroup()
@@ -2367,27 +2543,41 @@ local function splitUndirected(
 		leftM, rightM = -fallbackLaneWidthM / 2, fallbackLaneWidthM / 2
 	end
 	local midM = (leftM + rightM) / 2
-	local pavement = style.SidewalkWidthM
-	for _, component in profile.Components do
+	local leftPavementM, rightPavementM = 0, 0
+	for i, component in profile.Components do
 		if component.Kind == "Sidewalk" then
-			pavement = math.max(pavement, component.WidthM)
+			local edge = componentOffsets[i]
+			if math.abs(edge.Right - leftM) < 1e-6 then
+				leftPavementM = math.max(leftPavementM, component.WidthM)
+			end
+			if math.abs(edge.Left - rightM) < 1e-6 then
+				rightPavementM = math.max(rightPavementM, component.WidthM)
+			end
 		end
 	end
 	local function half(widthM: number): { LaneSpec }
 		return { { Kind = "Drive" :: RoadProfile.ComponentKind, WidthM = widthM, Directional = true } }
 	end
-	return { Lanes = half(midM - leftM), LeftM = leftM, RightM = midM, PavementM = pavement }, {
+	return {
+		Lanes = half(midM - leftM),
+		LeftM = leftM,
+		RightM = midM,
+		LeftPavementM = leftPavementM,
+		RightPavementM = 0,
+	}, {
 		Lanes = half(rightM - midM),
 		LeftM = midM,
 		RightM = rightM,
-		PavementM = pavement,
+		LeftPavementM = 0,
+		RightPavementM = rightPavementM,
 	}
 end
 
 local function buildArm(
 	curve: PolyCurve.PolyCurve,
 	arm: ArmProfile,
-	cutPavementM: number,
+	cutPavementLeftM: number,
+	cutPavementRightM: number,
 	cutAtStart: boolean,
 	center: Vector3,
 	ringKerbRadiusStuds: number,
@@ -2397,10 +2587,13 @@ local function buildArm(
 ): (Model, { ConvexFootprint })
 	local roadwayFootprints: { ConvexFootprint } = {}
 	local sidewalkIndices: { number } = {}
+	local componentOffsets = RoadProfile.ComponentOffsetsM(arm.Profile)
 	local needsSurfaceTaper = arm.CutShoulderM > 1e-6
 	for i, component in arm.Profile.Components do
 		if component.Kind == "Sidewalk" then
 			table.insert(sidewalkIndices, i)
+			local edge = componentOffsets[i]
+			local cutPavementM = if (edge.Left + edge.Right) / 2 < 0 then cutPavementLeftM else cutPavementRightM
 			if math.abs(component.WidthM - cutPavementM) > 1e-6 then
 				needsSurfaceTaper = true
 			end
@@ -2481,7 +2674,7 @@ local function buildArm(
 		local curbHeight = style.CurbHeightM * scale
 		local roadDepth = settings.RoadThicknessStuds
 		local pavementDepth = roadDepth + curbHeight
-		local offsets = RoadProfile.ComponentOffsetsM(arm.Profile)
+		local offsets = componentOffsets
 		local length = curve.Length
 
 		local function makeSurfacePart(name: string, material: Enum.Material, color: Color3): Part
@@ -2505,9 +2698,52 @@ local function buildArm(
 			return makeSurfacePart("Sidewalk", Enum.Material.Concrete, style.SidewalkColor)
 		end
 
-		local function ringAlphaAt(station: number): number
-			local t = if cutAtStart then station / length else 1 - station / length
-			t = math.clamp(t, 0, 1)
+		local function sourceToRingU(station: number): number
+			return math.clamp(if cutAtStart then station / length else 1 - station / length, 0, 1)
+		end
+
+		local function stationAtSourceToRingU(u: number): number
+			return if cutAtStart then u * length else (1 - u) * length
+		end
+
+		-- A solo arm's inboard source footway must disappear at the kerb, not
+		-- continue tapering toward the tangential merge point inside the
+		-- circulating carriageway. Find the first station where its zero-width
+		-- terminal boundary reaches that kerb and finish the taper there.
+		local function zeroWidthTerminalU(innerOffsetM: number, sourcePavementM: number, ringPavementM: number): number
+			if sourcePavementM <= 1e-6 or ringPavementM > 1e-6 then
+				return 1
+			end
+			local function radiusAt(u: number): number
+				local frame = curve:FrameAt(stationAtSourceToRingU(u))
+				local point = (frame * CFrame.new(innerOffsetM * scale, 0, 0)).Position
+				return distanceXZ(point, center)
+			end
+			if radiusAt(1) > ringKerbRadiusStuds + 1e-5 then
+				return 1
+			end
+			local previous = 0
+			for i = 1, 64 do
+				local current = i / 64
+				if radiusAt(current) <= ringKerbRadiusStuds then
+					local lo, hi = previous, current
+					for _ = 1, 24 do
+						local mid = (lo + hi) / 2
+						if radiusAt(mid) > ringKerbRadiusStuds then
+							lo = mid
+						else
+							hi = mid
+						end
+					end
+					return hi
+				end
+				previous = current
+			end
+			return 1
+		end
+
+		local function ringAlphaAt(station: number, terminalU: number): number
+			local t = math.clamp(sourceToRingU(station) / math.max(terminalU, 1e-6), 0, 1)
 			return t * t * (3 - 2 * t)
 		end
 
@@ -2518,10 +2754,12 @@ local function buildArm(
 			local outward = if leftSide then -1 else 1
 			local innerOffsetM = if leftSide then edge.Right else edge.Left
 			local ringPavementM = component.WidthM
+			local cutPavementM = if leftSide then cutPavementLeftM else cutPavementRightM
 			local cutShoulderM = if outward < 0 then arm.CutShoulderLeftM else arm.CutShoulderRightM
+			local terminalU = zeroWidthTerminalU(innerOffsetM, cutPavementM, ringPavementM)
 
 			local function surfacePoints(station: number): (Vector3, Vector3, Vector3, Vector3, number, number)
-				local alpha = ringAlphaAt(station)
+				local alpha = ringAlphaAt(station, terminalU)
 				local shoulderWidthM = cutShoulderM * (1 - alpha)
 				local pavementWidthM = cutPavementM + (ringPavementM - cutPavementM) * alpha
 				local frame = curve:FrameAt(station)
@@ -2972,9 +3210,11 @@ end
 -- on where its neighbours actually landed.
 type MouthArm = {
 	Profile: ArmProfile,
-	-- Pavement width on the source approach at the cut. May be zero; the arm's
-	-- profile above carries the ring-side width and `buildArm` joins the two.
-	CutPavementM: number,
+	-- Pavement widths on each side of the source approach at the cut, expressed
+	-- in this arm's own frame. Either may be zero; buildArm never invents the
+	-- opposite-side footway for an asymmetric one-way road.
+	CutPavementLeftM: number,
+	CutPavementRightM: number,
 	MergeRadius: number,
 	-- Centreline offset at the cut, measured from the approach's centreline along
 	-- the RIGHT OF THE INWARD direction, so both arms use one frame.
@@ -3034,7 +3274,8 @@ local function planMouth(
 		-- outward, and which of those matches the curve depends on which END of
 		-- the road the junction sits at - so it is neither "always the exit" nor
 		-- a property of the arm alone.
-		local profile = armProfileFor(group, solo, style, scale, travelsInward == atStart, ringSidewalkWidthM(style))
+		local mirrored = travelsInward == atStart
+		local profile = armProfileFor(group, solo, style, scale, mirrored, ringSidewalkWidthM(style))
 		local mergeRadius = ringKerbRadiusStuds - profile.OuterOffsetStuds
 		if mergeRadius <= 1 then
 			return nil
@@ -3053,7 +3294,8 @@ local function planMouth(
 			else coreCentreInward + profile.RoadwayCentreM
 		return {
 			Profile = profile,
-			CutPavementM = group.PavementM,
+			CutPavementLeftM = if mirrored then group.RightPavementM else group.LeftPavementM,
+			CutPavementRightM = if mirrored then group.LeftPavementM else group.RightPavementM,
 			MergeRadius = mergeRadius,
 			LateralStuds = lateralM * scale,
 		}
@@ -3221,7 +3463,8 @@ local function buildMouth(
 		local armModel, roadwayCutters = buildArm(
 			entryCurve :: PolyCurve.PolyCurve,
 			entry.Profile,
-			entry.CutPavementM,
+			entry.CutPavementLeftM,
+			entry.CutPavementRightM,
 			true,
 			center,
 			entryRingKerbRadius,
@@ -3251,7 +3494,8 @@ local function buildMouth(
 		local armModel, roadwayCutters = buildArm(
 			exitCurve :: PolyCurve.PolyCurve,
 			exit.Profile,
-			exit.CutPavementM,
+			exit.CutPavementLeftM,
+			exit.CutPavementRightM,
 			false,
 			center,
 			exitRingKerbRadius,
@@ -3779,6 +4023,10 @@ function RoundaboutBuilder.CreateAtJunction(
 		Style = ringStyle,
 		Settings = flatSettings(settings),
 		Preview = false,
+		-- Raised ring pavement is emitted after mouth ownership is known, as
+		-- exact station quads. RoadBuilder's padded boxes visibly overshoot at
+		-- their outer seams and cannot be clipped exactly once they are Parts.
+		ExcludeComponentIndices = ringSidewalkComponentIndices(profile),
 		MarkingLines = roundaboutMarkingLines(profile, ringStyle, ringStyle.RoundaboutMarkings == "SolidLanes"),
 		MarkingDashStartsAtZero = true,
 	}
@@ -3788,18 +4036,12 @@ function RoundaboutBuilder.CreateAtJunction(
 	stampRingMeta(ring, center, radiusStuds, outerRadiusStuds, laneCount, laneWidthM, junctionId)
 	stampRingOverrides(ring, requestedMarkings, requestedSidewalk, requestedIsland)
 
-	-- The ring's OWN outer pavement, captured before any arm parts are parented
-	-- in. It is built as one unbroken circle, so without this it runs a
-	-- raised kerb + pavement band straight across every entry - the mouth reads
-	-- as walled off rather than open ("the mouth still has to open, not close
-	-- into it"). Each mouth below reports the angular sector it occupies and we
-	-- delete the ring pavement inside it.
-	local ringSidewalk: { BasePart } = {}
+	-- Capture only ring-owned paint before arm parts are parented. Raised ring
+	-- pavement is intentionally deferred until every mouth has reported its
+	-- ownership mask, then emitted already-open by buildExactRingSidewalk.
 	local ringMarkings: { BasePart } = {}
 	for _, descendant in ring:GetDescendants() do
-		if descendant:IsA("BasePart") and descendant.Name == "Sidewalk" then
-			table.insert(ringSidewalk, descendant :: BasePart)
-		elseif descendant:IsA("BasePart") and descendant.Name == "Marking" then
+		if descendant:IsA("BasePart") and descendant.Name == "Marking" then
 			table.insert(ringMarkings, descendant :: BasePart)
 		end
 	end
@@ -3866,22 +4108,32 @@ function RoundaboutBuilder.CreateAtJunction(
 	-- pushes the edge line inside the bound, and it survives as a white line
 	-- painted straight across the mouth.
 	local edgeLineInset = ringStyle.MarkingWidthM * 1.5 * scale
-	-- Solo curved arms are not polar sectors. Subtract their actual roadway
-	-- triangles first, while `ringSidewalk` still contains the original block
-	-- footprints; this keeps both curb returns without leaving concrete over the
-	-- live carriageway. Inter-mouth kerb separation keeps these fragments clear
-	-- of the paired angular openings applied immediately afterward.
-	openRingSidewalkByFootprints(ringSidewalk, soloRoadwayCutters)
-	openRingPavement(ringSidewalk, center, mouthSectors, 0)
+	-- Solo curved arms are not polar sectors. The exact builder subtracts their
+	-- generated roadway footprints; paired mouths use their clamped angular
+	-- ownership wedges. Performing both operations before Parts are emitted
+	-- leaves no padded sidewalk corner inside the circulating lanes and no
+	-- outer-edge box overshoot between untouched ring spans.
+	buildExactRingSidewalk(
+		ring,
+		ringCurve,
+		profile,
+		center,
+		outerRadiusStuds,
+		ringStyle,
+		settings,
+		RoadBuilder.StationsFor(ringOptions),
+		mouthSectors,
+		soloRoadwayCutters
+	)
 	-- Edge paint has a different physical hand-off from raised pavement. Open
 	-- it to the full merge angles so the preserved arm edge line reaches the
 	-- same point and tangent; the radial bound keeps all internal dividers.
 	openRingPavement(ringMarkings, center, edgeMarkingSectors, ringKerbRadius - edgeLineInset - 0.5, false)
 
-	-- After openRingPavement, deliberately. The spiral is laid only on the arcs
+	-- After opening the ordinary ring paint, deliberately. The spiral is laid only on the arcs
 	-- BETWEEN mouths, so there is nothing in a sector for that pass to remove -
-	-- and running it first would hand these parts to `ringPavement`, which was
-	-- captured before any of them existed.
+	-- and running it first would make those fresh parts look like ordinary ring
+	-- dividers to the replacement pass.
 	if ringStyle.RoundaboutMarkings == "Turbo" then
 		local replacements = buildTurboMarkings(
 			ring,

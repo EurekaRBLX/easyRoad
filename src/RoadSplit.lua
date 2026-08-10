@@ -9,8 +9,10 @@
 -- transition (ProfileEnd set), a bus bay, or source-window features - correctly remapping either
 -- across an arbitrary cut point (interpolating the exact profile at the
 -- split station, or deciding which piece keeps the bay) is real geometry
--- work, not attempted here. Such roads are rejected with a visible reason;
--- they are never split while silently dropping marking/kerb ranges or stops.
+-- work, not attempted here. Junction- and roundabout-trimmed roads without
+-- those features ARE safe to split: SplitMany cuts the visible window while
+-- partitioning the preserved untrimmed source at the matching source station.
+-- Such roads remain restorable at their original outer node after the cut.
 
 local CurveSegment = require("./Geometry/CurveSegment")
 local PolyCurve = require("./Geometry/PolyCurve")
@@ -26,6 +28,19 @@ local RoadSource = require("./RoadSource")
 local RoadSplit = {}
 
 local MIN_PIECE_LENGTH_STUDS = 4
+local SOURCE_WINDOW_EPSILON_STUDS = 1e-3
+local SOURCE_HINT_TOLERANCE_STUDS = 1
+
+-- These attributes describe the placed road's corridor membership rather than
+-- generated geometry. A split turns one carriageway into multiple consecutive
+-- Models, but every piece still belongs to the same parallel roadway.
+local PRESERVED_RW_ATTRIBUTES: { [string]: boolean } = {
+	RW_ParallelGroupId = true,
+	RW_ParallelIndex = true,
+	RW_ParallelCount = true,
+	RW_ParallelOffsetM = true,
+	RW_ParallelReverse = true,
+}
 
 export type SplitCut = {
 	StationStuds: number,
@@ -36,28 +51,37 @@ function RoadSplit.MinimumPieceLengthStuds(): number
 	return MIN_PIECE_LENGTH_STUDS
 end
 
-local function hasActiveSourceWindow(road: Model, data: RoadInstance.RoadData): boolean
-	local source = RoadSource.ReadSegment(road)
-	if not source then
-		return false
-	end
-	local sourceCurve = PolyCurve.new({ source })
-	return math.abs(sourceCurve.Length - data.Curve.Length) > 1e-3
-		or (sourceCurve:PosAt(0) - data.Curve:PosAt(0)).Magnitude > 1e-3
-		or (sourceCurve:PosAt(sourceCurve.Length) - data.Curve:PosAt(data.Curve.Length)).Magnitude > 1e-3
+local function hasUnsupportedProfileOffsetWarp(data: RoadInstance.RoadData): boolean
+	-- A profile transition is already rejected below. Keep the same safety
+	-- boundary for externally-authored constant-profile roads whose profile
+	-- centre nevertheless moves across the segment: splitting would restart the
+	-- smoothstep on every piece and visibly change the original alignment.
+	return data.ProfileEnd == nil and math.abs(data.ProfileOffsetEndM - data.ProfileOffsetStartM) > 1e-6
 end
 
-local function connectedToRoundabout(data: RoadInstance.RoadData): boolean
-	for _, junctionId in { data.StartJunctionId, data.EndJunctionId } do
-		if junctionId then
-			local controller = JunctionInstance.FindById(junctionId)
-			local controllerData = if controller then JunctionInstance.Read(controller) else nil
-			if controllerData and controllerData.Kind == "Roundabout" then
-				return true
-			end
-		end
+local function hasUnsupportedStructure(data: RoadInstance.RoadData): boolean
+	-- Every split piece currently starts custom-module tiling and procedural
+	-- pier distribution from its own station zero.  Splitting a structured road
+	-- would therefore overlap/rephase Ground modules and can duplicate viaduct
+	-- supports around the new node.  CrossSection snapping remains available
+	-- because it never mutates the target; automatic topology must wait until a
+	-- durable structure phase/source-station offset is part of RoadData.
+	return data.Structure ~= nil and (data.Structure :: RoadInstance.StructureData).Mode ~= "None"
+end
+
+local function activeSourceWindow(
+	road: Model,
+	data: RoadInstance.RoadData
+): (CurveSegment.Segment?, PolyCurve.PolyCurve?)
+	local source = RoadSource.ReadSegment(road)
+	if not source then
+		return nil, nil
 	end
-	return false
+	local sourceCurve = PolyCurve.new({ source })
+	local active = math.abs(sourceCurve.Length - data.Curve.Length) > 1e-3
+		or (sourceCurve:PosAt(0) - data.Curve:PosAt(0)).Magnitude > 1e-3
+		or (sourceCurve:PosAt(sourceCurve.Length) - data.Curve:PosAt(data.Curve.Length)).Magnitude > 1e-3
+	return if active then source else nil, if active then sourceCurve else nil
 end
 
 -- True if `road` is a plain, unmodified segment RoadSplit can safely cut -
@@ -68,12 +92,12 @@ function RoadSplit.CanSplit(road: Model): boolean
 		return false
 	end
 	return data.ProfileEnd == nil
+		and not hasUnsupportedProfileOffsetWarp(data)
+		and not hasUnsupportedStructure(data)
 		and data.Bay == nil
 		and #data.MarkingStretches == 0
 		and #data.KerbStretches == 0
 		and #BusStops.Get(road) == 0
-		and not hasActiveSourceWindow(road, data)
-		and not connectedToRoundabout(data)
 		and #data.Curve.Segments == 1
 end
 
@@ -86,20 +110,79 @@ function RoadSplit.SplitBlockReason(road: Model): string?
 		return "Road is missing editable curve data"
 	elseif data.ProfileEnd ~= nil then
 		return "Widening/narrowing roads cannot be split yet"
+	elseif hasUnsupportedProfileOffsetWarp(data) then
+		return "Roads with a changing profile-centre offset cannot be split yet"
+	elseif hasUnsupportedStructure(data) then
+		return "Roads with custom or procedural structures cannot be split yet"
 	elseif data.Bay ~= nil then
 		return "Roads with bus bays cannot be split yet"
 	elseif #data.MarkingStretches > 0 or #data.KerbStretches > 0 then
 		return "Roads with marking or kerb stretches cannot be split yet"
 	elseif #BusStops.Get(road) > 0 then
 		return "Roads with bus stops cannot be split yet"
-	elseif hasActiveSourceWindow(road, data) then
-		return "Roads currently trimmed by a junction or roundabout cannot be split yet"
-	elseif connectedToRoundabout(data) then
-		return "Roundabout approaches cannot be split while connected"
 	elseif #data.Curve.Segments ~= 1 then
 		return "Multi-segment roads cannot be split yet"
 	end
 	return nil
+end
+
+-- Refine a source station around the expected branch. CurveSegment.Sub builds
+-- a fresh 64-sample arc table, so adding visible arc lengths to a source origin
+-- is a useful branch hint but is not exact on a strong cubic. Projecting the
+-- physical cut point closes that drift while the bounded search prevents a
+-- self-crossing source from jumping to its other branch.
+local function projectSourceStationNear(
+	sourceCurve: PolyCurve.PolyCurve,
+	point: Vector3,
+	expectedStation: number,
+	minimumStation: number,
+	maximumStation: number
+): number
+	minimumStation = math.clamp(minimumStation, 0, sourceCurve.Length)
+	maximumStation = math.clamp(maximumStation, minimumStation, sourceCurve.Length)
+	if maximumStation - minimumStation <= SOURCE_WINDOW_EPSILON_STUDS then
+		return minimumStation
+	end
+
+	local radius = math.max(sourceCurve.Length / 32, 4)
+	local low = math.max(minimumStation, expectedStation - radius)
+	local high = math.min(maximumStation, expectedStation + radius)
+	if high - low <= SOURCE_WINDOW_EPSILON_STUDS then
+		low, high = minimumStation, maximumStation
+	end
+	local bestStation = math.clamp(expectedStation, low, high)
+	local bestDistance = (sourceCurve:PosAt(bestStation) - point).Magnitude
+	local window = high - low
+	for _ = 1, 10 do
+		local searchLow = math.max(low, bestStation - window)
+		local searchHigh = math.min(high, bestStation + window)
+		for sample = 0, 12 do
+			local station = searchLow + (searchHigh - searchLow) * sample / 12
+			local distance = (sourceCurve:PosAt(station) - point).Magnitude
+			if distance < bestDistance then
+				bestDistance = distance
+				bestStation = station
+			end
+		end
+		window = math.max((searchHigh - searchLow) / 6, SOURCE_WINDOW_EPSILON_STUDS)
+	end
+	return math.clamp(bestStation, minimumStation, maximumStation)
+end
+
+local function visibleSourceOrigin(road: Model, data: RoadInstance.RoadData, sourceCurve: PolyCurve.PolyCurve): number
+	local visibleStart = data.Curve:PosAt(0)
+	local stored = road:GetAttribute("RW_FeatureSourceOffsetStuds")
+	if
+		typeof(stored) == "number"
+		and stored == stored
+		and stored > -SOURCE_WINDOW_EPSILON_STUDS
+		and stored < sourceCurve.Length + SOURCE_WINDOW_EPSILON_STUDS
+		and (sourceCurve:PosAt(math.clamp(stored, 0, sourceCurve.Length)) - visibleStart).Magnitude
+			<= SOURCE_HINT_TOLERANCE_STUDS
+	then
+		return math.clamp(stored, 0, sourceCurve.Length)
+	end
+	return sourceCurve:ClosestS(visibleStart)
 end
 
 local function sortedCutsForLength(length: number, cuts: { SplitCut }): { SplitCut }?
@@ -167,13 +250,15 @@ function RoadSplit.SplitMany(
 	end
 
 	local segment = data.Curve.Segments[1]
-	local customAttributes: { [string]: any } = {}
+	local sourceSegment, sourceCurve = activeSourceWindow(road, data)
+	local preservedAttributes: { [string]: any } = {}
 	for name, value in road:GetAttributes() do
 		-- EasyRoad owns every RW_ attribute; copying any of those across would
 		-- overwrite the freshly built piece's curve endpoints, tangents, profile,
-		-- topology ids, or source window. Preserve user/plugin attributes only.
-		if string.sub(name, 1, 3) ~= "RW_" then
-			customAttributes[name] = value
+		-- topology ids, or source window. Preserve user/plugin attributes plus
+		-- the explicit EasyRoad corridor-membership whitelist above.
+		if string.sub(name, 1, 3) ~= "RW_" or PRESERVED_RW_ATTRIBUTES[name] then
+			preservedAttributes[name] = value
 		end
 	end
 	local stations: { number } = table.create(#sorted + 2)
@@ -182,12 +267,56 @@ function RoadSplit.SplitMany(
 		table.insert(stations, cut.StationStuds)
 	end
 	table.insert(stations, data.Curve.Length)
+	-- A rendered approach may be only a window of its durable source because a
+	-- junction or roundabout owns the geometry at one or both ends.  Partition
+	-- that source at positions corresponding to the visible cuts, while still
+	-- building each replacement from the same visible window it had before.
+	-- This is what lets a mid-span snap coexist with an already-connected outer
+	-- end: the old node can later expand/retrim its piece from the retained source
+	-- instead of losing the hidden section permanently.
+	local sourceStations: { number }? = nil
+	local visibleSourceStations: { number }? = nil
+	if sourceSegment and sourceCurve then
+		sourceStations = table.create(#stations)
+		visibleSourceStations = table.create(#stations)
+		local visibleSourceStart = visibleSourceOrigin(road, data, sourceCurve)
+		local visibleSourceEnd = projectSourceStationNear(
+			sourceCurve,
+			data.Curve:PosAt(data.Curve.Length),
+			visibleSourceStart + data.Curve.Length,
+			visibleSourceStart,
+			sourceCurve.Length
+		)
+		table.insert(visibleSourceStations, visibleSourceStart)
+		local previousVisibleStation = visibleSourceStart
+		for index = 2, #stations - 1 do
+			local projected = projectSourceStationNear(
+				sourceCurve,
+				data.Curve:PosAt(stations[index]),
+				visibleSourceStart + stations[index],
+				previousVisibleStation + SOURCE_WINDOW_EPSILON_STUDS,
+				visibleSourceEnd - SOURCE_WINDOW_EPSILON_STUDS
+			)
+			table.insert(visibleSourceStations, projected)
+			previousVisibleStation = projected
+		end
+		table.insert(visibleSourceStations, visibleSourceEnd)
+
+		table.insert(sourceStations, 0)
+		for index = 2, #stations - 1 do
+			table.insert(sourceStations, visibleSourceStations[index])
+		end
+		table.insert(sourceStations, sourceCurve.Length)
+	end
 
 	-- Build every replacement before mutating the original so a construction
 	-- error cannot leave only half of a road in the workspace.
 	local pieces: { Model } = {}
 	for index = 1, #stations - 1 do
 		local pieceSegment = CurveSegment.Sub(segment, stations[index], stations[index + 1])
+		local pieceSourceSegment = if sourceSegment and sourceStations
+			then CurveSegment.Sub(sourceSegment, sourceStations[index], sourceStations[index + 1])
+			else pieceSegment
 		local pieceCurve = PolyCurve.new({ pieceSegment })
 		local piece = RoadBuilder.Build({
 			Curve = pieceCurve,
@@ -200,7 +329,7 @@ function RoadSplit.SplitMany(
 			Preview = false,
 		})
 		piece.Name = road.Name
-		for name, value in customAttributes do
+		for name, value in preservedAttributes do
 			piece:SetAttribute(name, value)
 		end
 		local startJunctionId = if index == 1 then data.StartJunctionId else sorted[index - 1].JunctionId
@@ -212,8 +341,10 @@ function RoadSplit.SplitMany(
 			if index > #sorted then data.EndPortId else nil
 		)
 		RoadInstance.StampStructure(piece, data.Structure)
-		RoadSource.WriteSegment(piece, pieceSegment)
-		piece:SetAttribute("RW_FeatureSourceOffsetStuds", 0)
+		RoadSource.WriteSegment(piece, pieceSourceSegment)
+		local visiblePieceSourceStart = if visibleSourceStations then visibleSourceStations[index] else stations[index]
+		local pieceSourceStart = if sourceStations then sourceStations[index] else stations[index]
+		piece:SetAttribute("RW_FeatureSourceOffsetStuds", math.max(0, visiblePieceSourceStart - pieceSourceStart))
 		StructureBuilder.Render(piece, pieceCurve, data.Structure or StructureBuilder.DefaultData(settings), settings)
 		table.insert(pieces, piece)
 	end

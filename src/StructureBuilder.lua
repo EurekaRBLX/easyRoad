@@ -1,6 +1,7 @@
 --!strict
--- Repeats imported rigid Models along a placed road. Without a custom asset it
--- builds a concrete viaduct deck/parapets or a tunnel base/walls/arched vault;
+-- Repeats imported rigid Models along a placed road. Ground assets replace the
+-- ordinary generated cross-section after a successful module build. Without a
+-- custom asset it builds a concrete viaduct deck/parapets or a tunnel base/walls/arched vault;
 -- viaduct piers are projected vertically down to Terrain/world parts.
 
 local Workspace = game:GetService("Workspace")
@@ -269,17 +270,17 @@ local function placeModules(
 	template: Model,
 	offsetStuds: number,
 	settings: Settings.EasyRoadSettings
-): (number, string?)
+): (number, string?, string?)
 	local startSocket = StructureAssets.FindSocket(template, "EasyRoadStart")
 	local endSocket = StructureAssets.FindSocket(template, "EasyRoadEnd")
 	if not startSocket or not endSocket then
-		return 0, "The stored asset is missing EasyRoadStart/EasyRoadEnd sockets. Re-import it."
+		return 0, "The stored asset is missing EasyRoadStart/EasyRoadEnd sockets. Re-import it.", nil
 	end
 	local sourceStart = startSocket.WorldPosition
 	local sourceEnd = endSocket.WorldPosition
 	local moduleLength = (sourceEnd - sourceStart).Magnitude
 	if moduleLength < 0.1 then
-		return 0, "The stored asset's sockets overlap."
+		return 0, "The stored asset's sockets overlap.", nil
 	end
 	local sourceFrame = safeLookAt(sourceStart, sourceEnd, startSocket.WorldCFrame.UpVector)
 	local pivotRelative = sourceFrame:ToObjectSpace(template:GetPivot())
@@ -293,6 +294,14 @@ local function placeModules(
 		return curve:PosAt(station) + frame.RightVector * profileOffsetStuds + frame.UpVector * offsetStuds
 	end
 	local ranges = moduleRanges(curve.Length, targetPositionAt, moduleLength)
+	if #ranges == 0 or math.abs(ranges[#ranges][2] - curve.Length) > EPSILON then
+		return 0,
+			string.format(
+				"This alignment needs more than %d rigid modules. Use a longer source module or shorter road.",
+				MAX_MODULES
+			),
+			nil
+	end
 	local modules = Instance.new("Folder")
 	modules.Name = "Modules"
 	modules.Parent = parent
@@ -302,10 +311,22 @@ local function placeModules(
 		local p0, p1 = targetPositionAt(s0), targetPositionAt(s1)
 		local middleFrame = bankedFrameAt((s0 + s1) / 2)
 		local targetFrame = safeLookAt(p0, p1, middleFrame.UpVector)
-		local clone = template:Clone()
+		local clone, cloneError = StructureAssets.CloneComplete(template)
+		if not clone then
+			modules:Destroy()
+			return 0,
+				(cloneError or "Roblox could not clone the complete stored road asset.") .. " Export and re-import it.",
+				nil
+		end
 		clone.Name = string.format("Module_%04d", index)
+		clone:SetAttribute("RW_AssetId", template:GetAttribute("ER_AssetId"))
+		clone:SetAttribute("RW_ModuleIndex", index)
+		clone:SetAttribute("RW_ModuleStationStartStuds", s0)
+		clone:SetAttribute("RW_ModuleStationEndStuds", s1)
+		local partCount = 0
 		for _, descendant in clone:GetDescendants() do
 			if descendant:IsA("BasePart") then
+				partCount += 1
 				descendant.Anchored = true
 			elseif descendant:IsA("BaseScript") then
 				-- Importing literal geometry must not multiply and execute a source
@@ -314,10 +335,43 @@ local function placeModules(
 				descendant.Enabled = false
 			end
 		end
+		if partCount == 0 then
+			clone:Destroy()
+			modules:Destroy()
+			return 0, "The stored road asset no longer contains clonable BaseParts. Re-import it.", nil
+		end
 		clone:PivotTo(targetFrame * pivotRelative)
 		clone.Parent = modules
 	end
-	return #ranges, nil
+	local endpointChord = (targetPositionAt(curve.Length) - targetPositionAt(0)).Magnitude
+	local fitWarning = if #ranges == 1 and endpointChord + 0.05 < moduleLength
+		then "The road is shorter than one rigid module, so the module extends beyond an endpoint."
+		else nil
+	return #ranges, nil, fitWarning
+end
+
+-- RoadBuilder emits the editable cross-section as direct BasePart children.
+-- A custom Ground asset owns the visible and physical surface instead. Only
+-- remove those Parts after every custom module cloned successfully, so a
+-- missing/deleted/bad asset safely leaves the ordinary generated road intact.
+local function suppressGeneratedRoadSurface(road: Model): number
+	local removed = 0
+	for _, child in road:GetChildren() do
+		if child:IsA("BasePart") then
+			removed += 1
+			child:Destroy()
+		end
+	end
+	return removed
+end
+
+local function hasGeneratedRoadSurface(road: Model): boolean
+	for _, child in road:GetChildren() do
+		if child:IsA("BasePart") and typeof(child:GetAttribute("RW_ComponentStartIndex")) == "number" then
+			return true
+		end
+	end
+	return false
 end
 
 local function raycastExclusions(road: Model): { Instance }
@@ -892,11 +946,11 @@ local function placeProceduralTunnel(
 end
 
 local function restyleElevatedMedian(road: Model, enabled: boolean, baseColor: Color3, baseMaterial: Enum.Material)
-	for _, descendant in road:GetDescendants() do
-		if not descendant:IsA("BasePart") or descendant.Name ~= "Median" then
+	for _, child in road:GetChildren() do
+		if not child:IsA("BasePart") or child.Name ~= "Median" then
 			continue
 		end
-		local part = descendant :: BasePart
+		local part = child :: BasePart
 		if part:GetAttribute("RW_ElevatedMedianStyled") == true then
 			local originalColor = part:GetAttribute("RW_OriginalMedianColor")
 			part.Material = Enum.Material.Grass
@@ -923,15 +977,33 @@ function StructureBuilder.Render(
 ): (boolean, string)
 	local concreteColor = StructureBuilder.ColorFromHex(data.ConcreteColorHex)
 	local baseMaterial = StructureMaterials.Resolve(data.BaseMaterial)
-	restyleElevatedMedian(road, data.Mode == "Viaduct" and data.ConcreteMedian, concreteColor, baseMaterial)
-	StructureBuilder.Clear(road)
+	local existingStructure = road:FindFirstChild(GENERATED_NAME)
+	local existingMode = if existingStructure then existingStructure:GetAttribute("RW_StructureMode") else nil
+	local proceduralSurfacePresent = hasGeneratedRoadSurface(road)
 	if data.Mode == "None" then
+		if existingMode == "Ground" and not proceduralSurfacePresent then
+			return false,
+				"Rebuild the procedural road surface before removing its custom Ground module; the existing road was kept visible."
+		end
+		restyleElevatedMedian(road, false, concreteColor, baseMaterial)
+		StructureBuilder.Clear(road)
 		return true, "Ground-level road; no generated structure."
+	end
+	if data.Mode ~= "Ground" and existingMode == "Ground" and not proceduralSurfacePresent then
+		return false,
+			"Rebuild the procedural road surface before changing away from a custom Ground module; the existing road was kept visible."
+	end
+	if data.Mode == "Ground" and not data.AssetId then
+		return false,
+			if existingMode == "Ground" and not proceduralSurfacePresent
+				then "Choose an imported Ground road module. The existing custom road was kept as a safe fallback."
+				else "Choose an imported Ground road module. The procedural road was kept as a safe fallback."
 	end
 
 	local generated = makeGeneratedModel()
 	local moduleCount = 0
 	local proceduralPartCount = 0
+	local moduleFitWarning: string? = nil
 	if data.AssetId then
 		local asset = StructureAssets.Get(data.AssetId)
 		if not asset then
@@ -943,13 +1015,14 @@ function StructureBuilder.Render(
 			generated:Destroy()
 			return false, "The selected asset belongs to the " .. tostring(assetKind) .. " library."
 		end
-		local count, err =
+		local count, err, fitWarning =
 			placeModules(generated, road, curve, asset, data.ModuleOffsetM * settings.MetersToStuds, settings)
 		if err then
 			generated:Destroy()
 			return false, err
 		end
 		moduleCount = count
+		moduleFitWarning = fitWarning
 	elseif data.Mode == "Viaduct" then
 		proceduralPartCount = placeProceduralViaduct(generated, road, curve, data, settings)
 	elseif data.Mode == "Tunnel" then
@@ -961,11 +1034,45 @@ function StructureBuilder.Render(
 	generated:SetAttribute("RW_ModuleCount", moduleCount)
 	generated:SetAttribute("RW_PierCount", pierCount)
 	generated:SetAttribute("RW_ProceduralPartCount", proceduralPartCount)
-	generated.Parent = road
 
+	-- Commit only after the complete replacement exists. Keep the previous
+	-- structure and/or procedural surface visible through every validation and
+	-- clone failure above. Parenting the pending replacement before suppressing
+	-- Ground Parts also prevents a failed Parent assignment from blanking a road.
+	generated.Name = GENERATED_NAME .. "_Pending"
+	local parented = pcall(function()
+		generated.Parent = road
+	end)
+	if not parented then
+		generated:Destroy()
+		return false, "Roblox could not attach the completed structure; the existing road was kept visible."
+	end
+	restyleElevatedMedian(road, data.Mode == "Viaduct" and data.ConcreteMedian, concreteColor, baseMaterial)
+	local suppressedSurfacePartCount = if data.Mode == "Ground" then suppressGeneratedRoadSurface(road) else 0
+	generated:SetAttribute("RW_SuppressedSurfacePartCount", suppressedSurfacePartCount)
+	if existingStructure and existingStructure.Parent then
+		existingStructure:Destroy()
+	end
+	generated.Name = GENERATED_NAME
+
+	if data.Mode == "Ground" then
+		return true,
+			string.format(
+				"Built %d rigid custom ground-road modules and replaced %d procedural surface parts.%s",
+				moduleCount,
+				suppressedSurfacePartCount,
+				if moduleFitWarning then " " .. moduleFitWarning else ""
+			)
+	end
 	if data.Mode == "Viaduct" then
 		if data.AssetId then
-			return true, string.format("Built %d custom viaduct modules and %d raycast piers.", moduleCount, pierCount)
+			return true,
+				string.format(
+					"Built %d custom viaduct modules and %d raycast piers.%s",
+					moduleCount,
+					pierCount,
+					if moduleFitWarning then " " .. moduleFitWarning else ""
+				)
 		end
 		return true,
 			string.format(
@@ -975,7 +1082,12 @@ function StructureBuilder.Render(
 			)
 	end
 	if data.AssetId then
-		return true, string.format("Built %d custom tunnel modules. Terrain excavation is explicit.", moduleCount)
+		return true,
+			string.format(
+				"Built %d custom tunnel modules. Terrain excavation is explicit.%s",
+				moduleCount,
+				if moduleFitWarning then " " .. moduleFitWarning else ""
+			)
 	end
 	return true,
 		string.format(

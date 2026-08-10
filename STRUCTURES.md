@@ -1,8 +1,10 @@
-# EasyRoad custom structures
+# EasyRoad custom roads and structures
 
-EasyRoad keeps its existing procedural cross-section as the road surface and
-can attach a repeated literal Roblox `Model` while placing or editing a road.
-The supported structure roles are viaducts and tunnels.
+EasyRoad can repeat a literal Roblox `Model` along any placed alignment. A
+**Ground road** asset replaces EasyRoad's generated lanes, markings, kerbs, and
+pavements with that Model; **Viaduct** and **Tunnel** assets keep the procedural
+road surface and supply its surrounding structure. All three roles use the same
+socket-chord tiler and game-owned asset library.
 
 Use the Road Builder's **Elevation** field (or its raise/lower keybinds) while
 placing control points: positive values create an elevated alignment for
@@ -14,7 +16,8 @@ lining, and ground-projected supports.
 ## Building from Road Tools
 
 1. Open **Road Tools** and scroll to **Structure**.
-2. Choose **Ground level**, **Elevated viaduct**, or **Tunnel**.
+2. Choose **Ground level**, **Custom ground road**, **Elevated viaduct**, or
+   **Tunnel**.
 3. Set **Elevation** above the terrain for a viaduct or below it for a tunnel.
 4. Place the road normally. The selected structure is serialized and generated
    as soon as each segment is committed; the choice stays active along the
@@ -24,6 +27,13 @@ Without a custom module, viaduct mode builds a thin central structural base and
 edge parapet/fascia walls beneath/along the generated road, then raycasts piers
 down to the world. Tunnel mode builds a thin base, bottom-extended sidewalls,
 and a segmented arched vault.
+
+Custom ground mode requires an imported Ground module. EasyRoad first builds a
+normal road as a recoverable fallback, validates and clones every rigid module,
+then removes only the generated surface Parts after that succeeds. The imported
+Model therefore owns the visible geometry, collisions, materials, and hierarchy.
+The Road Editor profile remains the alignment, width/snapping envelope, and
+topology source for junctions even though its visual Parts are replaced.
 
 Road Tools keeps the common mode/asset choices visible and collapses the
 geometry fields under **Edit advanced structure options**. Those fields control
@@ -39,8 +49,9 @@ placement sessions. Imported modules keep their authored appearance.
 1. Put the source `Model` in Workspace and orient its forward direction along
    local **-Z** if it does not have explicit sockets.
 2. Open **Road Assets** from the top mode bar, then press **Import Selection as
-   Viaduct** or **Import Selection as Tunnel**. The same surface lists every
-   stored asset and provides rename/delete controls.
+   Ground Road**, **Import Selection as Viaduct**, or **Import Selection as
+   Tunnel**. The same surface lists every stored asset, its bounds/socket mode,
+   validation warnings, and rename/export/delete controls.
 3. Open **Road Tools**, choose the matching structure mode and select the
    imported asset before placing. For an existing road, select it, open **Edit
    on Road Builder**, choose the asset, then press **Apply to Road**.
@@ -64,7 +75,7 @@ single source script is not executed once per repeated road module. ModuleScript
 are preserved as inert data. Put active road behaviour in a separate controller
 that discovers generated modules instead of embedding it in the tiled Model.
 
-## Socket contract
+## Socket and fit contract
 
 For precise joints, add these Attachments anywhere inside the source Model:
 
@@ -73,15 +84,41 @@ For precise joints, add these Attachments anywhere inside the source Model:
 
 Their position-to-position distance is the rigid module chord. The Start
 Attachment's UpVector establishes source roll; the road curve supplies the
-target roll. When either socket is missing, the importer adds both at the
+target roll. When both sockets are missing, the importer adds them at the
 oriented bounding box's +Z/-Z faces using a transparent non-colliding Part.
 That fallback makes ordinary Models usable, but explicit sockets are recommended
 for asymmetric bridges, deliberate overlap joints, and tunnel portals.
 
+Use either both named sockets or neither. A lone socket and duplicate names are
+rejected instead of choosing an arbitrary joint. Overlapping sockets and sockets
+many Model widths outside the bounds are also rejected. A modest deliberate
+outside-bounds overlap, a Start attachment not looking toward End, or opposed
+socket UpVectors are imported with a visible warning because those layouts can
+be intentional and the socket chord remains unambiguous.
+
 A Model is rigid: EasyRoad rotates and repeats clones but does not bend their
 meshes. Use shorter modules on tight curves and steep grade changes. The last
 module may overlap its predecessor so the road ends at a socket instead of
-leaving an uncovered gap.
+leaving an uncovered gap. If an entire road is shorter than one rigid module,
+the full module is retained and the placed-road status names the endpoint
+overshoot; EasyRoad never silently distorts the authored Model.
+
+## Ground road assets
+
+A Ground asset is the maximum-control workflow: author the asphalt, markings,
+kerbs, shoulders, medians, barriers, decorative meshes, attachments, collision,
+and any custom metadata together in one Model. Put the start/end sockets on the
+datum that should follow the EasyRoad alignment, normally the carriageway centre
+at road-surface height. A positive or negative **Y offset** in advanced module
+placement moves the whole repeated asset without changing that datum.
+
+Rendered copies are anchored. Scripts and LocalScripts are disabled per tile so
+one imported script cannot execute hundreds of times; ModuleScripts remain inert
+data. The placement preview continues to show the editable EasyRoad profile as
+an alignment envelope, while committed and rebuilt roads show the literal Model.
+Bus-bay and marking-stretch data remain serialized, but their procedural visual
+Parts are intentionally not layered over a Ground asset: put equivalent details
+in the source Model when the literal asset owns the surface.
 
 ## Viaducts
 
@@ -127,10 +164,13 @@ separate explicit feature rather than a side effect of selecting a tunnel.
 - Road configuration attribute: `RW_StructureJson`
 - Generated road child: `EasyRoadStructure`
 - Generated subfolders: `Modules`, `Piers`, `ProceduralViaduct`, or `ProceduralTunnel`
+- Ground replacement count: `EasyRoadStructure.RW_SuppressedSurfacePartCount`
 
 Generated children are disposable. EasyRoad recreates them from the serialized
-road configuration after lane, marking, bus-bay, split, junction, and
-roundabout rebuilds. Edit the source library Model and re-apply only after a
+road configuration after supported lane, marking, bus-bay, junction, and
+roundabout rebuilds. Structured roads are deliberately not split into junction
+pieces yet, because custom-module and pier spacing need one persistent phase
+across every piece. Edit the source library Model and re-apply only after a
 future replace/update workflow exists; direct edits to generated clones will be
 overwritten.
 
@@ -142,3 +182,6 @@ informed the procedural defaults. `tools/preview/hardware_reference_check.py`
 parses those XML files, while `structure_preview.py` validates and renders the
 procedural slab/piers, twin cap beam, independently styled wall/roof channels,
 and arched tunnel cross-section without Roblox Studio.
+`ground_asset_preview.py` source-links the Ground mode/import/UI contract,
+exercises valid, automatic, partial, duplicate, reversed, and out-of-bounds
+socket cases, and renders the same rigid socket repetition used by all assets.

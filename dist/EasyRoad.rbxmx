@@ -1279,11 +1279,7 @@ end
 -- approximates that arc and - unlike a guide-point quadratic - stays smooth
 -- at ANY turn angle, including end points placed beside or behind the
 -- start. No cusps, no folded frames.
-function Fitting.CurveFromTangent(
-	startPos: Vector3,
-	startTangent: Vector3,
-	endPos: Vector3
-): CurveSegment.Segment
+function Fitting.CurveFromTangent(startPos: Vector3, startTangent: Vector3, endPos: Vector3): CurveSegment.Segment
 	local chord = endPos - startPos
 	local chordLength = chord.Magnitude
 	if chordLength &lt; 1e-6 then
@@ -1313,14 +1309,99 @@ end
 
 -- Straight continuation from a locked tangent: the road goes exactly along
 -- the tangent for the projected distance to the clicked point.
-function Fitting.StraightFromTangent(
-	startPos: Vector3,
-	startTangent: Vector3,
-	endPos: Vector3
-): CurveSegment.Segment
+function Fitting.StraightFromTangent(startPos: Vector3, startTangent: Vector3, endPos: Vector3): CurveSegment.Segment
 	local tangent = startTangent.Unit
 	local distance = math.max((endPos - startPos):Dot(tangent), 1)
 	return CurveSegment.Line(startPos, startPos + tangent * distance)
+end
+
+-- Treat a target-road tangent as an undirected axis and point it along the
+-- authored segment's chord. Sharing this convention with placement keeps the
+-- endpoint's tangent and its lateral profile-offset frame from choosing
+-- opposite signs.
+function Fitting.OrientedTangentAxis(axis: Vector3, chord: Vector3): Vector3
+	local chordDirection = if chord.Magnitude &gt; 1e-6 then chord.Unit else Vector3.zAxis
+	local direction = if axis.Magnitude &gt; 1e-6 then axis.Unit else chordDirection
+	return if direction:Dot(chordDirection) &lt; 0 then -direction else direction
+end
+
+-- Mirrors PolyCurve.FrameAt's unrolled right vector. Cross-section placement
+-- uses it to solve the authored curve point whose later RoadBuilder profile
+-- offset will put the visible carriageway centre exactly on the snap target.
+function Fitting.TangentRightVector(tangent: Vector3): Vector3
+	local direction = if tangent.Magnitude &gt; 1e-6 then tangent.Unit else Vector3.zAxis
+	local flat = Vector3.new(direction.X, 0, direction.Z)
+	if flat.Magnitude &lt; 1e-6 then
+		direction = Vector3.zAxis
+	end
+	return CFrame.lookAt(Vector3.zero, direction, Vector3.yAxis).RightVector
+end
+
+-- Re-expresses any supported segment as an equivalent cubic, then constrains
+-- whichever endpoint tangent axes were supplied.  The endpoints themselves
+-- never move and the unconstrained handle stays mathematically equivalent to
+-- the original Line / Quadratic / Cubic shape.  This is used by
+-- cross-section-only road placement: the target road remains untouched, while
+-- the new road arrives along the selected carriageway reference instead of
+-- ending in an abrupt angled butt joint.
+--
+-- A tangent is treated as an AXIS rather than a directed vector.  Its sign is
+-- chosen from the endpoint chord, so the same target-road tangent works for a
+-- merge or a diverge and for either end of the newly placed road.  Capping a
+-- constrained handle at one third of the chord keeps a very distant user
+-- control from turning into a loop after its direction is rotated.
+function Fitting.ConstrainEndpointTangents(
+	segment: CurveSegment.Segment,
+	startTangentAxis: Vector3?,
+	endTangentAxis: Vector3?
+): CurveSegment.Segment
+	if not startTangentAxis and not endTangentAxis then
+		return segment
+	end
+
+	local p0 = segment.P0
+	local p3: Vector3
+	local p1: Vector3
+	local p2: Vector3
+	if segment.Kind == "Line" then
+		p3 = segment.P1
+		p1 = p0:Lerp(p3, 1 / 3)
+		p2 = p0:Lerp(p3, 2 / 3)
+	elseif segment.Kind == "Quadratic" then
+		p3 = segment.P2 :: Vector3
+		-- Exact degree elevation: a quadratic represented as a cubic follows
+		-- the identical curve before either requested endpoint is constrained.
+		p1 = p0 + (segment.P1 - p0) * (2 / 3)
+		p2 = p3 + (segment.P1 - p3) * (2 / 3)
+	else
+		p3 = segment.P3 :: Vector3
+		p1 = segment.P1
+		p2 = segment.P2 :: Vector3
+	end
+
+	local chord = p3 - p0
+	local chordLength = chord.Magnitude
+	if chordLength &lt; 1e-6 then
+		return segment
+	end
+	local maximumHandle = chordLength / 3
+
+	if startTangentAxis then
+		local handleLength = math.min((p1 - p0).Magnitude, maximumHandle)
+		if handleLength &lt; 1e-4 then
+			handleLength = maximumHandle
+		end
+		p1 = p0 + Fitting.OrientedTangentAxis(startTangentAxis, chord) * handleLength
+	end
+	if endTangentAxis then
+		local handleLength = math.min((p3 - p2).Magnitude, maximumHandle)
+		if handleLength &lt; 1e-4 then
+			handleLength = maximumHandle
+		end
+		p2 = p3 - Fitting.OrientedTangentAxis(endTangentAxis, chord) * handleLength
+	end
+
+	return CurveSegment.Cubic(p0, p1, p2, p3)
 end
 
 return Fitting
@@ -7632,6 +7713,22 @@ local function ringSidewalkWidthM(style: RegionStyles.RegionStyle): number
 	return if style.RoundaboutSidewalk == false then 0 else style.SidewalkWidthM
 end
 
+local function ringSidewalkComponentIndices(profile: RoadProfile.RoadProfile): { number }
+	local indices: { number } = {}
+	for index, component in profile.Components do
+		if component.Kind == "Sidewalk" and component.WidthM &gt; 1e-6 then
+			table.insert(indices, index)
+		end
+	end
+	return indices
+end
+
+-- Assigned after the convex-polygon helpers are declared. Create/Rebuild are
+-- called only after this module has finished loading, so both use the same
+-- exact station-quad pavement path without moving the public Create API below
+-- several thousand lines of roundabout implementation.
+local buildExactRingSidewalk: any
+
 -- Centreline to the ring's INNER edge, i.e. the side the central island is on -
 -- the opposite side from the pavement (see ringComponents).
 local function ringInnerHalfWidthM(profile: RoadProfile.RoadProfile, style: RegionStyles.RegionStyle): number
@@ -7932,15 +8029,18 @@ function RoundaboutBuilder.Create(
 		Style = style,
 		Settings = flatSettings(settings),
 		Preview = false,
+		ExcludeComponentIndices = ringSidewalkComponentIndices(profile),
 		MarkingLines = roundaboutMarkingLines(profile, style, style.RoundaboutMarkings == "SolidLanes"),
 		MarkingDashStartsAtZero = true,
 	}
 	local model = RoadBuilder.Build(ringOptions)
+	local stations = RoadBuilder.StationsFor(ringOptions)
+	local halfW = RoadProfile.TotalWidthM(profile) / 2 * settings.MetersToStuds
+	buildExactRingSidewalk(model, curve, profile, center, radiusStuds + halfW, style, settings, stations, {}, {})
 	model:SetAttribute("RW_Road", nil)
 	model.Name = "Roundabout"
-	local halfW = RoadProfile.TotalWidthM(profile) / 2 * settings.MetersToStuds
 	stampRingMeta(model, center, radiusStuds, radiusStuds + halfW, laneCount, laneWidthM, nil)
-	buildIsland(model, center, radiusStuds, profile, style, settings, curve, RoadBuilder.StationsFor(ringOptions))
+	buildIsland(model, center, radiusStuds, profile, style, settings, curve, stations)
 	packGeneratedGeometry(model, true)
 	model.Parent = getRoundaboutsFolder()
 	return model
@@ -8853,6 +8953,138 @@ local function replaceWithClippedPolygon(part: BasePart, polygon: ConvexFootprin
 	replaceWithClippedPolygons(part, { polygon })
 end
 
+-- Ring pavement is a true annular strip, not a chain of padded midpoint boxes.
+-- The ordinary RoadBuilder boxes deliberately overlap to hide curve gaps; on a
+-- raised outer strip those padded corners are visible as the sidewalk stepping
+-- outward at every seam. Emit exact station quads instead, subtracting mouth
+-- ownership in polygon space before any Roblox Parts exist. This also avoids
+-- trying to infer the top triangle of a clipped WedgePart later.
+buildExactRingSidewalk = function(
+	model: Model,
+	curve: PolyCurve.PolyCurve,
+	profile: RoadProfile.RoadProfile,
+	center: Vector3,
+	outerRadiusStuds: number,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings,
+	stations: { number },
+	rawSectors: { MouthSector },
+	roadwayCutters: { ConvexFootprint }
+)
+	local componentIndices = ringSidewalkComponentIndices(profile)
+	if #componentIndices == 0 or #stations &lt; 2 then
+		return
+	end
+
+	local boundedCutters: { BoundedFootprint } = {}
+	local function addCutter(polygon: ConvexFootprint)
+		if #polygon &lt; 3 or math.abs(signedAreaXZ(polygon)) &lt;= POLYGON_AREA_EPSILON then
+			return
+		end
+		local minX, maxX, minZ, maxZ = polygonBoundsXZ(polygon)
+		table.insert(boundedCutters, {
+			Polygon = polygon,
+			MinX = minX,
+			MaxX = maxX,
+			MinZ = minZ,
+			MaxZ = maxZ,
+		})
+	end
+
+	-- Paired mouths own a bounded angular wedge of the ring pavement. The
+	-- radius is deliberately beyond every ring corner, making this triangle an
+	-- exact half-ray sector over the only band we ever subtract from.
+	local cutterRadius = math.max(outerRadiusStuds * 3, outerRadiusStuds + 100)
+	for _, sector in clampSectors(rawSectors) do
+		local behindAngle = sector.Angle - sector.Behind
+		local aheadAngle = sector.Angle + sector.Ahead
+		addCutter({
+			center,
+			center + Vector3.new(math.cos(behindAngle) * cutterRadius, 0, math.sin(behindAngle) * cutterRadius),
+			center + Vector3.new(math.cos(aheadAngle) * cutterRadius, 0, math.sin(aheadAngle) * cutterRadius),
+		})
+	end
+	-- A solo curved arm is not an angular sector. Its generated roadway blocks
+	-- and shoulder taper quads are the ownership mask, preserving concrete only
+	-- where the road does not actually drive.
+	for _, cutter in roadwayCutters do
+		addCutter(cutter)
+	end
+
+	local scale = settings.MetersToStuds
+	local curbHeight = style.CurbHeightM * scale
+	local depth = settings.RoadThicknessStuds + curbHeight
+	local offsets = RoadProfile.ComponentOffsetsM(profile)
+	for _, componentIndex in componentIndices do
+		local edge = offsets[componentIndex]
+		local leftStuds = edge.Left * scale
+		local rightStuds = edge.Right * scale
+		for stationIndex = 1, #stations - 1 do
+			local s0, s1 = stations[stationIndex], stations[stationIndex + 1]
+			local frame0, frame1 = curve:FrameAt(s0), curve:FrameAt(s1)
+			local fragments: { ConvexFootprint } = {
+				{
+					(frame0 * CFrame.new(leftStuds, curbHeight, 0)).Position,
+					(frame0 * CFrame.new(rightStuds, curbHeight, 0)).Position,
+					(frame1 * CFrame.new(rightStuds, curbHeight, 0)).Position,
+					(frame1 * CFrame.new(leftStuds, curbHeight, 0)).Position,
+				},
+			}
+			for _, cutter in boundedCutters do
+				local nextFragments: { ConvexFootprint } = {}
+				for _, fragment in fragments do
+					local minX, maxX, minZ, maxZ = polygonBoundsXZ(fragment)
+					if maxX &lt; cutter.MinX or minX &gt; cutter.MaxX or maxZ &lt; cutter.MinZ or minZ &gt; cutter.MaxZ then
+						table.insert(nextFragments, fragment)
+					else
+						local survivors = subtractConvexFootprint(fragment, cutter.Polygon)
+						for _, survivor in survivors do
+							table.insert(nextFragments, survivor)
+						end
+					end
+				end
+				fragments = nextFragments
+				if #fragments == 0 then
+					break
+				end
+			end
+			fragments = coalesceConvexFootprints(fragments)
+			local function makePart(): Part
+				local part = Instance.new("Part")
+				part.Name = "Sidewalk"
+				part.Anchored = true
+				part.CanCollide = true
+				part.CanTouch = false
+				part.CastShadow = false
+				part.TopSurface = Enum.SurfaceType.Smooth
+				part.BottomSurface = Enum.SurfaceType.Smooth
+				part.Material = Enum.Material.Concrete
+				part.Color = style.SidewalkColor
+				part:SetAttribute("RW_ComponentStartIndex", componentIndex)
+				part:SetAttribute("RW_ComponentEndIndex", componentIndex)
+				part:SetAttribute("RW_StationStartStuds", s0)
+				part:SetAttribute("RW_StationEndStuds", s1)
+				part:SetAttribute("RW_ExactRoundaboutPavement", true)
+				return part
+			end
+			local down = -curve:FrameAt((s0 + s1) / 2).UpVector
+			for _, polygon in fragments do
+				for triangleIndex = 2, #polygon - 1 do
+					FillTriangle(
+						polygon[1],
+						polygon[triangleIndex],
+						polygon[triangleIndex + 1],
+						depth,
+						down,
+						makePart,
+						model
+					)
+				end
+			end
+		end
+	end
+end
+
 -- Remove only the top-plane overlap between the ring's original Sidewalk
 -- strips and solo one-way roadway footprints. A polar sector cannot describe a
 -- curved finite-width arm: making it wide enough to clear the inboard edge also
@@ -9437,7 +9669,16 @@ type LaneSpec = { Kind: RoadProfile.ComponentKind, WidthM: number, Directional: 
 -- The lanes of an approach travelling one way, and the span they occupy in the
 -- approach profile's own frame. `Lanes` is in the approach's own left-to-right
 -- order; `armProfileFor` reverses it when the arm's frame is mirrored.
-type LaneGroup = { Lanes: { LaneSpec }, LeftM: number, RightM: number, PavementM: number }
+type LaneGroup = {
+	Lanes: { LaneSpec },
+	LeftM: number,
+	RightM: number,
+	-- Source footway widths are directional data. A custom one-way profile may
+	-- have pavement on either side, both sides, or neither; collapsing that to a
+	-- single number made buildArm recreate the same pavement on both sides.
+	LeftPavementM: number,
+	RightPavementM: number,
+}
 
 -- One direction's worth of an approach, as a one-way road: the lanes that
 -- actually travel that way, plus a single pavement on the arm's OUTER side. A
@@ -9587,7 +9828,13 @@ local function splitApproachLanes(
 		-- Zero means the approach genuinely has no pavement (a motorway). The
 		-- arm still receives the ring-side width in `armProfileFor`; `buildArm`
 		-- tapers between the two instead of pretending the approach had one.
-		return { Lanes = {}, LeftM = math.huge, RightM = -math.huge, PavementM = 0 }
+		return {
+			Lanes = {},
+			LeftM = math.huge,
+			RightM = -math.huge,
+			LeftPavementM = 0,
+			RightPavementM = 0,
+		}
 	end
 	local inbound, outbound = newGroup(), newGroup()
 	-- Indices, not widths, and sorted into cross-section order at the end. The
@@ -9648,8 +9895,11 @@ local function splitApproachLanes(
 				continue
 			end
 			local edge = offsets[i]
-			if math.abs(edge.Right - group.LeftM) &lt; 1e-6 or math.abs(edge.Left - group.RightM) &lt; 1e-6 then
-				group.PavementM = component.WidthM
+			if math.abs(edge.Right - group.LeftM) &lt; 1e-6 then
+				group.LeftPavementM = math.max(group.LeftPavementM, component.WidthM)
+			end
+			if math.abs(edge.Left - group.RightM) &lt; 1e-6 then
+				group.RightPavementM = math.max(group.RightPavementM, component.WidthM)
 			end
 		end
 	end
@@ -9697,10 +9947,16 @@ local function splitUndirected(
 		local index = onlyDriveIndex :: number
 		local component = profile.Components[index]
 		local edge = componentOffsets[index]
-		local pavement = style.SidewalkWidthM
-		for _, candidate in profile.Components do
+		local leftPavementM, rightPavementM = 0, 0
+		for i, candidate in profile.Components do
 			if candidate.Kind == "Sidewalk" then
-				pavement = math.max(pavement, candidate.WidthM)
+				local candidateEdge = componentOffsets[i]
+				if math.abs(candidateEdge.Right - edge.Left) &lt; 1e-6 then
+					leftPavementM = math.max(leftPavementM, candidate.WidthM)
+				end
+				if math.abs(candidateEdge.Left - edge.Right) &lt; 1e-6 then
+					rightPavementM = math.max(rightPavementM, candidate.WidthM)
+				end
 			end
 		end
 		local function sharedGroup(): LaneGroup
@@ -9710,7 +9966,8 @@ local function splitUndirected(
 				},
 				LeftM = edge.Left,
 				RightM = edge.Right,
-				PavementM = pavement,
+				LeftPavementM = leftPavementM,
+				RightPavementM = rightPavementM,
 			}
 		end
 		return sharedGroup(), sharedGroup()
@@ -9720,27 +9977,41 @@ local function splitUndirected(
 		leftM, rightM = -fallbackLaneWidthM / 2, fallbackLaneWidthM / 2
 	end
 	local midM = (leftM + rightM) / 2
-	local pavement = style.SidewalkWidthM
-	for _, component in profile.Components do
+	local leftPavementM, rightPavementM = 0, 0
+	for i, component in profile.Components do
 		if component.Kind == "Sidewalk" then
-			pavement = math.max(pavement, component.WidthM)
+			local edge = componentOffsets[i]
+			if math.abs(edge.Right - leftM) &lt; 1e-6 then
+				leftPavementM = math.max(leftPavementM, component.WidthM)
+			end
+			if math.abs(edge.Left - rightM) &lt; 1e-6 then
+				rightPavementM = math.max(rightPavementM, component.WidthM)
+			end
 		end
 	end
 	local function half(widthM: number): { LaneSpec }
 		return { { Kind = "Drive" :: RoadProfile.ComponentKind, WidthM = widthM, Directional = true } }
 	end
-	return { Lanes = half(midM - leftM), LeftM = leftM, RightM = midM, PavementM = pavement }, {
+	return {
+		Lanes = half(midM - leftM),
+		LeftM = leftM,
+		RightM = midM,
+		LeftPavementM = leftPavementM,
+		RightPavementM = 0,
+	}, {
 		Lanes = half(rightM - midM),
 		LeftM = midM,
 		RightM = rightM,
-		PavementM = pavement,
+		LeftPavementM = 0,
+		RightPavementM = rightPavementM,
 	}
 end
 
 local function buildArm(
 	curve: PolyCurve.PolyCurve,
 	arm: ArmProfile,
-	cutPavementM: number,
+	cutPavementLeftM: number,
+	cutPavementRightM: number,
 	cutAtStart: boolean,
 	center: Vector3,
 	ringKerbRadiusStuds: number,
@@ -9750,10 +10021,13 @@ local function buildArm(
 ): (Model, { ConvexFootprint })
 	local roadwayFootprints: { ConvexFootprint } = {}
 	local sidewalkIndices: { number } = {}
+	local componentOffsets = RoadProfile.ComponentOffsetsM(arm.Profile)
 	local needsSurfaceTaper = arm.CutShoulderM &gt; 1e-6
 	for i, component in arm.Profile.Components do
 		if component.Kind == "Sidewalk" then
 			table.insert(sidewalkIndices, i)
+			local edge = componentOffsets[i]
+			local cutPavementM = if (edge.Left + edge.Right) / 2 &lt; 0 then cutPavementLeftM else cutPavementRightM
 			if math.abs(component.WidthM - cutPavementM) &gt; 1e-6 then
 				needsSurfaceTaper = true
 			end
@@ -9834,7 +10108,7 @@ local function buildArm(
 		local curbHeight = style.CurbHeightM * scale
 		local roadDepth = settings.RoadThicknessStuds
 		local pavementDepth = roadDepth + curbHeight
-		local offsets = RoadProfile.ComponentOffsetsM(arm.Profile)
+		local offsets = componentOffsets
 		local length = curve.Length
 
 		local function makeSurfacePart(name: string, material: Enum.Material, color: Color3): Part
@@ -9858,9 +10132,52 @@ local function buildArm(
 			return makeSurfacePart("Sidewalk", Enum.Material.Concrete, style.SidewalkColor)
 		end
 
-		local function ringAlphaAt(station: number): number
-			local t = if cutAtStart then station / length else 1 - station / length
-			t = math.clamp(t, 0, 1)
+		local function sourceToRingU(station: number): number
+			return math.clamp(if cutAtStart then station / length else 1 - station / length, 0, 1)
+		end
+
+		local function stationAtSourceToRingU(u: number): number
+			return if cutAtStart then u * length else (1 - u) * length
+		end
+
+		-- A solo arm's inboard source footway must disappear at the kerb, not
+		-- continue tapering toward the tangential merge point inside the
+		-- circulating carriageway. Find the first station where its zero-width
+		-- terminal boundary reaches that kerb and finish the taper there.
+		local function zeroWidthTerminalU(innerOffsetM: number, sourcePavementM: number, ringPavementM: number): number
+			if sourcePavementM &lt;= 1e-6 or ringPavementM &gt; 1e-6 then
+				return 1
+			end
+			local function radiusAt(u: number): number
+				local frame = curve:FrameAt(stationAtSourceToRingU(u))
+				local point = (frame * CFrame.new(innerOffsetM * scale, 0, 0)).Position
+				return distanceXZ(point, center)
+			end
+			if radiusAt(1) &gt; ringKerbRadiusStuds + 1e-5 then
+				return 1
+			end
+			local previous = 0
+			for i = 1, 64 do
+				local current = i / 64
+				if radiusAt(current) &lt;= ringKerbRadiusStuds then
+					local lo, hi = previous, current
+					for _ = 1, 24 do
+						local mid = (lo + hi) / 2
+						if radiusAt(mid) &gt; ringKerbRadiusStuds then
+							lo = mid
+						else
+							hi = mid
+						end
+					end
+					return hi
+				end
+				previous = current
+			end
+			return 1
+		end
+
+		local function ringAlphaAt(station: number, terminalU: number): number
+			local t = math.clamp(sourceToRingU(station) / math.max(terminalU, 1e-6), 0, 1)
 			return t * t * (3 - 2 * t)
 		end
 
@@ -9871,10 +10188,12 @@ local function buildArm(
 			local outward = if leftSide then -1 else 1
 			local innerOffsetM = if leftSide then edge.Right else edge.Left
 			local ringPavementM = component.WidthM
+			local cutPavementM = if leftSide then cutPavementLeftM else cutPavementRightM
 			local cutShoulderM = if outward &lt; 0 then arm.CutShoulderLeftM else arm.CutShoulderRightM
+			local terminalU = zeroWidthTerminalU(innerOffsetM, cutPavementM, ringPavementM)
 
 			local function surfacePoints(station: number): (Vector3, Vector3, Vector3, Vector3, number, number)
-				local alpha = ringAlphaAt(station)
+				local alpha = ringAlphaAt(station, terminalU)
 				local shoulderWidthM = cutShoulderM * (1 - alpha)
 				local pavementWidthM = cutPavementM + (ringPavementM - cutPavementM) * alpha
 				local frame = curve:FrameAt(station)
@@ -10325,9 +10644,11 @@ end
 -- on where its neighbours actually landed.
 type MouthArm = {
 	Profile: ArmProfile,
-	-- Pavement width on the source approach at the cut. May be zero; the arm's
-	-- profile above carries the ring-side width and `buildArm` joins the two.
-	CutPavementM: number,
+	-- Pavement widths on each side of the source approach at the cut, expressed
+	-- in this arm's own frame. Either may be zero; buildArm never invents the
+	-- opposite-side footway for an asymmetric one-way road.
+	CutPavementLeftM: number,
+	CutPavementRightM: number,
 	MergeRadius: number,
 	-- Centreline offset at the cut, measured from the approach's centreline along
 	-- the RIGHT OF THE INWARD direction, so both arms use one frame.
@@ -10387,7 +10708,8 @@ local function planMouth(
 		-- outward, and which of those matches the curve depends on which END of
 		-- the road the junction sits at - so it is neither "always the exit" nor
 		-- a property of the arm alone.
-		local profile = armProfileFor(group, solo, style, scale, travelsInward == atStart, ringSidewalkWidthM(style))
+		local mirrored = travelsInward == atStart
+		local profile = armProfileFor(group, solo, style, scale, mirrored, ringSidewalkWidthM(style))
 		local mergeRadius = ringKerbRadiusStuds - profile.OuterOffsetStuds
 		if mergeRadius &lt;= 1 then
 			return nil
@@ -10406,7 +10728,8 @@ local function planMouth(
 			else coreCentreInward + profile.RoadwayCentreM
 		return {
 			Profile = profile,
-			CutPavementM = group.PavementM,
+			CutPavementLeftM = if mirrored then group.RightPavementM else group.LeftPavementM,
+			CutPavementRightM = if mirrored then group.LeftPavementM else group.RightPavementM,
 			MergeRadius = mergeRadius,
 			LateralStuds = lateralM * scale,
 		}
@@ -10574,7 +10897,8 @@ local function buildMouth(
 		local armModel, roadwayCutters = buildArm(
 			entryCurve :: PolyCurve.PolyCurve,
 			entry.Profile,
-			entry.CutPavementM,
+			entry.CutPavementLeftM,
+			entry.CutPavementRightM,
 			true,
 			center,
 			entryRingKerbRadius,
@@ -10604,7 +10928,8 @@ local function buildMouth(
 		local armModel, roadwayCutters = buildArm(
 			exitCurve :: PolyCurve.PolyCurve,
 			exit.Profile,
-			exit.CutPavementM,
+			exit.CutPavementLeftM,
+			exit.CutPavementRightM,
 			false,
 			center,
 			exitRingKerbRadius,
@@ -11132,6 +11457,10 @@ function RoundaboutBuilder.CreateAtJunction(
 		Style = ringStyle,
 		Settings = flatSettings(settings),
 		Preview = false,
+		-- Raised ring pavement is emitted after mouth ownership is known, as
+		-- exact station quads. RoadBuilder's padded boxes visibly overshoot at
+		-- their outer seams and cannot be clipped exactly once they are Parts.
+		ExcludeComponentIndices = ringSidewalkComponentIndices(profile),
 		MarkingLines = roundaboutMarkingLines(profile, ringStyle, ringStyle.RoundaboutMarkings == "SolidLanes"),
 		MarkingDashStartsAtZero = true,
 	}
@@ -11141,18 +11470,12 @@ function RoundaboutBuilder.CreateAtJunction(
 	stampRingMeta(ring, center, radiusStuds, outerRadiusStuds, laneCount, laneWidthM, junctionId)
 	stampRingOverrides(ring, requestedMarkings, requestedSidewalk, requestedIsland)
 
-	-- The ring's OWN outer pavement, captured before any arm parts are parented
-	-- in. It is built as one unbroken circle, so without this it runs a
-	-- raised kerb + pavement band straight across every entry - the mouth reads
-	-- as walled off rather than open ("the mouth still has to open, not close
-	-- into it"). Each mouth below reports the angular sector it occupies and we
-	-- delete the ring pavement inside it.
-	local ringSidewalk: { BasePart } = {}
+	-- Capture only ring-owned paint before arm parts are parented. Raised ring
+	-- pavement is intentionally deferred until every mouth has reported its
+	-- ownership mask, then emitted already-open by buildExactRingSidewalk.
 	local ringMarkings: { BasePart } = {}
 	for _, descendant in ring:GetDescendants() do
-		if descendant:IsA("BasePart") and descendant.Name == "Sidewalk" then
-			table.insert(ringSidewalk, descendant :: BasePart)
-		elseif descendant:IsA("BasePart") and descendant.Name == "Marking" then
+		if descendant:IsA("BasePart") and descendant.Name == "Marking" then
 			table.insert(ringMarkings, descendant :: BasePart)
 		end
 	end
@@ -11219,22 +11542,32 @@ function RoundaboutBuilder.CreateAtJunction(
 	-- pushes the edge line inside the bound, and it survives as a white line
 	-- painted straight across the mouth.
 	local edgeLineInset = ringStyle.MarkingWidthM * 1.5 * scale
-	-- Solo curved arms are not polar sectors. Subtract their actual roadway
-	-- triangles first, while `ringSidewalk` still contains the original block
-	-- footprints; this keeps both curb returns without leaving concrete over the
-	-- live carriageway. Inter-mouth kerb separation keeps these fragments clear
-	-- of the paired angular openings applied immediately afterward.
-	openRingSidewalkByFootprints(ringSidewalk, soloRoadwayCutters)
-	openRingPavement(ringSidewalk, center, mouthSectors, 0)
+	-- Solo curved arms are not polar sectors. The exact builder subtracts their
+	-- generated roadway footprints; paired mouths use their clamped angular
+	-- ownership wedges. Performing both operations before Parts are emitted
+	-- leaves no padded sidewalk corner inside the circulating lanes and no
+	-- outer-edge box overshoot between untouched ring spans.
+	buildExactRingSidewalk(
+		ring,
+		ringCurve,
+		profile,
+		center,
+		outerRadiusStuds,
+		ringStyle,
+		settings,
+		RoadBuilder.StationsFor(ringOptions),
+		mouthSectors,
+		soloRoadwayCutters
+	)
 	-- Edge paint has a different physical hand-off from raised pavement. Open
 	-- it to the full merge angles so the preserved arm edge line reaches the
 	-- same point and tangent; the radial bound keeps all internal dividers.
 	openRingPavement(ringMarkings, center, edgeMarkingSectors, ringKerbRadius - edgeLineInset - 0.5, false)
 
-	-- After openRingPavement, deliberately. The spiral is laid only on the arcs
+	-- After opening the ordinary ring paint, deliberately. The spiral is laid only on the arcs
 	-- BETWEEN mouths, so there is nothing in a sector for that pass to remove -
-	-- and running it first would hand these parts to `ringPavement`, which was
-	-- captured before any of them existed.
+	-- and running it first would make those fresh parts look like ordinary ring
+	-- dividers to the replacement pass.
 	if ringStyle.RoundaboutMarkings == "Turbo" then
 		local replacements = buildTurboMarkings(
 			ring,
@@ -14610,13 +14943,15 @@ export type BayData = {
 	Side: "Left" | "Right",
 }
 
-export type StructureMode = "None" | "Viaduct" | "Tunnel"
+export type StructureMode = "None" | "Ground" | "Viaduct" | "Tunnel"
 export type PillarLayout = "Single" | "Twin"
 export type TransitionAnchor = "Centre" | "LeftEdge" | "RightEdge"
 
 export type StructureData = {
 	Mode: StructureMode,
-	-- References a Model in ServerStorage/EasyRoadAssets. Viaduct mode can
+	-- References a Model in ServerStorage/EasyRoadAssets. Ground mode requires
+	-- one and replaces the generated cross-section with its rigid modules.
+	-- Viaduct mode can
 	-- omit one and use the procedural road itself as the deck; tunnels omit
 	-- one to use EasyRoad's procedural concrete shell.
 	AssetId: string?,
@@ -14880,7 +15215,11 @@ local function structureFromModel(model: Model): StructureData?
 		return nil
 	end
 	local ok, decoded = pcall(HttpService.JSONDecode, HttpService, raw)
-	if not ok or typeof(decoded) ~= "table" or (decoded.Mode ~= "Viaduct" and decoded.Mode ~= "Tunnel") then
+	if
+		not ok
+		or typeof(decoded) ~= "table"
+		or (decoded.Mode ~= "Ground" and decoded.Mode ~= "Viaduct" and decoded.Mode ~= "Tunnel")
+	then
 		return nil
 	end
 	return {
@@ -15854,8 +16193,10 @@ return RoadSource
 -- transition (ProfileEnd set), a bus bay, or source-window features - correctly remapping either
 -- across an arbitrary cut point (interpolating the exact profile at the
 -- split station, or deciding which piece keeps the bay) is real geometry
--- work, not attempted here. Such roads are rejected with a visible reason;
--- they are never split while silently dropping marking/kerb ranges or stops.
+-- work, not attempted here. Junction- and roundabout-trimmed roads without
+-- those features ARE safe to split: SplitMany cuts the visible window while
+-- partitioning the preserved untrimmed source at the matching source station.
+-- Such roads remain restorable at their original outer node after the cut.
 
 local CurveSegment = require("./Geometry/CurveSegment")
 local PolyCurve = require("./Geometry/PolyCurve")
@@ -15871,6 +16212,19 @@ local RoadSource = require("./RoadSource")
 local RoadSplit = {}
 
 local MIN_PIECE_LENGTH_STUDS = 4
+local SOURCE_WINDOW_EPSILON_STUDS = 1e-3
+local SOURCE_HINT_TOLERANCE_STUDS = 1
+
+-- These attributes describe the placed road's corridor membership rather than
+-- generated geometry. A split turns one carriageway into multiple consecutive
+-- Models, but every piece still belongs to the same parallel roadway.
+local PRESERVED_RW_ATTRIBUTES: { [string]: boolean } = {
+	RW_ParallelGroupId = true,
+	RW_ParallelIndex = true,
+	RW_ParallelCount = true,
+	RW_ParallelOffsetM = true,
+	RW_ParallelReverse = true,
+}
 
 export type SplitCut = {
 	StationStuds: number,
@@ -15881,28 +16235,37 @@ function RoadSplit.MinimumPieceLengthStuds(): number
 	return MIN_PIECE_LENGTH_STUDS
 end
 
-local function hasActiveSourceWindow(road: Model, data: RoadInstance.RoadData): boolean
-	local source = RoadSource.ReadSegment(road)
-	if not source then
-		return false
-	end
-	local sourceCurve = PolyCurve.new({ source })
-	return math.abs(sourceCurve.Length - data.Curve.Length) &gt; 1e-3
-		or (sourceCurve:PosAt(0) - data.Curve:PosAt(0)).Magnitude &gt; 1e-3
-		or (sourceCurve:PosAt(sourceCurve.Length) - data.Curve:PosAt(data.Curve.Length)).Magnitude &gt; 1e-3
+local function hasUnsupportedProfileOffsetWarp(data: RoadInstance.RoadData): boolean
+	-- A profile transition is already rejected below. Keep the same safety
+	-- boundary for externally-authored constant-profile roads whose profile
+	-- centre nevertheless moves across the segment: splitting would restart the
+	-- smoothstep on every piece and visibly change the original alignment.
+	return data.ProfileEnd == nil and math.abs(data.ProfileOffsetEndM - data.ProfileOffsetStartM) &gt; 1e-6
 end
 
-local function connectedToRoundabout(data: RoadInstance.RoadData): boolean
-	for _, junctionId in { data.StartJunctionId, data.EndJunctionId } do
-		if junctionId then
-			local controller = JunctionInstance.FindById(junctionId)
-			local controllerData = if controller then JunctionInstance.Read(controller) else nil
-			if controllerData and controllerData.Kind == "Roundabout" then
-				return true
-			end
-		end
+local function hasUnsupportedStructure(data: RoadInstance.RoadData): boolean
+	-- Every split piece currently starts custom-module tiling and procedural
+	-- pier distribution from its own station zero.  Splitting a structured road
+	-- would therefore overlap/rephase Ground modules and can duplicate viaduct
+	-- supports around the new node.  CrossSection snapping remains available
+	-- because it never mutates the target; automatic topology must wait until a
+	-- durable structure phase/source-station offset is part of RoadData.
+	return data.Structure ~= nil and (data.Structure :: RoadInstance.StructureData).Mode ~= "None"
+end
+
+local function activeSourceWindow(
+	road: Model,
+	data: RoadInstance.RoadData
+): (CurveSegment.Segment?, PolyCurve.PolyCurve?)
+	local source = RoadSource.ReadSegment(road)
+	if not source then
+		return nil, nil
 	end
-	return false
+	local sourceCurve = PolyCurve.new({ source })
+	local active = math.abs(sourceCurve.Length - data.Curve.Length) &gt; 1e-3
+		or (sourceCurve:PosAt(0) - data.Curve:PosAt(0)).Magnitude &gt; 1e-3
+		or (sourceCurve:PosAt(sourceCurve.Length) - data.Curve:PosAt(data.Curve.Length)).Magnitude &gt; 1e-3
+	return if active then source else nil, if active then sourceCurve else nil
 end
 
 -- True if `road` is a plain, unmodified segment RoadSplit can safely cut -
@@ -15913,12 +16276,12 @@ function RoadSplit.CanSplit(road: Model): boolean
 		return false
 	end
 	return data.ProfileEnd == nil
+		and not hasUnsupportedProfileOffsetWarp(data)
+		and not hasUnsupportedStructure(data)
 		and data.Bay == nil
 		and #data.MarkingStretches == 0
 		and #data.KerbStretches == 0
 		and #BusStops.Get(road) == 0
-		and not hasActiveSourceWindow(road, data)
-		and not connectedToRoundabout(data)
 		and #data.Curve.Segments == 1
 end
 
@@ -15931,20 +16294,79 @@ function RoadSplit.SplitBlockReason(road: Model): string?
 		return "Road is missing editable curve data"
 	elseif data.ProfileEnd ~= nil then
 		return "Widening/narrowing roads cannot be split yet"
+	elseif hasUnsupportedProfileOffsetWarp(data) then
+		return "Roads with a changing profile-centre offset cannot be split yet"
+	elseif hasUnsupportedStructure(data) then
+		return "Roads with custom or procedural structures cannot be split yet"
 	elseif data.Bay ~= nil then
 		return "Roads with bus bays cannot be split yet"
 	elseif #data.MarkingStretches &gt; 0 or #data.KerbStretches &gt; 0 then
 		return "Roads with marking or kerb stretches cannot be split yet"
 	elseif #BusStops.Get(road) &gt; 0 then
 		return "Roads with bus stops cannot be split yet"
-	elseif hasActiveSourceWindow(road, data) then
-		return "Roads currently trimmed by a junction or roundabout cannot be split yet"
-	elseif connectedToRoundabout(data) then
-		return "Roundabout approaches cannot be split while connected"
 	elseif #data.Curve.Segments ~= 1 then
 		return "Multi-segment roads cannot be split yet"
 	end
 	return nil
+end
+
+-- Refine a source station around the expected branch. CurveSegment.Sub builds
+-- a fresh 64-sample arc table, so adding visible arc lengths to a source origin
+-- is a useful branch hint but is not exact on a strong cubic. Projecting the
+-- physical cut point closes that drift while the bounded search prevents a
+-- self-crossing source from jumping to its other branch.
+local function projectSourceStationNear(
+	sourceCurve: PolyCurve.PolyCurve,
+	point: Vector3,
+	expectedStation: number,
+	minimumStation: number,
+	maximumStation: number
+): number
+	minimumStation = math.clamp(minimumStation, 0, sourceCurve.Length)
+	maximumStation = math.clamp(maximumStation, minimumStation, sourceCurve.Length)
+	if maximumStation - minimumStation &lt;= SOURCE_WINDOW_EPSILON_STUDS then
+		return minimumStation
+	end
+
+	local radius = math.max(sourceCurve.Length / 32, 4)
+	local low = math.max(minimumStation, expectedStation - radius)
+	local high = math.min(maximumStation, expectedStation + radius)
+	if high - low &lt;= SOURCE_WINDOW_EPSILON_STUDS then
+		low, high = minimumStation, maximumStation
+	end
+	local bestStation = math.clamp(expectedStation, low, high)
+	local bestDistance = (sourceCurve:PosAt(bestStation) - point).Magnitude
+	local window = high - low
+	for _ = 1, 10 do
+		local searchLow = math.max(low, bestStation - window)
+		local searchHigh = math.min(high, bestStation + window)
+		for sample = 0, 12 do
+			local station = searchLow + (searchHigh - searchLow) * sample / 12
+			local distance = (sourceCurve:PosAt(station) - point).Magnitude
+			if distance &lt; bestDistance then
+				bestDistance = distance
+				bestStation = station
+			end
+		end
+		window = math.max((searchHigh - searchLow) / 6, SOURCE_WINDOW_EPSILON_STUDS)
+	end
+	return math.clamp(bestStation, minimumStation, maximumStation)
+end
+
+local function visibleSourceOrigin(road: Model, data: RoadInstance.RoadData, sourceCurve: PolyCurve.PolyCurve): number
+	local visibleStart = data.Curve:PosAt(0)
+	local stored = road:GetAttribute("RW_FeatureSourceOffsetStuds")
+	if
+		typeof(stored) == "number"
+		and stored == stored
+		and stored &gt; -SOURCE_WINDOW_EPSILON_STUDS
+		and stored &lt; sourceCurve.Length + SOURCE_WINDOW_EPSILON_STUDS
+		and (sourceCurve:PosAt(math.clamp(stored, 0, sourceCurve.Length)) - visibleStart).Magnitude
+			&lt;= SOURCE_HINT_TOLERANCE_STUDS
+	then
+		return math.clamp(stored, 0, sourceCurve.Length)
+	end
+	return sourceCurve:ClosestS(visibleStart)
 end
 
 local function sortedCutsForLength(length: number, cuts: { SplitCut }): { SplitCut }?
@@ -16012,13 +16434,15 @@ function RoadSplit.SplitMany(
 	end
 
 	local segment = data.Curve.Segments[1]
-	local customAttributes: { [string]: any } = {}
+	local sourceSegment, sourceCurve = activeSourceWindow(road, data)
+	local preservedAttributes: { [string]: any } = {}
 	for name, value in road:GetAttributes() do
 		-- EasyRoad owns every RW_ attribute; copying any of those across would
 		-- overwrite the freshly built piece's curve endpoints, tangents, profile,
-		-- topology ids, or source window. Preserve user/plugin attributes only.
-		if string.sub(name, 1, 3) ~= "RW_" then
-			customAttributes[name] = value
+		-- topology ids, or source window. Preserve user/plugin attributes plus
+		-- the explicit EasyRoad corridor-membership whitelist above.
+		if string.sub(name, 1, 3) ~= "RW_" or PRESERVED_RW_ATTRIBUTES[name] then
+			preservedAttributes[name] = value
 		end
 	end
 	local stations: { number } = table.create(#sorted + 2)
@@ -16027,12 +16451,56 @@ function RoadSplit.SplitMany(
 		table.insert(stations, cut.StationStuds)
 	end
 	table.insert(stations, data.Curve.Length)
+	-- A rendered approach may be only a window of its durable source because a
+	-- junction or roundabout owns the geometry at one or both ends.  Partition
+	-- that source at positions corresponding to the visible cuts, while still
+	-- building each replacement from the same visible window it had before.
+	-- This is what lets a mid-span snap coexist with an already-connected outer
+	-- end: the old node can later expand/retrim its piece from the retained source
+	-- instead of losing the hidden section permanently.
+	local sourceStations: { number }? = nil
+	local visibleSourceStations: { number }? = nil
+	if sourceSegment and sourceCurve then
+		sourceStations = table.create(#stations)
+		visibleSourceStations = table.create(#stations)
+		local visibleSourceStart = visibleSourceOrigin(road, data, sourceCurve)
+		local visibleSourceEnd = projectSourceStationNear(
+			sourceCurve,
+			data.Curve:PosAt(data.Curve.Length),
+			visibleSourceStart + data.Curve.Length,
+			visibleSourceStart,
+			sourceCurve.Length
+		)
+		table.insert(visibleSourceStations, visibleSourceStart)
+		local previousVisibleStation = visibleSourceStart
+		for index = 2, #stations - 1 do
+			local projected = projectSourceStationNear(
+				sourceCurve,
+				data.Curve:PosAt(stations[index]),
+				visibleSourceStart + stations[index],
+				previousVisibleStation + SOURCE_WINDOW_EPSILON_STUDS,
+				visibleSourceEnd - SOURCE_WINDOW_EPSILON_STUDS
+			)
+			table.insert(visibleSourceStations, projected)
+			previousVisibleStation = projected
+		end
+		table.insert(visibleSourceStations, visibleSourceEnd)
+
+		table.insert(sourceStations, 0)
+		for index = 2, #stations - 1 do
+			table.insert(sourceStations, visibleSourceStations[index])
+		end
+		table.insert(sourceStations, sourceCurve.Length)
+	end
 
 	-- Build every replacement before mutating the original so a construction
 	-- error cannot leave only half of a road in the workspace.
 	local pieces: { Model } = {}
 	for index = 1, #stations - 1 do
 		local pieceSegment = CurveSegment.Sub(segment, stations[index], stations[index + 1])
+		local pieceSourceSegment = if sourceSegment and sourceStations
+			then CurveSegment.Sub(sourceSegment, sourceStations[index], sourceStations[index + 1])
+			else pieceSegment
 		local pieceCurve = PolyCurve.new({ pieceSegment })
 		local piece = RoadBuilder.Build({
 			Curve = pieceCurve,
@@ -16045,7 +16513,7 @@ function RoadSplit.SplitMany(
 			Preview = false,
 		})
 		piece.Name = road.Name
-		for name, value in customAttributes do
+		for name, value in preservedAttributes do
 			piece:SetAttribute(name, value)
 		end
 		local startJunctionId = if index == 1 then data.StartJunctionId else sorted[index - 1].JunctionId
@@ -16057,8 +16525,10 @@ function RoadSplit.SplitMany(
 			if index &gt; #sorted then data.EndPortId else nil
 		)
 		RoadInstance.StampStructure(piece, data.Structure)
-		RoadSource.WriteSegment(piece, pieceSegment)
-		piece:SetAttribute("RW_FeatureSourceOffsetStuds", 0)
+		RoadSource.WriteSegment(piece, pieceSourceSegment)
+		local visiblePieceSourceStart = if visibleSourceStations then visibleSourceStations[index] else stations[index]
+		local pieceSourceStart = if sourceStations then sourceStations[index] else stations[index]
+		piece:SetAttribute("RW_FeatureSourceOffsetStuds", math.max(0, visiblePieceSourceStart - pieceSourceStart))
 		StructureBuilder.Render(piece, pieceCurve, data.Structure or StructureBuilder.DefaultData(settings), settings)
 		table.insert(pieces, piece)
 	end
@@ -16797,6 +17267,7 @@ local LENGTH_UNITS = { "Meters", "Feet", "Studs" }
 
 export type SuperelevationMode = "Auto" | "Manual" | "Off"
 export type SnapReference = "Centre" | "LeftRoadwayEdge" | "RightRoadwayEdge"
+export type SnapConnectionMode = "AutomaticJunction" | "CrossSection"
 
 -- Which English variant to use for user-facing terminology that differs
 -- between them (Kerb/Curb, Pavement/Sidewalk, ...) - see Locale.lua. Purely
@@ -16855,6 +17326,12 @@ export type EasyRoadSettings = {
 	-- mid-span snapping. Left/right follow that road's stored start -&gt; end
 	-- profile orientation; topology still connects to its centreline station.
 	SnapReference: SnapReference,
+	-- AutomaticJunction preserves the ordinary network-building workflow.
+	-- CrossSection is a topology-free tangential connection for ramps,
+	-- flyovers, and other custom geometry: it snaps to the chosen road
+	-- cross-section, constrains the new road's lead-in, leaves the target road
+	-- unsplit, and does not generate a junction pad.
+	SnapConnectionMode: SnapConnectionMode,
 	-- Deflect roundabout entries: each mouth's entry arm merges closer in to the
 	-- mouth than its exit arm peels off, so traffic joining the ring is turned
 	-- harder than traffic leaving (see RoundaboutBuilder). Off = a symmetric pair.
@@ -16949,6 +17426,12 @@ local function sanitizeSettings(rawValue: any): EasyRoadSettings
 		SnapToGrid = booleanOr(raw, "SnapToGrid", false),
 		SnapToRoad = booleanOr(raw, "SnapToRoad", true),
 		SnapReference = enumOr(raw, "SnapReference", { "Centre", "LeftRoadwayEdge", "RightRoadwayEdge" }, "Centre") :: SnapReference,
+		SnapConnectionMode = enumOr(
+			raw,
+			"SnapConnectionMode",
+			{ "AutomaticJunction", "CrossSection" },
+			"AutomaticJunction"
+		) :: SnapConnectionMode,
 		RoundaboutEntryCurve = booleanOr(raw, "RoundaboutEntryCurve", true),
 		ElevationStepStuds = numberOr(raw, "ElevationStepStuds", 1, 0.25, 32),
 		LastElevationStuds = numberOr(raw, "LastElevationStuds", 0, -100000, 100000),
@@ -17007,6 +17490,7 @@ local function serializeSettings(settings: EasyRoadSettings): { [string]: any }
 		SnapToGrid = settings.SnapToGrid,
 		SnapToRoad = settings.SnapToRoad,
 		SnapReference = settings.SnapReference,
+		SnapConnectionMode = settings.SnapConnectionMode,
 		RoundaboutEntryCurve = settings.RoundaboutEntryCurve,
 		ElevationStepStuds = settings.ElevationStepStuds,
 		LastElevationStuds = settings.LastElevationStuds,
@@ -17096,10 +17580,10 @@ return {
 	Replace = replaceSettings,
 }
 </ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX38"><Properties><string name="Name">StructureAssets</string><ProtectedString name="Source">--!strict
--- Game-owned library for rigid road structure modules imported from Studio.
+-- Game-owned library for rigid road and structure modules imported from Studio.
 --
--- A user Ctrl-selects a placed EasyRoad road plus any workspace Model, then
--- imports that Model as either a Viaduct or Tunnel module. The clone lives in
+-- A user selects any Workspace Model, then imports it as a Ground, Viaduct,
+-- or Tunnel module. The clone lives in
 -- ServerStorage/EasyRoadAssets so it remains editable and saved with the place
 -- without rendering an extra copy in the world.
 --
@@ -17114,12 +17598,18 @@ return {
 local HttpService = game:GetService("HttpService")
 local ServerStorage = game:GetService("ServerStorage")
 
-export type AssetKind = "Viaduct" | "Tunnel"
+export type AssetKind = "Ground" | "Viaduct" | "Tunnel"
+export type SocketMode = "Explicit" | "Automatic"
 export type AssetInfo = {
 	Id: string,
 	Name: string,
 	Kind: AssetKind,
 	LengthStuds: number,
+	WidthStuds: number,
+	HeightStuds: number,
+	DepthStuds: number,
+	SocketMode: SocketMode,
+	Warnings: string?,
 }
 
 local FOLDER_NAME = "EasyRoadAssets"
@@ -17135,6 +17625,88 @@ local function hasBasePart(model: Model): boolean
 		end
 	end
 	return false
+end
+
+local function hierarchySnapshot(root: Model): ({ Instance }, { [Instance]: boolean }, number)
+	local instances: { Instance } = { root }
+	local archivable: { [Instance]: boolean } = {}
+	local basePartCount = 0
+	for _, descendant in root:GetDescendants() do
+		table.insert(instances, descendant)
+		if descendant:IsA("BasePart") then
+			basePartCount += 1
+		end
+	end
+	for _, instance in instances do
+		archivable[instance] = instance.Archivable
+	end
+	return instances, archivable, basePartCount
+end
+
+local function cloneHierarchyMatches(source: Instance, clone: Instance): boolean
+	if source.ClassName ~= clone.ClassName or source.Name ~= clone.Name then
+		return false
+	end
+	local sourceChildren = source:GetChildren()
+	local cloneChildren = clone:GetChildren()
+	if #sourceChildren ~= #cloneChildren then
+		return false
+	end
+	for index, sourceChild in sourceChildren do
+		if not cloneHierarchyMatches(sourceChild, cloneChildren[index]) then
+			return false
+		end
+	end
+	return true
+end
+
+-- Clone every descendant or return no Model at all. Instance:Clone silently
+-- omits descendants whose own Archivable flag is false, which is unacceptable
+-- for a rigid road module: losing one kerb/barrier/socket and then suppressing
+-- the procedural road would turn a recoverable asset problem into missing
+-- geometry. Temporarily enable the complete hierarchy, restore the source in
+-- all outcomes, and deliberately keep the complete clone archivable so its
+-- geometry survives saving the asset library and placed road to the place file.
+function StructureAssets.CloneComplete(source: Model): (Model?, string?)
+	local instances, authoredArchivable, expectedBaseParts = hierarchySnapshot(source)
+	local cloneResult: Instance? = nil
+	local okClone = pcall(function()
+		for _, instance in instances do
+			if not authoredArchivable[instance] then
+				instance.Archivable = true
+			end
+		end
+		cloneResult = source:Clone()
+	end)
+	for _, instance in instances do
+		local authored = authoredArchivable[instance]
+		if not authored then
+			pcall(function()
+				instance.Archivable = false
+			end)
+		end
+	end
+
+	local clone: Model? = if okClone and cloneResult and cloneResult:IsA("Model") then cloneResult else nil
+	if not clone then
+		return nil, "Roblox could not clone the complete selected Model."
+	end
+
+	local clonedBaseParts = 0
+	for _, descendant in clone:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			clonedBaseParts += 1
+		end
+	end
+	if
+		not cloneHierarchyMatches(source, clone :: Model)
+		or #clone:GetDescendants() ~= #instances - 1
+		or clonedBaseParts ~= expectedBaseParts
+	then
+		clone:Destroy()
+		return nil, "Roblox omitted part of the selected Model hierarchy while cloning it."
+	end
+	return clone, nil
 end
 
 local function assetsFolder(create: boolean): Folder?
@@ -17206,18 +17778,135 @@ local function ensureSockets(model: Model): (Attachment, Attachment, boolean)
 	return startSocket :: Attachment, endSocket :: Attachment, true
 end
 
+local function socketCount(model: Model, name: string): number
+	local count = 0
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("Attachment") and descendant.Name == name then
+			count += 1
+		end
+	end
+	return count
+end
+
+local function boundingDimensions(model: Model): (CFrame, Vector3)
+	local frame, size = model:GetBoundingBox()
+	return frame, size
+end
+
+local function socketBoundsExcess(boxFrame: CFrame, boxSize: Vector3, position: Vector3): number
+	local localPosition = boxFrame:PointToObjectSpace(position)
+	local half = boxSize / 2
+	return math.max(
+		math.abs(localPosition.X) - half.X,
+		math.abs(localPosition.Y) - half.Y,
+		math.abs(localPosition.Z) - half.Z,
+		0
+	)
+end
+
+-- Socket checks deliberately distinguish unsafe geometry from uncommon but
+-- useful authoring. A portal may put a socket slightly outside its visible
+-- bounds to create an overlap joint, so that is a warning. Duplicate sockets,
+-- a single half-defined pair, overlapping endpoints, or sockets many model
+-- widths away are errors because placement would otherwise be ambiguous.
+local function validateSockets(
+	model: Model,
+	startSocket: Attachment,
+	endSocket: Attachment,
+	autoSockets: boolean
+): ({ string }?, string?)
+	local startPosition = startSocket.WorldPosition
+	local endPosition = endSocket.WorldPosition
+	local chord = endPosition - startPosition
+	local length = chord.Magnitude
+	if length &lt; 0.1 then
+		return nil, "EasyRoadStart and EasyRoadEnd must be at least 0.1 studs apart."
+	end
+
+	local warnings: { string } = {}
+	local boxFrame, boxSize = boundingDimensions(model)
+	local largestDimension = math.max(boxSize.X, boxSize.Y, boxSize.Z)
+	local hardOutsideLimit = math.max(16, largestDimension * 2)
+	local softOutsideLimit = math.max(0.5, length * 0.15)
+	local startExcess = socketBoundsExcess(boxFrame, boxSize, startPosition)
+	local endExcess = socketBoundsExcess(boxFrame, boxSize, endPosition)
+	local worstExcess = math.max(startExcess, endExcess)
+	if worstExcess &gt; hardOutsideLimit then
+		return nil,
+			"A socket is far outside the Model bounds. Move EasyRoadStart/EasyRoadEnd back to the intended joints."
+	elseif worstExcess &gt; softOutsideLimit then
+		table.insert(
+			warnings,
+			"Sockets extend outside the visible bounds; keep this only for a deliberate overlap joint"
+		)
+	end
+
+	if not autoSockets then
+		local axis = chord.Unit
+		if startSocket.WorldCFrame.LookVector:Dot(axis) &lt; 0.35 then
+			table.insert(warnings, "EasyRoadStart does not look toward EasyRoadEnd; placement uses the socket chord")
+		end
+		if startSocket.WorldCFrame.UpVector:Dot(endSocket.WorldCFrame.UpVector) &lt; 0 then
+			table.insert(warnings, "Socket UpVectors face opposite directions; the Start UpVector controls module roll")
+		end
+	end
+	return warnings, nil
+end
+
 local function infoFromModel(model: Model): AssetInfo?
 	local id = model:GetAttribute("ER_AssetId")
 	local kind = model:GetAttribute("ER_AssetKind")
 	local length = model:GetAttribute("ER_ModuleLengthStuds")
-	if typeof(id) ~= "string" or (kind ~= "Viaduct" and kind ~= "Tunnel") or typeof(length) ~= "number" then
+	if
+		typeof(id) ~= "string"
+		or (kind ~= "Ground" and kind ~= "Viaduct" and kind ~= "Tunnel")
+		or typeof(length) ~= "number"
+	then
 		return nil
+	end
+	local socketMode = model:GetAttribute("ER_SocketMode")
+	if socketMode ~= "Explicit" and socketMode ~= "Automatic" then
+		socketMode = if model:GetAttribute("ER_AutoSockets") == true then "Automatic" else "Explicit"
+	end
+	local rawWidth = model:GetAttribute("ER_BoundsWidthStuds")
+	local rawHeight = model:GetAttribute("ER_BoundsHeightStuds")
+	local rawDepth = model:GetAttribute("ER_BoundsDepthStuds")
+	local width: number? = if typeof(rawWidth) == "number" then rawWidth else nil
+	local height: number? = if typeof(rawHeight) == "number" then rawHeight else nil
+	local depth: number? = if typeof(rawDepth) == "number" then rawDepth else nil
+	local rawWarnings = model:GetAttribute("ER_AssetWarnings")
+	local warningText: string? = if typeof(rawWarnings) == "string" and rawWarnings ~= "" then rawWarnings else nil
+
+	-- New assets cache their import-time bounds, so listing a large library is
+	-- metadata-only. Legacy/damaged entries may lack those attributes; keep that
+	-- migration fallback protected because GetBoundingBox can reject a Model
+	-- whose BaseParts were removed by a user editing ServerStorage directly.
+	if width == nil or height == nil or depth == nil then
+		local fallbackSize: Vector3? = nil
+		local readable = pcall(function()
+			local _, size = boundingDimensions(model)
+			fallbackSize = size
+		end)
+		if readable and fallbackSize then
+			local size = fallbackSize :: Vector3
+			width = width or size.X
+			height = height or size.Y
+			depth = depth or size.Z
+		else
+			warningText = (if warningText then warningText .. "; " else "")
+				.. "Stored Model bounds are unreadable; export or re-import the asset"
+		end
 	end
 	return {
 		Id = id,
 		Name = model.Name,
 		Kind = kind :: AssetKind,
 		LengthStuds = length,
+		WidthStuds = width or 0,
+		HeightStuds = height or 0,
+		DepthStuds = depth or 0,
+		SocketMode = socketMode :: SocketMode,
+		Warnings = warningText,
 	}
 end
 
@@ -17302,19 +17991,9 @@ function StructureAssets.ExportToWorkspace(assetId: string): (Model?, string)
 		return nil, "That road asset no longer exists."
 	end
 
-	-- Library Models are normally archivable, but users can edit them directly
-	-- in ServerStorage. Temporarily permit cloning and restore their setting so
-	-- exporting never modifies the stored asset's final state.
-	local wasArchivable = asset.Archivable
-	asset.Archivable = true
-	local okClone, cloneResult = pcall(function()
-		return asset:Clone()
-	end)
-	asset.Archivable = wasArchivable
-
-	local clone: Model? = if okClone and cloneResult and cloneResult:IsA("Model") then cloneResult else nil
+	local clone, cloneError = StructureAssets.CloneComplete(asset)
 	if not clone then
-		return nil, "Roblox could not clone the selected road asset."
+		return nil, cloneError or "Roblox could not clone the selected road asset."
 	end
 
 	clone.Name = uniqueWorkspaceName(asset.Name)
@@ -17392,29 +18071,35 @@ function StructureAssets.Import(source: Model, kind: AssetKind): (AssetInfo?, st
 		return nil, "The selected Model has no BaseParts."
 	end
 
-	-- Clone() returns nil for an unarchivable source. Preserve the user's flag.
-	local wasArchivable = source.Archivable
-	source.Archivable = true
-	local okClone, cloneResult = pcall(function()
-		return source:Clone()
-	end)
-	source.Archivable = wasArchivable
-	local clone: Model? = if okClone and cloneResult and cloneResult:IsA("Model") then cloneResult else nil
+	local clone, cloneError = StructureAssets.CloneComplete(source)
 	if not clone then
-		return nil, "Roblox could not clone the selected Model."
+		return nil, cloneError or "Roblox could not clone the selected Model."
 	end
 	clone.Archivable = true
 	if not hasBasePart(clone) then
 		clone:Destroy()
 		return nil, "The selected Model's BaseParts are not archivable."
 	end
+	local startCount = socketCount(clone, START_SOCKET)
+	local endCount = socketCount(clone, END_SOCKET)
+	if startCount &gt; 1 or endCount &gt; 1 then
+		clone:Destroy()
+		return nil, "Keep exactly one EasyRoadStart and one EasyRoadEnd Attachment in the Model."
+	end
+	if (startCount == 1) ~= (endCount == 1) then
+		clone:Destroy()
+		return nil, "Add both EasyRoadStart and EasyRoadEnd, or remove the lone socket to use automatic bounds."
+	end
 
 	local startSocket, endSocket, autoSockets = ensureSockets(clone)
-	local length = (endSocket.WorldPosition - startSocket.WorldPosition).Magnitude
-	if length &lt; 0.1 then
+	local warnings, socketError = validateSockets(clone, startSocket, endSocket, autoSockets)
+	if socketError then
 		clone:Destroy()
-		return nil, "EasyRoadStart and EasyRoadEnd must be at least 0.1 studs apart."
+		return nil, socketError
 	end
+	local length = (endSocket.WorldPosition - startSocket.WorldPosition).Magnitude
+	local _, bounds = boundingDimensions(clone)
+	local warningText = if warnings and #warnings &gt; 0 then table.concat(warnings, "; ") else nil
 
 	local id = HttpService:GenerateGUID(false)
 	clone:SetAttribute("ER_Asset", true)
@@ -17422,6 +18107,12 @@ function StructureAssets.Import(source: Model, kind: AssetKind): (AssetInfo?, st
 	clone:SetAttribute("ER_AssetKind", kind)
 	clone:SetAttribute("ER_ModuleLengthStuds", length)
 	clone:SetAttribute("ER_AutoSockets", autoSockets)
+	clone:SetAttribute("ER_SocketMode", if autoSockets then "Automatic" else "Explicit")
+	clone:SetAttribute("ER_BoundsWidthStuds", bounds.X)
+	clone:SetAttribute("ER_BoundsHeightStuds", bounds.Y)
+	clone:SetAttribute("ER_BoundsDepthStuds", bounds.Z)
+	clone:SetAttribute("ER_ModuleFit", "RigidRepeat")
+	clone:SetAttribute("ER_AssetWarnings", warningText)
 	local folder = assetsFolder(true)
 	assert(folder, "EasyRoadAssets folder creation failed")
 	clone.Parent = folder
@@ -17431,16 +18122,24 @@ function StructureAssets.Import(source: Model, kind: AssetKind): (AssetInfo?, st
 		Name = clone.Name,
 		Kind = kind,
 		LengthStuds = length,
+		WidthStuds = bounds.X,
+		HeightStuds = bounds.Y,
+		DepthStuds = bounds.Z,
+		SocketMode = if autoSockets then "Automatic" else "Explicit",
+		Warnings = warningText,
 	},
-		if autoSockets
+		(if autoSockets
 			then "Imported with automatic bounding-box sockets; add EasyRoadStart/EasyRoadEnd Attachments for precise joints."
-			else "Imported using EasyRoadStart/EasyRoadEnd Attachments."
+			else "Imported using EasyRoadStart/EasyRoadEnd Attachments.") .. (if warningText
+			then " Warning: " .. warningText .. "."
+			else "")
 end
 
 return StructureAssets
 </ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX39"><Properties><string name="Name">StructureBuilder</string><ProtectedString name="Source">--!strict
--- Repeats imported rigid Models along a placed road. Without a custom asset it
--- builds a concrete viaduct deck/parapets or a tunnel base/walls/arched vault;
+-- Repeats imported rigid Models along a placed road. Ground assets replace the
+-- ordinary generated cross-section after a successful module build. Without a
+-- custom asset it builds a concrete viaduct deck/parapets or a tunnel base/walls/arched vault;
 -- viaduct piers are projected vertically down to Terrain/world parts.
 
 local Workspace = game:GetService("Workspace")
@@ -17709,17 +18408,17 @@ local function placeModules(
 	template: Model,
 	offsetStuds: number,
 	settings: Settings.EasyRoadSettings
-): (number, string?)
+): (number, string?, string?)
 	local startSocket = StructureAssets.FindSocket(template, "EasyRoadStart")
 	local endSocket = StructureAssets.FindSocket(template, "EasyRoadEnd")
 	if not startSocket or not endSocket then
-		return 0, "The stored asset is missing EasyRoadStart/EasyRoadEnd sockets. Re-import it."
+		return 0, "The stored asset is missing EasyRoadStart/EasyRoadEnd sockets. Re-import it.", nil
 	end
 	local sourceStart = startSocket.WorldPosition
 	local sourceEnd = endSocket.WorldPosition
 	local moduleLength = (sourceEnd - sourceStart).Magnitude
 	if moduleLength &lt; 0.1 then
-		return 0, "The stored asset's sockets overlap."
+		return 0, "The stored asset's sockets overlap.", nil
 	end
 	local sourceFrame = safeLookAt(sourceStart, sourceEnd, startSocket.WorldCFrame.UpVector)
 	local pivotRelative = sourceFrame:ToObjectSpace(template:GetPivot())
@@ -17733,6 +18432,14 @@ local function placeModules(
 		return curve:PosAt(station) + frame.RightVector * profileOffsetStuds + frame.UpVector * offsetStuds
 	end
 	local ranges = moduleRanges(curve.Length, targetPositionAt, moduleLength)
+	if #ranges == 0 or math.abs(ranges[#ranges][2] - curve.Length) &gt; EPSILON then
+		return 0,
+			string.format(
+				"This alignment needs more than %d rigid modules. Use a longer source module or shorter road.",
+				MAX_MODULES
+			),
+			nil
+	end
 	local modules = Instance.new("Folder")
 	modules.Name = "Modules"
 	modules.Parent = parent
@@ -17742,10 +18449,22 @@ local function placeModules(
 		local p0, p1 = targetPositionAt(s0), targetPositionAt(s1)
 		local middleFrame = bankedFrameAt((s0 + s1) / 2)
 		local targetFrame = safeLookAt(p0, p1, middleFrame.UpVector)
-		local clone = template:Clone()
+		local clone, cloneError = StructureAssets.CloneComplete(template)
+		if not clone then
+			modules:Destroy()
+			return 0,
+				(cloneError or "Roblox could not clone the complete stored road asset.") .. " Export and re-import it.",
+				nil
+		end
 		clone.Name = string.format("Module_%04d", index)
+		clone:SetAttribute("RW_AssetId", template:GetAttribute("ER_AssetId"))
+		clone:SetAttribute("RW_ModuleIndex", index)
+		clone:SetAttribute("RW_ModuleStationStartStuds", s0)
+		clone:SetAttribute("RW_ModuleStationEndStuds", s1)
+		local partCount = 0
 		for _, descendant in clone:GetDescendants() do
 			if descendant:IsA("BasePart") then
+				partCount += 1
 				descendant.Anchored = true
 			elseif descendant:IsA("BaseScript") then
 				-- Importing literal geometry must not multiply and execute a source
@@ -17754,10 +18473,43 @@ local function placeModules(
 				descendant.Enabled = false
 			end
 		end
+		if partCount == 0 then
+			clone:Destroy()
+			modules:Destroy()
+			return 0, "The stored road asset no longer contains clonable BaseParts. Re-import it.", nil
+		end
 		clone:PivotTo(targetFrame * pivotRelative)
 		clone.Parent = modules
 	end
-	return #ranges, nil
+	local endpointChord = (targetPositionAt(curve.Length) - targetPositionAt(0)).Magnitude
+	local fitWarning = if #ranges == 1 and endpointChord + 0.05 &lt; moduleLength
+		then "The road is shorter than one rigid module, so the module extends beyond an endpoint."
+		else nil
+	return #ranges, nil, fitWarning
+end
+
+-- RoadBuilder emits the editable cross-section as direct BasePart children.
+-- A custom Ground asset owns the visible and physical surface instead. Only
+-- remove those Parts after every custom module cloned successfully, so a
+-- missing/deleted/bad asset safely leaves the ordinary generated road intact.
+local function suppressGeneratedRoadSurface(road: Model): number
+	local removed = 0
+	for _, child in road:GetChildren() do
+		if child:IsA("BasePart") then
+			removed += 1
+			child:Destroy()
+		end
+	end
+	return removed
+end
+
+local function hasGeneratedRoadSurface(road: Model): boolean
+	for _, child in road:GetChildren() do
+		if child:IsA("BasePart") and typeof(child:GetAttribute("RW_ComponentStartIndex")) == "number" then
+			return true
+		end
+	end
+	return false
 end
 
 local function raycastExclusions(road: Model): { Instance }
@@ -18332,11 +19084,11 @@ local function placeProceduralTunnel(
 end
 
 local function restyleElevatedMedian(road: Model, enabled: boolean, baseColor: Color3, baseMaterial: Enum.Material)
-	for _, descendant in road:GetDescendants() do
-		if not descendant:IsA("BasePart") or descendant.Name ~= "Median" then
+	for _, child in road:GetChildren() do
+		if not child:IsA("BasePart") or child.Name ~= "Median" then
 			continue
 		end
-		local part = descendant :: BasePart
+		local part = child :: BasePart
 		if part:GetAttribute("RW_ElevatedMedianStyled") == true then
 			local originalColor = part:GetAttribute("RW_OriginalMedianColor")
 			part.Material = Enum.Material.Grass
@@ -18363,15 +19115,33 @@ function StructureBuilder.Render(
 ): (boolean, string)
 	local concreteColor = StructureBuilder.ColorFromHex(data.ConcreteColorHex)
 	local baseMaterial = StructureMaterials.Resolve(data.BaseMaterial)
-	restyleElevatedMedian(road, data.Mode == "Viaduct" and data.ConcreteMedian, concreteColor, baseMaterial)
-	StructureBuilder.Clear(road)
+	local existingStructure = road:FindFirstChild(GENERATED_NAME)
+	local existingMode = if existingStructure then existingStructure:GetAttribute("RW_StructureMode") else nil
+	local proceduralSurfacePresent = hasGeneratedRoadSurface(road)
 	if data.Mode == "None" then
+		if existingMode == "Ground" and not proceduralSurfacePresent then
+			return false,
+				"Rebuild the procedural road surface before removing its custom Ground module; the existing road was kept visible."
+		end
+		restyleElevatedMedian(road, false, concreteColor, baseMaterial)
+		StructureBuilder.Clear(road)
 		return true, "Ground-level road; no generated structure."
+	end
+	if data.Mode ~= "Ground" and existingMode == "Ground" and not proceduralSurfacePresent then
+		return false,
+			"Rebuild the procedural road surface before changing away from a custom Ground module; the existing road was kept visible."
+	end
+	if data.Mode == "Ground" and not data.AssetId then
+		return false,
+			if existingMode == "Ground" and not proceduralSurfacePresent
+				then "Choose an imported Ground road module. The existing custom road was kept as a safe fallback."
+				else "Choose an imported Ground road module. The procedural road was kept as a safe fallback."
 	end
 
 	local generated = makeGeneratedModel()
 	local moduleCount = 0
 	local proceduralPartCount = 0
+	local moduleFitWarning: string? = nil
 	if data.AssetId then
 		local asset = StructureAssets.Get(data.AssetId)
 		if not asset then
@@ -18383,13 +19153,14 @@ function StructureBuilder.Render(
 			generated:Destroy()
 			return false, "The selected asset belongs to the " .. tostring(assetKind) .. " library."
 		end
-		local count, err =
+		local count, err, fitWarning =
 			placeModules(generated, road, curve, asset, data.ModuleOffsetM * settings.MetersToStuds, settings)
 		if err then
 			generated:Destroy()
 			return false, err
 		end
 		moduleCount = count
+		moduleFitWarning = fitWarning
 	elseif data.Mode == "Viaduct" then
 		proceduralPartCount = placeProceduralViaduct(generated, road, curve, data, settings)
 	elseif data.Mode == "Tunnel" then
@@ -18401,11 +19172,45 @@ function StructureBuilder.Render(
 	generated:SetAttribute("RW_ModuleCount", moduleCount)
 	generated:SetAttribute("RW_PierCount", pierCount)
 	generated:SetAttribute("RW_ProceduralPartCount", proceduralPartCount)
-	generated.Parent = road
 
+	-- Commit only after the complete replacement exists. Keep the previous
+	-- structure and/or procedural surface visible through every validation and
+	-- clone failure above. Parenting the pending replacement before suppressing
+	-- Ground Parts also prevents a failed Parent assignment from blanking a road.
+	generated.Name = GENERATED_NAME .. "_Pending"
+	local parented = pcall(function()
+		generated.Parent = road
+	end)
+	if not parented then
+		generated:Destroy()
+		return false, "Roblox could not attach the completed structure; the existing road was kept visible."
+	end
+	restyleElevatedMedian(road, data.Mode == "Viaduct" and data.ConcreteMedian, concreteColor, baseMaterial)
+	local suppressedSurfacePartCount = if data.Mode == "Ground" then suppressGeneratedRoadSurface(road) else 0
+	generated:SetAttribute("RW_SuppressedSurfacePartCount", suppressedSurfacePartCount)
+	if existingStructure and existingStructure.Parent then
+		existingStructure:Destroy()
+	end
+	generated.Name = GENERATED_NAME
+
+	if data.Mode == "Ground" then
+		return true,
+			string.format(
+				"Built %d rigid custom ground-road modules and replaced %d procedural surface parts.%s",
+				moduleCount,
+				suppressedSurfacePartCount,
+				if moduleFitWarning then " " .. moduleFitWarning else ""
+			)
+	end
 	if data.Mode == "Viaduct" then
 		if data.AssetId then
-			return true, string.format("Built %d custom viaduct modules and %d raycast piers.", moduleCount, pierCount)
+			return true,
+				string.format(
+					"Built %d custom viaduct modules and %d raycast piers.%s",
+					moduleCount,
+					pierCount,
+					if moduleFitWarning then " " .. moduleFitWarning else ""
+				)
 		end
 		return true,
 			string.format(
@@ -18415,7 +19220,12 @@ function StructureBuilder.Render(
 			)
 	end
 	if data.AssetId then
-		return true, string.format("Built %d custom tunnel modules. Terrain excavation is explicit.", moduleCount)
+		return true,
+			string.format(
+				"Built %d custom tunnel modules. Terrain excavation is explicit.%s",
+				moduleCount,
+				if moduleFitWarning then " " .. moduleFitWarning else ""
+			)
 	end
 	return true,
 		string.format(
@@ -18812,6 +19622,41 @@ local function BuildBar(props: {
 				Grow = true,
 			}),
 		})
+	children.SnapConnectionMode = props.Settings.SnapToRoad
+		and props.ToolMode ~= "Roundabout"
+		and e(Components.Row, { LayoutOrder = 8 }, {
+			Label = e(Components.Label, { Text = "Connection", LayoutOrder = 1, Width = 76 }),
+			Dropdown = e(Components.Dropdown, {
+				Options = {
+					{ Id = "AutomaticJunction", Text = "Build junction" },
+					{ Id = "CrossSection", Text = "Cross-section only" },
+				},
+				SelectedId = props.Settings.SnapConnectionMode,
+				OnSelected = function(id: string)
+					props.Settings.SnapConnectionMode = id :: Settings.SnapConnectionMode
+					props.OnSettingsChanged()
+				end,
+				LayoutOrder = 2,
+				Grow = true,
+			}),
+		})
+	children.SnapConnectionHint = props.Settings.SnapToRoad
+		and props.ToolMode ~= "Roundabout"
+		and props.Settings.SnapConnectionMode == "CrossSection"
+		and e("TextLabel", {
+			Text = if props.Parallel.Enabled
+				then "Tangential lead-in: the primary carriageway meets the cross-section; no junction pad is generated."
+				else "Tangential lead-in: the target road stays intact and no junction pad is generated.",
+			TextColor3 = Theme.DIM,
+			BackgroundTransparency = 1,
+			Size = UDim2.new(1, 0, 0, 0),
+			AutomaticSize = Enum.AutomaticSize.Y,
+			Font = Theme.FONT,
+			TextSize = 12,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextWrapped = true,
+			LayoutOrder = 9,
+		})
 	children.SnapToGridToggle = e(Components.Checkbox, {
 		Label = "Snap to grid",
 		Checked = props.Settings.SnapToGrid,
@@ -18819,9 +19664,9 @@ local function BuildBar(props: {
 			props.Settings.SnapToGrid = checked
 			props.OnSettingsChanged()
 		end,
-		LayoutOrder = 8,
+		LayoutOrder = 10,
 	})
-	children.Transition = e(Components.Row, { LayoutOrder = 9 }, {
+	children.Transition = e(Components.Row, { LayoutOrder = 11 }, {
 		Label = e(Components.Label, { Text = "Widen to", LayoutOrder = 1, Width = 60 }),
 		Dropdown = e(Components.Dropdown, {
 			Options = endProfileOptions,
@@ -18834,7 +19679,7 @@ local function BuildBar(props: {
 		}),
 	})
 	children.TransitionAnchor = props.EndProfileId
-		and e(Components.Row, { LayoutOrder = 10 }, {
+		and e(Components.Row, { LayoutOrder = 12 }, {
 			Label = e(Components.Label, { Text = "Lane placement", LayoutOrder = 1, Width = 96 }),
 			Dropdown = e(Components.Dropdown, {
 				Options = {
@@ -18857,11 +19702,11 @@ local function BuildBar(props: {
 			props.Settings.SuperelevationMode = if checked then "Auto" else "Off"
 			props.OnSettingsChanged()
 		end,
-		LayoutOrder = 11,
+		LayoutOrder = 13,
 	})
 	local speedShown, speedMin, speedMax = Units.SpeedField(props.Settings, props.Settings.DesignSpeedKph, 10, 200)
 	children.Speed = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 12 }, {
+		and e(Components.Row, { LayoutOrder = 14 }, {
 			Label = e(Components.Label, {
 				Text = "Speed (" .. Units.SpeedSuffix(props.Settings) .. ")",
 				LayoutOrder = 1,
@@ -18887,7 +19732,7 @@ local function BuildBar(props: {
 	local runoffShown, runoffMin, runoffMax =
 		Units.LengthField(props.Settings, props.Settings.SuperelevationRunoffM, 2, 30)
 	children.BankTransition = props.Settings.SuperelevationMode ~= "Off"
-		and e(Components.Row, { LayoutOrder = 13 }, {
+		and e(Components.Row, { LayoutOrder = 15 }, {
 			Label = e(Components.Label, {
 				Text = "Transition (" .. Units.LengthSuffix(props.Settings) .. ")",
 				LayoutOrder = 1,
@@ -18905,7 +19750,7 @@ local function BuildBar(props: {
 				LayoutOrder = 2,
 			}),
 		})
-	children.Elevation = e(Components.Row, { LayoutOrder = 14 }, {
+	children.Elevation = e(Components.Row, { LayoutOrder = 16 }, {
 		Label = e(Components.Label, { Text = "Elevation", LayoutOrder = 1, Width = 64 }),
 		Down = e(Components.Button, {
 			Text = "",
@@ -18940,7 +19785,7 @@ local function BuildBar(props: {
 	-- CS2-style step adjustment: how far each R/F press or arrow click
 	-- moves the elevation, editable right next to the elevation control
 	-- instead of buried in a separate settings dock.
-	children.ElevationStep = e(Components.Row, { LayoutOrder = 15 }, {
+	children.ElevationStep = e(Components.Row, { LayoutOrder = 17 }, {
 		Label = e(Components.Label, { Text = "Step", Dim = true, LayoutOrder = 1, Width = 64 }),
 		Field = e(Components.NumberField, {
 			Value = props.Settings.ElevationStepStuds,
@@ -18961,7 +19806,7 @@ local function BuildBar(props: {
 			keyHint(props.Settings.Keybinds.ElevationDown)
 		),
 		Dim = true,
-		LayoutOrder = 16,
+		LayoutOrder = 18,
 	})
 	-- Keep the mode visible directly below the tool picker. This is the main
 	-- placement workflow, so hiding it below every snapping/banking/elevation
@@ -18993,13 +19838,13 @@ local function BuildBar(props: {
 		TextSize = Theme.TEXT_SIZE,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		TextWrapped = true,
-		LayoutOrder = 18,
+		LayoutOrder = 20,
 	})
 	children.Stop = e(Components.Button, {
 		Text = "Stop Building",
 		Danger = true,
 		OnClick = props.OnStop,
-		LayoutOrder = 19,
+		LayoutOrder = 21,
 	})
 
 	local scrollProps = Components.ScrollBar()
@@ -23255,7 +24100,7 @@ end
 
 return RegionalPreferenceGui
 </ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX57"><Properties><string name="Name">RoadAssetsPanel</string><ProtectedString name="Source">--!strict
--- Dedicated import/management surface for literal Roblox road structure
+-- Dedicated import/management surface for literal Roblox road/structure
 -- Models. Placement and placed-road inspectors only choose an existing asset;
 -- ownership operations live here so building remains focused on alignment.
 
@@ -23314,10 +24159,17 @@ local function RoadAssetsPanel(props: {
 	RoadDesigner.DecorateCard(children)
 	children.Header = e(Components.Section, { Text = "Import / Manage Road Assets", First = true, LayoutOrder = 1 })
 	children.Help = paragraph(
-		"Select a Model in Workspace, then import it once here. Export creates an editable Workspace copy without removing it from this library.",
+		"Select a Workspace Model, then choose how EasyRoad should use it. Ground road modules replace the generated surface; viaduct and tunnel modules accompany their matching structure mode.",
 		2
 	)
-	children.Import = e(Components.Row, { LayoutOrder = 3 }, {
+	children.ImportGround = e(Components.Button, {
+		Text = "Import Selection as Ground Road",
+		LayoutOrder = 3,
+		OnClick = function()
+			props.OnImport("Ground")
+		end,
+	})
+	children.ImportStructure = e(Components.Row, { LayoutOrder = 4 }, {
 		Viaduct = e(Components.Button, {
 			Text = "Import Selection as Viaduct",
 			Grow = true,
@@ -23335,10 +24187,10 @@ local function RoadAssetsPanel(props: {
 			end,
 		}),
 	})
-	children.Library = e(Components.Section, { Text = "Asset Library", LayoutOrder = 4 })
+	children.Library = e(Components.Section, { Text = "Asset Library", LayoutOrder = 5 })
 
 	if #options &gt; 0 then
-		children.Picker = e(Components.Row, { LayoutOrder = 5 }, {
+		children.Picker = e(Components.Row, { LayoutOrder = 6 }, {
 			Label = e(Components.Label, { Text = "Asset", Width = 54, LayoutOrder = 1 }),
 			Field = e(Components.Dropdown, {
 				Options = options,
@@ -23351,14 +24203,14 @@ local function RoadAssetsPanel(props: {
 			}),
 		})
 	else
-		children.Empty = paragraph("No custom road assets imported yet.", 5)
+		children.Empty = paragraph("No custom road assets imported yet.", 6)
 	end
 
 	local exportId = if selected then selected.Id else nil
 	children.Export = e(Components.Button, {
 		Text = "Export Selected Asset to Workspace",
 		Disabled = exportId == nil,
-		LayoutOrder = 8,
+		LayoutOrder = 10,
 		OnClick = function()
 			if exportId then
 				props.OnExport(exportId)
@@ -23368,7 +24220,7 @@ local function RoadAssetsPanel(props: {
 
 	if selected then
 		local asset = selected :: StructureAssets.AssetInfo
-		children.Name = e(Components.Row, { LayoutOrder = 6 }, {
+		children.Name = e(Components.Row, { LayoutOrder = 7 }, {
 			Label = e(Components.Label, { Text = "Name", Width = 54, LayoutOrder = 1 }),
 			Field = e(Components.TextField, {
 				Value = asset.Name,
@@ -23381,18 +24233,36 @@ local function RoadAssetsPanel(props: {
 		})
 		children.Meta = paragraph(
 			string.format(
-				"%s module  |  %.1f studs socket length  |  used by %d placed road%s",
-				asset.Kind,
+				"%s  |  %.1f stud socket chord  |  %.1f x %.1f x %.1f stud bounds  |  %s sockets  |  used by %d placed road%s",
+				if asset.Kind == "Ground" then "Ground road module" else asset.Kind .. " module",
 				asset.LengthStuds,
+				asset.WidthStuds,
+				asset.HeightStuds,
+				asset.DepthStuds,
+				asset.SocketMode:lower(),
 				props.UsageCount,
 				if props.UsageCount == 1 then "" else "s"
 			),
-			7
+			8
 		)
+		if asset.Warnings then
+			children.Warning = e("TextLabel", {
+				Text = "Check: " .. asset.Warnings,
+				TextColor3 = Theme.WARNING,
+				BackgroundTransparency = 1,
+				Size = UDim2.new(1, 0, 0, 0),
+				AutomaticSize = Enum.AutomaticSize.Y,
+				Font = Theme.FONT,
+				TextSize = Theme.TEXT_SIZE,
+				TextWrapped = true,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				LayoutOrder = 9,
+			})
+		end
 		children.Delete = e(Components.Button, {
 			Text = "Delete Selected Asset",
 			Danger = true,
-			LayoutOrder = 9,
+			LayoutOrder = 11,
 			OnClick = function()
 				props.OnDelete(asset.Id)
 			end,
@@ -23400,11 +24270,11 @@ local function RoadAssetsPanel(props: {
 	end
 
 	if props.Status then
-		children.Status = paragraph(props.Status, 10)
+		children.Status = paragraph(props.Status, 12)
 	end
 	children.Close = e(Components.Button, {
 		Text = "Close",
-		LayoutOrder = 11,
+		LayoutOrder = 13,
 		OnClick = props.OnClose,
 	})
 
@@ -24950,7 +25820,9 @@ local function RoadInspector(props: {
 	local structure = session.GetStructure()
 	local structureKind: StructureAssets.AssetKind? = if structure and structure.Mode == "Viaduct"
 		then "Viaduct"
-		else if structure and structure.Mode == "Tunnel" then "Tunnel" else nil
+		else if structure and structure.Mode == "Tunnel"
+			then "Tunnel"
+			else if structure and structure.Mode == "Ground" then "Ground" else nil
 	return e(RoadDesigner.Panel, {
 		PluginObj = props.PluginObj,
 		Profile = profile,
@@ -26620,7 +27492,7 @@ end
 
 return SoftwareGui
 </ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX65"><Properties><string name="Name">StructureControls</string><ProtectedString name="Source">--!strict
--- Placed-road controls for imported rigid viaduct/tunnel modules and
+-- Placed-road controls for imported rigid ground/viaduct/tunnel modules and
 -- terrain-projected viaduct piers. Kept out of RoadDesigner proper because
 -- these settings belong to a road instance, not a reusable cross-section.
 
@@ -26682,6 +27554,7 @@ local function StructureControls(props: {
 
 	local modeOptions: { Components.DropdownOption } = {
 		{ Id = "None", Text = "Ground level" },
+		{ Id = "Ground", Text = "Custom ground road" },
 		{ Id = "Viaduct", Text = "Elevated viaduct" },
 		{ Id = "Tunnel", Text = "Tunnel (procedural / custom)" },
 	}
@@ -26753,7 +27626,10 @@ local function StructureControls(props: {
 		local assetOptions: { Components.DropdownOption } = {
 			{
 				Id = "__none__",
-				Text = if kind == "Viaduct" then "Procedural slab + parapets" else "Procedural arched tunnel",
+				Text = if kind == "Ground"
+					then "Choose an imported ground road"
+					elseif kind == "Viaduct" then "Procedural slab + parapets"
+					else "Procedural arched tunnel",
 			},
 		}
 		for _, asset in props.Assets do
@@ -26778,12 +27654,16 @@ local function StructureControls(props: {
 		})
 		order += 1
 		children.ElevationHelp = note(
-			"Import and manage custom Models from Road Assets. Set positive/negative Elevation for viaduct grades or sunken tunnel alignments.",
+			if kind == "Ground"
+				then "Ground modules replace the generated lane, marking, and pavement Parts after placement. The Road Editor profile remains the alignment and snapping envelope."
+				else "Import and manage custom Models from Road Assets. Set positive/negative Elevation for viaduct grades or sunken tunnel alignments.",
 			order
 		)
 		order += 1
 		children.AdvancedToggle = e(Components.Button, {
-			Text = if advancedOpen then "Hide advanced structure options" else "Edit advanced structure options",
+			Text = if advancedOpen
+				then if kind == "Ground" then "Hide module placement" else "Hide advanced structure options"
+				else if kind == "Ground" then "Edit module placement" else "Edit advanced structure options",
 			Selected = advancedOpen,
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
 			LayoutOrder = order,
@@ -26810,31 +27690,40 @@ local function StructureControls(props: {
 				}),
 			})
 			order += 1
-			children.InterfaceOverlap = e(Components.Row, { LayoutOrder = order }, {
-				Label = e(Components.Label, { Text = lengthLabel("Road overlap"), LayoutOrder = 1 }),
-				Field = e(Components.NumberField, {
-					Value = Units.LengthFromM(props.Settings, structure.InterfaceOverlapM),
-					Min = Units.LengthFromM(props.Settings, 0),
-					Width = 62,
-					LayoutOrder = 2,
-					OnChanged = function(value: number)
-						change(function(copy)
-							copy.InterfaceOverlapM = Units.LengthToM(props.Settings, value)
-						end)
-					end,
-				}),
-			})
-			order += 1
+			if kind ~= "Ground" then
+				children.InterfaceOverlap = e(Components.Row, { LayoutOrder = order }, {
+					Label = e(Components.Label, { Text = lengthLabel("Road overlap"), LayoutOrder = 1 }),
+					Field = e(Components.NumberField, {
+						Value = Units.LengthFromM(props.Settings, structure.InterfaceOverlapM),
+						Min = Units.LengthFromM(props.Settings, 0),
+						Width = 62,
+						LayoutOrder = 2,
+						OnChanged = function(value: number)
+							change(function(copy)
+								copy.InterfaceOverlapM = Units.LengthToM(props.Settings, value)
+							end)
+						end,
+					}),
+				})
+				order += 1
+			end
 
 			if structure.AssetId then
 				children.AssetAppearance = note(
-					"Custom module materials and colours stay exactly as authored in the imported Roblox Model.",
+					"Custom module materials, colours, collisions, and hierarchy stay as authored. Scripts are disabled in repeated clones.",
+					order
+				)
+				order += 1
+			end
+			if kind == "Ground" then
+				children.GroundFit = note(
+					"Modules repeat rigidly from EasyRoadStart to EasyRoadEnd. The final tile may overlap to close the road end; a road shorter than one module keeps the full module and reports an endpoint warning.",
 					order
 				)
 				order += 1
 			end
 
-			if not structure.AssetId or kind == "Viaduct" then
+			if kind == "Viaduct" or (kind == "Tunnel" and not structure.AssetId) then
 				addFinishControls(
 					"BaseFinish",
 					if structure.AssetId then "Pier and cap finish" else "Structural base finish",
@@ -27452,6 +28341,7 @@ local StructureAssets = require("./StructureAssets")
 local StructureBuilder = require("./StructureBuilder")
 local RoadSplit = require("./RoadSplit")
 local JunctionInstance = require("./JunctionInstance")
+local RoundaboutInstance = require("./RoundaboutInstance")
 local RegionStyles = require("./RegionStyles")
 local Settings = require("./Settings")
 local Keybinds = require("./Keybinds")
@@ -27482,6 +28372,7 @@ export type RoadSession = {
 	GetEndProfile: () -&gt; RoadProfile.RoadProfile?,
 	SetTransitionAnchor: (anchor: RoadInstance.TransitionAnchor) -&gt; (),
 	GetTransitionAnchor: () -&gt; RoadInstance.TransitionAnchor,
+	RefreshPlacementSettings: () -&gt; (),
 	GetElevation: () -&gt; number,
 	AdjustElevation: (delta: number) -&gt; (),
 	SetElevation: (value: number) -&gt; (),
@@ -27541,6 +28432,10 @@ type SnapMatch = {
 	Station: number?,
 	Junction: Model?,
 	Ring: Model?,
+	-- Distance to the visible feature that produced this match. For a
+	-- controller-owned endpoint this is intentionally not distance to Position:
+	-- the cursor is at the trimmed mouth while Position is the durable node/rim.
+	CursorDistance: number?,
 }
 
 -- Continues from an exact existing point/tangent (e.g. "Place More" on an
@@ -27566,6 +28461,13 @@ local function createRoadSession(
 	local profile = initialProfile
 	local endProfile: RoadProfile.RoadProfile? = nil
 	local transitionAnchor: RoadInstance.TransitionAnchor = "Centre"
+	-- Capture the topology policy for the current click chain. Settings are live,
+	-- but changing AutomaticJunction &lt;-&gt; CrossSection must not reinterpret snap
+	-- matches that were recorded under the other policy. RefreshPlacementSettings
+	-- adopts a new value only after clearing an active placement.
+	local placementConnectionMode: Settings.SnapConnectionMode = settings.SnapConnectionMode
+	local placementSnapToRoad = settings.SnapToRoad
+	local placementSnapReference: Settings.SnapReference = settings.SnapReference
 	local profileOffsetM = RoadInstance.NormalizeProfileOffsetM(if seed then seed.ProfileOffsetM else nil)
 
 	local points: { Vector3 } = if seed then { seed.Position } else {}
@@ -27624,13 +28526,31 @@ local function createRoadSession(
 		local spacingM = widthM + math.max(parallel.GapM, 0)
 		local style = getStyle()
 		local forwardIndex = if style.DriveOnLeft then 1 else count
-		local placements: { ParallelPlacement } = {}
-		for index = 1, count do
-			local offsetM = (index - (count + 1) / 2) * spacingM
-			local offsetSegments = CurveSegment.OffsetMany(segment, offsetM * settings.MetersToStuds)
-			local reverse = if count == 2 and parallel.OppositeDirections
+		local function reverseForIndex(index: number): boolean
+			return if count == 2 and parallel.OppositeDirections
 				then index ~= forwardIndex
 				else parallel.ReverseByIndex[index] == true
+		end
+		-- The authored segment is normally the median of the whole parallel
+		-- corridor. In cross-section mode the click instead names the actual
+		-- carriageway that must touch the target, so keep the same primary
+		-- (first forward) placement on offset zero and fan the others from it.
+		local alignmentOriginOffsetM = 0
+		if placementConnectionMode == "CrossSection" then
+			local anchorIndex = 1
+			for index = 1, count do
+				if not reverseForIndex(index) then
+					anchorIndex = index
+					break
+				end
+			end
+			alignmentOriginOffsetM = (anchorIndex - (count + 1) / 2) * spacingM
+		end
+		local placements: { ParallelPlacement } = {}
+		for index = 1, count do
+			local offsetM = (index - (count + 1) / 2) * spacingM - alignmentOriginOffsetM
+			local offsetSegments = CurveSegment.OffsetMany(segment, offsetM * settings.MetersToStuds)
+			local reverse = reverseForIndex(index)
 			if reverse then
 				local reversed: { CurveSegment.Segment } = {}
 				for segmentIndex = #offsetSegments, 1, -1 do
@@ -27702,6 +28622,11 @@ local function createRoadSession(
 	local markerFolder: Folder? = nil
 	local crossingMarkerFolder: Folder? = nil
 	local hoverSnapPos: Vector3? = nil
+	-- The exact match that produced hoverSnapPos.  Keeping it beside the
+	-- position lets preview and commit apply the same cross-section tangent;
+	-- rediscovering the target from the snapped point can choose a different
+	-- nearby road at dense junctions.
+	local hoverSnapMatch: SnapMatch? = nil
 	local previewValidCrossingCount = 0
 	local previewBlockedCrossingCount = 0
 	local previewDirty = false
@@ -27730,6 +28655,10 @@ local function createRoadSession(
 
 	local function isAtGrade(a: Vector3, b: Vector3): boolean
 		return math.abs(a.Y - b.Y) &lt;= math.max(MIN_AT_GRADE_SEPARATION_STUDS, settings.RoadThicknessStuds * 2)
+	end
+
+	local function automaticJunctionsEnabled(): boolean
+		return placementConnectionMode == "AutomaticJunction"
 	end
 
 	-- Ground-picking deliberately ignores existing roads/junctions/roundabouts
@@ -27796,7 +28725,7 @@ local function createRoadSession(
 	-- matched. Matching against centre distance minus the junction's own
 	-- real pad radius fixes that for any road width.
 	local function findJunctionNear(pos: Vector3): Model?
-		if not settings.SnapToRoad then
+		if not settings.SnapToRoad or not automaticJunctionsEnabled() then
 			return nil
 		end
 		for _, junctionModel in JunctionInstance.GetAll() do
@@ -27914,6 +28843,108 @@ local function createRoadSession(
 		return (frame * CFrame.new(offsetM * settings.MetersToStuds, 0, 0)).Position
 	end
 
+	-- Tangent of the VISIBLE snap reference, not merely the authored centreline.
+	-- A widened profile centre or a roadway edge traces a slightly different
+	-- path around a curve, and its height also changes through a bank runoff.
+	-- A short finite difference through roadSnapPosition captures both effects
+	-- so a cross-section-only lead-in meets the point the user actually chose.
+	local function roadSnapTangent(data: RoadInstance.RoadData, station: number): Vector3
+		local length = data.Curve.Length
+		if length &lt;= 1e-6 then
+			return data.Curve:TangentAt(station)
+		end
+		local sampleDistance = math.min(math.max(length / 200, 0.25), 2)
+		local s0 = math.max(0, station - sampleDistance)
+		local s1 = math.min(length, station + sampleDistance)
+		local delta = roadSnapPosition(data, s1) - roadSnapPosition(data, s0)
+		return if delta.Magnitude &gt; 1e-6 then delta.Unit else data.Curve:TangentAt(station)
+	end
+
+	local function endpointSnapCandidate(
+		road: Model,
+		data: RoadInstance.RoadData,
+		roadEnd: "Start" | "End",
+		position: Vector3,
+		topologyPosition: Vector3,
+		tangent: Vector3,
+		cursorDistance: number
+	): SnapMatch?
+		-- Controller centres and roundabout rims are topology datums, not the
+		-- visible cross-section the user pointed at. Canonicalise them only for
+		-- automatic node construction; alignment-only mode must keep the exact
+		-- selected mouth/end so its eventual merge/diverge transition does not
+		-- jump across the controller-owned setback.
+		if not automaticJunctionsEnabled() then
+			return {
+				Kind = "RoadEndpoint",
+				Position = position,
+				TopologyPosition = topologyPosition,
+				Tangent = tangent,
+				Road = road,
+				RoadEnd = roadEnd,
+				Station = if roadEnd == "Start" then 0 else data.Curve.Length,
+				CursorDistance = cursorDistance,
+			}
+		end
+		local junctionId = if roadEnd == "Start" then data.StartJunctionId else data.EndJunctionId
+		if junctionId then
+			local controller = JunctionInstance.FindById(junctionId)
+			local controllerData = if controller then JunctionInstance.Read(controller) else nil
+			if controller and controllerData then
+				if controllerData.Kind == "Roundabout" then
+					local ring = RoundaboutInstance.FindByJunctionId(junctionId)
+					local ringData = if ring then RoundaboutInstance.Read(ring) else nil
+					if not ring or not ringData then
+						-- Never feed a roundabout-owned endpoint through generic
+						-- connectAt: JunctionBuilder intentionally ignores that
+						-- controller kind, leaving a link with no generated mouth.
+						return nil
+					end
+					local radial = Vector3.new(position.X - ringData.Center.X, 0, position.Z - ringData.Center.Z)
+					if radial.Magnitude &lt; 1e-6 then
+						radial = Vector3.xAxis
+					else
+						radial = radial.Unit
+					end
+					local attach = Vector3.new(
+						ringData.Center.X + radial.X * ringData.OuterRadiusStuds,
+						ringData.Center.Y,
+						ringData.Center.Z + radial.Z * ringData.OuterRadiusStuds
+					)
+					return {
+						Kind = "Roundabout",
+						Position = attach,
+						TopologyPosition = attach,
+						Tangent = radial,
+						Ring = ring,
+						CursorDistance = cursorDistance,
+					}
+				end
+				-- A trimmed mouth is only renderer geometry. Author the new road to
+				-- the controller centre so a later setback reduction can restore it
+				-- from RoadSource instead of running out at the old pad edge.
+				return {
+					Kind = "Junction",
+					Position = controllerData.Position,
+					TopologyPosition = controllerData.Position,
+					Tangent = nil,
+					Junction = controller,
+					CursorDistance = cursorDistance,
+				}
+			end
+		end
+		return {
+			Kind = "RoadEndpoint",
+			Position = position,
+			TopologyPosition = topologyPosition,
+			Tangent = tangent,
+			Road = road,
+			RoadEnd = roadEnd,
+			Station = if roadEnd == "Start" then 0 else data.Curve.Length,
+			CursorDistance = cursorDistance,
+		}
+	end
+
 	local function findEndpointSnap(pos: Vector3): SnapMatch?
 		if not settings.SnapToRoad then
 			return nil
@@ -27936,20 +28967,17 @@ local function createRoadSession(
 				local endTopologyPos = if settings.SnapReference == "Centre"
 					then endPos
 					else data.Curve:PosAt(endStation)
-				local endTan = data.Curve:TangentAt(endStation)
+				local endTan = if automaticJunctionsEnabled()
+					then data.Curve:TangentAt(endStation)
+					else roadSnapTangent(data, endStation)
 				do
 					local d = (endPos - pos).Magnitude
 					if isAtGrade(endPos, pos) and d &lt; bestDistance then
-						bestDistance = d
-						best = {
-							Kind = "RoadEndpoint",
-							Position = endPos,
-							TopologyPosition = endTopologyPos,
-							Tangent = endTan, -- Outgoing continuation direction
-							Road = road,
-							RoadEnd = "End",
-							Station = endStation,
-						}
+						local candidate = endpointSnapCandidate(road, data, "End", endPos, endTopologyPos, endTan, d)
+						if candidate then
+							bestDistance = d
+							best = candidate
+						end
 					end
 				end
 				do
@@ -27957,19 +28985,17 @@ local function createRoadSession(
 					local startTopologyPos = if settings.SnapReference == "Centre"
 						then startPos
 						else data.Curve:PosAt(0)
-					local startTan = data.Curve:TangentAt(0)
+					local startTan = if automaticJunctionsEnabled()
+						then data.Curve:TangentAt(0)
+						else roadSnapTangent(data, 0)
 					local d = (startPos - pos).Magnitude
 					if isAtGrade(startPos, pos) and d &lt; bestDistance then
-						bestDistance = d
-						best = {
-							Kind = "RoadEndpoint",
-							Position = startPos,
-							TopologyPosition = startTopologyPos,
-							Tangent = -startTan, -- Continue backwards out of the start
-							Road = road,
-							RoadEnd = "Start",
-							Station = 0,
-						}
+						local candidate =
+							endpointSnapCandidate(road, data, "Start", startPos, startTopologyPos, -startTan, d)
+						if candidate then
+							bestDistance = d
+							best = candidate
+						end
 					end
 				end
 			end
@@ -27985,7 +29011,7 @@ local function createRoadSession(
 		-- junction with more than one road already meeting there, so this
 		-- leaves the tangent unlocked (nil) - the placement tools already
 		-- treat a nil tangent as "no guide point saved, free to aim."
-		if not best then
+		if not best and automaticJunctionsEnabled() then
 			local junctionModel = findJunctionNear(pos)
 			if junctionModel then
 				local junctionData = JunctionInstance.Read(junctionModel)
@@ -27996,6 +29022,7 @@ local function createRoadSession(
 						TopologyPosition = junctionData.Position,
 						Tangent = nil,
 						Junction = junctionModel,
+						CursorDistance = (junctionData.Position - pos).Magnitude,
 					}
 				end
 			end
@@ -28004,7 +29031,7 @@ local function createRoadSession(
 		-- RW_OuterRadius and are not RW_Road, so the loop above never sees
 		-- them). Attach point is on the outer pavement edge; outward tangent
 		-- lets the tool chain a new spoke away from the ring.
-		if not best then
+		if not best and automaticJunctionsEnabled() then
 			local ring, attachPos, outward = RoundaboutBuilder.FindNear(pos, settings.SnapRadiusStuds)
 			if attachPos and outward then
 				-- Attach on the ring's own deck height (center.Y stamped at
@@ -28016,6 +29043,7 @@ local function createRoadSession(
 					TopologyPosition = attachPos,
 					Tangent = outward,
 					Ring = ring,
+					CursorDistance = (attachPos - pos).Magnitude,
 				}
 			end
 		end
@@ -28122,6 +29150,20 @@ local function createRoadSession(
 		if not junctionData then
 			return
 		end
+		if junctionData.Kind == "Roundabout" then
+			local ring = RoundaboutInstance.FindByJunctionId(junctionData.Id)
+			if not ring then
+				structureStatus = "Could not connect the road because the roundabout ring is missing."
+				warn("[EasyRoad] " .. structureStatus)
+				return
+			end
+			local connected, message = RoundaboutBuilder.ConnectRoad(ring, model, getStyle(), settings)
+			if not connected then
+				structureStatus = message or "Could not connect the road to the roundabout."
+				warn("[EasyRoad] " .. structureStatus)
+			end
+			return
+		end
 		stampEndJunction(model, modelEnd, junctionData.Id)
 		if otherModel and otherEnd then
 			stampEndJunction(otherModel, otherEnd, junctionData.Id)
@@ -28152,7 +29194,11 @@ local function createRoadSession(
 			if (exclude and child == exclude) or child:GetAttribute("RW_Road") ~= true then
 				continue
 			end
-			if not RoadSplit.CanSplit(child) then
+			-- Automatic junctions need a road that RoadSplit can safely divide.
+			-- Cross-section alignment never edits the target, so transitions,
+			-- bays, stretches, and other feature-bearing roads remain valid snap
+			-- references instead of disappearing from the magnetic search.
+			if automaticJunctionsEnabled() and not RoadSplit.CanSplit(child) then
 				continue
 			end
 			local data = RoadInstance.Read(child)
@@ -28189,18 +29235,32 @@ local function createRoadSession(
 				then snapPosition
 				else data.Curve:PosAt(station)
 			local distance = (snapPosition - pos).Magnitude
+			local stationLeftM, stationRightM = roadwayEdgeOffsetsAtStationM(data, station)
 			local tolerance = if settings.SnapReference == "Centre"
-				then RoadProfile.TotalWidthM(data.ProfileStart) / 2 * settings.MetersToStuds + settings.SnapRadiusStuds
+				then if automaticJunctionsEnabled()
+					then RoadProfile.TotalWidthM(data.ProfileStart) / 2 * settings.MetersToStuds + settings.SnapRadiusStuds
+					else math.max(math.abs(stationLeftM), math.abs(stationRightM)) * settings.MetersToStuds
+						+ settings.SnapRadiusStuds
 				else settings.SnapRadiusStuds
-			if isAtGrade(snapPosition, pos) and distance &lt; tolerance and distance &lt; bestDistance then
+			-- A near-end match that RoadSplit will reject must not light up as
+			-- SNAPPED and then silently fail during commit. Alignment-only mode
+			-- does not split the target, so it intentionally accepts every station.
+			local validTopologyStation = not automaticJunctionsEnabled() or RoadSplit.CanSplitAt(child, station)
+			if
+				validTopologyStation
+				and isAtGrade(snapPosition, pos)
+				and distance &lt; tolerance
+				and distance &lt; bestDistance
+			then
 				bestDistance = distance
 				best = {
 					Kind = "RoadMidSpan",
 					Position = snapPosition,
 					TopologyPosition = topologyPosition,
-					Tangent = nil,
+					Tangent = if automaticJunctionsEnabled() then nil else roadSnapTangent(data, station),
 					Road = child :: Model,
 					Station = station,
+					CursorDistance = distance,
 				}
 			end
 		end
@@ -28233,7 +29293,7 @@ local function createRoadSession(
 	-- as grade-separated; geometrically valid but unsupported cuts remain in
 	-- the result as red preview markers with a reason.
 	local function findCurveCrossings(newCurve: PolyCurve.PolyCurve): { CrossingCandidate }
-		if not settings.SnapToRoad then
+		if not settings.SnapToRoad or not automaticJunctionsEnabled() then
 			return {}
 		end
 		local folder = getRoadsFolder(false)
@@ -28244,6 +29304,9 @@ local function createRoadSession(
 		local maximumVerticalSeparation = math.max(MIN_AT_GRADE_SEPARATION_STUDS, settings.RoadThicknessStuds * 2)
 		local newRoadBlockReason = if endProfile ~= nil
 			then "Widening/narrowing roads cannot be split at a crossing yet"
+			elseif
+				structure.Mode ~= "None"
+			then "Roads with custom or procedural structures cannot be split at a crossing yet"
 			elseif #newCurve.Segments &gt; 1 then "Curved parallel roadways cannot be split at a crossing yet"
 			else nil
 		local candidates: { CrossingCandidate } = {}
@@ -28363,13 +29426,44 @@ local function createRoadSession(
 			return unsnapped, nil, false, nil
 		end
 		local endpointMatch = findEndpointSnap(unsnapped)
-		if endpointMatch then
-			return endpointMatch.Position, if isStart then endpointMatch.Tangent else nil, true, endpointMatch
+		if automaticJunctionsEnabled() then
+			if isStart or isEnd then
+				local midSpanMatch = findMidSpanMatch(unsnapped, nil)
+				local selectedMatch = endpointMatch
+				if
+					midSpanMatch
+					and (
+						not selectedMatch
+						or (midSpanMatch.CursorDistance or math.huge) + 1e-4
+							&lt; (selectedMatch.CursorDistance or math.huge)
+					)
+				then
+					selectedMatch = midSpanMatch
+				end
+				if selectedMatch then
+					return selectedMatch.Position, if isStart then selectedMatch.Tangent else nil, true, selectedMatch
+				end
+			end
+			return unsnapped, nil, false, nil
 		end
-		if isEnd then
+		-- Alignment-only snapping is symmetric and distance-ranked: a custom
+		-- ramp may begin or end at any station, including one close to an
+		-- existing endpoint. Exact ties keep endpoint tangent continuation;
+		-- otherwise the cross-section directly under the cursor wins.
+		if isStart or isEnd then
 			local midSpanMatch = findMidSpanMatch(unsnapped, nil)
+			local selectedMatch = endpointMatch
 			if midSpanMatch then
-				return midSpanMatch.Position, nil, true, midSpanMatch
+				local midDistance = midSpanMatch.CursorDistance or (midSpanMatch.Position - unsnapped).Magnitude
+				local endpointDistance = if endpointMatch
+					then endpointMatch.CursorDistance or (endpointMatch.Position - unsnapped).Magnitude
+					else math.huge
+				if midDistance + 1e-4 &lt; endpointDistance then
+					selectedMatch = midSpanMatch
+				end
+			end
+			if selectedMatch then
+				return selectedMatch.Position, if isStart then selectedMatch.Tangent else nil, true, selectedMatch
 			end
 		end
 		return unsnapped, nil, false, nil
@@ -28384,9 +29478,10 @@ local function createRoadSession(
 		if not ground then
 			return
 		end
-		local position, _, snapped = placementPointFromGround(ground)
+		local position, _, snapped, snapMatch = placementPointFromGround(ground)
 		hoverPos = position
 		hoverSnapPos = if snapped then position else nil
+		hoverSnapMatch = if snapped then snapMatch else nil
 		previewDirty = true
 	end
 
@@ -28416,13 +29511,18 @@ local function createRoadSession(
 		end
 		local position, tangent, snapped, snapMatch = placementPointFromGround(ground)
 		hoverSnapPos = if snapped then position else nil
+		hoverSnapMatch = if snapped then snapMatch else nil
 		return position, tangent, snapMatch
 	end
 
 	-- Curve construction -----------------------------------------------------------
 
-	-- Build the segment from placed points plus an optional pending point
-	local function buildSegment(pending: Vector3?): CurveSegment.Segment?
+	-- Build the segment from placed points plus an optional pending point.  A
+	-- CrossSection snap constrains the new road's own endpoint tangent while
+	-- deliberately leaving the target road and topology untouched.  The exact
+	-- cubic becomes ordinary RW_CurveJson metadata, so every later rebuild sees
+	-- the same lead-in without a separate connection object.
+	local function buildSegment(pending: Vector3?, pendingSnapMatch: SnapMatch?): CurveSegment.Segment?
 		local pts = table.clone(points)
 		if pending then
 			table.insert(pts, pending)
@@ -28431,36 +29531,91 @@ local function createRoadSession(
 			return nil
 		end
 		local tangent = lockedTangent
+		local startSnapMatch = pointSnapMatches[1]
+		local endSnapMatch = if pending then pendingSnapMatch else pointSnapMatches[#pts]
+		local crossSection = placementConnectionMode == "CrossSection"
+		local startTangentAxis = if crossSection and startSnapMatch then startSnapMatch.Tangent else nil
+		local endTangentAxis = if crossSection and endSnapMatch then endSnapMatch.Tangent else nil
+		if crossSection and (startSnapMatch or endSnapMatch) then
+			local startOffsetM, endOffsetM = corridorProfileOffsetsM()
+			-- RoadBuilder applies ProfileOffsetStart/EndM along the curve frame's
+			-- RightVector after fitting. Solve the authored endpoints backward so
+			-- the rendered profile centre, rather than the hidden curve datum, lands
+			-- on the visible snap target. Two cheap passes make the tangent-axis sign
+			-- agree with the final adjusted chord when both endpoints are constrained.
+			for _ = 1, 2 do
+				local chord = pts[#pts] - pts[1]
+				local solvedStart = pts[1]
+				local solvedEnd = pts[#pts]
+				if startSnapMatch and startTangentAxis then
+					local startDirection = Fitting.OrientedTangentAxis(startTangentAxis, chord)
+					solvedStart = startSnapMatch.Position
+						- Fitting.TangentRightVector(startDirection) * (startOffsetM * settings.MetersToStuds)
+				end
+				if endSnapMatch and endTangentAxis then
+					local endDirection = Fitting.OrientedTangentAxis(endTangentAxis, chord)
+					solvedEnd = endSnapMatch.Position
+						- Fitting.TangentRightVector(endDirection) * (endOffsetM * settings.MetersToStuds)
+				end
+				pts[1] = solvedStart
+				pts[#pts] = solvedEnd
+			end
+		end
+		-- A target-road tangent is an undirected merge/diverge axis. Orient the
+		-- locked start toward this placement before the ordinary fitting helper
+		-- derives its other handle; correcting only the final cubic's first handle
+		-- would leave that other handle influenced by the arbitrary target-road
+		-- storage direction.
+		if startTangentAxis and tangent then
+			local chord = pts[#pts] - pts[1]
+			if chord.Magnitude &gt; 1e-6 then
+				tangent = Fitting.OrientedTangentAxis(startTangentAxis, chord)
+			end
+		end
+
+		local segment: CurveSegment.Segment
 
 		if toolMode == "Straight" then
-			if tangent then
-				return Fitting.StraightFromTangent(pts[1], tangent, pts[#pts])
+			if startTangentAxis or endTangentAxis then
+				-- StraightFromTangent projects the destination onto the start ray;
+				-- that is correct for the ordinary straight continuation tool but
+				-- would move a snapped cross-section endpoint. Start from the exact
+				-- chord (or a seeded tangent curve) and let the endpoint constraints
+				-- turn it into the final cubic.
+				segment = if tangent and not startTangentAxis
+					then Fitting.CurveFromTangent(pts[1], tangent, pts[#pts])
+					else Fitting.Straight(pts[1], pts[#pts])
+			elseif tangent then
+				segment = Fitting.StraightFromTangent(pts[1], tangent, pts[#pts])
+			else
+				segment = Fitting.Straight(pts[1], pts[2])
 			end
-			return Fitting.Straight(pts[1], pts[2])
 		elseif toolMode == "Curve" then
 			if tangent then
-				return Fitting.CurveFromTangent(pts[1], tangent, pts[2])
+				segment = Fitting.CurveFromTangent(pts[1], tangent, pts[2])
+			elseif #pts &gt;= 3 then
+				segment = Fitting.Curve(pts[1], pts[2], pts[3])
+			else
+				-- Only start + guide so far: preview a straight toward the guide
+				segment = Fitting.Straight(pts[1], pts[2])
 			end
-			if #pts &gt;= 3 then
-				return Fitting.Curve(pts[1], pts[2], pts[3])
-			end
-			-- Only start + guide so far: preview a straight toward the guide
-			return Fitting.Straight(pts[1], pts[2])
 		else -- Freeform
 			if tangent then
 				if #pts &gt;= 3 then
 					local control1 = pts[1] + tangent.Unit * ((pts[3] - pts[1]).Magnitude / 3)
-					return Fitting.Freeform(pts[1], control1, pts[2], pts[3])
+					segment = Fitting.Freeform(pts[1], control1, pts[2], pts[3])
+				else
+					segment = Fitting.CurveFromTangent(pts[1], tangent, pts[2])
 				end
-				return Fitting.CurveFromTangent(pts[1], tangent, pts[2])
-			end
-			if #pts &gt;= 4 then
-				return Fitting.Freeform(pts[1], pts[2], pts[3], pts[4])
+			elseif #pts &gt;= 4 then
+				segment = Fitting.Freeform(pts[1], pts[2], pts[3], pts[4])
 			elseif #pts == 3 then
-				return Fitting.Curve(pts[1], pts[2], pts[3])
+				segment = Fitting.Curve(pts[1], pts[2], pts[3])
+			else
+				segment = Fitting.Straight(pts[1], pts[2])
 			end
-			return Fitting.Straight(pts[1], pts[2])
 		end
+		return Fitting.ConstrainEndpointTangents(segment, startTangentAxis, endTangentAxis)
 	end
 
 	-- Preview ------------------------------------------------------------------------
@@ -28588,7 +29743,7 @@ local function createRoadSession(
 	end
 
 	local function rebuildPreview()
-		local segment = buildSegment(hoverPos)
+		local segment = buildSegment(hoverPos, hoverSnapMatch)
 		if not segment then
 			destroyPreview()
 			updateCrossingMarkers({})
@@ -28775,6 +29930,13 @@ local function createRoadSession(
 		-- fallback. That was the real reason "can't add a new road to an
 		-- intersection" survived the previous fix.
 		local function connectEnd(targetModel: Model, pos: Vector3, whichEnd: "Start" | "End", snapMatch: SnapMatch?)
+			-- Alignment-only connections deliberately stop here. The endpoint was
+			-- already moved onto the chosen target cross-section during placement;
+			-- leaving topology untouched is what lets ramps and flyovers coexist
+			-- with the ordinary automatic JunctionBuilder workflow.
+			if not automaticJunctionsEnabled() then
+				return
+			end
 			-- A lateral snap can be farther than SnapRadiusStuds from the target
 			-- centreline, so proximity rediscovery is not reliable. Use the exact
 			-- target captured on click and connect at its true centreline station.
@@ -28909,6 +30071,7 @@ local function createRoadSession(
 		pointSnapMatches = {}
 		lockedTangent = corridorCurve:TangentAt(corridorCurve.Length)
 		hoverSnapPos = nil
+		hoverSnapMatch = nil
 		destroyCrossingMarkers()
 		setPreviewCrossingStatus(0, 0)
 		updateMarkers()
@@ -28990,10 +30153,11 @@ local function createRoadSession(
 			pointSnapMatches[#points] = snapMatch
 		end
 		hoverSnapPos = nil
+		hoverSnapMatch = nil
 		updateMarkers()
 
 		if #points &gt;= clicksNeeded() then
-			local segment = buildSegment(nil)
+			local segment = buildSegment(nil, nil)
 			if segment and segment.Length &gt; 1 then
 				commitRoad(segment)
 			else
@@ -29010,7 +30174,13 @@ local function createRoadSession(
 		points = {}
 		pointSnapMatches = {}
 		lockedTangent = nil
+		-- A widening transition can carry a left/right profile datum into the
+		-- continuation chain. Once that chain is cancelled, the next independent
+		-- road must start from its own centre datum rather than inheriting the old
+		-- carriageway's lateral offset.
+		profileOffsetM = 0
 		hoverSnapPos = nil
+		hoverSnapMatch = nil
 		updateMarkers()
 		destroyPreview()
 		destroyCrossingMarkers()
@@ -29133,6 +30303,29 @@ local function createRoadSession(
 		return transitionAnchor
 	end
 
+	function session.RefreshPlacementSettings()
+		local requestedMode = settings.SnapConnectionMode
+		local requestedSnapToRoad = settings.SnapToRoad
+		local requestedSnapReference = settings.SnapReference
+		local snapSemanticsChanged = requestedMode ~= placementConnectionMode
+			or requestedSnapToRoad ~= placementSnapToRoad
+			or requestedSnapReference ~= placementSnapReference
+		if snapSemanticsChanged then
+			-- A committed road leaves one endpoint behind to continue the chain, so
+			-- #points &gt; 0 covers both an in-progress road and an active chain.
+			-- Cancel before adopting the new policy/reference; otherwise old
+			-- SnapMatches can suddenly gain/lose topology or mix reference datums on
+			-- the next hover/click.
+			if #points &gt; 0 then
+				cancelPlacement()
+			end
+			placementConnectionMode = requestedMode
+			placementSnapToRoad = requestedSnapToRoad
+			placementSnapReference = requestedSnapReference
+		end
+		refreshHoverPos()
+	end
+
 	function session.GetElevation(): number
 		return elevation
 	end
@@ -29148,6 +30341,7 @@ local function createRoadSession(
 		structure = StructureBuilder.CloneData(newStructure)
 		structureStatus = if structure.Mode == "None"
 			then "Ground mode selected."
+			elseif structure.Mode == "Ground" then "New roads will use the selected custom ground-road module."
 			elseif structure.Mode == "Viaduct" then "New roads will generate viaduct supports when placed."
 			else "New roads will generate a tunnel shell when placed."
 		changeSignal:Fire()
@@ -29219,6 +30413,9 @@ local function createRoadSession(
 		local count = #points
 		local needed = clicksNeeded()
 		if count == 0 then
+			if not automaticJunctionsEnabled() then
+				return "Click any road cross-section or free space to place the start"
+			end
 			return "Click to place the start point (snaps to existing road ends)"
 		elseif count == needed - 1 then
 			if lockedTangent and toolMode ~= "Straight" then
@@ -29231,7 +30428,9 @@ local function createRoadSession(
 				-- always get the full guide-point click.
 				return "Start snapped to an existing road end - click to place the end point (no separate guide point needed)"
 			end
-			return "Click to place the end point"
+			return if automaticJunctionsEnabled()
+				then "Click to place the end point"
+				else "Click any road cross-section or free space to place the end"
 		else
 			return "Click to place a guide point"
 		end
@@ -30414,7 +31613,7 @@ return function(
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
 				Position = UDim2.new(0, 12, 1, -16),
-				Size = UDim2.new(0, 560, 0, 300),
+				Size = UDim2.new(0, 600, 0, 360),
 			}
 		elseif session then
 			local currentSession = session :: createRoadSession.RoadSession
@@ -30431,6 +31630,7 @@ return function(
 			local placementStructureKind: StructureAssets.AssetKind? = if placementStructure.Mode == "Viaduct"
 				then "Viaduct"
 				elseif placementStructure.Mode == "Tunnel" then "Tunnel"
+				elseif placementStructure.Mode == "Ground" then "Ground"
 				else nil
 			-- Two separate floating boxes, CS2-style, not one box with
 			-- everything stacked on top of itself: Tool Mode left-aligned
@@ -30479,6 +31679,7 @@ return function(
 						Settings = settings,
 						OnSettingsChanged = function()
 							library.SetStyle(getStyle())
+							currentSession.RefreshPlacementSettings()
 							persist()
 							updateUI()
 						end,

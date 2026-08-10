@@ -4,6 +4,66 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Flexible road connections and node-adjacent splitting
+
+Road Tools now separates two connection workflows. **Build junction** keeps
+the existing topology-aware behaviour, while **Cross-section only** aligns a
+new road to the chosen left edge, centre, or right edge without splitting the
+target or generating a junction pad. The new road is stored as a bounded cubic
+with G1 tangent continuity along the selected visible reference, so preview and
+rebuild retain a smooth lead-in instead of an angled butt joint. Either endpoint
+can use it, including ramps, flyovers, feature-bearing roads, and parallel
+carriageways; one real primary carriageway, rather than the empty corridor
+centre, owns the selected datum.
+
+Automatic mid-span snapping now remains available when the target road is
+already trimmed by a junction or roundabout. Splitting partitions its durable
+untrimmed source, preserves the original outer controller/port and parallel
+metadata, and keeps feature stations in the correct source coordinate space.
+Controller-owned mouths resolve back to their owning junction or roundabout
+instead of being mistaken for ordinary loose road endpoints.
+
+`cross_section_connection_preview.py` renders automatic and topology-free
+left/centre/right cases and checks endpoint distance ranking, parallel
+anchoring, terminal tangency, carried profile offsets, and preview/final parity.
+The source-linked contracts also protect the no-topology-mutation rule and
+cancel an active click chain before a live connection-mode change can reinterpret
+its captured snap targets.
+
+## Exact roundabout pavement and asymmetric one-way arms
+
+The circulating pavement is now emitted from exact station quads, with mouth
+roadway footprints subtracted before Roblox Parts are created. This removes the
+padded-box outer-ring overshoot and the raised sidewalk fragments that used to
+sit inside circulating lanes. One-way approaches retain independent left and
+right source pavement widths; only a side that actually exists is generated,
+and the traffic-inboard side tapers to zero at the ring kerb.
+
+LHT and RHT bird's-eye/gap/close-up fixtures report no mouth or ring holes and
+a worst approach-to-arm pavement step of 0.10 studs.
+
+## Literal custom Ground road assets
+
+Road Assets now imports a selected Workspace Model as a **Ground road** as well
+as a viaduct or tunnel. Road Tools and the placed-road inspector expose a
+dedicated **Custom ground road** mode. Its rigid modules repeat along the full
+banked/graded alignment using `EasyRoadStart` and `EasyRoadEnd`; committed
+Ground roads replace EasyRoad's generated lane, marking, kerb, and pavement
+Parts only after every module builds successfully. The authored Model therefore
+owns appearance, collision, hierarchy, and metadata, while the serialized Road
+Editor profile remains the topology and snapping envelope.
+
+The importer now rejects duplicate, half-defined, overlapping, and wildly
+out-of-bounds sockets. Missing pairs still get automatic oriented-bounds
+sockets; unusual but unambiguous orientation/outside-bound layouts import with
+a visible warning. Asset metadata shows socket mode, chord, and full bounds.
+Rigid modules are never silently distorted: the final tile may overlap to close
+the endpoint, and a road shorter than one module reports that overshoot.
+
+`ground_asset_preview.py` source-links import, serialization, UI, safe-fallback,
+and surface-ownership contracts, injects socket failures, and renders the shared
+rigid repeat-to-fit path. The check is part of the Windows validation runner.
+
 ## Widening anchors, seamless continuation, and first-run setup
 
 - Widening and narrowing transitions now expose a **Lane placement** choice:
@@ -473,8 +533,9 @@ selected or a generated concrete shell otherwise; Terrain excavation is
 deliberately not implied or performed.
 
 The configuration and generated children survive lane/marking edits, bus-bay
-rebuilds, road splits, junction approach trimming, and roundabout spoke
-trimming. `tools/preview/structure_preview.py` ports the socket stepping and
+rebuilds, junction approach trimming, and roundabout spoke trimming. Structured
+road splits are now intentionally blocked until rigid-module and pier station
+phase can remain continuous across the pieces. `tools/preview/structure_preview.py` ports the socket stepping and
 terrain projection, asserts continuous module coverage/pier contact, and
 renders viaduct plan/elevation plus tunnel plan as a PNG. This is headless and
 still needs a live Studio check; Roblox Model contents, collisions, Attachment

@@ -1,5 +1,5 @@
 --!strict
--- Placed-road controls for imported rigid viaduct/tunnel modules and
+-- Placed-road controls for imported rigid ground/viaduct/tunnel modules and
 -- terrain-projected viaduct piers. Kept out of RoadDesigner proper because
 -- these settings belong to a road instance, not a reusable cross-section.
 
@@ -61,6 +61,7 @@ local function StructureControls(props: {
 
 	local modeOptions: { Components.DropdownOption } = {
 		{ Id = "None", Text = "Ground level" },
+		{ Id = "Ground", Text = "Custom ground road" },
 		{ Id = "Viaduct", Text = "Elevated viaduct" },
 		{ Id = "Tunnel", Text = "Tunnel (procedural / custom)" },
 	}
@@ -132,7 +133,10 @@ local function StructureControls(props: {
 		local assetOptions: { Components.DropdownOption } = {
 			{
 				Id = "__none__",
-				Text = if kind == "Viaduct" then "Procedural slab + parapets" else "Procedural arched tunnel",
+				Text = if kind == "Ground"
+					then "Choose an imported ground road"
+					elseif kind == "Viaduct" then "Procedural slab + parapets"
+					else "Procedural arched tunnel",
 			},
 		}
 		for _, asset in props.Assets do
@@ -157,12 +161,16 @@ local function StructureControls(props: {
 		})
 		order += 1
 		children.ElevationHelp = note(
-			"Import and manage custom Models from Road Assets. Set positive/negative Elevation for viaduct grades or sunken tunnel alignments.",
+			if kind == "Ground"
+				then "Ground modules replace the generated lane, marking, and pavement Parts after placement. The Road Editor profile remains the alignment and snapping envelope."
+				else "Import and manage custom Models from Road Assets. Set positive/negative Elevation for viaduct grades or sunken tunnel alignments.",
 			order
 		)
 		order += 1
 		children.AdvancedToggle = e(Components.Button, {
-			Text = if advancedOpen then "Hide advanced structure options" else "Edit advanced structure options",
+			Text = if advancedOpen
+				then if kind == "Ground" then "Hide module placement" else "Hide advanced structure options"
+				else if kind == "Ground" then "Edit module placement" else "Edit advanced structure options",
 			Selected = advancedOpen,
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
 			LayoutOrder = order,
@@ -189,31 +197,40 @@ local function StructureControls(props: {
 				}),
 			})
 			order += 1
-			children.InterfaceOverlap = e(Components.Row, { LayoutOrder = order }, {
-				Label = e(Components.Label, { Text = lengthLabel("Road overlap"), LayoutOrder = 1 }),
-				Field = e(Components.NumberField, {
-					Value = Units.LengthFromM(props.Settings, structure.InterfaceOverlapM),
-					Min = Units.LengthFromM(props.Settings, 0),
-					Width = 62,
-					LayoutOrder = 2,
-					OnChanged = function(value: number)
-						change(function(copy)
-							copy.InterfaceOverlapM = Units.LengthToM(props.Settings, value)
-						end)
-					end,
-				}),
-			})
-			order += 1
+			if kind ~= "Ground" then
+				children.InterfaceOverlap = e(Components.Row, { LayoutOrder = order }, {
+					Label = e(Components.Label, { Text = lengthLabel("Road overlap"), LayoutOrder = 1 }),
+					Field = e(Components.NumberField, {
+						Value = Units.LengthFromM(props.Settings, structure.InterfaceOverlapM),
+						Min = Units.LengthFromM(props.Settings, 0),
+						Width = 62,
+						LayoutOrder = 2,
+						OnChanged = function(value: number)
+							change(function(copy)
+								copy.InterfaceOverlapM = Units.LengthToM(props.Settings, value)
+							end)
+						end,
+					}),
+				})
+				order += 1
+			end
 
 			if structure.AssetId then
 				children.AssetAppearance = note(
-					"Custom module materials and colours stay exactly as authored in the imported Roblox Model.",
+					"Custom module materials, colours, collisions, and hierarchy stay as authored. Scripts are disabled in repeated clones.",
+					order
+				)
+				order += 1
+			end
+			if kind == "Ground" then
+				children.GroundFit = note(
+					"Modules repeat rigidly from EasyRoadStart to EasyRoadEnd. The final tile may overlap to close the road end; a road shorter than one module keeps the full module and reports an endpoint warning.",
 					order
 				)
 				order += 1
 			end
 
-			if not structure.AssetId or kind == "Viaduct" then
+			if kind == "Viaduct" or (kind == "Tunnel" and not structure.AssetId) then
 				addFinishControls(
 					"BaseFinish",
 					if structure.AssetId then "Pier and cap finish" else "Structural base finish",

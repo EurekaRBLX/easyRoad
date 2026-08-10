@@ -29,13 +29,15 @@ export type BayData = {
 	Side: "Left" | "Right",
 }
 
-export type StructureMode = "None" | "Viaduct" | "Tunnel"
+export type StructureMode = "None" | "Ground" | "Viaduct" | "Tunnel"
 export type PillarLayout = "Single" | "Twin"
 export type TransitionAnchor = "Centre" | "LeftEdge" | "RightEdge"
 
 export type StructureData = {
 	Mode: StructureMode,
-	-- References a Model in ServerStorage/EasyRoadAssets. Viaduct mode can
+	-- References a Model in ServerStorage/EasyRoadAssets. Ground mode requires
+	-- one and replaces the generated cross-section with its rigid modules.
+	-- Viaduct mode can
 	-- omit one and use the procedural road itself as the deck; tunnels omit
 	-- one to use EasyRoad's procedural concrete shell.
 	AssetId: string?,
@@ -299,7 +301,11 @@ local function structureFromModel(model: Model): StructureData?
 		return nil
 	end
 	local ok, decoded = pcall(HttpService.JSONDecode, HttpService, raw)
-	if not ok or typeof(decoded) ~= "table" or (decoded.Mode ~= "Viaduct" and decoded.Mode ~= "Tunnel") then
+	if
+		not ok
+		or typeof(decoded) ~= "table"
+		or (decoded.Mode ~= "Ground" and decoded.Mode ~= "Viaduct" and decoded.Mode ~= "Tunnel")
+	then
 		return nil
 	end
 	return {

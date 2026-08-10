@@ -72,7 +72,7 @@ def custom_shoulder_faults():
     if inbound is None or outbound is not None or len(inbound["lanes"]) != 6:
         faults.append("undirected adjacency did not grow through both shoulder runs")
         return faults
-    components, _outer, _inner, _centre, cuts, _shift = rp.arm_from_group(
+    components, _outer, _inner, _centre, cuts, _shift, _pavements = rp.arm_from_group(
         inbound, True, solo=True
     )
     if any(abs(actual - expected) > 1e-6

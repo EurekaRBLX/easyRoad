@@ -50,6 +50,7 @@ SECTOR_INSET_RAD = math.radians(3)
 # degrees. Keep this shoulder-specific: solo mouths are clipped against their
 # actual emitted roadway footprints below rather than an angular inset.
 SHOULDER_SECTOR_INSET_RAD = math.radians(8)
+SEAM_STEP_TOLERANCE = 0.5
 ARM_HANDLE = 0.30
 ENTRY_SPLIT_SCALE = 0.8
 GORE_SAMPLES = 18
@@ -89,8 +90,12 @@ def split_approach_lanes(components, inbound_sign, style_pav=SW_M):
     # Zero is meaningful: a motorway really has no pavement. The arm profile
     # still carries the ring-side width; emit_arm tapers only that outer strip
     # down to this source width without recentering the roadway.
-    groups = {1: dict(lanes=[], idx=[], left=math.inf, right=-math.inf, pav=0.0),
-              -1: dict(lanes=[], idx=[], left=math.inf, right=-math.inf, pav=0.0)}
+    groups = {
+        1: dict(lanes=[], idx=[], left=math.inf, right=-math.inf,
+                pav_left=0.0, pav_right=0.0),
+        -1: dict(lanes=[], idx=[], left=math.inf, right=-math.inf,
+                 pav_left=0.0, pav_right=0.0),
+    }
 
     def add(g, i):
         g["idx"].append(i)
@@ -128,8 +133,10 @@ def split_approach_lanes(components, inbound_sign, style_pav=SW_M):
         for i, c in enumerate(components):
             if c[0] != "Sidewalk":
                 continue
-            if abs(offs[i][1]-g["left"]) < 1e-6 or abs(offs[i][0]-g["right"]) < 1e-6:
-                g["pav"] = c[1]
+            if abs(offs[i][1]-g["left"]) < 1e-6:
+                g["pav_left"] = max(g["pav_left"], c[1])
+            if abs(offs[i][0]-g["right"]) < 1e-6:
+                g["pav_right"] = max(g["pav_right"], c[1])
     return (groups[1] if groups[1]["lanes"] else None,
             groups[-1] if groups[-1]["lanes"] else None)
 
@@ -198,7 +205,13 @@ def arm_from_group(group, drive_on_left, solo=False, mirrored=False, ring_pav=SW
     outer = (-lm if drive_on_left else rm) * SCALE
     inner = (rm if drive_on_left else -lm) * SCALE
     core_shift = (cut_left - cut_right) / 2
-    return comps, outer, inner, (lm + rm) / 2, (cut_left, cut_right), core_shift
+    source_pavements = (
+        (group["pav_right"], group["pav_left"])
+        if mirrored else
+        (group["pav_left"], group["pav_right"])
+    )
+    return (comps, outer, inner, (lm + rm) / 2,
+            (cut_left, cut_right), core_shift, source_pavements)
 
 
 def retarget_edge_line(parts, curve, cut_at_start, source_offset_m, ring_offset_m):
@@ -234,8 +247,9 @@ def retarget_edge_line(parts, curve, cut_at_start, source_offset_m, ring_offset_
         part.center = center
 
 
-def emit_arm(curve, components, cut_pavement_m, cut_shoulders_m, cut_at_start,
-             drive_on_left, marking_bounds=None, edge_line_offsets_m=None):
+def emit_arm(curve, components, cut_pavements_m, cut_shoulders_m, cut_at_start,
+             drive_on_left, marking_bounds=None, edge_line_offsets_m=None,
+             ring_kerb=None, center=(0.0, 0.0)):
     """Emit fixed travel lanes with shoulder and pavement outside them.
 
     The Shoulder component is deliberately zero-width in `components`: it keeps
@@ -245,9 +259,14 @@ def emit_arm(curve, components, cut_pavement_m, cut_shoulders_m, cut_at_start,
     the ring-side width.
     """
     sidewalk_indices = [i for i, c in enumerate(components) if c[0] == "Sidewalk"]
+    offs = offsets_m(components)
     cut_left_shoulder_m, cut_right_shoulder_m = cut_shoulders_m
+    cut_left_pavement_m, cut_right_pavement_m = cut_pavements_m
     needs_taper = (cut_left_shoulder_m + cut_right_shoulder_m > 1e-6) or any(
-        abs(components[i][1] - cut_pavement_m) > 1e-6 for i in sidewalk_indices)
+        abs(components[i][1] - (cut_left_pavement_m
+                                if (offs[i][0] + offs[i][1]) / 2 < 0
+                                else cut_right_pavement_m)) > 1e-6
+        for i in sidewalk_indices)
     emitted = emit_road(curve, components, -ARM_SINK,
                         marking_bounds=marking_bounds)
     # Luau sinks only the arm surfaces. Markings have explicit ring ownership
@@ -264,7 +283,6 @@ def emit_arm(curve, components, cut_pavement_m, cut_shoulders_m, cut_at_start,
             edge_line_offsets_m[0],
             edge_line_offsets_m[1],
         )
-    offs = offsets_m(components)
     max_offset = sum(c[1] for c in components) / 2 * SCALE
     stations = build_stations(curve, MAX_SEGMENT_LENGTH, CHORD_TOLERANCE, max_offset)
     if not needs_taper:
@@ -277,6 +295,11 @@ def emit_arm(curve, components, cut_pavement_m, cut_shoulders_m, cut_at_start,
             p0, r0, _ = curve.frame(s0)
             p1, r1, _ = curve.frame(s1)
             for index in sidewalk_indices:
+                # RoadBuilder emits no Part for a zero-width semantic
+                # component. Trying to replace its cap would therefore select
+                # the nearest *other* Sidewalk and delete real pavement.
+                if components[index][1] <= 1e-6:
+                    continue
                 edge = offs[index]
                 poly = [
                     (p0[0] + r0[0] * edge[0] * SCALE,
@@ -288,21 +311,56 @@ def emit_arm(curve, components, cut_pavement_m, cut_shoulders_m, cut_at_start,
                     (p1[0] + r1[0] * edge[0] * SCALE,
                      p1[1] + r1[1] * edge[0] * SCALE),
                 ]
-                center = (sum(p[0] for p in poly) / 4,
-                          sum(p[1] for p in poly) / 4)
+                part_center = (sum(p[0] for p in poly) / 4,
+                               sum(p[1] for p in poly) / 4)
                 candidates = [p for p in emitted if p.name == "Sidewalk"]
-                victim = min(candidates, key=lambda p: math.dist(p.center, center))
+                victim = min(candidates,
+                             key=lambda p: math.dist(p.center, part_center))
                 emitted.remove(victim)
-                emitted.append(Part("Sidewalk", poly, SIDEWALK_C, center,
+                emitted.append(Part("Sidewalk", poly, SIDEWALK_C, part_center,
                                     -ARM_SINK + 0.125 * SCALE))
         return emitted, {"left": [], "right": []}
 
     parts = [p for p in emitted if p.name != "Sidewalk"]
     shoulder_parts = {"left": [], "right": []}
 
-    def ring_alpha(station):
+    def source_to_ring_u(station):
         t = station / curve.length if cut_at_start else 1.0 - station / curve.length
-        t = max(0.0, min(1.0, t))
+        return max(0.0, min(1.0, t))
+
+    def station_at_u(u):
+        return u * curve.length if cut_at_start else (1.0 - u) * curve.length
+
+    def zero_width_terminal_u(inner_m, source_pavement_m, ring_pavement_m):
+        if (ring_kerb is None or source_pavement_m <= 1e-6
+                or ring_pavement_m > 1e-6):
+            return 1.0
+
+        def radius_at(u):
+            pos, right, _ = curve.frame(station_at_u(u))
+            point = (pos[0] + right[0] * inner_m * SCALE,
+                     pos[1] + right[1] * inner_m * SCALE)
+            return math.dist(point, center)
+
+        if radius_at(1.0) > ring_kerb + 1e-5:
+            return 1.0
+        previous = 0.0
+        for sample in range(1, 65):
+            current = sample / 64.0
+            if radius_at(current) <= ring_kerb:
+                lo, hi = previous, current
+                for _ in range(24):
+                    mid = (lo + hi) / 2
+                    if radius_at(mid) > ring_kerb:
+                        lo = mid
+                    else:
+                        hi = mid
+                return hi
+            previous = current
+        return 1.0
+
+    def ring_alpha(station, terminal_u):
+        t = max(0.0, min(1.0, source_to_ring_u(station) / max(terminal_u, 1e-6)))
         return t * t * (3.0 - 2.0 * t)
 
     for index in sidewalk_indices:
@@ -314,9 +372,13 @@ def emit_arm(curve, components, cut_pavement_m, cut_shoulders_m, cut_at_start,
         side = "left" if left_side else "right"
         side_shoulder_m = (cut_left_shoulder_m if left_side
                            else cut_right_shoulder_m)
+        cut_pavement_m = (cut_left_pavement_m if left_side
+                          else cut_right_pavement_m)
+        terminal_u = zero_width_terminal_u(
+            inner_m, cut_pavement_m, ring_pavement_m)
 
         def surface_points(station):
-            alpha = ring_alpha(station)
+            alpha = ring_alpha(station, terminal_u)
             shoulder_m = side_shoulder_m * (1.0 - alpha)
             pavement_m = cut_pavement_m + (ring_pavement_m - cut_pavement_m) * alpha
             pos, right, _ = curve.frame(station)
@@ -337,14 +399,17 @@ def emit_arm(curve, components, cut_pavement_m, cut_shoulders_m, cut_at_start,
             sh_in1, sh_out1, pav_in1, pav_out1, sh_w1, pav_w1 = surface_points(s1)
             if max(sh_w0, sh_w1) * SCALE >= 0.02:
                 poly = [sh_in0, sh_out0, sh_out1, sh_in1]
-                center = (sum(p[0] for p in poly) / 4, sum(p[1] for p in poly) / 4)
-                part = Part("Shoulder", poly, KIND_C["Shoulder"], center, -ARM_SINK)
+                part_center = (sum(p[0] for p in poly) / 4,
+                               sum(p[1] for p in poly) / 4)
+                part = Part("Shoulder", poly, KIND_C["Shoulder"],
+                            part_center, -ARM_SINK)
                 parts.append(part)
                 shoulder_parts[side].append(part)
             if max(pav_w0, pav_w1) * SCALE >= 0.02:
                 poly = [pav_in0, pav_out0, pav_out1, pav_in1]
-                center = (sum(p[0] for p in poly) / 4, sum(p[1] for p in poly) / 4)
-                parts.append(Part("Sidewalk", poly, SIDEWALK_C, center,
+                part_center = (sum(p[0] for p in poly) / 4,
+                               sum(p[1] for p in poly) / 4)
+                parts.append(Part("Sidewalk", poly, SIDEWALK_C, part_center,
                                   -ARM_SINK + 0.125 * SCALE))
     return parts, shoulder_parts
 
@@ -376,6 +441,45 @@ def ring_components(lanes, lane_w, drive_on_left, sidewalk=True):
     else:
         comps.append(("Sidewalk", SW_M))
     return comps
+
+
+def exact_ring_sidewalk(curve, components):
+    """Raised ring pavement as exact station quads, matching Luau.
+
+    RoadBuilder's normal midpoint boxes use longitudinal overlap to close
+    curved-road gaps. That is appropriate for an asphalt deck, but their outer
+    corners visibly overshoot on a raised annular sidewalk. These quads share
+    exact station edges and therefore need no padding.
+    """
+    indices = [i for i, component in enumerate(components)
+               if component[0] == "Sidewalk" and component[1] > 1e-6]
+    if not indices:
+        return []
+    max_offset = sum(component[1] for component in components) / 2 * SCALE
+    stations = build_stations(
+        curve, MAX_SEGMENT_LENGTH, CHORD_TOLERANCE, max_offset)
+    offsets = offsets_m(components)
+    parts = []
+    for index in indices:
+        left_m, right_m = offsets[index]
+        for s0, s1 in zip(stations, stations[1:]):
+            p0, r0, _ = curve.frame(s0)
+            p1, r1, _ = curve.frame(s1)
+            poly = [
+                (p0[0] + r0[0] * left_m * SCALE,
+                 p0[1] + r0[1] * left_m * SCALE),
+                (p0[0] + r0[0] * right_m * SCALE,
+                 p0[1] + r0[1] * right_m * SCALE),
+                (p1[0] + r1[0] * right_m * SCALE,
+                 p1[1] + r1[1] * right_m * SCALE),
+                (p1[0] + r1[0] * left_m * SCALE,
+                 p1[1] + r1[1] * left_m * SCALE),
+            ]
+            center = (sum(point[0] for point in poly) / 4,
+                      sum(point[1] for point in poly) / 4)
+            parts.append(Part(
+                "Sidewalk", poly, SIDEWALK_C, center, 0.125 * SCALE))
+    return parts
 
 
 def arm_components(spoke_lanes, lane_w, drive_on_left, spoke=None):
@@ -1300,6 +1404,15 @@ def check_arm_kinds(scene):
         if want != got:
             faults.append(f"arm {n} ({arm['role']}): running surface was {want}, arm built {got}")
             continue
+        source_pavements = arm.get("source_pavements", (0.0, 0.0))
+        expected_pavements = tuple(reversed(source_pavements)) if arm.get("mirrored") else source_pavements
+        if any(abs(actual - expected) > 1e-6 for actual, expected in zip(
+                arm.get("cut_pavements", (0.0, 0.0)), expected_pavements)):
+            faults.append(
+                f"arm {n} ({arm['role']}): source pavements {source_pavements} "
+                f"with mirrored={arm.get('mirrored')} became "
+                f"{arm.get('cut_pavements')}, expected {expected_pavements}"
+            )
         source_shoulder = sum(w for k, w, _ in arm["source"] if k == "Shoulder")
         cut_left, cut_right = arm["cut_shoulders"]
         roadway = [c for c in arm["comps"] if c[0] != "Sidewalk"]
@@ -1473,7 +1586,9 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     # Build the ordinary concentric divider first. Turbo later replaces only
     # the arc owned by each peel, leaving the untouched portions concentric.
     ring_parts = emit_road(ring_curve, rc, solid_lane_lines=(markings == "SolidLanes"))
-    ring_sidewalk = [p for p in ring_parts if p.name == "Sidewalk"]
+    ring_parts = [part for part in ring_parts if part.name != "Sidewalk"]
+    ring_sidewalk = exact_ring_sidewalk(ring_curve, rc)
+    ring_parts += ring_sidewalk
     ring_markings = [p for p in ring_parts if p.name == "Marking"]
 
     pavement_sectors, solo_pavement_sectors, edge_marking_sectors = [], [], []
@@ -1517,7 +1632,8 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 return None
             # Junction at the far end (inbound sign +1 above), so the outward
             # arm is the mirrored one - see armProfileFor.
-            comps, outer, inner, road_centre, cut_shoulders, core_shift_local = arm_from_group(
+            (comps, outer, inner, road_centre, cut_shoulders,
+             core_shift_local, cut_pavements) = arm_from_group(
                 group, drive_on_left, solo, not travels_inward,
                 SW_M if sidewalk else 0.0)
             merge = ring_kerb - outer
@@ -1526,11 +1642,18 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
             lat_m = (core_centre - road_centre) if travels_inward else (core_centre + road_centre)
             # Source group kept alongside the built arm so check_arm_kinds can
             # compare the two rather than re-deriving what the arm ought to be.
-            arm_kinds.append(dict(role="entry" if travels_inward else "exit",
-                                  source=list(group["lanes"]), comps=comps,
-                                  cut_shoulders=cut_shoulders, solo=solo))
+            arm_kinds.append(dict(
+                role="entry" if travels_inward else "exit",
+                source=list(group["lanes"]),
+                comps=comps,
+                cut_shoulders=cut_shoulders,
+                source_pavements=(group["pav_left"], group["pav_right"]),
+                cut_pavements=cut_pavements,
+                mirrored=not travels_inward,
+                solo=solo,
+            ))
             return dict(comps=comps, outer=outer, inner=inner, merge=merge,
-                        lat=lat_m*SCALE, cut_pav=group["pav"],
+                        lat=lat_m*SCALE, cut_pavements=cut_pavements,
                         cut_shoulders=cut_shoulders)
 
         entry_arm, exit_arm = make(inbound, True), make(outbound, False)
@@ -1548,12 +1671,12 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 entry_arm["comps"], drive_on_left)
             first_record = len(arm_marking_bounds)
             emitted, shoulder_parts = emit_arm(
-                entry, entry_arm["comps"], entry_arm["cut_pav"],
+                entry, entry_arm["comps"], entry_arm["cut_pavements"],
                 entry_arm["cut_shoulders"], True, drive_on_left,
                 arm_marking_bounder(entry, center, ring_kerb, True,
                                     arm_marking_bounds,
                                     edge_offsets[0], edge_offsets[1]),
-                edge_offsets)
+                edge_offsets, ring_kerb, center)
             entry_emitted = emitted
             for record in arm_marking_bounds[first_record:]:
                 record["parts"] = [p for p in emitted
@@ -1571,12 +1694,12 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 exit_arm["comps"], drive_on_left)
             first_record = len(arm_marking_bounds)
             emitted, shoulder_parts = emit_arm(
-                exit_, exit_arm["comps"], exit_arm["cut_pav"],
+                exit_, exit_arm["comps"], exit_arm["cut_pavements"],
                 exit_arm["cut_shoulders"], False, drive_on_left,
                 arm_marking_bounder(exit_, center, ring_kerb, False,
                                     arm_marking_bounds,
                                     edge_offsets[0], edge_offsets[1]),
-                edge_offsets)
+                edge_offsets, ring_kerb, center)
             exit_emitted = emitted
             for record in arm_marking_bounds[first_record:]:
                 record["parts"] = [p for p in emitted
@@ -1962,6 +2085,28 @@ def render(scene, outdir):
         name = f"{scene['tag']}_controls.png"
         cv.save(os.path.join(outdir, name))
         written.append(name)
+    if scene["tag"].startswith("solo_pavement_sides") and scene.get("solo_mouths"):
+        # A focused visual regression for the two reported defects: the raised
+        # ring strip must keep a smooth outer edge, and the one-way arm must not
+        # carry its optional footway across circulating asphalt. Centre the
+        # first asymmetric merge and render at roughly three times the bird's-
+        # eye scale so a one-pixel seam cannot hide in the full scene.
+        focus = scene["solo_mouths"][0]["merge"]
+        close_scale, close_size = 9.0, 720
+        close_tx = lambda point: (
+            (point[0] - focus[0]) * close_scale + close_size / 2,
+            (point[1] - focus[1]) * close_scale + close_size / 2,
+        )
+        cv = Canvas(close_size, close_size, (250, 250, 250))
+        for part in sorted(scene["parts"], key=lambda item: item.y):
+            cv.fill_poly([close_tx(vertex) for vertex in part.poly], part.color)
+        for triangle in scene["apron"]:
+            cv.fill_poly([close_tx(vertex) for vertex in triangle], ASPHALT_C)
+        for triangle in scene["gore"]:
+            cv.fill_poly([close_tx(vertex) for vertex in triangle], ISLAND_C)
+        name = f"{scene['tag']}_pavement_closeup.png"
+        cv.save(os.path.join(outdir, name))
+        written.append(name)
     return written
 
 
@@ -2018,6 +2163,25 @@ def seam_steps(scene, probe=1.5, span=60.0, samples=1200):
             continue
         steps.append((abs(before[0] - after[0]), abs(before[1] - after[1])))
     return steps
+
+
+def seam_step_faults(scene, tolerance=SEAM_STEP_TOLERANCE):
+    """Reject a visible lateral step where a source road meets its arm.
+
+    This used to be report-only, so a preview could print ``STEPPED`` and
+    still exit successfully. Keep the measurement reusable by the parity
+    suite and make the CLI's status agree with its own diagnostic.
+    """
+    steps = seam_steps(scene)
+    if not steps:
+        return []
+    worst = max(max(left, right) for left, right in steps)
+    if worst <= tolerance:
+        return []
+    return [
+        f"approach/arm seam steps {worst:.2f} studs "
+        f"(limit {tolerance:.2f})"
+    ]
 
 
 def scan_mouths(scene, span=70.0, samples=420, steps=40, min_gap=0.2, max_skip=6.0):
@@ -2476,6 +2640,8 @@ def report(scene, holes, pitch, hairline):
         worst = max(max(a, b) for a, b in steps)
         print(f"    approach/arm seam: worst edge step {worst:.2f} studs "
               f"({'flush' if worst <= 0.5 else 'STEPPED'})")
+        if worst > SEAM_STEP_TOLERANCE:
+            ok = False
     if not holes:
         print("    no bare ground inside the ring footprint")
         return ok
@@ -2505,6 +2671,18 @@ def two_way(inbound, outbound, dol, lane=LANE_M, pav=SW_M):
 def one_way(lanes, into_ring, dol, lane=LANE_M, pav=SW_M):
     d = 1 if into_ring else -1
     return [("Sidewalk", pav)] + [("Drive", lane, d)] * lanes + [("Sidewalk", pav)]
+
+
+def one_way_asymmetric(lanes, into_ring, left_pav=0.0, right_pav=0.0,
+                       lane=LANE_M):
+    """Custom one-way cross-section with independently optional footways."""
+    direction = 1 if into_ring else -1
+    components = [("Drive", lane, direction)] * lanes
+    if left_pav > 1e-6:
+        components.insert(0, ("Sidewalk", left_pav))
+    if right_pav > 1e-6:
+        components.append(("Sidewalk", right_pav))
+    return components
 
 
 def one_way_bay(lanes, into_ring, dol, lane=LANE_M, bay=2.8, pav=SW_M):
@@ -2633,6 +2811,32 @@ def CASE_TABLE(dol_default=True):
         "solo_bay_us": case(80, 2, False, [
             (90, one_way_bay(2, True, False, bay=2.8)),
             (210, one_way_bay(2, False, False, bay=3.2)),
+            (330, two_way(2, 2, False)),
+        ]),
+        # Custom one-way roads may carry a footway on only one physical side.
+        # Preserve that exact side at the cut (including the mirrored exit arm)
+        # and taper an inboard source footway out before it reaches ring traffic.
+        "solo_pavement_sides": case(82, 2, True, [
+            (90, one_way_asymmetric(2, True, left_pav=2.2)),
+            (210, one_way_asymmetric(2, False, right_pav=1.6)),
+            (330, two_way(2, 2, True)),
+        ]),
+        "solo_pavement_sides_us": case(82, 2, False, [
+            (90, one_way_asymmetric(2, True, right_pav=2.2)),
+            (210, one_way_asymmetric(2, False, left_pav=1.6)),
+            (330, two_way(2, 2, False)),
+        ]),
+        # Exact-width one-sided pavement takes the no-taper cap path. The
+        # zero-width semantic component on the opposite side must not steal a
+        # real Sidewalk cap from the emitted arm.
+        "solo_pavement_identity": case(82, 2, True, [
+            (90, one_way_asymmetric(2, True, left_pav=SW_M)),
+            (210, one_way_asymmetric(2, False, right_pav=SW_M)),
+            (330, two_way(2, 2, True)),
+        ]),
+        "solo_pavement_identity_us": case(82, 2, False, [
+            (90, one_way_asymmetric(2, True, right_pav=SW_M)),
+            (210, one_way_asymmetric(2, False, left_pav=SW_M)),
             (330, two_way(2, 2, False)),
         ]),
     }

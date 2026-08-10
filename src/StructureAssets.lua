@@ -1,8 +1,8 @@
 --!strict
--- Game-owned library for rigid road structure modules imported from Studio.
+-- Game-owned library for rigid road and structure modules imported from Studio.
 --
--- A user Ctrl-selects a placed EasyRoad road plus any workspace Model, then
--- imports that Model as either a Viaduct or Tunnel module. The clone lives in
+-- A user selects any Workspace Model, then imports it as a Ground, Viaduct,
+-- or Tunnel module. The clone lives in
 -- ServerStorage/EasyRoadAssets so it remains editable and saved with the place
 -- without rendering an extra copy in the world.
 --
@@ -17,12 +17,18 @@
 local HttpService = game:GetService("HttpService")
 local ServerStorage = game:GetService("ServerStorage")
 
-export type AssetKind = "Viaduct" | "Tunnel"
+export type AssetKind = "Ground" | "Viaduct" | "Tunnel"
+export type SocketMode = "Explicit" | "Automatic"
 export type AssetInfo = {
 	Id: string,
 	Name: string,
 	Kind: AssetKind,
 	LengthStuds: number,
+	WidthStuds: number,
+	HeightStuds: number,
+	DepthStuds: number,
+	SocketMode: SocketMode,
+	Warnings: string?,
 }
 
 local FOLDER_NAME = "EasyRoadAssets"
@@ -38,6 +44,88 @@ local function hasBasePart(model: Model): boolean
 		end
 	end
 	return false
+end
+
+local function hierarchySnapshot(root: Model): ({ Instance }, { [Instance]: boolean }, number)
+	local instances: { Instance } = { root }
+	local archivable: { [Instance]: boolean } = {}
+	local basePartCount = 0
+	for _, descendant in root:GetDescendants() do
+		table.insert(instances, descendant)
+		if descendant:IsA("BasePart") then
+			basePartCount += 1
+		end
+	end
+	for _, instance in instances do
+		archivable[instance] = instance.Archivable
+	end
+	return instances, archivable, basePartCount
+end
+
+local function cloneHierarchyMatches(source: Instance, clone: Instance): boolean
+	if source.ClassName ~= clone.ClassName or source.Name ~= clone.Name then
+		return false
+	end
+	local sourceChildren = source:GetChildren()
+	local cloneChildren = clone:GetChildren()
+	if #sourceChildren ~= #cloneChildren then
+		return false
+	end
+	for index, sourceChild in sourceChildren do
+		if not cloneHierarchyMatches(sourceChild, cloneChildren[index]) then
+			return false
+		end
+	end
+	return true
+end
+
+-- Clone every descendant or return no Model at all. Instance:Clone silently
+-- omits descendants whose own Archivable flag is false, which is unacceptable
+-- for a rigid road module: losing one kerb/barrier/socket and then suppressing
+-- the procedural road would turn a recoverable asset problem into missing
+-- geometry. Temporarily enable the complete hierarchy, restore the source in
+-- all outcomes, and deliberately keep the complete clone archivable so its
+-- geometry survives saving the asset library and placed road to the place file.
+function StructureAssets.CloneComplete(source: Model): (Model?, string?)
+	local instances, authoredArchivable, expectedBaseParts = hierarchySnapshot(source)
+	local cloneResult: Instance? = nil
+	local okClone = pcall(function()
+		for _, instance in instances do
+			if not authoredArchivable[instance] then
+				instance.Archivable = true
+			end
+		end
+		cloneResult = source:Clone()
+	end)
+	for _, instance in instances do
+		local authored = authoredArchivable[instance]
+		if not authored then
+			pcall(function()
+				instance.Archivable = false
+			end)
+		end
+	end
+
+	local clone: Model? = if okClone and cloneResult and cloneResult:IsA("Model") then cloneResult else nil
+	if not clone then
+		return nil, "Roblox could not clone the complete selected Model."
+	end
+
+	local clonedBaseParts = 0
+	for _, descendant in clone:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			clonedBaseParts += 1
+		end
+	end
+	if
+		not cloneHierarchyMatches(source, clone :: Model)
+		or #clone:GetDescendants() ~= #instances - 1
+		or clonedBaseParts ~= expectedBaseParts
+	then
+		clone:Destroy()
+		return nil, "Roblox omitted part of the selected Model hierarchy while cloning it."
+	end
+	return clone, nil
 end
 
 local function assetsFolder(create: boolean): Folder?
@@ -109,18 +197,135 @@ local function ensureSockets(model: Model): (Attachment, Attachment, boolean)
 	return startSocket :: Attachment, endSocket :: Attachment, true
 end
 
+local function socketCount(model: Model, name: string): number
+	local count = 0
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("Attachment") and descendant.Name == name then
+			count += 1
+		end
+	end
+	return count
+end
+
+local function boundingDimensions(model: Model): (CFrame, Vector3)
+	local frame, size = model:GetBoundingBox()
+	return frame, size
+end
+
+local function socketBoundsExcess(boxFrame: CFrame, boxSize: Vector3, position: Vector3): number
+	local localPosition = boxFrame:PointToObjectSpace(position)
+	local half = boxSize / 2
+	return math.max(
+		math.abs(localPosition.X) - half.X,
+		math.abs(localPosition.Y) - half.Y,
+		math.abs(localPosition.Z) - half.Z,
+		0
+	)
+end
+
+-- Socket checks deliberately distinguish unsafe geometry from uncommon but
+-- useful authoring. A portal may put a socket slightly outside its visible
+-- bounds to create an overlap joint, so that is a warning. Duplicate sockets,
+-- a single half-defined pair, overlapping endpoints, or sockets many model
+-- widths away are errors because placement would otherwise be ambiguous.
+local function validateSockets(
+	model: Model,
+	startSocket: Attachment,
+	endSocket: Attachment,
+	autoSockets: boolean
+): ({ string }?, string?)
+	local startPosition = startSocket.WorldPosition
+	local endPosition = endSocket.WorldPosition
+	local chord = endPosition - startPosition
+	local length = chord.Magnitude
+	if length < 0.1 then
+		return nil, "EasyRoadStart and EasyRoadEnd must be at least 0.1 studs apart."
+	end
+
+	local warnings: { string } = {}
+	local boxFrame, boxSize = boundingDimensions(model)
+	local largestDimension = math.max(boxSize.X, boxSize.Y, boxSize.Z)
+	local hardOutsideLimit = math.max(16, largestDimension * 2)
+	local softOutsideLimit = math.max(0.5, length * 0.15)
+	local startExcess = socketBoundsExcess(boxFrame, boxSize, startPosition)
+	local endExcess = socketBoundsExcess(boxFrame, boxSize, endPosition)
+	local worstExcess = math.max(startExcess, endExcess)
+	if worstExcess > hardOutsideLimit then
+		return nil,
+			"A socket is far outside the Model bounds. Move EasyRoadStart/EasyRoadEnd back to the intended joints."
+	elseif worstExcess > softOutsideLimit then
+		table.insert(
+			warnings,
+			"Sockets extend outside the visible bounds; keep this only for a deliberate overlap joint"
+		)
+	end
+
+	if not autoSockets then
+		local axis = chord.Unit
+		if startSocket.WorldCFrame.LookVector:Dot(axis) < 0.35 then
+			table.insert(warnings, "EasyRoadStart does not look toward EasyRoadEnd; placement uses the socket chord")
+		end
+		if startSocket.WorldCFrame.UpVector:Dot(endSocket.WorldCFrame.UpVector) < 0 then
+			table.insert(warnings, "Socket UpVectors face opposite directions; the Start UpVector controls module roll")
+		end
+	end
+	return warnings, nil
+end
+
 local function infoFromModel(model: Model): AssetInfo?
 	local id = model:GetAttribute("ER_AssetId")
 	local kind = model:GetAttribute("ER_AssetKind")
 	local length = model:GetAttribute("ER_ModuleLengthStuds")
-	if typeof(id) ~= "string" or (kind ~= "Viaduct" and kind ~= "Tunnel") or typeof(length) ~= "number" then
+	if
+		typeof(id) ~= "string"
+		or (kind ~= "Ground" and kind ~= "Viaduct" and kind ~= "Tunnel")
+		or typeof(length) ~= "number"
+	then
 		return nil
+	end
+	local socketMode = model:GetAttribute("ER_SocketMode")
+	if socketMode ~= "Explicit" and socketMode ~= "Automatic" then
+		socketMode = if model:GetAttribute("ER_AutoSockets") == true then "Automatic" else "Explicit"
+	end
+	local rawWidth = model:GetAttribute("ER_BoundsWidthStuds")
+	local rawHeight = model:GetAttribute("ER_BoundsHeightStuds")
+	local rawDepth = model:GetAttribute("ER_BoundsDepthStuds")
+	local width: number? = if typeof(rawWidth) == "number" then rawWidth else nil
+	local height: number? = if typeof(rawHeight) == "number" then rawHeight else nil
+	local depth: number? = if typeof(rawDepth) == "number" then rawDepth else nil
+	local rawWarnings = model:GetAttribute("ER_AssetWarnings")
+	local warningText: string? = if typeof(rawWarnings) == "string" and rawWarnings ~= "" then rawWarnings else nil
+
+	-- New assets cache their import-time bounds, so listing a large library is
+	-- metadata-only. Legacy/damaged entries may lack those attributes; keep that
+	-- migration fallback protected because GetBoundingBox can reject a Model
+	-- whose BaseParts were removed by a user editing ServerStorage directly.
+	if width == nil or height == nil or depth == nil then
+		local fallbackSize: Vector3? = nil
+		local readable = pcall(function()
+			local _, size = boundingDimensions(model)
+			fallbackSize = size
+		end)
+		if readable and fallbackSize then
+			local size = fallbackSize :: Vector3
+			width = width or size.X
+			height = height or size.Y
+			depth = depth or size.Z
+		else
+			warningText = (if warningText then warningText .. "; " else "")
+				.. "Stored Model bounds are unreadable; export or re-import the asset"
+		end
 	end
 	return {
 		Id = id,
 		Name = model.Name,
 		Kind = kind :: AssetKind,
 		LengthStuds = length,
+		WidthStuds = width or 0,
+		HeightStuds = height or 0,
+		DepthStuds = depth or 0,
+		SocketMode = socketMode :: SocketMode,
+		Warnings = warningText,
 	}
 end
 
@@ -205,19 +410,9 @@ function StructureAssets.ExportToWorkspace(assetId: string): (Model?, string)
 		return nil, "That road asset no longer exists."
 	end
 
-	-- Library Models are normally archivable, but users can edit them directly
-	-- in ServerStorage. Temporarily permit cloning and restore their setting so
-	-- exporting never modifies the stored asset's final state.
-	local wasArchivable = asset.Archivable
-	asset.Archivable = true
-	local okClone, cloneResult = pcall(function()
-		return asset:Clone()
-	end)
-	asset.Archivable = wasArchivable
-
-	local clone: Model? = if okClone and cloneResult and cloneResult:IsA("Model") then cloneResult else nil
+	local clone, cloneError = StructureAssets.CloneComplete(asset)
 	if not clone then
-		return nil, "Roblox could not clone the selected road asset."
+		return nil, cloneError or "Roblox could not clone the selected road asset."
 	end
 
 	clone.Name = uniqueWorkspaceName(asset.Name)
@@ -295,29 +490,35 @@ function StructureAssets.Import(source: Model, kind: AssetKind): (AssetInfo?, st
 		return nil, "The selected Model has no BaseParts."
 	end
 
-	-- Clone() returns nil for an unarchivable source. Preserve the user's flag.
-	local wasArchivable = source.Archivable
-	source.Archivable = true
-	local okClone, cloneResult = pcall(function()
-		return source:Clone()
-	end)
-	source.Archivable = wasArchivable
-	local clone: Model? = if okClone and cloneResult and cloneResult:IsA("Model") then cloneResult else nil
+	local clone, cloneError = StructureAssets.CloneComplete(source)
 	if not clone then
-		return nil, "Roblox could not clone the selected Model."
+		return nil, cloneError or "Roblox could not clone the selected Model."
 	end
 	clone.Archivable = true
 	if not hasBasePart(clone) then
 		clone:Destroy()
 		return nil, "The selected Model's BaseParts are not archivable."
 	end
+	local startCount = socketCount(clone, START_SOCKET)
+	local endCount = socketCount(clone, END_SOCKET)
+	if startCount > 1 or endCount > 1 then
+		clone:Destroy()
+		return nil, "Keep exactly one EasyRoadStart and one EasyRoadEnd Attachment in the Model."
+	end
+	if (startCount == 1) ~= (endCount == 1) then
+		clone:Destroy()
+		return nil, "Add both EasyRoadStart and EasyRoadEnd, or remove the lone socket to use automatic bounds."
+	end
 
 	local startSocket, endSocket, autoSockets = ensureSockets(clone)
-	local length = (endSocket.WorldPosition - startSocket.WorldPosition).Magnitude
-	if length < 0.1 then
+	local warnings, socketError = validateSockets(clone, startSocket, endSocket, autoSockets)
+	if socketError then
 		clone:Destroy()
-		return nil, "EasyRoadStart and EasyRoadEnd must be at least 0.1 studs apart."
+		return nil, socketError
 	end
+	local length = (endSocket.WorldPosition - startSocket.WorldPosition).Magnitude
+	local _, bounds = boundingDimensions(clone)
+	local warningText = if warnings and #warnings > 0 then table.concat(warnings, "; ") else nil
 
 	local id = HttpService:GenerateGUID(false)
 	clone:SetAttribute("ER_Asset", true)
@@ -325,6 +526,12 @@ function StructureAssets.Import(source: Model, kind: AssetKind): (AssetInfo?, st
 	clone:SetAttribute("ER_AssetKind", kind)
 	clone:SetAttribute("ER_ModuleLengthStuds", length)
 	clone:SetAttribute("ER_AutoSockets", autoSockets)
+	clone:SetAttribute("ER_SocketMode", if autoSockets then "Automatic" else "Explicit")
+	clone:SetAttribute("ER_BoundsWidthStuds", bounds.X)
+	clone:SetAttribute("ER_BoundsHeightStuds", bounds.Y)
+	clone:SetAttribute("ER_BoundsDepthStuds", bounds.Z)
+	clone:SetAttribute("ER_ModuleFit", "RigidRepeat")
+	clone:SetAttribute("ER_AssetWarnings", warningText)
 	local folder = assetsFolder(true)
 	assert(folder, "EasyRoadAssets folder creation failed")
 	clone.Parent = folder
@@ -334,10 +541,17 @@ function StructureAssets.Import(source: Model, kind: AssetKind): (AssetInfo?, st
 		Name = clone.Name,
 		Kind = kind,
 		LengthStuds = length,
+		WidthStuds = bounds.X,
+		HeightStuds = bounds.Y,
+		DepthStuds = bounds.Z,
+		SocketMode = if autoSockets then "Automatic" else "Explicit",
+		Warnings = warningText,
 	},
-		if autoSockets
+		(if autoSockets
 			then "Imported with automatic bounding-box sockets; add EasyRoadStart/EasyRoadEnd Attachments for precise joints."
-			else "Imported using EasyRoadStart/EasyRoadEnd Attachments."
+			else "Imported using EasyRoadStart/EasyRoadEnd Attachments.") .. (if warningText
+			then " Warning: " .. warningText .. "."
+			else "")
 end
 
 return StructureAssets

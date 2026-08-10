@@ -1150,7 +1150,7 @@ return function(
 			bottomFrameProps = {
 				AnchorPoint = Vector2.new(0, 1),
 				Position = UDim2.new(0, 12, 1, -16),
-				Size = UDim2.new(0, 560, 0, 300),
+				Size = UDim2.new(0, 600, 0, 360),
 			}
 		elseif session then
 			local currentSession = session :: createRoadSession.RoadSession
@@ -1167,6 +1167,7 @@ return function(
 			local placementStructureKind: StructureAssets.AssetKind? = if placementStructure.Mode == "Viaduct"
 				then "Viaduct"
 				elseif placementStructure.Mode == "Tunnel" then "Tunnel"
+				elseif placementStructure.Mode == "Ground" then "Ground"
 				else nil
 			-- Two separate floating boxes, CS2-style, not one box with
 			-- everything stacked on top of itself: Tool Mode left-aligned
@@ -1215,6 +1216,7 @@ return function(
 						Settings = settings,
 						OnSettingsChanged = function()
 							library.SetStyle(getStyle())
+							currentSession.RefreshPlacementSettings()
 							persist()
 							updateUI()
 						end,

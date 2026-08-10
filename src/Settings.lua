@@ -21,6 +21,7 @@ local LENGTH_UNITS = { "Meters", "Feet", "Studs" }
 
 export type SuperelevationMode = "Auto" | "Manual" | "Off"
 export type SnapReference = "Centre" | "LeftRoadwayEdge" | "RightRoadwayEdge"
+export type SnapConnectionMode = "AutomaticJunction" | "CrossSection"
 
 -- Which English variant to use for user-facing terminology that differs
 -- between them (Kerb/Curb, Pavement/Sidewalk, ...) - see Locale.lua. Purely
@@ -79,6 +80,12 @@ export type EasyRoadSettings = {
 	-- mid-span snapping. Left/right follow that road's stored start -> end
 	-- profile orientation; topology still connects to its centreline station.
 	SnapReference: SnapReference,
+	-- AutomaticJunction preserves the ordinary network-building workflow.
+	-- CrossSection is a topology-free tangential connection for ramps,
+	-- flyovers, and other custom geometry: it snaps to the chosen road
+	-- cross-section, constrains the new road's lead-in, leaves the target road
+	-- unsplit, and does not generate a junction pad.
+	SnapConnectionMode: SnapConnectionMode,
 	-- Deflect roundabout entries: each mouth's entry arm merges closer in to the
 	-- mouth than its exit arm peels off, so traffic joining the ring is turned
 	-- harder than traffic leaving (see RoundaboutBuilder). Off = a symmetric pair.
@@ -173,6 +180,12 @@ local function sanitizeSettings(rawValue: any): EasyRoadSettings
 		SnapToGrid = booleanOr(raw, "SnapToGrid", false),
 		SnapToRoad = booleanOr(raw, "SnapToRoad", true),
 		SnapReference = enumOr(raw, "SnapReference", { "Centre", "LeftRoadwayEdge", "RightRoadwayEdge" }, "Centre") :: SnapReference,
+		SnapConnectionMode = enumOr(
+			raw,
+			"SnapConnectionMode",
+			{ "AutomaticJunction", "CrossSection" },
+			"AutomaticJunction"
+		) :: SnapConnectionMode,
 		RoundaboutEntryCurve = booleanOr(raw, "RoundaboutEntryCurve", true),
 		ElevationStepStuds = numberOr(raw, "ElevationStepStuds", 1, 0.25, 32),
 		LastElevationStuds = numberOr(raw, "LastElevationStuds", 0, -100000, 100000),
@@ -231,6 +244,7 @@ local function serializeSettings(settings: EasyRoadSettings): { [string]: any }
 		SnapToGrid = settings.SnapToGrid,
 		SnapToRoad = settings.SnapToRoad,
 		SnapReference = settings.SnapReference,
+		SnapConnectionMode = settings.SnapConnectionMode,
 		RoundaboutEntryCurve = settings.RoundaboutEntryCurve,
 		ElevationStepStuds = settings.ElevationStepStuds,
 		LastElevationStuds = settings.LastElevationStuds,

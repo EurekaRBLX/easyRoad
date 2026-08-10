@@ -46,7 +46,9 @@ PY_ONLY = {"CHORD_TOLERANCE", "MIN_STEP", "MAX_TURN_PER_STEP", "MARKING_THICKNES
            "MARKING_LIFT",
            "MAX_SEGMENT_LENGTH", "ARC_SAMPLES", "SCALE", "SW_M", "LANE_M",
            "MARKING_W_M", "THICKNESS",
-           "GROUND", "FLAT", "ASPHALT_C", "SIDEWALK_C", "MARK_C", "ISLAND_C"}
+           "GROUND", "FLAT", "ASPHALT_C", "SIDEWALK_C", "MARK_C", "ISLAND_C",
+           # Visual-QA failure threshold; it does not affect emitted geometry.
+           "SEAM_STEP_TOLERANCE"}
 
 
 def scalars(text, rad):
