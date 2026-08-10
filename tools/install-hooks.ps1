@@ -1,7 +1,11 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Install roChassis's git hooks into this clone.
+    Install this plugin's git hooks into this clone.
+
+.NOTES
+    Identical in every repo in the family, like tools\ci.ps1 - it names no
+    plugin, so it can be copied across verbatim. Do not fork it per plugin.
 
 .DESCRIPTION
     .git/hooks is not tracked by git, so a committed hook does nothing until it
