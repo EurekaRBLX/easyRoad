@@ -1903,6 +1903,10 @@ local APRON_SAMPLES = 24
 -- at the waist instead threw away everything beyond it, including the wide part
 -- against the ring, and left bare kerb at the mouth.
 local APRON_ARC_STEP_RAD = math.rad(2)
+-- Minimum number of sides in the circumscribed kerb-disc cutter used by the
+-- hybrid splitter frontage. APRON_ARC_STEP_RAD currently asks for 180, while
+-- this floor keeps future coarser preview settings safely below visible scale.
+local SPLITTER_RING_CLIP_MIN_SAMPLES = 64
 -- The gore is the gap between the two arms' INNER roadway edges, so on an
 -- approach with a median it starts out that median's width at the cut, and on
 -- one WITHOUT a median it starts at zero and only opens as the arms diverge.
@@ -3119,11 +3123,14 @@ local function buildSplitterIsland(
 		fillSurface(entrySide[j], exitSide[j + 1], entrySide[j + 1], depth, makeSidewalkPart)
 	end
 
-	-- Close the last frontage as FLAT ASPHALT, never raised splitter pavement.
-	-- Straight chords between points on a circle lie inside that circle: the old
-	-- Sidewalk fan therefore produced the pair of concrete triangles observed
-	-- across the circulating lane. The polygon is still needed to close the
-	-- mouth, but it belongs to the carriageway/apron at deck level.
+	-- Close the last frontage with a hybrid surface. The complete fan remains a
+	-- flat asphalt safety layer, so the mouth can never expose terrain. Above it,
+	-- restore only the portion of the splitter that is OUTSIDE the circular kerb.
+	-- The old all-concrete fan used straight circle chords and therefore put two
+	-- raised wedges across the circulating lane; the all-asphalt replacement
+	-- fixed that intrusion but visibly chopped the approach's inner median kerb.
+	-- Subtracting a circumscribed kerb disc from each fan triangle preserves the
+	-- median right up to the ring while guaranteeing no raised fragment enters it.
 	local noseStation = kerbCrossing(entryCurve, lastAlong, 1, entryArm)
 	local tailStation = kerbCrossing(exitCurve, exitCurve.Length - lastAlong, -1, exitArm)
 	local nose = goreEdgeAt(entryCurve, lastAlong, entryArm, -ARM_SINK_STUDS)
@@ -3142,8 +3149,36 @@ local function buildSplitterIsland(
 	table.insert(boundary, tailEnd)
 	table.insert(boundary, tail)
 	local apronDepth = settings.RoadThicknessStuds
+	local circleSteps = math.max(SPLITTER_RING_CLIP_MIN_SAMPLES, math.ceil(2 * math.pi / APRON_ARC_STEP_RAD))
+	local circleStep = 2 * math.pi / circleSteps
+	-- Circumscribed rather than inscribed: every cutter edge is tangent to the
+	-- true kerb circle, so polygon chord error can only shorten the splitter by a
+	-- hairline and can never put concrete back into the circulating carriageway.
+	local cutterRadius = ringKerbRadiusStuds / math.cos(circleStep / 2)
+	local ringDisc: ConvexFootprint = {}
+	for i = 0, circleSteps - 1 do
+		table.insert(ringDisc, ringPointAt(center, (i + 0.5) * circleStep, cutterRadius, apex.Y))
+	end
+	local raisedLift = Vector3.new(0, curbHeight + ARM_SINK_STUDS, 0)
 	for k = 1, #boundary - 1 do
-		fillSurface(apex, boundary[k], boundary[k + 1], apronDepth, makeApronPart)
+		local flatTriangle: ConvexFootprint = { apex, boundary[k], boundary[k + 1] }
+		fillSurface(flatTriangle[1], flatTriangle[2], flatTriangle[3], apronDepth, makeApronPart)
+		local exteriorFragments = subtractConvexFootprint(flatTriangle, ringDisc)
+		for _, fragment in exteriorFragments do
+			local raisedFragment: ConvexFootprint = {}
+			for _, point in fragment do
+				table.insert(raisedFragment, point + raisedLift)
+			end
+			for triangleIndex = 2, #raisedFragment - 1 do
+				fillSurface(
+					raisedFragment[1],
+					raisedFragment[triangleIndex],
+					raisedFragment[triangleIndex + 1],
+					depth,
+					makeSidewalkPart
+				)
+			end
+		end
 	end
 end
 

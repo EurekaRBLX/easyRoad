@@ -116,11 +116,27 @@ def static_faults(source):
             "splitter and GoreApron surfaces cannot own the ring-pavement cut")
     require(splitter, "table.insert(surfaceCutters, { a, b, c })",
             "splitter surface triangles are not added to the ownership mask")
-    require(splitter, "Close the last frontage as FLAT ASPHALT",
-            "splitter frontage has no explicit circulating-lane ownership rule")
+    require(splitter, "Close the last frontage with a hybrid surface",
+            "splitter frontage has no explicit hybrid ownership rule")
     require(splitter,
-            "fillSurface(apex, boundary[k], boundary[k + 1], apronDepth, makeApronPart)",
-            "splitter frontage does not close the mouth with flat asphalt")
+            "local circleSteps = math.max(SPLITTER_RING_CLIP_MIN_SAMPLES, math.ceil(2 * math.pi / APRON_ARC_STEP_RAD))",
+            "splitter frontage has no bounded kerb-disc resolution")
+    require(splitter,
+            "local cutterRadius = ringKerbRadiusStuds / math.cos(circleStep / 2)",
+            "splitter kerb cutter is not circumscribed around the live ring")
+    require(splitter, "local ringDisc: ConvexFootprint = {}",
+            "splitter frontage has no circular traffic exclusion disc")
+    require(splitter,
+            "local flatTriangle: ConvexFootprint = { apex, boundary[k], boundary[k + 1] }",
+            "splitter frontage is not retained as a flat asphalt underlay")
+    require(splitter,
+            "fillSurface(flatTriangle[1], flatTriangle[2], flatTriangle[3], apronDepth, makeApronPart)",
+            "splitter frontage can expose terrain below its raised fragment")
+    require(splitter,
+            "local exteriorFragments = subtractConvexFootprint(flatTriangle, ringDisc)",
+            "splitter frontage is not clipped only against the circular ring")
+    require(splitter, "local raisedFragment: ConvexFootprint = {}",
+            "splitter loses the exterior median-kerb frontage")
     reject(splitter,
            "FillTriangle(apex, boundary[k], boundary[k + 1], depth, DOWN, makeSidewalkPart, ring)",
            "splitter frontage still lays raised chords inside the circular kerb")
@@ -237,6 +253,14 @@ def preview_static_faults(source):
         faults.append("Python CLI can report STEPPED while still returning success")
     if '"solo_pavement_identity"' not in source or '"solo_pavement_identity_us"' not in source:
         faults.append("Python parity omits exact-width asymmetric pavement regressions")
+    if "def splitter_ring_disc(center, radius):" not in source:
+        faults.append("Python preview has no circumscribed splitter kerb cutter")
+    if "for fragment in _convex_difference(flat_triangle, ring_disc):" not in source:
+        faults.append("Python preview does not preserve circle-exterior splitter frontage")
+    if "def splitter_continuity_faults(scene" not in source:
+        faults.append("Python preview has no median-to-kerb continuity invariant")
+    if '"hybrid_divided4"' not in source:
+        faults.append("Python parity omits the divided four-arm hybrid fixture")
     return faults
 
 
@@ -346,6 +370,7 @@ def geometry_faults(name):
             f"{len(intrusions)} splitter triangles enter circulating traffic "
             f"(worst {max(item['depth'] for item in intrusions):.3f} studs)"
         )
+    faults += rp.splitter_continuity_faults(scene)
     faults += rp.check_solo_merges(scene)
     faults += solo_ownership_faults(scene)
     records = [record for record in scene["arm_marking_bounds"]
@@ -437,12 +462,43 @@ def break_tests(source, preview_source):
                     bool(static_faults(padded_arm))))
 
     raised_frontage = source.replace(
-        "fillSurface(apex, boundary[k], boundary[k + 1], apronDepth, makeApronPart)",
-        "fillSurface(apex, boundary[k], boundary[k + 1], depth, makeSidewalkPart)",
+        "local exteriorFragments = subtractConvexFootprint(flatTriangle, ringDisc)",
+        "local exteriorFragments = { flatTriangle } -- restored all-raised fan",
         1,
     )
     results.append(("restored raised splitter frontage fan",
                     bool(static_faults(raised_frontage))))
+
+    inscribed_disc = source.replace(
+        "local cutterRadius = ringKerbRadiusStuds / math.cos(circleStep / 2)",
+        "local cutterRadius = ringKerbRadiusStuds",
+        1,
+    )
+    results.append(("used inscribed splitter ring disc",
+                    bool(static_faults(inscribed_disc))))
+
+    without_frontage_underlay = source.replace(
+        "fillSurface(flatTriangle[1], flatTriangle[2], flatTriangle[3], apronDepth, makeApronPart)",
+        "-- flat frontage underlay removed by break-test",
+        1,
+    )
+    results.append(("removed flat splitter frontage underlay",
+                    bool(static_faults(without_frontage_underlay))))
+
+    chopped, _ = geometry_faults("hybrid_divided4")
+    chopped["splitter_records"][0]["frontage_raised"] = []
+    results.append(("chopped divided-road splitter frontage",
+                    bool(rp.splitter_continuity_faults(chopped))))
+
+    intruding, _ = geometry_faults("hybrid_divided4")
+    radius = intruding["ring_kerb"] - 0.5
+    intruding["gore"].append([
+        (radius, -0.1),
+        (radius, 0.1),
+        (radius - 0.2, 0.0),
+    ])
+    results.append(("raised splitter fragment inside ring",
+                    bool(rp.splitter_ring_intrusions(intruding))))
 
     bounded, _ = geometry_faults("uk4")
     record = next(record for record in bounded["arm_marking_bounds"]
@@ -582,7 +638,8 @@ def main():
                  "stress_us", "solo_bay", "solo_bay_us",
                  "solo_pavement_sides", "solo_pavement_sides_us",
                  "solo_pavement_identity", "solo_pavement_identity_us",
-                 "mouth_sidewalk_lht", "mouth_sidewalk_rht"):
+                 "mouth_sidewalk_lht", "mouth_sidewalk_rht",
+                 "hybrid_divided4"):
         scene, case_faults = geometry_faults(name)
         scenes[name] = scene
         for fault in case_faults:
@@ -610,7 +667,7 @@ def main():
     # keeps this dynamic parity guard materially cheaper than the full CLI scan.
     for name in ("solo_flare", "hw_oneway", "solo_bay", "solo_bay_us",
                  "solo_pavement_sides", "solo_pavement_sides_us",
-                 "stress", "stress_us"):
+                  "stress", "stress_us", "hybrid_divided4"):
         for fault in visible_ring_gap_faults(scenes[name]):
             faults.append(f"{name}: {fault}")
 

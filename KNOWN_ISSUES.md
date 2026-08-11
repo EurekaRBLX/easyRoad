@@ -8,9 +8,11 @@ internal planning only. See `TODO.md` for planned new features and
   first rebuilt parity attempt still left concrete wedges at ring mouths.
   Headlessly, every arm sidewalk is now an exact station-quad surface and the
   ring footway is subtracted only by actual arm, apron, and splitter
-  footprints. The splitter's final frontage is flat GoreApron asphalt, removing
-  the two raised triangles that chorded across circulating lanes. Full parity,
-  including `stress_us`, passes with all 21 injected defects caught; keep this
+  footprints. The splitter's final frontage keeps a flat GoreApron underlay and
+  restores raised concrete only outside a circumscribed kerb-disc cutter. That
+  reconnects the median kerb without restoring the two triangles that chorded
+  across circulating lanes. Full parity,
+  including `stress_us`, passes with all 25 injected defects caught; keep this
   item open only until the rebuilt plugin is visually checked in Studio.
 - **Curve rendering is rolled back headlessly and still needs rebuilt-dist
   Studio confirmation.** Curved/banked lateral coalescing is disabled after its

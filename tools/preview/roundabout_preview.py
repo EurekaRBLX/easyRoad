@@ -56,6 +56,7 @@ ENTRY_SPLIT_SCALE = 0.8
 GORE_SAMPLES = 18
 APRON_SAMPLES = 24
 APRON_ARC_STEP_RAD = math.radians(2)
+SPLITTER_RING_CLIP_MIN_SAMPLES = 64
 # Two separate questions about the gore - see RoundaboutBuilder. Does the
 # approach arrive with a median at all (measured at the cut), and on one that
 # does not, how wide must the gore open before the splitter becomes a raised
@@ -640,6 +641,28 @@ def _convex_difference(subject, clip, tolerance=1e-9):
     if len(inside) < 3 or abs(_signed_area(inside)) <= tolerance:
         return [list(subject)]
     return outside_fragments
+
+
+def splitter_ring_disc(center, radius):
+    """Circumscribed polygon used to remove live-ring concrete from a splitter.
+
+    An inscribed polygon leaves every chord slightly inside the true kerb circle.
+    Circumscribing the cutter makes that approximation conservative: exterior
+    fragments can stop a hairline early, but can never protrude into traffic.
+    """
+    steps = max(
+        SPLITTER_RING_CLIP_MIN_SAMPLES,
+        math.ceil(2 * math.pi / APRON_ARC_STEP_RAD),
+    )
+    step = 2 * math.pi / steps
+    cutter_radius = radius / math.cos(step / 2)
+    return [
+        (
+            center[0] + math.cos((index + 0.5) * step) * cutter_radius,
+            center[1] + math.sin((index + 0.5) * step) * cutter_radius,
+        )
+        for index in range(steps)
+    ]
 
 
 def open_parts_by_footprints(parts, cutters, selected, area_tolerance=1e-7):
@@ -1587,6 +1610,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
 
     pavement_sectors, solo_pavement_sectors, edge_marking_sectors = [], [], []
     arm_parts, gore_tris, apron_tris = [], [], []
+    splitter_records = []
     # Physical mouth surfaces are the raised ring-pavement ownership mask.
     # Generated core Parts retain their real padding; manual pavement/shoulder
     # strips and splitter geometry contribute their exact polygons.
@@ -1745,6 +1769,11 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
             ))
 
         if entry and exit_:
+            splitter_gore_start = len(gore_tris)
+            splitter_apron_start = len(apron_tris)
+            frontage_raised = []
+            frontage_flat = []
+
             def gore_edge(curve, sst, arm):
                 p, rt_, _ = curve.frame(max(0.0, min(curve.length, sst)))
                 io = arm["inner"]
@@ -1779,8 +1808,9 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
             # whether there is one - the gore is never left open. Default
             # `reach`: a gore that never opens to island width is apron for its
             # whole length. See RoundaboutBuilder.
+            source_gore_width = gore_width(0)
             start_along = reach
-            if gore_width(0) >= MEDIAN_AT_CUT_M*SCALE:
+            if source_gore_width >= MEDIAN_AT_CUT_M*SCALE:
                 start_along = 0.0          # median arrives at the cut: continue it
             else:
                 for i in range(65):
@@ -1848,9 +1878,10 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 gore_tris.append([L[j], R[j], R[j+1]])
                 gore_tris.append([L[j], R[j+1], L[j+1]])
             if L and R:
-                # Close the frontage with asphalt, not raised splitter
-                # pavement. The chords intentionally enter the circular ring,
-                # where they are carriageway ownership rather than sidewalk.
+                # The terminal fan is a hybrid surface. Its full footprint is
+                # flat asphalt so the circulating carriageway never meets a
+                # hole; only the circle-exterior fragments are raised back into
+                # the splitter so a source median reaches the kerb unchopped.
                 nose, tail = L[-1], R[-1]
                 nose_end = gore_edge(
                     entry, kerb_crossing(entry, last_along, 1, entry_arm), entry_arm)
@@ -1867,8 +1898,55 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                     boundary.append((math.cos(ang2)*ring_kerb,
                                      math.sin(ang2)*ring_kerb))
                 boundary += [tail_end, tail]
+                ring_disc = splitter_ring_disc(center, ring_kerb)
                 for k in range(len(boundary)-1):
-                    apron_tris.append([apex, boundary[k], boundary[k+1]])
+                    # The complete fan is flat carriageway ownership underneath.
+                    # Raise only the portions exterior to the true kerb circle;
+                    # this preserves the median-to-kerb frontage without putting
+                    # concrete back into the circulating carriageway.
+                    flat_triangle = [apex, boundary[k], boundary[k+1]]
+                    apron_tris.append(flat_triangle)
+                    frontage_flat.append(flat_triangle)
+                    for fragment in _convex_difference(flat_triangle, ring_disc):
+                        cleaned = _clean_polygon(fragment)
+                        if (len(cleaned) >= 3
+                                and abs(_signed_area(cleaned)) > 1e-7):
+                            gore_tris.append(cleaned)
+                            frontage_raised.append(cleaned)
+
+            continuity_probes = []
+            if source_gore_width >= MEDIAN_AT_CUT_M*SCALE and last_along > 1e-6:
+                # Mid-interval samples avoid testing triangle boundaries while
+                # still proving that the authored source median reaches the
+                # terminal frontage with no chopped station in between.
+                for sample in range(96):
+                    along = (sample + 0.5) / 96 * last_along
+                    pa = gore_edge(entry, along, entry_arm)
+                    pb = gore_edge(exit_, exit_.length-along, exit_arm)
+                    continuity_probes.append(((pa[0]+pb[0])/2,
+                                              (pa[1]+pb[1])/2))
+                if L and R:
+                    apex_radius = math.dist(apex, center)
+                    if apex_radius > ring_kerb + 1e-6:
+                        radial = unit((apex[0]-center[0], apex[1]-center[1]))
+                        for sample in range(32):
+                            radius = (ring_kerb
+                                      + (sample + 0.5) / 32
+                                      * (apex_radius-ring_kerb))
+                            continuity_probes.append((
+                                center[0] + radial[0]*radius,
+                                center[1] + radial[1]*radius,
+                            ))
+            splitter_records.append(dict(
+                angle=deg,
+                source_gore_width=source_gore_width,
+                starts_at_source=abs(start_along) <= 1e-9,
+                raised=gore_tris[splitter_gore_start:],
+                apron=apron_tris[splitter_apron_start:],
+                frontage_raised=frontage_raised,
+                frontage_flat=frontage_flat,
+                continuity_probes=continuity_probes,
+            ))
 
         if not (entry and exit_):
             only = entry_arm or exit_arm
@@ -2035,6 +2113,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 arm_kinds=arm_kinds,
                 arm_marking_bounds=arm_marking_bounds,
                 shoulder_tapers=shoulder_tapers,
+                splitter_records=splitter_records,
                 mouth_surface_parts=mouth_surface_parts,
                 solo_mouths=solo_mouths,
                 outer_ring_parts=outer_ring_parts,
@@ -2509,6 +2588,68 @@ def splitter_ring_intrusions(scene, tolerance=0.05):
     return faults
 
 
+def _point_polygon_distance(point, polygon):
+    """Plan-view distance to a polygon boundary (zero when on an edge)."""
+    best = math.inf
+    for a, b in zip(polygon, polygon[1:] + polygon[:1]):
+        vx, vy = b[0] - a[0], b[1] - a[1]
+        length2 = vx * vx + vy * vy
+        if length2 <= 1e-12:
+            candidate = math.dist(point, a)
+        else:
+            alpha = max(0.0, min(1.0, (
+                (point[0] - a[0]) * vx + (point[1] - a[1]) * vy
+            ) / length2))
+            candidate = math.dist(
+                point,
+                (a[0] + alpha * vx, a[1] + alpha * vy),
+            )
+        best = min(best, candidate)
+    return best
+
+
+def splitter_continuity_faults(scene, tolerance=1e-4):
+    """A source median must remain raised continuously to the ring kerb."""
+    faults = []
+    for index, record in enumerate(scene.get("splitter_records", []), 1):
+        if record["source_gore_width"] < MEDIAN_AT_CUT_M * SCALE:
+            continue
+        if not record["starts_at_source"]:
+            faults.append(f"splitter {index} does not begin at its source median")
+            continue
+        if not record["frontage_flat"]:
+            faults.append(f"splitter {index} has no flat terminal underlay")
+        if not record["frontage_raised"]:
+            faults.append(f"splitter {index} loses its raised exterior frontage")
+            continue
+
+        raised = record["raised"]
+        missing = []
+        for probe in record["continuity_probes"]:
+            if not any(
+                point_in(polygon, probe)
+                or _point_polygon_distance(probe, polygon) <= tolerance
+                for polygon in raised
+            ):
+                missing.append(probe)
+        if missing:
+            faults.append(
+                f"splitter {index} has {len(missing)} uncovered median-to-kerb probes"
+            )
+
+        closest_frontage = min(
+            math.dist(vertex, scene["center"])
+            for polygon in record["frontage_raised"]
+            for vertex in polygon
+        )
+        if closest_frontage > scene["ring_kerb"] + 0.05:
+            faults.append(
+                f"splitter {index} frontage stops {closest_frontage - scene['ring_kerb']:.3f} "
+                "studs before the kerb"
+            )
+    return faults
+
+
 def cluster_gaps(holes, pitch, hairline):
     """Group bare-ground samples by angle and split real holes from hairlines.
 
@@ -2683,6 +2824,15 @@ def report(scene, holes, pitch, hairline):
         )
     else:
         print("    splitter clearance: all raised triangles remain outside the ring kerb")
+    continuity_faults = splitter_continuity_faults(scene)
+    if continuity_faults:
+        ok = False
+        for fault in continuity_faults:
+            print(f"    SPLITTER CONTINUITY: {fault}")
+    elif any(
+            record["source_gore_width"] >= MEDIAN_AT_CUT_M * SCALE
+            for record in scene.get("splitter_records", [])):
+        print("    splitter continuity: source medians remain raised to the kerb")
     for fault in check_arm_kinds(scene):
         ok = False
         print(f"    ARM: {fault}")
@@ -2745,6 +2895,16 @@ def two_way(inbound, outbound, dol, lane=LANE_M, pav=SW_M):
     outl = [("Drive", lane, -1)] * outbound
     middle = inl + outl if dol else outl + inl
     return [("Sidewalk", pav)] + middle + [("Sidewalk", pav)]
+
+
+def divided_two_way(inbound, outbound, dol, lane=LANE_M, pav=SW_M,
+                    median=MEDIAN_M):
+    """Two carriageways separated by a raised median at the source cut."""
+    in_lanes = [("Drive", lane, 1)] * inbound
+    out_lanes = [("Drive", lane, -1)] * outbound
+    left, right = (in_lanes, out_lanes) if dol else (out_lanes, in_lanes)
+    return ([('Sidewalk', pav)] + left + [('Median', median, 0)]
+            + right + [('Sidewalk', pav)])
 
 
 def one_way(lanes, into_ring, dol, lane=LANE_M, pav=SW_M):
@@ -2932,6 +3092,13 @@ def CASE_TABLE(dol_default=True):
             (90, two_way(1, 1, False)),
             (180, two_way(2, 2, False)),
             (270, two_way(1, 3, False)),
+        ]),
+        # Hybrid cutter regression: exact arm footprints own only the outer
+        # ring pavement while each authored centre median remains raised all the
+        # way to the circular kerb. This matches the reported divided 4-arm view.
+        "hybrid_divided4": case(70, 2, True, [
+            (angle, divided_two_way(2, 2, True))
+            for angle in (0, 90, 180, 270)
         ]),
     }
 

@@ -620,17 +620,17 @@ shared-station triangles. Degenerate zero-width taper ends are recorded as the
 same two non-degenerate triangles actually emitted, so cutter geometry cannot
 retain or delete an unrelated ring fragment.
 
-The splitter's last circular-frontage fan is now **flat GoreApron asphalt**.
-The former raised Sidewalk fan joined points on the kerb circle with chords,
-placing the two selected concrete triangles inside the circulating annulus.
-Raised splitter material now stops outside that frontage; the flat fan still
-closes the mouth without blocking traffic.
+The splitter's last circular-frontage fan is now **hybrid**. A complete flat
+GoreApron underlay closes the mouth, while a circumscribed kerb-disc cutter
+restores only the part of that fan outside the circular kerb as raised
+Sidewalk. The approach median therefore reaches the ring again, but the former
+two concrete chord triangles cannot re-enter the circulating annulus.
 
 Surface and paint ownership remain deliberately separate. Raised pavement uses
 physical footprints; the outer ring edge line opens angularly to its tangent
 handoff, and matching arm paint reaches that boundary. The full 3D parity suite
 passes every case, including LHT/RHT asymmetric one-way mouths, `stress_us`,
-and Bay profiles, and catches all 21 injected ownership failures. Keep only the
+and Bay profiles, and catches all 25 injected ownership failures. Keep only the
 rebuilt Studio visual check open.
 
 ### 5.5 Smaller, known limits

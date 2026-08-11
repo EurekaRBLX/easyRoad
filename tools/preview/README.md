@@ -39,7 +39,7 @@ trap as an invariant nobody re-reads.
 | `hardware_reference_check.py` | Parses the five `hardware/*.rbxmx` references and verifies their deck/base, parapet/wall, and tunnel-crown cues. |
 | `junction_pad_preview.py`, `corner_preview.py` | Junction pad and curb-return shapes. Not yet wired into `validate.py`. |
 | `turbo_check.py`, `road_break_tests.py`, `structure_break_tests.py` | Break-tests: reintroduce a defect and confirm the relevant scan catches it. |
-| `roundabout_parity_contract.py` | Static plus 3D ownership contract for arm markings, exact arm sidewalks, generated roadway footprints, ring-pavement subtraction, GoreApron/splitter geometry, Turbo overlays, and LHT/RHT one-way mouths; catches 21 injected regressions. |
+| `roundabout_parity_contract.py` | Static plus 3D ownership contract for arm markings, exact arm sidewalks, generated roadway footprints, ring-pavement subtraction, hybrid splitter frontage, Turbo overlays, and LHT/RHT one-way mouths; catches 25 injected regressions. |
 | `check_parity.py` | Constants shared with the Lua. Constants only. |
 | `dump_compare.py` | Diffs a live plugin dump against this port. |
 | `raster.py` | Stdlib-only PNG writer. |

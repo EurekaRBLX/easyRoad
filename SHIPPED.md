@@ -57,14 +57,15 @@ GoreApron triangles, and raised splitter triangles. This removes the old
 padded-box outer-ring overshoot without cutting broad angular holes beside a
 curved arm.
 
-The splitter's final circular frontage is flat asphalt GoreApron rather than a
-raised concrete fan. The two concrete triangles that could chord inside the
-ring and cover circulating asphalt therefore no longer exist. One-way
+The splitter's final circular frontage uses a flat GoreApron underlay plus an
+exterior-only raised concrete layer clipped by a circumscribed kerb disc. The
+approach median remains visibly kerbed up to the ring, while the two concrete
+chord triangles that previously covered circulating asphalt cannot return. One-way
 approaches retain independent left and right source pavement widths; only a
 side present in the source is continued at the approach cut, and the
 traffic-inboard side tapers to zero at the ring kerb.
 
-Full 3D parity is green for every configured case and catches all 21 injected
+Full 3D parity is green for every configured case and catches all 25 injected
 ownership/clipping regressions. Focused four-leg LHT and RHT
 bird's-eye/gap/close-up fixtures report no mouth or ring holes, zero splitter
 intrusion, and a worst approach-to-arm pavement step of 0.10 studs.
@@ -291,7 +292,7 @@ sector clipping. It removed retained corners but still treated a curved mouth
 as an angular wedge, which could over-delete ring pavement and did not own every
 arm sidewalk/splitter surface. The physical-footprint implementation documented
 at the top of this file supersedes that pass: full parity, including
-`stress_us`, is now green and all 21 injected defects are caught.
+`stress_us`, is now green and all 25 injected defects are caught.
 ## Preview-matched roundabout markings and exact approach caps
 
 Generated roundabout rings and arms now use the accepted Python preview as
