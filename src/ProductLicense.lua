@@ -10,7 +10,7 @@ local ProductLicense = {}
 ProductLicense.Mode = "Commercial" :: Mode
 
 ProductLicense.EulaVersion = "1.0"
-ProductLicense.Build = "1.1.0"
+ProductLicense.Build = "1.1.1"
 ProductLicense.OssLicenseName = "AGPL-3.0"
 
 ProductLicense.WebBase = "https://v2.eurekarblx.com"
