@@ -3,8 +3,10 @@
 -- geometry (a Model of anchored Parts).
 --
 -- The cross-section is extruded along the curve in adaptive intervals:
--- short intervals where curvature is high, long ones on straights. Each
--- interval places one part per profile component plus marking parts.
+-- short intervals where curvature is high, long ones on straights. Flat,
+-- constant-width curves retain the build-0.1 per-component midpoint boxes;
+-- widening and changing-bank surfaces use exact station-edge quadrilaterals.
+-- Only proven rigid straight ranges merge compatible lanes into long Parts.
 -- Superelevation is applied as a roll of the whole cross-section frame,
 -- smoothed along the curve to approximate runoff transitions.
 --
@@ -87,8 +89,6 @@ local MIN_STEP = 0.4
 local MAX_TURN_PER_STEP = 0.2 -- Radians of heading change allowed per strip
 local MAX_ROLL_PER_STEP = 0.02 -- Radians of superelevation (bank) change allowed per strip
 local MAX_ROLL_INTERPOLATION_ERROR = 0.0015 -- Radians between the canonical bank profile and one strip
-local MAX_BANKED_BAND_WARP_STUDS = 0.025 -- Max vertical error when coalescing Drive lanes through runoff
-local MAX_CURVED_BAND_OVERHANG_STUDS = 0.025 -- Max extra box overhang versus any source Drive component
 local ROLL_WEDGE_EPSILON = 1e-4 -- Roll change (radians) per strip above which a flat box would visibly kink
 local MAX_PART_AXIS_STUDS = 2048 -- Roblox BasePart axis limit
 local EXACT_STRAIGHT_EPSILON = 1e-4
@@ -662,34 +662,16 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	end
 
 	-- Deck strips ---------------------------------------------------------------
-	-- Always centerline-symmetric: each strip is centered on the tangent
-	-- frame at its own interval's true midpoint (an exact point on the
-	-- curve, not an approximation), both edges padded via curveMiterPad to
-	-- close the resulting curve gap. This was previously an "Inside"/
-	-- "Outside" anchored-edge alternative (deliberately keeping one lane
-	-- edge exact via a shared station point, closing the other edge's
-	-- residual gap with an exact FillTriangle wedge) - removed after this
-	-- didn't hold up in practice: the far/residual edge's fixes
-	-- (width-padding, then a curvature-gated wedge) kept trading one
-	-- visible defect for another (sawtooth, then still-visible gaps), and
-	-- anchoring a single edge instead of the centerline is what made the
-	-- whole road visually drift off the clicked path on a sustained curve
-	-- - by definition, only one edge tracked the true path exactly, so a
-	-- wide cross-section's centerline (what the user actually clicked)
-	-- could wander from it. Centerline-anchoring avoids that entirely:
-	-- every strip's own center is placed directly on the curve, so the
-	-- road can never drift from the path regardless of curve length or
-	-- cross-section width. No FillTriangle wedges are used for ordinary curve
-	-- joints any more. The opt-in exact raised caps below are deliberately
-	-- different: their purpose is to end a Sidewalk/Median exactly at station
-	-- 0/Length where another builder owns the surface beyond that plane.
-	--
-	-- On a constant-profile run, adjacent Drive components with the same
-	-- surface signature may be emitted as one wider band. Curved intervals use
-	-- the same source profile and marking plan; changing-bank intervals apply a
-	-- stricter width budget below before they are allowed to coalesce.
-	local compatibleBandEndByStart: { [number]: number } = {}
-	if not isTransition and options.DisableSurfaceCoalescing ~= true then
+	-- Curved surfaces deliberately retain the build-0.1 per-component emitter.
+	-- Coalescing several Drive lanes made every padded interval one broad box,
+	-- turning a small component seam into a carriageway-wide transverse defect.
+	-- Only an exact straight, constant-profile run may merge compatible Drive
+	-- components into one long rectangular Part. Curves remain centreline-
+	-- anchored midpoint boxes with their proven miter overlap; changing width,
+	-- lateral offset, or bank still uses exact station-edge wedges below.
+	local bandEndByStart: { [number]: number } = {}
+	local mergedIntoPrevious: { [number]: boolean } = {}
+	if optimizedStraight and options.DisableSurfaceCoalescing ~= true then
 		local c = 1
 		while c <= componentCount do
 			local bandEnd = c
@@ -711,14 +693,14 @@ function RoadBuilder.Build(options: BuildOptions): Model
 					bandEnd = nextIndex
 				end
 			end
-			for sourceIndex = c, bandEnd do
-				compatibleBandEndByStart[sourceIndex] = bandEnd
+			bandEndByStart[c] = bandEnd
+			for sourceIndex = c + 1, bandEnd do
+				mergedIntoPrevious[sourceIndex] = true
 			end
 			c = bandEnd + 1
 		end
 	end
-	local curvedSurfaceCoalesced = false
-	local bankedSurfaceCoalesced = false
+	local exactStationQuadSurfaces = false
 
 	for i = 1, stationCount - 1 do
 		local s0 = stations[i]
@@ -747,59 +729,11 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		-- against its neighbour.
 		local rollDelta = math.abs(rolls[i + 1] - rolls[i])
 
-		local c = 1
-		while c <= componentCount do
-			if excludedComponents[c] then
-				c += 1
+		for c = 1, componentCount do
+			if excludedComponents[c] or mergedIntoPrevious[c] then
 				continue
 			end
-
-			-- A bank transition twists the cross-section between its two exact
-			-- station edges. Coalescing several lanes changes where that ruled
-			-- surface is triangulated, so admit only as much width as keeps the
-			-- worst centre-of-quad height difference below the explicit budget:
-			-- width * |sin(roll1) - sin(roll0)| / 4.
-			local componentEnd = c
-			local compatibleEnd = compatibleBandEndByStart[c] or c
-			if compatibleEnd > c then
-				local sinDelta = math.abs(math.sin(rolls[i + 1]) - math.sin(rolls[i]))
-				local maxBandWidth = if sinDelta <= 1e-9 then math.huge else 4 * MAX_BANKED_BAND_WARP_STUDS / sinDelta
-				local bandWidth = math.max(stationWidths[i][c], stationWidths[i + 1][c])
-				local sourceLeft = stationOffsets[i][c]
-				local sourceRight = sourceLeft + stationWidths[i][c]
-				local sourceEdgeDistance = math.max(math.abs(sourceLeft), math.abs(sourceRight))
-				local minimumSourceMiter = curveMiterPad(curve, sMid, sourceEdgeDistance, nominalLength)
-				while componentEnd < compatibleEnd do
-					local nextIndex = componentEnd + 1
-					local nextWidth = math.max(stationWidths[i][nextIndex], stationWidths[i + 1][nextIndex])
-					if bandWidth + nextWidth > maxBandWidth then
-						break
-					end
-
-					-- Constant-roll curved surfaces use midpoint boxes with a
-					-- curvature-dependent length pad. A wider merged box inherits
-					-- the farthest edge's pad across every source lane; bound the
-					-- extra half-length it would add over the shortest source box.
-					local nextLeft = stationOffsets[i][nextIndex]
-					local nextRight = nextLeft + stationWidths[i][nextIndex]
-					local nextEdgeDistance = math.max(math.abs(nextLeft), math.abs(nextRight))
-					local nextSourceMiter = curveMiterPad(curve, sMid, nextEdgeDistance, nominalLength)
-					local candidateLeft = stationOffsets[i][c]
-					local candidateRight = nextRight
-					local candidateEdgeDistance = math.max(math.abs(candidateLeft), math.abs(candidateRight))
-					local candidateMiter = curveMiterPad(curve, sMid, candidateEdgeDistance, nominalLength)
-					local candidateMinimumMiter = math.min(minimumSourceMiter, nextSourceMiter)
-					if
-						rollDelta <= ROLL_WEDGE_EPSILON
-						and (candidateMiter - candidateMinimumMiter) / 2 > MAX_CURVED_BAND_OVERHANG_STUDS
-					then
-						break
-					end
-					bandWidth += nextWidth
-					minimumSourceMiter = candidateMinimumMiter
-					componentEnd = nextIndex
-				end
-			end
+			local componentEnd = bandEndByStart[c] or c
 			local w0 = 0
 			local w1 = 0
 			for sourceIndex = c, componentEnd do
@@ -808,20 +742,11 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			end
 			local width = (w0 + w1) / 2
 			if width < 0.05 then
-				c = componentEnd + 1
 				continue
 			end
 			local centerOffset0 = stationOffsets[i][c] + w0 / 2
 			local centerOffset1 = stationOffsets[i + 1][c] + w1 / 2
 			local centerOffset = (centerOffset0 + centerOffset1) / 2
-			if componentEnd > c then
-				if math.max(math.abs(rolls[i]), math.abs(rolls[i + 1])) > ROLL_WEDGE_EPSILON then
-					bankedSurfaceCoalesced = true
-				elseif not optimizedStraight then
-					curvedSurfaceCoalesced = true
-				end
-			end
-
 			local kind = componentsStart[c].Kind
 			local raised = RoadProfile.IsRaised(kind)
 			local exactRaisedCap = raised
@@ -830,20 +755,14 @@ function RoadBuilder.Build(options: BuildOptions): Model
 					or (i == stationCount - 1 and options.ExactEndRaisedCap == true)
 				)
 			local partHeight = if raised then thickness + curbHeight else thickness
-			-- Deck (roadway) top surface sits at frame level; raised
-			-- components (sidewalk/median) stand a curb height above
-			-- it. Alternating strips drop by a sub-visible epsilon so
-			-- overlapping neighbor strips never z-fight.
+			-- Flat curved components use the visually validated build-0.1 midpoint
+			-- boxes. Their small overlap is staggered vertically to avoid z-fight;
+			-- because curves are no longer lane-coalesced, that stagger never spans
+			-- an entire multi-lane carriageway as one broad surface.
 			local centerY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2)
 				- (if optimizedStraight then 0 else (i % 2) * 0.004)
-
 			local edgeDistance = math.max(math.abs(centerOffset - width / 2), math.abs(centerOffset + width / 2))
 			local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
-			-- A slightly larger flat safety margin than before (was 0.02) -
-			-- uniform across every strip regardless of curvature, so it
-			-- can't reproduce the curvature-scaled sawtooth the old
-			-- far-edge pad caused; just a little extra overlap insurance
-			-- against any remaining sliver of a gap.
 			local padding = if optimizedStraight then 0 else miter + 0.08
 
 			local function makeTransitionPart(): Part
@@ -896,11 +815,14 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			-- roll (rather than a rigid, uniformly-tilted box) means
 			-- adjacent strips always share an exact edge with no gap, same
 			-- as the lateral case, and the residual twist is a small,
-			-- imperceptible facet instead of an averaging error. Strips
-			-- that are neither transitioning nor banking (the ordinary
-			-- case for most flat, straight road) are unaffected - same
-			-- plain rectangle construction as before.
-			if exactRaisedCap or math.abs(centerOffset1 - centerOffset0) > 1e-4 or rollDelta > ROLL_WEDGE_EPSILON then
+			-- imperceptible facet instead of an averaging error. Flat,
+			-- constant-width curves retain the build-0.1 midpoint boxes below.
+			local requiresExactSurfaceQuad = exactRaisedCap
+				or math.abs(centerOffset1 - centerOffset0) > 1e-4
+				or math.abs(w1 - w0) > 1e-4
+				or rollDelta > ROLL_WEDGE_EPSILON
+			if requiresExactSurfaceQuad then
+				exactStationQuadSurfaces = true
 				local topY = if raised then curbHeight else 0
 				local innerStart = (frames[i] * CFrame.new(centerOffset0 - w0 / 2, topY, 0)).Position
 				local outerStart = (frames[i] * CFrame.new(centerOffset0 + w0 / 2, topY, 0)).Position
@@ -915,7 +837,6 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
 				part.Parent = model
 			end
-			c = componentEnd + 1
 		end
 	end
 
@@ -1120,8 +1041,9 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		profileOffsetEndM
 	)
 	model:SetAttribute("RW_StraightSurfaceCoalesced", optimizedStraight)
-	model:SetAttribute("RW_CurvedSurfaceCoalesced", curvedSurfaceCoalesced)
-	model:SetAttribute("RW_BankedSurfaceCoalesced", bankedSurfaceCoalesced)
+	model:SetAttribute("RW_CurvedSurfaceCoalesced", false)
+	model:SetAttribute("RW_BankedSurfaceCoalesced", false)
+	model:SetAttribute("RW_ExactStationQuadSurfaces", exactStationQuadSurfaces)
 
 	return model
 end

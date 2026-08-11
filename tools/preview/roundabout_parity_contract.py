@@ -75,18 +75,19 @@ def static_faults(source):
     require(build_arm, "MarkingLines = markingLines",
             "RoadBuilder does not receive the clipped arm marking plan")
     require(build_arm, "collectRoadwayFootprints: boolean",
-            "buildArm cannot collect solo roadway cutters")
+            "buildArm cannot collect mouth-surface cutters")
     require(build_arm, "local stations = RoadBuilder.StationsFor(options)",
-            "solo cutters do not share RoadBuilder's station grid")
+            "exact manual surfaces do not share RoadBuilder's station grid")
     require(build_arm, "local roadwayPartNames: { [string]: boolean }",
-            "solo cutters have no generated-part roadway filter")
-    require(build_arm, "Bay = true",
-            "solo cutters omit generated Bay blocks")
+            "generated core surfaces have no actual-Part cutter allow-list")
     require(build_arm, "table.insert(roadwayFootprints, partTopPolygon(descendant))",
-            "solo cutters do not use exact generated core block footprints")
+            "generated core cutters do not match RoadBuilder's padded Parts")
     require(build_arm,
-            "{ shoulderInner0, shoulderOuter0, shoulderOuter1, shoulderInner1 }",
-            "solo cutters omit the exact shoulder-taper quad")
+            "{ shoulderInner0, shoulderOuter0, shoulderOuter1 }",
+            "mouth cutters omit the exact shoulder-taper quad")
+    require(build_arm,
+            "{ pavementInner0, pavementOuter0, pavementOuter1 }",
+            "mouth cutters omit the exact arm-sidewalk quad")
     require(build_arm, "return model, roadwayFootprints",
             "buildArm drops its captured roadway cutters")
     require(build_arm, "cutPavementLeftM: number",
@@ -100,6 +101,29 @@ def static_faults(source):
             "inboard solo pavement still tapers through circulating lanes")
     require(build_arm, "radiusAt(current) <= ringKerbRadiusStuds",
             "zero-width pavement termination is not bounded by the ring kerb")
+    require(build_arm, "local needsExactSurface = arm.CutShoulderM > 1e-6",
+            "roundabout arms have no exact raised-surface path")
+    require(build_arm, "needsExactSurface = true",
+            "constant-width arm pavement can bypass exact station strips")
+    require(build_arm,
+            "ExcludeComponentIndices = if #sidewalkIndices > 0 then sidewalkIndices else nil",
+            "RoadBuilder can still emit padded Sidewalk boxes on roundabout arms")
+    reject(build_arm, "local function replaceCutPavementCaps()",
+           "roundabout arms still replace one cap instead of every station strip")
+
+    splitter = function_scope(source, "local function buildSplitterIsland(")
+    require(splitter, "surfaceCutters: { ConvexFootprint }",
+            "splitter and GoreApron surfaces cannot own the ring-pavement cut")
+    require(splitter, "table.insert(surfaceCutters, { a, b, c })",
+            "splitter surface triangles are not added to the ownership mask")
+    require(splitter, "Close the last frontage as FLAT ASPHALT",
+            "splitter frontage has no explicit circulating-lane ownership rule")
+    require(splitter,
+            "fillSurface(apex, boundary[k], boundary[k + 1], apronDepth, makeApronPart)",
+            "splitter frontage does not close the mouth with flat asphalt")
+    reject(splitter,
+           "FillTriangle(apex, boundary[k], boundary[k + 1], depth, DOWN, makeSidewalkPart, ring)",
+           "splitter frontage still lays raised chords inside the circular kerb")
 
     exact_ring = function_scope(
         source, "buildExactRingSidewalk = function(",
@@ -157,24 +181,20 @@ def static_faults(source):
            "solo pavement is still deleted by an angular sector")
     require(mouth, "local edgeLineRadius = ringKerbRadius - style.MarkingWidthM * 1.5 * settings.MetersToStuds",
             "solo paint sector is not measured at the ring outer edge-line centre")
-    require(mouth, "return nil, sectorAtRadius(edgeLineRadius), soloTrace, soloRoadwayCutters",
+    require(mouth, "return nil, sectorAtRadius(edgeLineRadius), soloTrace, surfaceCutters",
             "solo mouths do not return footprint-owned pavement and edge-line paint")
     require(mouth, "): (MouthSector?, MouthSector, ExitTrace?, { ConvexFootprint })",
             "buildMouth cannot return nil solo pavement plus roadway cutters")
-    require(mouth, "local soloMouth = not (plan.Entry and plan.Exit)",
-            "roadway cutter capture is not restricted to solo mouths")
     require(mouth,
-            "local collectSoloRoadway = soloMouth and ringSidewalkWidthM(style) > 1e-6",
-            "roadway cutters are collected when no solo ring sidewalk exists")
+            "local collectSurfaceFootprints = ringSidewalkWidthM(style) > 1e-6",
+            "paired and solo mouths do not share physical-surface ownership")
+    require(mouth, "settings,\n\t\t\tsurfaceCutters",
+            "splitter/GoreApron cutters are not returned with the arm cutters")
     require(mouth, "return pavementSector,",
             "paired mouths no longer preserve their pavement sector")
 
-    require(source, "if sector then",
-            "nil solo pavement sectors cannot be excluded from mouthSectors")
-    require(source, "table.insert(mouthSectors, sector)",
-            "paired pavement sectors are no longer collected")
-    require(source, "\t\tmouthSectors,\n\t\tsoloRoadwayCutters\n\t)",
-            "Rebuild does not pass paired and solo ownership to exact ring pavement")
+    require(source, "\t\t{},\n\t\tsurfaceCutters\n\t)",
+            "connected ring pavement still uses broad angular mouth sectors")
 
     splits = function_scope(source, "local function resolveSplits(")
     require(splits, "local fitAngle = math.asin",
@@ -199,8 +219,14 @@ def preview_static_faults(source):
     start = source.find("def emit_arm(")
     end = source.find("\n\n# --- roundabout", start)
     emit_arm = source[start:end] if start >= 0 and end >= 0 else ""
-    if "if components[index][1] <= 1e-6:" not in emit_arm:
-        faults.append("Python cap replacement can steal real pavement for a zero-width component")
+    if "needs_exact_surface = bool(sidewalk_indices)" not in emit_arm:
+        faults.append("Python constant-width arm pavement can bypass exact station strips")
+    if "exact_core = []" in emit_arm or "emitted.extend(exact_core)" in emit_arm:
+        faults.append("Python curved arm core no longer models RoadBuilder's padded Parts")
+    if "Keep RoadBuilder's midpoint rectangles" not in emit_arm:
+        faults.append("Python arm core ownership contract is undocumented")
+    if "victim = min(candidates" in emit_arm:
+        faults.append("Python still models one-cap replacement instead of exact arm strips")
     if "part_center = (sum(p[0] for p in poly)" not in emit_arm:
         faults.append("Python arm Parts have no centroid local distinct from the roundabout centre")
     if "\n                center = (sum(p[0] for p in poly)" in emit_arm:
@@ -254,7 +280,9 @@ def solo_ownership_faults(scene, tolerance=1e-7):
         overlap_found = False
         for roadway in roadway_parts:
             for sidewalk in ring_sidewalk:
-                if rp._overlap_area(roadway.poly, sidewalk.poly) > 1e-5:
+                # Match the live subtraction question: retained ring sidewalk
+                # is the subject and this physical surface is the cutter.
+                if rp._overlap_area(sidewalk.poly, roadway.poly) > 1e-5:
                     faults.append(
                         f"mouth {index} retains ring Sidewalk over an exact "
                         f"{roadway.name} footprint"
@@ -312,6 +340,12 @@ def geometry_faults(name):
     faults += rp.check_outboard_edge_handoffs(scene)
     faults += rp.check_visual_ownership(scene)
     faults += rp.check_ring_openings(scene)
+    intrusions = rp.splitter_ring_intrusions(scene)
+    if intrusions:
+        faults.append(
+            f"{len(intrusions)} splitter triangles enter circulating traffic "
+            f"(worst {max(item['depth'] for item in intrusions):.3f} studs)"
+        )
     faults += rp.check_solo_merges(scene)
     faults += solo_ownership_faults(scene)
     records = [record for record in scene["arm_marking_bounds"]
@@ -363,8 +397,8 @@ def break_tests(source, preview_source):
                     bool(static_faults(one_edge))))
 
     angular_solo = source.replace(
-        "return nil, sectorAtRadius(edgeLineRadius), soloTrace, soloRoadwayCutters",
-        "return sectorAtRadius(edgeLineRadius), sectorAtRadius(edgeLineRadius), soloTrace, soloRoadwayCutters",
+        "return nil, sectorAtRadius(edgeLineRadius), soloTrace, surfaceCutters",
+        "return sectorAtRadius(edgeLineRadius), sectorAtRadius(edgeLineRadius), soloTrace, surfaceCutters",
         1,
     )
     results.append(("returned angular solo pavement sector",
@@ -380,19 +414,35 @@ def break_tests(source, preview_source):
 
     without_core_cutters = source.replace(
         "table.insert(roadwayFootprints, partTopPolygon(descendant))",
-        "-- core cutter removed by break-test",
+        "-- generated core cutter removed by break-test",
         1,
     )
     results.append(("omitted generated core cutters",
                     bool(static_faults(without_core_cutters))))
 
     without_shoulder_cutters = source.replace(
-        "{ shoulderInner0, shoulderOuter0, shoulderOuter1, shoulderInner1 }",
+        "{ shoulderInner0, shoulderOuter0, shoulderOuter1 }",
         "{} -- shoulder cutter removed by break-test",
         1,
     )
     results.append(("omitted shoulder taper cutters",
                     bool(static_faults(without_shoulder_cutters))))
+
+    padded_arm = source.replace(
+        "\t\t\tneedsExactSurface = true",
+        "\t\t\t-- exact arm pavement removed by break-test",
+        1,
+    )
+    results.append(("restored padded arm sidewalk path",
+                    bool(static_faults(padded_arm))))
+
+    raised_frontage = source.replace(
+        "fillSurface(apex, boundary[k], boundary[k + 1], apronDepth, makeApronPart)",
+        "fillSurface(apex, boundary[k], boundary[k + 1], depth, makeSidewalkPart)",
+        1,
+    )
+    results.append(("restored raised splitter frontage fan",
+                    bool(static_faults(raised_frontage))))
 
     bounded, _ = geometry_faults("uk4")
     record = next(record for record in bounded["arm_marking_bounds"]
@@ -502,14 +552,13 @@ def break_tests(source, preview_source):
     results.append(("mutated roundabout centre to Part centroid",
                     bool(preview_static_faults(mutable_center))))
 
-    zero_identity = preview_source.replace(
-        "                if components[index][1] <= 1e-6:\n"
-        "                    continue\n",
-        "",
+    padded_preview = preview_source.replace(
+        "needs_exact_surface = bool(sidewalk_indices)",
+        "needs_exact_surface = False",
         1,
     )
-    results.append(("processed zero-width sidewalk cap",
-                    bool(preview_static_faults(zero_identity))))
+    results.append(("restored padded Python arm sidewalks",
+                    bool(preview_static_faults(padded_preview))))
 
     non_failing_seam = preview_source.replace(
         "        if worst > SEAM_STEP_TOLERANCE:\n"
@@ -532,7 +581,8 @@ def main():
                  "hw4", "hw4us", "hw_oneway", "solo_flare", "stress",
                  "stress_us", "solo_bay", "solo_bay_us",
                  "solo_pavement_sides", "solo_pavement_sides_us",
-                 "solo_pavement_identity", "solo_pavement_identity_us"):
+                 "solo_pavement_identity", "solo_pavement_identity_us",
+                 "mouth_sidewalk_lht", "mouth_sidewalk_rht"):
         scene, case_faults = geometry_faults(name)
         scenes[name] = scene
         for fault in case_faults:
@@ -574,7 +624,7 @@ def main():
         for fault in faults:
             print("FAILED:", fault)
         return 1
-    print("roundabout 3D parity passed: exact solo footprint openings, edge handoffs, split mouth ownership, and width-safe Turbo")
+    print("roundabout 3D parity passed: exact ring/arm sidewalks, splitter clearance, solo footprint openings, edge handoffs, and width-safe Turbo")
     return 0
 
 

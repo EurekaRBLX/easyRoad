@@ -5,28 +5,20 @@ internal planning only. See `TODO.md` for planned new features and
 `SHIPPED.md` for what's already been fixed/built.
 
 - **Live roundabout appearance parity needs one more rebuilt-dist check.** The
-  user confirmed that the first parity build still left concrete wedges and
-  excess white slashes at ring mouths. The live root cause is now fixed
-  headlessly: ring sidewalk/outer-edge Parts were opened by centre position, so
-  boundary-straddling corners survived inside a sector. They are now clipped at
-  the exact sector ray instead of kept whole or over-deleted. Keep this open
-  until that rebuilt plugin is checked in Studio.
-- **The `stress_us` four-approach roundabout preview has one deterministic mouth
-  tear sample.** The full validator measures a 3.00-stud hole on leg 2,
-  73.6 studs from the approach cut. The roundabout port and builder were
-  untouched by the current structure/parallel work, so the case is carried
-  explicitly in `validate.py` rather than attributed to those changes.
-- **Curve rendering - deck strips reverted to centerline-anchored, still
-  unverified live.** After `farEdgePad` was removed (previous round) and
-  the Inside/Outside anchored-edge scheme was removed (this round, see
-  `SHIPPED.md`), curved deck strips are back to the original
-  centerline-symmetric construction: every strip is centered on the curve's
-  true midpoint frame for its own interval, both edges padded via
-  `curveMiterPad`. This is the simplest scheme in the codebase's history
-  and can't drift by construction, but has not been checked in a live
-  Studio session (this environment can't render Studio) - leaving this
-  entry open until a user confirms curves render cleanly (no gaps, no
-  sawtooth, no drift) with real testing.
+  first rebuilt parity attempt still left concrete wedges at ring mouths.
+  Headlessly, every arm sidewalk is now an exact station-quad surface and the
+  ring footway is subtracted only by actual arm, apron, and splitter
+  footprints. The splitter's final frontage is flat GoreApron asphalt, removing
+  the two raised triangles that chorded across circulating lanes. Full parity,
+  including `stress_us`, passes with all 21 injected defects caught; keep this
+  item open only until the rebuilt plugin is visually checked in Studio.
+- **Curve rendering is rolled back headlessly and still needs rebuilt-dist
+  Studio confirmation.** Curved/banked lateral coalescing is disabled after its
+  broad multi-lane boxes exposed transverse seams. Curves again use the
+  build-0.1 centreline-symmetric, per-component midpoint boxes; width, offset,
+  and bank transitions retain exact wedges. The focused contract proves the
+  original 990/882 Part counts and one-component maximum span. Keep this open
+  until a user confirms the rebuilt plugin has no gaps, sawtooth, or drift.
 - **Superelevation preview/final parity is fixed headlessly but still needs a
   rebuilt-dist Studio check.** The previous density-dependent box average and
   midpoint-roll hypothesis are no longer current: `Superelevation.BuildProfile`
@@ -34,9 +26,9 @@ internal planning only. See `TODO.md` for planned new features and
   `RoadBuilder.StationPlanFor` supplies the final roll-refined stations to both
   preview and final emission, and changing-roll strips use exact station-edge
   wedges. Procedural structures consume the same profile. The Python 3D
-  contract verifies zero outer-edge displacement and a maximum accepted merged
-  facet error below 0.025 studs, but Roblox rendering and live rebuild parity
-  remain unverified until the rebuilt plugin is exercised in Studio.
+  contract verifies zero outer-edge displacement and the original Part counts
+  without any non-straight lateral bands, but Roblox rendering and live rebuild
+  parity remain unverified until the rebuilt plugin is exercised in Studio.
 - **Hover-trap click-swallowing keeps recurring - three separate instances
   now, all fixed as found, but treat any future report of "clicking in the
   viewport does nothing" as this bug family first.** (1) The pie menu's

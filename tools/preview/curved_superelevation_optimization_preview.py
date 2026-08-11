@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""QA model for curved-road and superelevation-runoff surface coalescing.
+"""QA model for the curved-road coalescing rollback and canonical banking.
 
 This is a stdlib-only planning/validation model, not a Luau runtime. It ports
-the current curve-station and constant-curvature runoff rules, then tests the
-proposed conservative optimization: merge contiguous compatible Drive
-components laterally while retaining every raw component boundary for markings
-and metadata. Each interval greedily admits only the width whose triangulation
-stays within ``MAX_BANKED_BAND_WARP_STUDS`` of the per-component surface.
+the current curve-station and constant-curvature runoff rules, then proves the
+build-0.1 rollback contract: non-straight surfaces remain per component, while
+only exact straight ranges may merge compatible Drive components. The retired
+wide-band candidate is retained as a visual regression reference. Changing-bank
+intervals still use exact station wedges and the canonical roll profile.
 
     python curved_superelevation_optimization_preview.py --check
     python curved_superelevation_optimization_preview.py --out out/curved-bank.png
@@ -31,8 +31,8 @@ MAX_TURN_PER_STEP = 0.2
 MAX_ROLL_PER_STEP = 0.02
 MAX_ROLL_INTERPOLATION_ERROR = 0.0015
 ROLL_WEDGE_EPSILON = 1e-4
-MAX_BANKED_BAND_WARP_STUDS = 0.025
-MAX_CURVED_BAND_OVERHANG_STUDS = 0.025
+REGRESSED_MAX_SURFACE_BAND_WARP_STUDS = 0.025
+LEGACY_ALTERNATING_DROP_STUDS = 0.004
 PROFILE_MAX_SPACING_M = 2.0
 PROFILE_MIN_SPACING_M = 0.25
 PROFILE_LINEARITY_TOLERANCE_RAD = math.radians(0.05)
@@ -349,28 +349,20 @@ def refine_stations_for_roll(base, profile, max_offset, tolerance=CHORD_TOLERANC
     return unique_sorted(stations), [roll_at(station) for station in unique_sorted(stations)]
 
 
-def band_warp(width, start_roll, finish_roll):
-    return width * abs(math.sin(finish_roll) - math.sin(start_roll)) / 4.0
+def lateral_vector(road, station, roll):
+    right = road.right(station)
+    return right[0] * math.cos(roll), right[1] * math.cos(roll), math.sin(roll)
+
+
+def band_surface_warp(road, width, start, finish, start_roll, finish_roll):
+    """3D centre departure of a diagonal-triangulated ruled station quad."""
+    start_right = lateral_vector(road, start, start_roll)
+    finish_right = lateral_vector(road, finish, finish_roll)
+    return width * magnitude(subtract(finish_right, start_right)) / 4.0
 
 
 def curve_miter_pad(road, station, edge_distance, nominal_length):
     return abs(edge_distance) * abs(road.curvature(station)) * nominal_length
-
-
-def band_plan_overhang(road, components, band, start, finish):
-    """Actual plan-box half-length added over the shortest source box."""
-    if band.start == band.end:
-        return 0.0
-    offsets = component_offsets(components)
-    candidate_box = midpoint_box_plan_polygon(road, band, start, finish, 0.0)
-    candidate_half_length = plan_box_half_length(road, candidate_box, start, finish)
-    source_half_lengths = []
-    for index in range(band.start, band.end + 1):
-        left, right = offsets[index]
-        source = Band(index, index, left, right, components[index].kind)
-        source_box = midpoint_box_plan_polygon(road, source, start, finish, 0.0)
-        source_half_lengths.append(plan_box_half_length(road, source_box, start, finish))
-    return max(0.0, candidate_half_length - min(source_half_lengths))
 
 
 def midpoint_box_plan_polygon(road, band, start, finish, roll):
@@ -401,62 +393,33 @@ def midpoint_box_plan_polygon(road, band, start, finish, roll):
     ]
 
 
-def plan_box_half_length(road, polygon, start, finish):
-    midpoint = (start + finish) / 2.0
-    center = road.plan_position(midpoint)
-    forward = road.forward(midpoint)
-    projections = [
-        (point[0] - center[0]) * forward[0] + (point[1] - center[1]) * forward[1]
-        for point in polygon
-    ]
-    return (max(projections) - min(projections)) / 2.0
-
-
-def interval_bands(components, road, start, finish, start_roll, finish_roll):
-    """Port of RoadBuilder's per-interval greedy compatible-width rule."""
+def regressed_interval_bands(components, road, start, finish, start_roll, finish_roll):
+    """Retired wide-band planner, retained only for before/after rendering."""
     offsets = component_offsets(components)
     compatible = candidate_bands(components)
     compatible_end = {}
     for band in compatible:
         for index in range(band.start, band.end + 1):
             compatible_end[index] = band.end
-    sin_delta = abs(math.sin(finish_roll) - math.sin(start_roll))
-    max_width = math.inf if sin_delta <= EPSILON else 4.0 * MAX_BANKED_BAND_WARP_STUDS / sin_delta
-    roll_delta = abs(finish_roll - start_roll)
-    midpoint = (start + finish) / 2.0
-    nominal = finish - start
+    start_right = lateral_vector(road, start, start_roll)
+    finish_right = lateral_vector(road, finish, finish_roll)
+    direction_delta = magnitude(subtract(finish_right, start_right))
+    max_width = (
+        math.inf
+        if direction_delta <= EPSILON
+        else 4.0 * REGRESSED_MAX_SURFACE_BAND_WARP_STUDS / direction_delta
+    )
     result = []
     index = 0
     while index < len(components):
         end = index
         limit = compatible_end.get(index, index)
         width = components[index].width
-        source_left, source_right = offsets[index]
-        minimum_source_miter = curve_miter_pad(
-            road, midpoint, max(abs(source_left), abs(source_right)), nominal
-        )
         while end < limit:
             next_width = components[end + 1].width
             if width + next_width > max_width:
                 break
-            next_left, next_right = offsets[end + 1]
-            next_source_miter = curve_miter_pad(
-                road, midpoint, max(abs(next_left), abs(next_right)), nominal
-            )
-            candidate_left = offsets[index][0]
-            candidate_right = next_right
-            candidate_miter = curve_miter_pad(
-                road, midpoint, max(abs(candidate_left), abs(candidate_right)), nominal
-            )
-            candidate_minimum = min(minimum_source_miter, next_source_miter)
-            if (
-                roll_delta <= ROLL_WEDGE_EPSILON
-                and (candidate_miter - candidate_minimum) / 2.0
-                > MAX_CURVED_BAND_OVERHANG_STUDS
-            ):
-                break
             width += next_width
-            minimum_source_miter = candidate_minimum
             end += 1
         result.append(Band(index, end, offsets[index][0], offsets[end][1], components[index].kind))
         index = end + 1
@@ -497,13 +460,19 @@ def fill_triangle_part_count(a, b, c):
 
 def quad_part_count(road, band, start, finish, roll_at):
     start_roll, finish_roll = roll_at(start), roll_at(finish)
-    if abs(finish_roll - start_roll) <= ROLL_WEDGE_EPSILON:
-        return 1
     a = road.point(start, band.left, start_roll)
     b = road.point(start, band.right, start_roll)
     c = road.point(finish, band.right, finish_roll)
     d = road.point(finish, band.left, finish_roll)
     return fill_triangle_part_count(a, b, c) + fill_triangle_part_count(a, c, d)
+
+
+def legacy_quad_part_count(road, band, start, finish, roll_at):
+    """0.1/840 behaviour: a box unless roll changes across the interval."""
+    start_roll, finish_roll = roll_at(start), roll_at(finish)
+    if abs(finish_roll - start_roll) <= ROLL_WEDGE_EPSILON:
+        return 1
+    return quad_part_count(road, band, start, finish, roll_at)
 
 
 def surface_part_count(road, bands, stations, roll_at):
@@ -520,6 +489,142 @@ def interval_surface_part_count(road, interval_band_plan, stations, roll_at):
         for (start, finish, bands) in zip(stations, stations[1:], interval_band_plan)
         for band in bands
     )
+
+
+def legacy_surface_part_count(road, bands, stations, roll_at):
+    return sum(
+        legacy_quad_part_count(road, band, start, finish, roll_at)
+        for start, finish in zip(stations, stations[1:])
+        for band in bands
+    )
+
+
+def interval_legacy_surface_part_count(road, interval_band_plan, stations, roll_at):
+    return sum(
+        legacy_quad_part_count(road, band, start, finish, roll_at)
+        for (start, finish, bands) in zip(stations, stations[1:], interval_band_plan)
+        for band in bands
+    )
+
+
+def exact_quad(road, band, start, finish, roll_at):
+    start_roll, finish_roll = roll_at(start), roll_at(finish)
+    return [
+        road.point(start, band.left, start_roll),
+        road.point(start, band.right, start_roll),
+        road.point(finish, band.right, finish_roll),
+        road.point(finish, band.left, finish_roll),
+    ]
+
+
+def signed_area_2d(polygon):
+    return sum(
+        a[0] * b[1] - a[1] * b[0]
+        for a, b in zip(polygon, polygon[1:] + polygon[:1])
+    ) / 2.0
+
+
+def line_intersection_2d(a, b, c, d):
+    ab = (b[0] - a[0], b[1] - a[1])
+    cd = (d[0] - c[0], d[1] - c[1])
+    denominator = ab[0] * cd[1] - ab[1] * cd[0]
+    if abs(denominator) <= EPSILON:
+        return b
+    ac = (c[0] - a[0], c[1] - a[1])
+    t = (ac[0] * cd[1] - ac[1] * cd[0]) / denominator
+    return a[0] + ab[0] * t, a[1] + ab[1] * t
+
+
+def convex_intersection_area(subject, clip):
+    """Sutherland-Hodgman intersection area for convex plan polygons."""
+    output = list(subject)
+    orientation = 1.0 if signed_area_2d(clip) >= 0.0 else -1.0
+    for clip_start, clip_end in zip(clip, clip[1:] + clip[:1]):
+        if not output:
+            return 0.0
+        source = output
+        output = []
+
+        def inside(point):
+            edge = (clip_end[0] - clip_start[0], clip_end[1] - clip_start[1])
+            relative = (point[0] - clip_start[0], point[1] - clip_start[1])
+            return orientation * (edge[0] * relative[1] - edge[1] * relative[0]) >= -1e-9
+
+        previous = source[-1]
+        previous_inside = inside(previous)
+        for current in source:
+            current_inside = inside(current)
+            if current_inside != previous_inside:
+                output.append(line_intersection_2d(previous, current, clip_start, clip_end))
+            if current_inside:
+                output.append(current)
+            previous, previous_inside = current, current_inside
+    return abs(signed_area_2d(output)) if len(output) >= 3 else 0.0
+
+
+def exact_surface_metrics(road, interval_band_plan, stations, roll_at):
+    """Measure top-edge continuity and positive-area overlap of exact quads."""
+    max_joint_gap = 0.0
+    max_partition_gap = 0.0
+    max_partition_overlap = 0.0
+    all_quads = []
+    for interval_index, (start, finish, bands) in enumerate(
+        zip(stations, stations[1:], interval_band_plan)
+    ):
+        ordered = sorted(bands, key=lambda band: band.left)
+        cursor = ordered[0].left
+        for band in ordered:
+            delta = band.left - cursor
+            max_partition_gap = max(max_partition_gap, delta)
+            max_partition_overlap = max(max_partition_overlap, -delta)
+            cursor = band.right
+            all_quads.append(exact_quad(road, band, start, finish, roll_at))
+        if interval_index > 0:
+            previous = sorted(interval_band_plan[interval_index - 1], key=lambda band: band.left)
+            previous_left, previous_right = previous[0].left, previous[-1].right
+            current_left, current_right = ordered[0].left, ordered[-1].right
+            station = start
+            roll = roll_at(station)
+            max_joint_gap = max(
+                max_joint_gap,
+                magnitude(subtract(road.point(station, previous_left, roll), road.point(station, current_left, roll))),
+                magnitude(subtract(road.point(station, previous_right, roll), road.point(station, current_right, roll))),
+            )
+
+    max_plan_overlap = 0.0
+    plan_quads = [[(point[0], point[1]) for point in quad] for quad in all_quads]
+    for index, quad in enumerate(plan_quads):
+        for other in plan_quads[index + 1:]:
+            max_plan_overlap = max(max_plan_overlap, convex_intersection_area(quad, other))
+    return {
+        "max_joint_gap": max_joint_gap,
+        "max_partition_gap": max_partition_gap,
+        "max_partition_overlap": max_partition_overlap,
+        "max_plan_overlap_area": max_plan_overlap,
+        "max_top_step": max_joint_gap,
+    }
+
+
+def legacy_box_seam_metrics(road, interval_band_plan, stations, roll_at):
+    """Quantify the padded-box overlap and alternating top step being removed."""
+    worst_overlap = 0.0
+    for index in range(len(interval_band_plan) - 1):
+        current_by_range = {(band.start, band.end): band for band in interval_band_plan[index]}
+        next_by_range = {(band.start, band.end): band for band in interval_band_plan[index + 1]}
+        for key in current_by_range.keys() & next_by_range.keys():
+            current = current_by_range[key]
+            following = next_by_range[key]
+            roll0 = (roll_at(stations[index]) + roll_at(stations[index + 1])) / 2.0
+            roll1 = (roll_at(stations[index + 1]) + roll_at(stations[index + 2])) / 2.0
+            first = midpoint_box_plan_polygon(road, current, stations[index], stations[index + 1], roll0)
+            second = midpoint_box_plan_polygon(
+                road, following, stations[index + 1], stations[index + 2], roll1
+            )
+            worst_overlap = max(worst_overlap, convex_intersection_area(first, second))
+    return {
+        "max_plan_overlap_area": worst_overlap,
+        "max_top_step": LEGACY_ALTERNATING_DROP_STUDS,
+    }
 
 
 def max_edge_error(road, raw, interval_band_plan, stations, roll_at):
@@ -562,20 +667,25 @@ def build_case(tag, road, components, profile):
     roll_at = lambda station: roll_at_profile(profile, station)
     stations, rolls = refine_stations_for_roll(base_stations(road, max_offset), profile, max_offset)
     raw = raw_bands(components)
-    interval_plan = [interval_bands(components, road, start, finish, start_roll, finish_roll)
-                     for start, finish, start_roll, finish_roll
-                     in zip(stations, stations[1:], rolls, rolls[1:])]
-    baseline_parts = surface_part_count(road, raw, stations, roll_at)
-    optimized_parts = interval_surface_part_count(road, interval_plan, stations, roll_at)
-    twist = max((band_warp(band.width, rolls[index], rolls[index + 1])
-                 for index, bands in enumerate(interval_plan)
-                 for band in bands if band.end > band.start), default=0.0)
-    overhang = max((band_plan_overhang(road, components, band, stations[index], stations[index + 1])
-                    for index, bands in enumerate(interval_plan)
-                    for band in bands
-                    if band.end > band.start and abs(rolls[index + 1] - rolls[index]) <= ROLL_WEDGE_EPSILON),
-                   default=0.0)
-    edge = max_edge_error(road, raw, interval_plan, stations, roll_at)
+    regressed_plan = [
+        regressed_interval_bands(components, road, start, finish, start_roll, finish_roll)
+        for start, finish, start_roll, finish_roll
+        in zip(stations, stations[1:], rolls, rolls[1:])
+    ]
+    rollback_plan = [list(raw) for _ in stations[:-1]]
+    rollback_parts = interval_legacy_surface_part_count(
+        road, rollback_plan, stations, roll_at
+    )
+    regressed_parts = interval_legacy_surface_part_count(
+        road, regressed_plan, stations, roll_at
+    )
+    edge = max_edge_error(road, raw, rollback_plan, stations, roll_at)
+    rollback_metrics = legacy_box_seam_metrics(
+        road, rollback_plan, stations, roll_at
+    )
+    regressed_metrics = legacy_box_seam_metrics(
+        road, regressed_plan, stations, roll_at
+    )
     return {
         "tag": tag,
         "road": road,
@@ -587,12 +697,25 @@ def build_case(tag, road, components, profile):
         "baseline_stations": stations,
         "optimized_stations": stations,
         "raw_bands": raw,
-        "interval_bands": interval_plan,
-        "baseline_parts": baseline_parts,
-        "optimized_parts": optimized_parts,
-        "max_twist_error": twist,
-        "max_plan_overhang": overhang,
+        "interval_bands": rollback_plan,
+        "regressed_interval_bands": regressed_plan,
+        "rollback_parts": rollback_parts,
+        "regressed_parts": regressed_parts,
+        "max_drive_band_span": max(
+            band.width for band in raw if band.kind == "Drive"
+        ),
+        "max_regressed_drive_band_span": max(
+            band.width
+            for bands in regressed_plan
+            for band in bands
+            if band.kind == "Drive"
+        ),
+        "nonstraight_coalesced": any(
+            band.end > band.start for bands in rollback_plan for band in bands
+        ),
         "max_edge_error": edge,
+        "rollback_metrics": rollback_metrics,
+        "regressed_metrics": regressed_metrics,
     }
 
 
@@ -605,8 +728,6 @@ def parity_contracts():
         "MAX_TURN_PER_STEP": MAX_TURN_PER_STEP,
         "MAX_ROLL_PER_STEP": MAX_ROLL_PER_STEP,
         "MAX_ROLL_INTERPOLATION_ERROR": MAX_ROLL_INTERPOLATION_ERROR,
-        "MAX_BANKED_BAND_WARP_STUDS": MAX_BANKED_BAND_WARP_STUDS,
-        "MAX_CURVED_BAND_OVERHANG_STUDS": MAX_CURVED_BAND_OVERHANG_STUDS,
         "ROLL_WEDGE_EPSILON": ROLL_WEDGE_EPSILON,
     }
     for name, value in expected.items():
@@ -615,8 +736,17 @@ def parity_contracts():
         assert abs(float(match.group(1)) - value) <= EPSILON, (name, match.group(1), value)
     assert "FillTriangle(innerStart, outerStart, outerEnd" in source
     assert "FillTriangle(innerStart, outerEnd, innerEnd" in source
-    assert "4 * MAX_BANKED_BAND_WARP_STUDS / sinDelta" in source
-    assert "(candidateMiter - candidateMinimumMiter) / 2 > MAX_CURVED_BAND_OVERHANG_STUDS" in source
+    deck_scope = source[source.index("-- Deck strips"):source.index("-- Markings")]
+    assert "if optimizedStraight and options.DisableSurfaceCoalescing ~= true then" in deck_scope
+    assert "local componentEnd = bandEndByStart[c] or c" in deck_scope
+    assert "compatibleBandEndByStart" not in deck_scope
+    assert "or not optimizedStraight" not in deck_scope
+    assert "or math.abs(w1 - w0) > 1e-4" in deck_scope
+    assert "RW_ExactStationQuadSurfaces" in source
+    assert '("RW_CurvedSurfaceCoalesced", false)' in source
+    assert '("RW_BankedSurfaceCoalesced", false)' in source
+    assert "(i % 2) * 0.004" in deck_scope
+    assert "nominalLength + padding" in deck_scope
     assert "Superelevation.BuildProfile" in source
     assert "local PROFILE_MAX_SPACING_M = 2" in superelevation
     assert "local PROFILE_MIN_SPACING_M = 0.25" in superelevation
@@ -675,29 +805,6 @@ def semantic_break_tests(banked_case):
     assert abs(short_profile.rolls[-1]) <= EPSILON
     assert roll_at_profile(short_profile, short_length / 2.0) >= full_roll * 0.99
 
-    # Per-interval greedy planning may safely merge two lanes but not the third.
-    lane = components[1].width
-    sin_delta = 4.0 * MAX_BANKED_BAND_WARP_STUDS / (lane * 2.5)
-    partial = interval_bands(components, banked_case["road"], 0.0, 2.0, 0.0, math.asin(sin_delta))
-    drive_ranges = [(band.start, band.end) for band in partial if band.kind == "Drive"]
-    assert drive_ranges == [(1, 2), (3, 3), (5, 6), (7, 7)], drive_ranges
-    unsafe_width = sum(components[index].width for index in range(1, 4))
-    assert band_warp(unsafe_width, 0.0, math.asin(sin_delta)) > MAX_BANKED_BAND_WARP_STUDS
-
-    # Constant-roll curves use midpoint boxes. A globally merged three-lane
-    # candidate would inherit its farthest edge's miter pad across every lane;
-    # the greedy plan must reject it when that extra half-length exceeds 0.025.
-    compatible = next(band for band in candidate_bands(components)
-                      if band.start == 1 and band.end == 3)
-    unsafe_overhang = band_plan_overhang(
-        banked_case["road"], components, compatible, 0.0, MAX_SEGMENT_LENGTH
-    )
-    assert unsafe_overhang > MAX_CURVED_BAND_OVERHANG_STUDS
-    guarded = interval_bands(
-        components, banked_case["road"], 0.0, MAX_SEGMENT_LENGTH, full_roll, full_roll
-    )
-    assert not any(band.start == 1 and band.end == 3 for band in guarded)
-
     # A bay slice samples the full canonical profile at its source offset; it
     # must not acquire a second zero-bank endpoint taper at the slice boundary.
     slice_start, slice_length = 24.0, 20.0
@@ -755,18 +862,27 @@ def check():
         bank_profile,
     )
 
+    assert gentle["rollback_parts"] == 990, gentle
+    assert banked["rollback_parts"] == 882, banked
     for case in (gentle, banked):
-        assert case["optimized_parts"] < case["baseline_parts"], case
+        assert case["regressed_parts"] <= case["rollback_parts"], case
+        assert not case["nonstraight_coalesced"], case
+        assert case["max_drive_band_span"] <= 3.65 * SCALE + 1e-7, case
+        assert case["max_regressed_drive_band_span"] >= case["max_drive_band_span"], case
         assert case["max_edge_error"] <= 1e-7, case
-        assert case["max_twist_error"] <= MAX_BANKED_BAND_WARP_STUDS + 1e-7, case
-        assert case["max_plan_overhang"] <= MAX_CURVED_BAND_OVERHANG_STUDS + 1e-7, case
+        assert case["rollback_metrics"]["max_plan_overlap_area"] > 1e-5, case
+        assert abs(
+            case["rollback_metrics"]["max_top_step"]
+            - LEGACY_ALTERNATING_DROP_STUDS
+        ) <= EPSILON
         assert max(abs(b - a) for a, b in zip(case["rolls"], case["rolls"][1:])) <= MAX_ROLL_PER_STEP + 1e-7
         # Raw component boundaries remain independent of emitted band count.
         assert component_offsets(case["components"]) == case["offsets"]
 
     gentle_drive_before = sum(1 for band in gentle["raw_bands"] if band.kind == "Drive")
     gentle_drive_after = sum(1 for band in gentle["interval_bands"][0] if band.kind == "Drive")
-    assert gentle_drive_before == 6 and gentle_drive_after == 2
+    assert gentle_drive_before == 6 and gentle_drive_after == 6
+    assert gentle["max_regressed_drive_band_span"] > gentle["max_drive_band_span"]
     semantic_break_tests(banked)
     return gentle, banked
 
@@ -793,7 +909,15 @@ def plan_bounds(case):
     )
 
 
-def draw_plan(canvas, case, bands_or_plan, stations, box):
+def draw_plan(
+    canvas,
+    case,
+    bands_or_plan,
+    stations,
+    box,
+    legacy_boxes=False,
+    show_component_boundaries=False,
+):
     x0, y0, x1, y1 = box
     lo_x, lo_y, hi_x, hi_y = plan_bounds(case)
     scale = min((x1 - x0) / (hi_x - lo_x), (y1 - y0) / (hi_y - lo_y))
@@ -806,26 +930,28 @@ def draw_plan(canvas, case, bands_or_plan, stations, box):
         plans = bands_or_plan
     else:
         plans = [bands_or_plan for _ in range(len(stations) - 1)]
-    for start, finish, bands in zip(stations, stations[1:], plans):
+    for interval_index, (start, finish, bands) in enumerate(zip(stations, stations[1:], plans)):
         start_roll, finish_roll = roll_at(start), roll_at(finish)
         for band in bands:
-            if abs(finish_roll - start_roll) <= ROLL_WEDGE_EPSILON:
+            if legacy_boxes and abs(finish_roll - start_roll) <= ROLL_WEDGE_EPSILON:
                 quad = midpoint_box_plan_polygon(
                     road, band, start, finish, (start_roll + finish_roll) / 2.0
                 )
             else:
-                quad = [
-                    road.point(start, band.left, start_roll),
-                    road.point(start, band.right, start_roll),
-                    road.point(finish, band.right, finish_roll),
-                    road.point(finish, band.left, finish_roll),
-                ]
-            canvas.fill_poly([transform(point) for point in quad], COLOURS.get(band.kind, (120, 120, 120)))
-    for station in stations:
-        roll = roll_at(station)
-        left = road.point(station, case["offsets"][0][0], roll)
-        right = road.point(station, case["offsets"][-1][1], roll)
-        canvas.line(transform(left), transform(right), SEAM, 1)
+                quad = exact_quad(road, band, start, finish, roll_at)
+            colour = COLOURS.get(band.kind, (120, 120, 120))
+            if legacy_boxes and interval_index % 2:
+                colour = tuple(max(0, channel - 9) for channel in colour)
+            transformed = [transform(point) for point in quad]
+            canvas.fill_poly(transformed, colour)
+            if show_component_boundaries:
+                canvas.polyline(transformed + [transformed[0]], REFERENCE, 1)
+    if legacy_boxes:
+        for station in stations:
+            roll = roll_at(station)
+            left = road.point(station, case["offsets"][0][0], roll)
+            right = road.point(station, case["offsets"][-1][1], roll)
+            canvas.line(transform(left), transform(right), SEAM, 1)
     center = [transform((*road.plan_position(road.length * index / 120), 0.0))
               for index in range(121)]
     canvas.polyline(center, (238, 238, 238), 1)
@@ -883,7 +1009,7 @@ def draw_count_bars(canvas, gentle, banked, box):
         top = y0 + index * row + 10
         width = x1 - x0
         canvas.fill_poly([(x0, top), (x1, top), (x1, top + 14), (x0, top + 14)], (194, 83, 76))
-        fraction = case["optimized_parts"] / case["baseline_parts"]
+        fraction = case["regressed_parts"] / case["rollback_parts"]
         canvas.fill_poly([(x0, top + 22), (x0 + width * fraction, top + 22),
                           (x0 + width * fraction, top + 36), (x0, top + 36)], (62, 155, 94))
 
@@ -892,8 +1018,23 @@ def render(path, gentle=None, banked=None):
     if gentle is None or banked is None:
         gentle, banked = check()
     canvas = Canvas(1500, 980, GROUND)
-    draw_plan(canvas, gentle, gentle["raw_bands"], gentle["baseline_stations"], (35, 30, 730, 455))
-    draw_plan(canvas, gentle, gentle["interval_bands"], gentle["optimized_stations"], (770, 30, 1465, 455))
+    draw_plan(
+        canvas,
+        gentle,
+        gentle["regressed_interval_bands"],
+        gentle["optimized_stations"],
+        (35, 30, 730, 455),
+        legacy_boxes=True,
+    )
+    draw_plan(
+        canvas,
+        gentle,
+        gentle["interval_bands"],
+        gentle["optimized_stations"],
+        (770, 30, 1465, 455),
+        legacy_boxes=True,
+        show_component_boundaries=True,
+    )
     draw_side(canvas, banked, (50, 510, 930, 700))
     draw_cross_sections(canvas, banked, (50, 735, 930, 945))
     draw_count_bars(canvas, gentle, banked, (990, 550, 1435, 890))
@@ -902,13 +1043,14 @@ def render(path, gentle=None, banked=None):
 
 
 def describe(case):
-    reduction = (1.0 - case["optimized_parts"] / case["baseline_parts"]) * 100.0
     return (
-        f"{case['tag']}: {case['baseline_parts']} -> {case['optimized_parts']} surface Parts "
-        f"({reduction:.1f}% fewer), {len(case['baseline_stations']) - 1} -> "
-        f"{len(case['optimized_stations']) - 1} intervals, max edge "
-        f"{case['max_edge_error']:.6f}, max twist {case['max_twist_error']:.4f} studs, "
-        f"max plan overhang {case['max_plan_overhang']:.4f} studs"
+        f"{case['tag']}: rollback {case['rollback_parts']} surface Parts; "
+        f"retired wide-band reference {case['regressed_parts']}; "
+        f"max Drive band {case['max_drive_band_span']:.3f} studs "
+        f"(retired {case['max_regressed_drive_band_span']:.3f}); "
+        f"non-straight coalesced={case['nonstraight_coalesced']}, "
+        f"edge error {case['max_edge_error']:.6f}, canonical intervals "
+        f"{len(case['optimized_stations']) - 1}"
     )
 
 
@@ -922,7 +1064,7 @@ def main():
     )
     args = parser.parse_args()
     gentle, banked = check()
-    print("curved/superelevation optimization QA passed")
+    print("curved/superelevation rollback QA passed")
     print("  " + describe(gentle))
     print("  " + describe(banked))
     if not args.check:

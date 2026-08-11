@@ -3655,29 +3655,47 @@ local function isSmoothPassThrough(roads: { Model }, junctionId: string): boolea
 	if not junctionData then
 		return false
 	end
-	-- Matching tangents alone are not enough: a road placed with a lateral
-	-- snap reference can be parallel to the existing road while its centreline
-	-- endpoint sits on that road's edge. Treating that as a seamless through
-	-- road would suppress the junction pad and leave the offset endpoints
-	-- disconnected visually. A true pass-through has both centreline endpoints
-	-- at the node itself.
+	-- Matching tangents alone are not enough: a road placed with a lateral snap
+	-- reference can be parallel to the existing road while its centreline ends
+	-- somewhere else. Treating that as a seamless through road would suppress
+	-- the junction pad and leave the offset endpoints disconnected visually.
+	--
+	-- Test the DURABLE source endpoints against each other, not the currently
+	-- rendered endpoints against the node. All real intersection approaches are
+	-- trimmed to the pad before they are rendered, so after deleting a T's side
+	-- street the two surviving through pieces can never have visible endpoints
+	-- at the controller centre. RoadSplit partitions their source at the exact
+	-- same point, which is the topology fact needed to collapse the stale node.
+	local sourceEndpoints: { Vector3 } = {}
 	for _, road in roads do
 		local data = RoadInstance.Read(road)
 		if not data then
 			return false
 		end
+		local source = RoadSource.ReadSegment(road)
+		local sourceCurve = if source then PolyCurve.new({ source }) else data.Curve
 		local endpoint = if data.StartJunctionId == junctionId
-			then data.Curve:PosAt(0)
-			elseif data.EndJunctionId == junctionId then data.Curve:PosAt(data.Curve.Length)
+			then sourceCurve:PosAt(0)
+			elseif data.EndJunctionId == junctionId then sourceCurve:PosAt(sourceCurve.Length)
 			else nil
 		if not endpoint then
 			return false
 		end
-		local dx = endpoint.X - junctionData.Position.X
-		local dz = endpoint.Z - junctionData.Position.Z
-		if dx * dx + dz * dz &gt; 0.25 * 0.25 then
-			return false
-		end
+		table.insert(sourceEndpoints, endpoint)
+	end
+	local dx = sourceEndpoints[1].X - sourceEndpoints[2].X
+	local dz = sourceEndpoints[1].Z - sourceEndpoints[2].Z
+	if dx * dx + dz * dz &gt; 0.25 * 0.25 then
+		return false
+	end
+	-- Coincidence with each other does not prove ownership: malformed or
+	-- externally-authored roads can both be stamped to a remote controller.
+	-- Their shared durable endpoint must also be the controller's own datum.
+	local sourceMidpoint = (sourceEndpoints[1] + sourceEndpoints[2]) * 0.5
+	local centerDx = sourceMidpoint.X - junctionData.Position.X
+	local centerDz = sourceMidpoint.Z - junctionData.Position.Z
+	if centerDx * centerDx + centerDz * centerDz &gt; 0.25 * 0.25 then
+		return false
 	end
 	local profileA = profileAtJunctionEnd(roads[1], junctionId)
 	local profileB = profileAtJunctionEnd(roads[2], junctionId)
@@ -3810,9 +3828,18 @@ end
 -- ends from one preserved source segment matters once a placed road crosses
 -- more than one existing road: trimming one end and then the other in two
 -- independent passes would otherwise restore the first end from the source.
-local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settings: Settings.EasyRoadSettings)
+local function trimApproach(
+	road: Model,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings,
+	forceSourceRestore: boolean?
+)
 	local data = RoadInstance.Read(road)
-	if not data or #data.Curve.Segments ~= 1 or (not data.StartJunctionId and not data.EndJunctionId) then
+	if
+		not data
+		or #data.Curve.Segments ~= 1
+		or (not forceSourceRestore and not data.StartJunctionId and not data.EndJunctionId)
+	then
 		return
 	end
 	local source = RoadSource.ReadSegment(road)
@@ -3885,7 +3912,7 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 			trimmed = true
 		end
 	end
-	if not trimmed or endStation - startStation &lt; MIN_APPROACH_REMAINDER_STUDS then
+	if (not trimmed and not forceSourceRestore) or endStation - startStation &lt; MIN_APPROACH_REMAINDER_STUDS then
 		return
 	end
 	local outerSegment = CurveSegment.Sub(source, startStation, endStation)
@@ -4179,6 +4206,57 @@ function JunctionBuilder.TrimApproaches(
 	for _, road in roads do
 		trimApproach(road, style, settings)
 	end
+end
+
+-- Reconciles an ordinary controller after one of its connected roads leaves
+-- the DataModel. A zero/one-approach node has no intersection left to own. A
+-- two-approach node is also redundant when the surviving source endpoints and
+-- tangents prove it is the original through road that RoadSplit partitioned.
+--
+-- Detaching first and force-restoring from RoadSource matters: simply deleting
+-- the controller removes the pad but leaves every survivor cut back to the old
+-- pad boundary. All mutations happen synchronously inside Studio's own Delete
+-- operation, so Undo/Redo sees the removed road, restored survivors, and
+-- controller as one coherent history transaction.
+function JunctionBuilder.CleanupAfterRoadRemoval(
+	junctionId: string,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings,
+	removedRoad: Model?
+): boolean
+	local junctionModel = JunctionInstance.FindById(junctionId)
+	local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
+	if not junctionModel or not junctionData or junctionData.Kind == "Roundabout" then
+		return false
+	end
+
+	local roads: { Model } = {}
+	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
+		-- DescendantRemoving runs before Parent changes. Exclude by identity;
+		-- never clear the deleting road's topology or Undo may restore it detached.
+		if road ~= removedRoad then
+			table.insert(roads, road)
+		end
+	end
+	local shouldRemove = #roads &lt;= 1 or isSmoothPassThrough(roads, junctionId)
+	if not shouldRemove then
+		JunctionBuilder.Rebuild(junctionId, style, settings, removedRoad)
+		return false
+	end
+
+	for _, road in roads do
+		local data = RoadInstance.Read(road)
+		if data then
+			RoadInstance.StampJunctions(
+				road,
+				if data.StartJunctionId == junctionId then nil else data.StartJunctionId,
+				if data.EndJunctionId == junctionId then nil else data.EndJunctionId
+			)
+			trimApproach(road, style, settings, true)
+		end
+	end
+	JunctionInstance.Delete(junctionModel)
+	return true
 end
 
 -- 2D cross product (XZ plane, ground plane) of (a - o) and (b - o) - the
@@ -4655,7 +4733,8 @@ end
 function JunctionBuilder.Rebuild(
 	junctionId: string,
 	style: RegionStyles.RegionStyle,
-	settings: Settings.EasyRoadSettings
+	settings: Settings.EasyRoadSettings,
+	excludedRoad: Model?
 )
 	local junctionModel = JunctionInstance.FindById(junctionId)
 	if not junctionModel then
@@ -4670,7 +4749,12 @@ function JunctionBuilder.Rebuild(
 		return
 	end
 
-	local roads = JunctionInstance.ConnectedRoads(junctionId)
+	local roads: { Model } = {}
+	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
+		if road ~= excludedRoad then
+			table.insert(roads, road)
+		end
+	end
 	if #roads &lt; 2 then
 		-- A single connected road (or none, if this was the last one
 		-- removed) doesn't need any junction geometry at all.
@@ -5885,8 +5969,10 @@ return ProfileThumbnail
 -- geometry (a Model of anchored Parts).
 --
 -- The cross-section is extruded along the curve in adaptive intervals:
--- short intervals where curvature is high, long ones on straights. Each
--- interval places one part per profile component plus marking parts.
+-- short intervals where curvature is high, long ones on straights. Flat,
+-- constant-width curves retain the build-0.1 per-component midpoint boxes;
+-- widening and changing-bank surfaces use exact station-edge quadrilaterals.
+-- Only proven rigid straight ranges merge compatible lanes into long Parts.
 -- Superelevation is applied as a roll of the whole cross-section frame,
 -- smoothed along the curve to approximate runoff transitions.
 --
@@ -5969,8 +6055,6 @@ local MIN_STEP = 0.4
 local MAX_TURN_PER_STEP = 0.2 -- Radians of heading change allowed per strip
 local MAX_ROLL_PER_STEP = 0.02 -- Radians of superelevation (bank) change allowed per strip
 local MAX_ROLL_INTERPOLATION_ERROR = 0.0015 -- Radians between the canonical bank profile and one strip
-local MAX_BANKED_BAND_WARP_STUDS = 0.025 -- Max vertical error when coalescing Drive lanes through runoff
-local MAX_CURVED_BAND_OVERHANG_STUDS = 0.025 -- Max extra box overhang versus any source Drive component
 local ROLL_WEDGE_EPSILON = 1e-4 -- Roll change (radians) per strip above which a flat box would visibly kink
 local MAX_PART_AXIS_STUDS = 2048 -- Roblox BasePart axis limit
 local EXACT_STRAIGHT_EPSILON = 1e-4
@@ -6544,34 +6628,16 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	end
 
 	-- Deck strips ---------------------------------------------------------------
-	-- Always centerline-symmetric: each strip is centered on the tangent
-	-- frame at its own interval's true midpoint (an exact point on the
-	-- curve, not an approximation), both edges padded via curveMiterPad to
-	-- close the resulting curve gap. This was previously an "Inside"/
-	-- "Outside" anchored-edge alternative (deliberately keeping one lane
-	-- edge exact via a shared station point, closing the other edge's
-	-- residual gap with an exact FillTriangle wedge) - removed after this
-	-- didn't hold up in practice: the far/residual edge's fixes
-	-- (width-padding, then a curvature-gated wedge) kept trading one
-	-- visible defect for another (sawtooth, then still-visible gaps), and
-	-- anchoring a single edge instead of the centerline is what made the
-	-- whole road visually drift off the clicked path on a sustained curve
-	-- - by definition, only one edge tracked the true path exactly, so a
-	-- wide cross-section's centerline (what the user actually clicked)
-	-- could wander from it. Centerline-anchoring avoids that entirely:
-	-- every strip's own center is placed directly on the curve, so the
-	-- road can never drift from the path regardless of curve length or
-	-- cross-section width. No FillTriangle wedges are used for ordinary curve
-	-- joints any more. The opt-in exact raised caps below are deliberately
-	-- different: their purpose is to end a Sidewalk/Median exactly at station
-	-- 0/Length where another builder owns the surface beyond that plane.
-	--
-	-- On a constant-profile run, adjacent Drive components with the same
-	-- surface signature may be emitted as one wider band. Curved intervals use
-	-- the same source profile and marking plan; changing-bank intervals apply a
-	-- stricter width budget below before they are allowed to coalesce.
-	local compatibleBandEndByStart: { [number]: number } = {}
-	if not isTransition and options.DisableSurfaceCoalescing ~= true then
+	-- Curved surfaces deliberately retain the build-0.1 per-component emitter.
+	-- Coalescing several Drive lanes made every padded interval one broad box,
+	-- turning a small component seam into a carriageway-wide transverse defect.
+	-- Only an exact straight, constant-profile run may merge compatible Drive
+	-- components into one long rectangular Part. Curves remain centreline-
+	-- anchored midpoint boxes with their proven miter overlap; changing width,
+	-- lateral offset, or bank still uses exact station-edge wedges below.
+	local bandEndByStart: { [number]: number } = {}
+	local mergedIntoPrevious: { [number]: boolean } = {}
+	if optimizedStraight and options.DisableSurfaceCoalescing ~= true then
 		local c = 1
 		while c &lt;= componentCount do
 			local bandEnd = c
@@ -6593,14 +6659,14 @@ function RoadBuilder.Build(options: BuildOptions): Model
 					bandEnd = nextIndex
 				end
 			end
-			for sourceIndex = c, bandEnd do
-				compatibleBandEndByStart[sourceIndex] = bandEnd
+			bandEndByStart[c] = bandEnd
+			for sourceIndex = c + 1, bandEnd do
+				mergedIntoPrevious[sourceIndex] = true
 			end
 			c = bandEnd + 1
 		end
 	end
-	local curvedSurfaceCoalesced = false
-	local bankedSurfaceCoalesced = false
+	local exactStationQuadSurfaces = false
 
 	for i = 1, stationCount - 1 do
 		local s0 = stations[i]
@@ -6629,59 +6695,11 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		-- against its neighbour.
 		local rollDelta = math.abs(rolls[i + 1] - rolls[i])
 
-		local c = 1
-		while c &lt;= componentCount do
-			if excludedComponents[c] then
-				c += 1
+		for c = 1, componentCount do
+			if excludedComponents[c] or mergedIntoPrevious[c] then
 				continue
 			end
-
-			-- A bank transition twists the cross-section between its two exact
-			-- station edges. Coalescing several lanes changes where that ruled
-			-- surface is triangulated, so admit only as much width as keeps the
-			-- worst centre-of-quad height difference below the explicit budget:
-			-- width * |sin(roll1) - sin(roll0)| / 4.
-			local componentEnd = c
-			local compatibleEnd = compatibleBandEndByStart[c] or c
-			if compatibleEnd &gt; c then
-				local sinDelta = math.abs(math.sin(rolls[i + 1]) - math.sin(rolls[i]))
-				local maxBandWidth = if sinDelta &lt;= 1e-9 then math.huge else 4 * MAX_BANKED_BAND_WARP_STUDS / sinDelta
-				local bandWidth = math.max(stationWidths[i][c], stationWidths[i + 1][c])
-				local sourceLeft = stationOffsets[i][c]
-				local sourceRight = sourceLeft + stationWidths[i][c]
-				local sourceEdgeDistance = math.max(math.abs(sourceLeft), math.abs(sourceRight))
-				local minimumSourceMiter = curveMiterPad(curve, sMid, sourceEdgeDistance, nominalLength)
-				while componentEnd &lt; compatibleEnd do
-					local nextIndex = componentEnd + 1
-					local nextWidth = math.max(stationWidths[i][nextIndex], stationWidths[i + 1][nextIndex])
-					if bandWidth + nextWidth &gt; maxBandWidth then
-						break
-					end
-
-					-- Constant-roll curved surfaces use midpoint boxes with a
-					-- curvature-dependent length pad. A wider merged box inherits
-					-- the farthest edge's pad across every source lane; bound the
-					-- extra half-length it would add over the shortest source box.
-					local nextLeft = stationOffsets[i][nextIndex]
-					local nextRight = nextLeft + stationWidths[i][nextIndex]
-					local nextEdgeDistance = math.max(math.abs(nextLeft), math.abs(nextRight))
-					local nextSourceMiter = curveMiterPad(curve, sMid, nextEdgeDistance, nominalLength)
-					local candidateLeft = stationOffsets[i][c]
-					local candidateRight = nextRight
-					local candidateEdgeDistance = math.max(math.abs(candidateLeft), math.abs(candidateRight))
-					local candidateMiter = curveMiterPad(curve, sMid, candidateEdgeDistance, nominalLength)
-					local candidateMinimumMiter = math.min(minimumSourceMiter, nextSourceMiter)
-					if
-						rollDelta &lt;= ROLL_WEDGE_EPSILON
-						and (candidateMiter - candidateMinimumMiter) / 2 &gt; MAX_CURVED_BAND_OVERHANG_STUDS
-					then
-						break
-					end
-					bandWidth += nextWidth
-					minimumSourceMiter = candidateMinimumMiter
-					componentEnd = nextIndex
-				end
-			end
+			local componentEnd = bandEndByStart[c] or c
 			local w0 = 0
 			local w1 = 0
 			for sourceIndex = c, componentEnd do
@@ -6690,20 +6708,11 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			end
 			local width = (w0 + w1) / 2
 			if width &lt; 0.05 then
-				c = componentEnd + 1
 				continue
 			end
 			local centerOffset0 = stationOffsets[i][c] + w0 / 2
 			local centerOffset1 = stationOffsets[i + 1][c] + w1 / 2
 			local centerOffset = (centerOffset0 + centerOffset1) / 2
-			if componentEnd &gt; c then
-				if math.max(math.abs(rolls[i]), math.abs(rolls[i + 1])) &gt; ROLL_WEDGE_EPSILON then
-					bankedSurfaceCoalesced = true
-				elseif not optimizedStraight then
-					curvedSurfaceCoalesced = true
-				end
-			end
-
 			local kind = componentsStart[c].Kind
 			local raised = RoadProfile.IsRaised(kind)
 			local exactRaisedCap = raised
@@ -6712,20 +6721,14 @@ function RoadBuilder.Build(options: BuildOptions): Model
 					or (i == stationCount - 1 and options.ExactEndRaisedCap == true)
 				)
 			local partHeight = if raised then thickness + curbHeight else thickness
-			-- Deck (roadway) top surface sits at frame level; raised
-			-- components (sidewalk/median) stand a curb height above
-			-- it. Alternating strips drop by a sub-visible epsilon so
-			-- overlapping neighbor strips never z-fight.
+			-- Flat curved components use the visually validated build-0.1 midpoint
+			-- boxes. Their small overlap is staggered vertically to avoid z-fight;
+			-- because curves are no longer lane-coalesced, that stagger never spans
+			-- an entire multi-lane carriageway as one broad surface.
 			local centerY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2)
 				- (if optimizedStraight then 0 else (i % 2) * 0.004)
-
 			local edgeDistance = math.max(math.abs(centerOffset - width / 2), math.abs(centerOffset + width / 2))
 			local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
-			-- A slightly larger flat safety margin than before (was 0.02) -
-			-- uniform across every strip regardless of curvature, so it
-			-- can't reproduce the curvature-scaled sawtooth the old
-			-- far-edge pad caused; just a little extra overlap insurance
-			-- against any remaining sliver of a gap.
 			local padding = if optimizedStraight then 0 else miter + 0.08
 
 			local function makeTransitionPart(): Part
@@ -6778,11 +6781,14 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			-- roll (rather than a rigid, uniformly-tilted box) means
 			-- adjacent strips always share an exact edge with no gap, same
 			-- as the lateral case, and the residual twist is a small,
-			-- imperceptible facet instead of an averaging error. Strips
-			-- that are neither transitioning nor banking (the ordinary
-			-- case for most flat, straight road) are unaffected - same
-			-- plain rectangle construction as before.
-			if exactRaisedCap or math.abs(centerOffset1 - centerOffset0) &gt; 1e-4 or rollDelta &gt; ROLL_WEDGE_EPSILON then
+			-- imperceptible facet instead of an averaging error. Flat,
+			-- constant-width curves retain the build-0.1 midpoint boxes below.
+			local requiresExactSurfaceQuad = exactRaisedCap
+				or math.abs(centerOffset1 - centerOffset0) &gt; 1e-4
+				or math.abs(w1 - w0) &gt; 1e-4
+				or rollDelta &gt; ROLL_WEDGE_EPSILON
+			if requiresExactSurfaceQuad then
+				exactStationQuadSurfaces = true
 				local topY = if raised then curbHeight else 0
 				local innerStart = (frames[i] * CFrame.new(centerOffset0 - w0 / 2, topY, 0)).Position
 				local outerStart = (frames[i] * CFrame.new(centerOffset0 + w0 / 2, topY, 0)).Position
@@ -6797,7 +6803,6 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
 				part.Parent = model
 			end
-			c = componentEnd + 1
 		end
 	end
 
@@ -7002,8 +7007,9 @@ function RoadBuilder.Build(options: BuildOptions): Model
 		profileOffsetEndM
 	)
 	model:SetAttribute("RW_StraightSurfaceCoalesced", optimizedStraight)
-	model:SetAttribute("RW_CurvedSurfaceCoalesced", curvedSurfaceCoalesced)
-	model:SetAttribute("RW_BankedSurfaceCoalesced", bankedSurfaceCoalesced)
+	model:SetAttribute("RW_CurvedSurfaceCoalesced", false)
+	model:SetAttribute("RW_BankedSurfaceCoalesced", false)
+	model:SetAttribute("RW_ExactStationQuadSurfaces", exactStationQuadSurfaces)
 
 	return model
 end
@@ -9336,8 +9342,7 @@ local APRON_SAMPLES = 24
 -- FillTriangle drops them, while the island still forms either side. Bailing out
 -- at the waist instead threw away everything beyond it, including the wide part
 -- against the ring, and left bare kerb at the mouth.
--- Arc step for the island's nose fan where it meets the ring kerb.
-local NOSE_ARC_STEP_RAD = math.rad(2)
+local APRON_ARC_STEP_RAD = math.rad(2)
 -- The gore is the gap between the two arms' INNER roadway edges, so on an
 -- approach with a median it starts out that median's width at the cut, and on
 -- one WITHOUT a median it starts at zero and only opens as the arms diverge.
@@ -10022,15 +10027,16 @@ local function buildArm(
 	local roadwayFootprints: { ConvexFootprint } = {}
 	local sidewalkIndices: { number } = {}
 	local componentOffsets = RoadProfile.ComponentOffsetsM(arm.Profile)
-	local needsSurfaceTaper = arm.CutShoulderM &gt; 1e-6
+	-- Arm pavement is always emitted from the exact shared station grid below.
+	-- RoadBuilder's ordinary curved Sidewalk strips are padded midpoint boxes;
+	-- that overlap is useful for a flat road deck, but a raised curb exposes the
+	-- box corners as steps, gaps, and occasional intrusions at a roundabout
+	-- mouth. Shoulder-only highway arms also use this path for their taper.
+	local needsExactSurface = arm.CutShoulderM &gt; 1e-6
 	for i, component in arm.Profile.Components do
 		if component.Kind == "Sidewalk" then
 			table.insert(sidewalkIndices, i)
-			local edge = componentOffsets[i]
-			local cutPavementM = if (edge.Left + edge.Right) / 2 &lt; 0 then cutPavementLeftM else cutPavementRightM
-			if math.abs(component.WidthM - cutPavementM) &gt; 1e-6 then
-				needsSurfaceTaper = true
-			end
+			needsExactSurface = true
 		end
 	end
 
@@ -10076,7 +10082,7 @@ local function buildArm(
 		-- Shoulder marker, so both travel lanes and their solid outer line stay
 		-- exactly where planMouth placed them. Only the physical surface outside
 		-- that line is replaced below.
-		ExcludeComponentIndices = if needsSurfaceTaper then sidewalkIndices else nil,
+		ExcludeComponentIndices = if #sidewalkIndices &gt; 0 then sidewalkIndices else nil,
 		MarkingLines = markingLines,
 		MarkingDashStartsAtZero = true,
 	}
@@ -10084,10 +10090,9 @@ local function buildArm(
 	local stations = RoadBuilder.StationsFor(options)
 
 	if collectRoadwayFootprints then
-		-- RoadBuilder's flat arm core is emitted as midpoint-aligned rectangles
-		-- with curvature-dependent length padding. Cutting against ideal station
-		-- quads misses those real corner protrusions (and can cut bare crescents on
-		-- the opposite side), so use the generated block footprints themselves.
+		-- Curved core surfaces use RoadBuilder's padded midpoint Parts. The
+		-- raised ring pavement must therefore subtract the Parts' real top
+		-- footprints, not ideal station quads that miss their miter corners.
 		-- Bay is roadway too; custom profiles must not leave its mouth kerbed off.
 		local roadwayPartNames: { [string]: boolean } = {
 			Drive = true,
@@ -10103,7 +10108,7 @@ local function buildArm(
 		end
 	end
 
-	if needsSurfaceTaper then
+	if needsExactSurface then
 		local scale = settings.MetersToStuds
 		local curbHeight = style.CurbHeightM * scale
 		local roadDepth = settings.RoadThicknessStuds
@@ -10123,6 +10128,7 @@ local function buildArm(
 			part.BottomSurface = Enum.SurfaceType.Smooth
 			part.Material = material
 			part.Color = color
+			part:SetAttribute("RW_ExactRoundaboutArmSurface", true)
 			return part
 		end
 		local function makeShoulderPart(): Part
@@ -10218,10 +10224,8 @@ local function buildArm(
 						-- These surfaces are FillTriangle wedges, so their BasePart
 						-- bounding boxes are not their plan-view footprint. The source
 						-- quad is exact and convex on RoadBuilder's adaptive station grid.
-						table.insert(
-							roadwayFootprints,
-							{ shoulderInner0, shoulderOuter0, shoulderOuter1, shoulderInner1 }
-						)
+						table.insert(roadwayFootprints, { shoulderInner0, shoulderOuter0, shoulderOuter1 })
+						table.insert(roadwayFootprints, { shoulderInner0, shoulderOuter1, shoulderInner1 })
 					end
 					FillTriangle(
 						shoulderInner0,
@@ -10243,6 +10247,10 @@ local function buildArm(
 					)
 				end
 				if math.max(pavementWidth0, pavementWidth1) * scale &gt;= 0.02 then
+					if collectRoadwayFootprints then
+						table.insert(roadwayFootprints, { pavementInner0, pavementOuter0, pavementOuter1 })
+						table.insert(roadwayFootprints, { pavementInner0, pavementOuter1, pavementInner1 })
+					end
 					FillTriangle(
 						pavementInner0,
 						pavementOuter0,
@@ -10264,71 +10272,6 @@ local function buildArm(
 				end
 			end
 		end
-	elseif #sidewalkIndices &gt; 0 then
-		-- Constant-width raised surfaces can keep RoadBuilder's padded interior
-		-- strips: that overlap is what closes the mouth against the ring. Replace
-		-- only the strip at the approach cut, where a rotated rectangular end cap
-		-- can project across the adjoining carriageway.
-		local function replaceCutPavementCaps()
-			local scale = settings.MetersToStuds
-			local curbHeight = style.CurbHeightM * scale
-			local pavementDepth = settings.RoadThicknessStuds + curbHeight
-			local offsets = RoadProfile.ComponentOffsetsM(arm.Profile)
-			-- With one interval the cut cap is also the ring cap. Keep its overlap
-			-- rather than opening a hole at the mouth.
-			if #stations &lt; 3 then
-				return
-			end
-			local intervalIndex = if cutAtStart then 1 else #stations - 1
-			local s0 = stations[intervalIndex]
-			local s1 = stations[intervalIndex + 1]
-
-			local function makePavementPart(): Part
-				local part = Instance.new("Part")
-				part.Name = "Sidewalk"
-				part.Anchored = true
-				part.CanCollide = true
-				part.CanTouch = false
-				part.CanQuery = false
-				part.CastShadow = false
-				part.TopSurface = Enum.SurfaceType.Smooth
-				part.BottomSurface = Enum.SurfaceType.Smooth
-				part.Material = Enum.Material.Concrete
-				part.Color = style.SidewalkColor
-				return part
-			end
-
-			for _, componentIndex in sidewalkIndices do
-				for _, descendant in model:GetDescendants() do
-					local stationStart = descendant:GetAttribute("RW_StationStartStuds")
-					local stationEnd = descendant:GetAttribute("RW_StationEndStuds")
-					if
-						descendant:IsA("BasePart")
-						and descendant.Name == "Sidewalk"
-						and descendant:GetAttribute("RW_ComponentStartIndex") == componentIndex
-						and typeof(stationStart) == "number"
-						and typeof(stationEnd) == "number"
-						and math.abs(stationStart - s0) &lt; 1e-4
-						and math.abs(stationEnd - s1) &lt; 1e-4
-					then
-						descendant:Destroy()
-					end
-				end
-
-				local edge = offsets[componentIndex]
-				local frame0 = curve:FrameAt(s0)
-				local frame1 = curve:FrameAt(s1)
-				local left0 = (frame0 * CFrame.new(edge.Left * scale, curbHeight, 0)).Position
-				local right0 = (frame0 * CFrame.new(edge.Right * scale, curbHeight, 0)).Position
-				local left1 = (frame1 * CFrame.new(edge.Left * scale, curbHeight, 0)).Position
-				local right1 = (frame1 * CFrame.new(edge.Right * scale, curbHeight, 0)).Position
-				local down = -curve:FrameAt((s0 + s1) / 2).UpVector
-				FillTriangle(left0, right0, right1, pavementDepth, down, makePavementPart, model)
-				FillTriangle(left0, right1, left1, pavementDepth, down, makePavementPart, model)
-			end
-		end
-
-		replaceCutPavementCaps()
 	end
 	-- Not a free-standing editable road - owned by the roundabout mesh.
 	model:SetAttribute("RW_Road", nil)
@@ -10357,7 +10300,8 @@ local function buildSplitterIsland(
 	ringKerbRadiusStuds: number,
 	flow: number,
 	style: RegionStyles.RegionStyle,
-	settings: Settings.EasyRoadSettings
+	settings: Settings.EasyRoadSettings,
+	surfaceCutters: { ConvexFootprint }
 )
 	local scale = settings.MetersToStuds
 	local curbHeight = style.CurbHeightM * scale
@@ -10381,6 +10325,10 @@ local function buildSplitterIsland(
 	end
 	local function makeApronPart(): Part
 		return makePart("GoreApron", Enum.Material.Asphalt, style.AsphaltColor)
+	end
+	local function fillSurface(a: Vector3, b: Vector3, c: Vector3, surfaceDepth: number, factory: () -&gt; Part)
+		table.insert(surfaceCutters, { a, b, c })
+		FillTriangle(a, b, c, surfaceDepth, DOWN, factory, ring)
 	end
 	-- Gore-side roadway edge: the inner offset lies on +flow * right-of-travel for
 	-- both arms (the exit's travel is reversed, and so is its own right).
@@ -10407,9 +10355,9 @@ local function buildSplitterIsland(
 	local function goreWidth(along: number): number
 		return distanceXZ(goreEdge(entryCurve, along, entryArm), goreEdge(exitCurve, exitCurve.Length - along, exitArm))
 	end
-	-- Station at which one arm's gore edge first drops inside the ring's kerb,
-	-- searched forward from `station` in `direction` (+1 along the entry, -1
-	-- along the exit, which is parameterised from the ring outward).
+	-- Station at which an arm's gore edge first reaches the circular kerb. The
+	-- result is used only for flat asphalt frontage; raised material stops at the
+	-- last fully exterior rung below.
 	local function kerbCrossing(curve: PolyCurve.PolyCurve, station: number, direction: number, arm: ArmProfile): number
 		local step = curve.Length / 128
 		local s = station
@@ -10549,8 +10497,8 @@ local function buildSplitterIsland(
 			local a = goreEdgeAt(entryCurve, along, entryArm, -ARM_SINK_STUDS)
 			local b = goreEdgeAt(exitCurve, exitCurve.Length - along, exitArm, -ARM_SINK_STUDS)
 			if prevA and prevB then
-				FillTriangle(prevA, prevB, b, apronDepth, DOWN, makeApronPart, ring)
-				FillTriangle(prevA, b, a, apronDepth, DOWN, makeApronPart, ring)
+				fillSurface(prevA, prevB, b, apronDepth, makeApronPart)
+				fillSurface(prevA, b, a, apronDepth, makeApronPart)
 			end
 			prevA, prevB = a, b
 		end
@@ -10574,8 +10522,8 @@ local function buildSplitterIsland(
 				local mid = a:Lerp(b, 0.5)
 				a, b = mid:Lerp(a, t), mid:Lerp(b, t)
 				if prevA and prevB then
-					FillTriangle(prevA, prevB, b, depth, DOWN, makeSidewalkPart, ring)
-					FillTriangle(prevA, b, a, depth, DOWN, makeSidewalkPart, ring)
+					fillSurface(prevA, prevB, b, depth, makeSidewalkPart)
+					fillSurface(prevA, b, a, depth, makeSidewalkPart)
 				end
 				prevA, prevB = a, b
 			end
@@ -10607,26 +10555,25 @@ local function buildSplitterIsland(
 		lastAlong = along
 	end
 	for j = 1, #entrySide - 1 do
-		FillTriangle(entrySide[j], exitSide[j], exitSide[j + 1], depth, DOWN, makeSidewalkPart, ring)
-		FillTriangle(entrySide[j], exitSide[j + 1], entrySide[j + 1], depth, DOWN, makeSidewalkPart, ring)
+		fillSurface(entrySide[j], exitSide[j], exitSide[j + 1], depth, makeSidewalkPart)
+		fillSurface(entrySide[j], exitSide[j + 1], entrySide[j + 1], depth, makeSidewalkPart)
 	end
 
-	-- Nose. The strip stops at the FIRST of the two edges to reach the kerb, so
-	-- the other one still has a run of island left outside it, and beyond both
-	-- the frontage is an arc of the kerb rather than the chord the last rung
-	-- draws. Close all of that here: out along each edge to its own crossing,
-	-- then around the kerb between them. Without it every mouth keeps a crescent
-	-- of bare ground where the island should meet the carriageway.
-	local nose, tail = entrySide[#entrySide], exitSide[#exitSide]
-	if not nose or not tail then
-		return
-	end
-	local noseEnd = goreEdge(entryCurve, kerbCrossing(entryCurve, lastAlong, 1, entryArm), entryArm)
-	local tailEnd = goreEdge(exitCurve, kerbCrossing(exitCurve, exitCurve.Length - lastAlong, -1, exitArm), exitArm)
+	-- Close the last frontage as FLAT ASPHALT, never raised splitter pavement.
+	-- Straight chords between points on a circle lie inside that circle: the old
+	-- Sidewalk fan therefore produced the pair of concrete triangles observed
+	-- across the circulating lane. The polygon is still needed to close the
+	-- mouth, but it belongs to the carriageway/apron at deck level.
+	local noseStation = kerbCrossing(entryCurve, lastAlong, 1, entryArm)
+	local tailStation = kerbCrossing(exitCurve, exitCurve.Length - lastAlong, -1, exitArm)
+	local nose = goreEdgeAt(entryCurve, lastAlong, entryArm, -ARM_SINK_STUDS)
+	local tail = goreEdgeAt(exitCurve, exitCurve.Length - lastAlong, exitArm, -ARM_SINK_STUDS)
+	local noseEnd = goreEdgeAt(entryCurve, noseStation, entryArm, -ARM_SINK_STUDS)
+	local tailEnd = goreEdgeAt(exitCurve, tailStation, exitArm, -ARM_SINK_STUDS)
 	local a0 = math.atan2(noseEnd.Z - center.Z, noseEnd.X - center.X)
 	local a1 = math.atan2(tailEnd.Z - center.Z, tailEnd.X - center.X)
 	local sweep = angleDelta(a1, a0)
-	local steps = math.max(1, math.ceil(math.abs(sweep) / NOSE_ARC_STEP_RAD))
+	local steps = math.max(1, math.ceil(math.abs(sweep) / APRON_ARC_STEP_RAD))
 	local apex = nose:Lerp(tail, 0.5)
 	local boundary: { Vector3 } = { nose, noseEnd }
 	for k = 1, steps - 1 do
@@ -10634,8 +10581,9 @@ local function buildSplitterIsland(
 	end
 	table.insert(boundary, tailEnd)
 	table.insert(boundary, tail)
+	local apronDepth = settings.RoadThicknessStuds
 	for k = 1, #boundary - 1 do
-		FillTriangle(apex, boundary[k], boundary[k + 1], depth, DOWN, makeSidewalkPart, ring)
+		fillSurface(apex, boundary[k], boundary[k + 1], apronDepth, makeApronPart)
 	end
 end
 
@@ -10857,9 +10805,10 @@ local function resolveSplits(
 	return split, entrySplit, plan.Angle + flow * entrySplit, plan.Angle - flow * split
 end
 
--- One mouth: entry arm, exit arm, splitter island. Paired mouths return an
--- angular pavement sector; solo mouths return nil plus exact roadway cutters.
--- Edge paint remains angular for both because its handoff is a radial ring line.
+-- One mouth: entry arm, exit arm, splitter island. Every physical surface
+-- returns an exact ownership cutter for raised ring pavement. The optional
+-- paired sector remains diagnostic metadata; edge paint stays angular because
+-- its handoff is a radial ring line.
 local function buildMouth(
 	ring: Model,
 	plan: MouthPlan,
@@ -10870,9 +10819,8 @@ local function buildMouth(
 ): (MouthSector?, MouthSector, ExitTrace?, { ConvexFootprint })
 	-- Which way traffic circulates, matching circleSegments' own sign.
 	local flow = if style.DriveOnLeft then 1 else -1
-	local soloMouth = not (plan.Entry and plan.Exit)
-	local collectSoloRoadway = soloMouth and ringSidewalkWidthM(style) &gt; 1e-6
-	local soloRoadwayCutters: { ConvexFootprint } = {}
+	local collectSurfaceFootprints = ringSidewalkWidthM(style) &gt; 1e-6
+	local surfaceCutters: { ConvexFootprint } = {}
 	local dir = plan.Direction
 	local side = rightOf(dir)
 
@@ -10904,11 +10852,11 @@ local function buildMouth(
 			entryRingKerbRadius,
 			style,
 			settings,
-			collectSoloRoadway
+			collectSurfaceFootprints
 		)
 		armModel.Parent = ring
 		for _, cutter in roadwayCutters do
-			table.insert(soloRoadwayCutters, cutter)
+			table.insert(surfaceCutters, cutter)
 		end
 		ringKerbRadius = entryRingKerbRadius
 	end
@@ -10935,11 +10883,11 @@ local function buildMouth(
 			exitRingKerbRadius,
 			style,
 			settings,
-			collectSoloRoadway
+			collectSurfaceFootprints
 		)
 		armModel.Parent = ring
 		for _, cutter in roadwayCutters do
-			table.insert(soloRoadwayCutters, cutter)
+			table.insert(surfaceCutters, cutter)
 		end
 		ringKerbRadius = exitRingKerbRadius
 	end
@@ -10958,7 +10906,8 @@ local function buildMouth(
 			ringKerbRadius,
 			flow,
 			style,
-			settings
+			settings,
+			surfaceCutters
 		)
 	end
 
@@ -10967,8 +10916,8 @@ local function buildMouth(
 	-- each arm is covered throughout. With only ONE arm there is no island, so
 	-- edge paint is opened exactly between that arm's two roadway-edge crossings.
 	-- Raised pavement is not represented by a polar sector at all: the caller
-	-- subtracts the analytical roadway footprints gathered above, preserving the
-	-- curb-return concrete beside the curved arm.
+	-- subtracts the generated core Parts plus exact arm/splitter surfaces,
+	-- preserving every curb-return fragment no physical surface replaces.
 	if not (entry and exit) then
 		local only = (entry or exit) :: MouthArm
 		local onlyCurve = (entryCurve or exitCurve) :: PolyCurve.PolyCurve
@@ -10989,7 +10938,7 @@ local function buildMouth(
 		local soloTrace: ExitTrace? = if exit and exitCurve
 			then { Curve = exitCurve :: PolyCurve.PolyCurve, Arm = exit.Profile }
 			else nil
-		return nil, sectorAtRadius(edgeLineRadius), soloTrace, soloRoadwayCutters
+		return nil, sectorAtRadius(edgeLineRadius), soloTrace, surfaceCutters
 	end
 	-- Open exactly as far as each arm actually reaches, inset so the opening can
 	-- never outrun them.
@@ -11011,7 +10960,7 @@ local function buildMouth(
 	return pavementSector,
 		edgeMarkingSector,
 		{ Curve = exitCurve :: PolyCurve.PolyCurve, Arm = (exit :: MouthArm).Profile },
-		soloRoadwayCutters
+		surfaceCutters
 end
 
 -- COMFORTABLE ring radius: one that gives every leg room for its two arms, a
@@ -11287,10 +11236,14 @@ local function preflightApproaches(
 	trimTarget: number,
 	laneWidthM: number,
 	ringStyle: RegionStyles.RegionStyle,
-	settings: Settings.EasyRoadSettings
+	settings: Settings.EasyRoadSettings,
+	excludedRoad: Model?
 ): ({ ApproachPreflight }?, string?)
 	local prepared: { ApproachPreflight } = {}
 	for index, road in JunctionInstance.ConnectedRoads(junctionId) do
+		if road == excludedRoad then
+			continue
+		end
 		local label = string.format("approach %d (%s)", index, road.Name)
 		local data = readRoadForPreflight(road)
 		if not data then
@@ -11380,7 +11333,8 @@ function RoundaboutBuilder.CreateAtJunction(
 	laneWidthM: number,
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings,
-	requestedData: RoundaboutInstance.RoundaboutData?
+	requestedData: RoundaboutInstance.RoundaboutData?,
+	excludedRoad: Model?
 ): (Model?, string?)
 	local junctionModel = JunctionInstance.FindById(junctionId)
 	if not junctionModel then
@@ -11431,8 +11385,16 @@ function RoundaboutBuilder.CreateAtJunction(
 	local outerRadiusStuds = radiusStuds + halfWidthStuds
 	local ringKerbRadius = outerRadiusStuds - ringSidewalkWidthM(ringStyle) * scale
 	local trimTarget = outerRadiusStuds + armRunStuds(outerRadiusStuds)
-	local approaches, preflightError =
-		preflightApproaches(junctionId, center, ringKerbRadius, trimTarget, laneWidthM, ringStyle, settings)
+	local approaches, preflightError = preflightApproaches(
+		junctionId,
+		center,
+		ringKerbRadius,
+		trimTarget,
+		laneWidthM,
+		ringStyle,
+		settings,
+		excludedRoad
+	)
 	if not approaches then
 		return nil, "Roundabout rebuild blocked: " .. (preflightError or "approach preflight failed.")
 	end
@@ -11513,22 +11475,18 @@ function RoundaboutBuilder.CreateAtJunction(
 		table.insert(plans, approach.Plan)
 	end
 
-	local mouthSectors: { MouthSector } = {}
 	local edgeMarkingSectors: { MouthSector } = {}
 	local exitTraces: { ExitTrace } = {}
-	local soloRoadwayCutters: { ConvexFootprint } = {}
+	local surfaceCutters: { ConvexFootprint } = {}
 	for i, plan in plans do
-		local sector, edgeSector, trace, roadwayCutters =
+		local _sector, edgeSector, trace, mouthSurfaceCutters =
 			buildMouth(ring, plan, center, splitBudgetFor(plans, i), ringStyle, settings)
-		if sector then
-			table.insert(mouthSectors, sector)
-		end
 		table.insert(edgeMarkingSectors, edgeSector)
 		if trace then
 			table.insert(exitTraces, trace)
 		end
-		for _, cutter in roadwayCutters do
-			table.insert(soloRoadwayCutters, cutter)
+		for _, cutter in mouthSurfaceCutters do
+			table.insert(surfaceCutters, cutter)
 		end
 	end
 
@@ -11542,11 +11500,10 @@ function RoundaboutBuilder.CreateAtJunction(
 	-- pushes the edge line inside the bound, and it survives as a white line
 	-- painted straight across the mouth.
 	local edgeLineInset = ringStyle.MarkingWidthM * 1.5 * scale
-	-- Solo curved arms are not polar sectors. The exact builder subtracts their
-	-- generated roadway footprints; paired mouths use their clamped angular
-	-- ownership wedges. Performing both operations before Parts are emitted
-	-- leaves no padded sidewalk corner inside the circulating lanes and no
-	-- outer-edge box overshoot between untouched ring spans.
+	-- Curved mouths are not polar sectors. Subtract the generated arm-core Parts
+	-- plus exact pavement, shoulder, GoreApron, and splitter polygons for paired
+	-- and solo mouths alike. This removes no concrete that another physical
+	-- surface does not replace, so it cannot open the old curb-return crescents.
 	buildExactRingSidewalk(
 		ring,
 		ringCurve,
@@ -11556,8 +11513,8 @@ function RoundaboutBuilder.CreateAtJunction(
 		ringStyle,
 		settings,
 		RoadBuilder.StationsFor(ringOptions),
-		mouthSectors,
-		soloRoadwayCutters
+		{},
+		surfaceCutters
 	)
 	-- Edge paint has a different physical hand-off from raised pavement. Open
 	-- it to the full merge angles so the preserved arm edge line reaches the
@@ -12098,7 +12055,8 @@ end
 function RoundaboutBuilder.Rebuild(
 	model: Model,
 	style: RegionStyles.RegionStyle,
-	settings: Settings.EasyRoadSettings
+	settings: Settings.EasyRoadSettings,
+	excludedRoad: Model?
 ): (Model?, string?)
 	local ring = RoundaboutInstance.FindRoundabout(model)
 	local data = if ring then RoundaboutInstance.Read(ring) else nil
@@ -12118,7 +12076,8 @@ function RoundaboutBuilder.Rebuild(
 			data.LaneWidthM,
 			style,
 			settings,
-			data
+			data,
+			excludedRoad
 		)
 		return if rebuilt then rebuilt else nil, if rebuilt then nil else (message or "Roundabout rebuild failed.")
 	end
@@ -30789,6 +30748,21 @@ return function(
 	local roundaboutEditSessionChangedCn = roundaboutEditSession.ChangeSignal:Connect(function()
 		updateUI()
 	end)
+	local roadsFolderRemoving = false
+	-- Destroying the final road-owned ring synchronously fires this same
+	-- DescendantRemoving listener while the departing road is still queryable.
+	-- Suppress only that nested owner event so it cannot restore/detach the road
+	-- that Studio is in the process of deleting (which would corrupt Undo).
+	local ringRemovalFromRoadCleanup: { [Instance]: boolean } = {}
+	local function connectedRoadsExcept(junctionId: string, removedRoad: Model): { Model }
+		local roads: { Model } = {}
+		for _, road in JunctionInstance.ConnectedRoads(junctionId) do
+			if road ~= removedRoad then
+				table.insert(roads, road)
+			end
+		end
+		return roads
+	end
 
 	-- Deleting a road (Studio's own Delete key, or anything else that
 	-- removes it from the Roads folder) doesn't go through RoadEditSession
@@ -30796,9 +30770,24 @@ return function(
 	-- otherwise keep a stale pad forever - fires just before the removal
 	-- actually happens, while the road's attributes are still readable, and
 	-- for either end it referenced: rebuilds that junction's pad against
-	-- whatever's left connected, or removes the junction outright if this
-	-- was its last road.
+	-- whatever's left connected, or restores and removes a now-orphaned node
+	-- (including the two source-continuous pieces left after deleting a T arm).
 	local roadRemovingCn = workspace.DescendantRemoving:Connect(function(instance)
+		local roadsFolder = workspace:FindFirstChild("Roads")
+		if instance == roadsFolder then
+			-- Bulk folder deletion is not N independent road edits. Avoid rewriting
+			-- topology while Roblox recursively dismantles the collection.
+			roadsFolderRemoving = true
+			task.defer(function()
+				roadsFolderRemoving = false
+			end)
+			return
+		elseif roadsFolderRemoving then
+			return
+		end
+		if ringRemovalFromRoadCleanup[instance] then
+			return
+		end
 		-- A direct Explorer delete of a connected ring becomes an ordinary
 		-- junction. In-place editor rebuilds destroy a temporary ring too, but in
 		-- that case the stable selected owner still exists for the same controller
@@ -30876,16 +30865,8 @@ return function(
 		end
 		local startId = instance:GetAttribute("RW_StartJunctionId")
 		local endId = instance:GetAttribute("RW_EndJunctionId")
-		-- DescendantRemoving fires while this Model is still queryable. Detach
-		-- its topology first, then rebuild synchronously inside Studio's Delete
-		-- history operation so Undo restores the road, controller and ring as one
-		-- coherent state rather than restoring only the road a frame later.
-		if typeof(startId) == "string" then
-			instance:SetAttribute("RW_StartJunctionId", nil)
-		end
-		if typeof(endId) == "string" then
-			instance:SetAttribute("RW_EndJunctionId", nil)
-		end
+		-- DescendantRemoving fires while this Model is still queryable. Do not
+		-- mutate its junction ids: exclusion by identity preserves Undo state.
 		local seen: { [string]: boolean } = {}
 		for _, value in { startId, endId } do
 			if typeof(value) ~= "string" or seen[value] then
@@ -30898,18 +30879,20 @@ return function(
 			if not junctionModel or not junctionData then
 				continue
 			end
-			local remaining = #JunctionInstance.ConnectedRoads(junctionId)
-			if remaining == 0 then
+			local remaining = #connectedRoadsExcept(junctionId, instance :: Model)
+			if junctionData.Kind == "Roundabout" and remaining == 0 then
 				local ring = RoundaboutInstance.FindByJunctionId(junctionId)
 				if ring then
+					ringRemovalFromRoadCleanup[ring] = true
 					ring:Destroy()
+					ringRemovalFromRoadCleanup[ring] = nil
 				end
 				JunctionInstance.Delete(junctionModel)
 			elseif junctionData.Kind == "Roundabout" then
 				local ring = RoundaboutInstance.FindByJunctionId(junctionId)
 				if ring then
 					local ok, rebuilt, message = pcall(function()
-						return RoundaboutBuilder.Rebuild(ring, getStyle(), settings)
+						return RoundaboutBuilder.Rebuild(ring, getStyle(), settings, instance :: Model)
 					end)
 					if not ok or not rebuilt then
 						warn(
@@ -30919,7 +30902,7 @@ return function(
 					end
 				end
 			else
-				JunctionBuilder.Rebuild(junctionId, getStyle(), settings)
+				JunctionBuilder.CleanupAfterRoadRemoval(junctionId, getStyle(), settings, instance :: Model)
 			end
 		end
 		task.defer(updateUI)

@@ -28,7 +28,7 @@ trap as an invariant nobody re-reads.
 | `roundabout_editor_preview.py` | Before/after bird's-eye editor showcase for a connected UK roundabout. Reuses `roundabout_preview.py` directly so adjustable radius, lane count/width, appearance toggles, mouths, and markings are rendered by the canonical component pipeline. |
 | `road_preview.py` | An ordinary road on its own - straights, arcs down to R=30, an S-curve, avenues, motorways. Bare ground inside the road, edge sawtooth, broken edge lines. |
 | `straight_optimization_preview.py` | Exact-straight 2048-stud splitting, explicit stretch breakpoints, conservative Drive-only lateral merging, source-range metadata contracts, and a before/after surface-Part render. |
-| `curved_superelevation_optimization_preview.py` | Feasibility and regression harness for conservative Drive-band merging on curves and bank runoff. Ports the density-independent roll profile (including short-curve runoff controls), roll-aware station refinement, per-interval 0.025-stud twist and curved-box overhang budgets, exact outer-edge parity, actual midpoint-box plan footprints, injected break-tests, Part counts, and a combined bird's-eye/side/cross-section render. |
+| `curved_superelevation_optimization_preview.py` | Regression harness for the build-0.1 per-component curved emitter and the retired wide-band candidate. Ports the density-independent roll profile and roll-aware station refinement, proves non-straight coalescing stays disabled at 990/882 reference Parts, bounds each Drive span to one component, checks exact source-edge parity, injects break-tests, and renders bird's-eye/side/cross-section comparisons. |
 | `structure_preview.py` | Rigid imported-module socket stepping, procedural viaduct elevation, single/twin pier and cap geometry, independent finish channels, and arched tunnel cross-section; check-only or one combined PNG. |
 | `ground_asset_preview.py` | Source-linked custom Ground asset contract: strict/recoverable socket validation, safe procedural-surface replacement ordering, shared rigid repeat-to-fit coverage, injected failures, and a combined plan/cross-section PNG. |
 | `parallel_preview.py` | Curved parallel-carriageway offset/refit, an opposed pair, and independent direction choices for larger groups. |
@@ -39,7 +39,7 @@ trap as an invariant nobody re-reads.
 | `hardware_reference_check.py` | Parses the five `hardware/*.rbxmx` references and verifies their deck/base, parapet/wall, and tunnel-crown cues. |
 | `junction_pad_preview.py`, `corner_preview.py` | Junction pad and curb-return shapes. Not yet wired into `validate.py`. |
 | `turbo_check.py`, `road_break_tests.py`, `structure_break_tests.py` | Break-tests: reintroduce a defect and confirm the relevant scan catches it. |
-| `roundabout_parity_contract.py` | Static plus geometry contract for per-offset arm-line clipping, mouth-boundary ownership, and non-coplanar Turbo overlay; includes five break-tests. |
+| `roundabout_parity_contract.py` | Static plus 3D ownership contract for arm markings, exact arm sidewalks, generated roadway footprints, ring-pavement subtraction, GoreApron/splitter geometry, Turbo overlays, and LHT/RHT one-way mouths; catches 21 injected regressions. |
 | `check_parity.py` | Constants shared with the Lua. Constants only. |
 | `dump_compare.py` | Diffs a live plugin dump against this port. |
 | `raster.py` | Stdlib-only PNG writer. |

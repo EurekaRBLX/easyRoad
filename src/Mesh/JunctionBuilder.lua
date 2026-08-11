@@ -294,29 +294,47 @@ local function isSmoothPassThrough(roads: { Model }, junctionId: string): boolea
 	if not junctionData then
 		return false
 	end
-	-- Matching tangents alone are not enough: a road placed with a lateral
-	-- snap reference can be parallel to the existing road while its centreline
-	-- endpoint sits on that road's edge. Treating that as a seamless through
-	-- road would suppress the junction pad and leave the offset endpoints
-	-- disconnected visually. A true pass-through has both centreline endpoints
-	-- at the node itself.
+	-- Matching tangents alone are not enough: a road placed with a lateral snap
+	-- reference can be parallel to the existing road while its centreline ends
+	-- somewhere else. Treating that as a seamless through road would suppress
+	-- the junction pad and leave the offset endpoints disconnected visually.
+	--
+	-- Test the DURABLE source endpoints against each other, not the currently
+	-- rendered endpoints against the node. All real intersection approaches are
+	-- trimmed to the pad before they are rendered, so after deleting a T's side
+	-- street the two surviving through pieces can never have visible endpoints
+	-- at the controller centre. RoadSplit partitions their source at the exact
+	-- same point, which is the topology fact needed to collapse the stale node.
+	local sourceEndpoints: { Vector3 } = {}
 	for _, road in roads do
 		local data = RoadInstance.Read(road)
 		if not data then
 			return false
 		end
+		local source = RoadSource.ReadSegment(road)
+		local sourceCurve = if source then PolyCurve.new({ source }) else data.Curve
 		local endpoint = if data.StartJunctionId == junctionId
-			then data.Curve:PosAt(0)
-			elseif data.EndJunctionId == junctionId then data.Curve:PosAt(data.Curve.Length)
+			then sourceCurve:PosAt(0)
+			elseif data.EndJunctionId == junctionId then sourceCurve:PosAt(sourceCurve.Length)
 			else nil
 		if not endpoint then
 			return false
 		end
-		local dx = endpoint.X - junctionData.Position.X
-		local dz = endpoint.Z - junctionData.Position.Z
-		if dx * dx + dz * dz > 0.25 * 0.25 then
-			return false
-		end
+		table.insert(sourceEndpoints, endpoint)
+	end
+	local dx = sourceEndpoints[1].X - sourceEndpoints[2].X
+	local dz = sourceEndpoints[1].Z - sourceEndpoints[2].Z
+	if dx * dx + dz * dz > 0.25 * 0.25 then
+		return false
+	end
+	-- Coincidence with each other does not prove ownership: malformed or
+	-- externally-authored roads can both be stamped to a remote controller.
+	-- Their shared durable endpoint must also be the controller's own datum.
+	local sourceMidpoint = (sourceEndpoints[1] + sourceEndpoints[2]) * 0.5
+	local centerDx = sourceMidpoint.X - junctionData.Position.X
+	local centerDz = sourceMidpoint.Z - junctionData.Position.Z
+	if centerDx * centerDx + centerDz * centerDz > 0.25 * 0.25 then
+		return false
 	end
 	local profileA = profileAtJunctionEnd(roads[1], junctionId)
 	local profileB = profileAtJunctionEnd(roads[2], junctionId)
@@ -449,9 +467,18 @@ end
 -- ends from one preserved source segment matters once a placed road crosses
 -- more than one existing road: trimming one end and then the other in two
 -- independent passes would otherwise restore the first end from the source.
-local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settings: Settings.EasyRoadSettings)
+local function trimApproach(
+	road: Model,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings,
+	forceSourceRestore: boolean?
+)
 	local data = RoadInstance.Read(road)
-	if not data or #data.Curve.Segments ~= 1 or (not data.StartJunctionId and not data.EndJunctionId) then
+	if
+		not data
+		or #data.Curve.Segments ~= 1
+		or (not forceSourceRestore and not data.StartJunctionId and not data.EndJunctionId)
+	then
 		return
 	end
 	local source = RoadSource.ReadSegment(road)
@@ -524,7 +551,7 @@ local function trimApproach(road: Model, style: RegionStyles.RegionStyle, settin
 			trimmed = true
 		end
 	end
-	if not trimmed or endStation - startStation < MIN_APPROACH_REMAINDER_STUDS then
+	if (not trimmed and not forceSourceRestore) or endStation - startStation < MIN_APPROACH_REMAINDER_STUDS then
 		return
 	end
 	local outerSegment = CurveSegment.Sub(source, startStation, endStation)
@@ -818,6 +845,57 @@ function JunctionBuilder.TrimApproaches(
 	for _, road in roads do
 		trimApproach(road, style, settings)
 	end
+end
+
+-- Reconciles an ordinary controller after one of its connected roads leaves
+-- the DataModel. A zero/one-approach node has no intersection left to own. A
+-- two-approach node is also redundant when the surviving source endpoints and
+-- tangents prove it is the original through road that RoadSplit partitioned.
+--
+-- Detaching first and force-restoring from RoadSource matters: simply deleting
+-- the controller removes the pad but leaves every survivor cut back to the old
+-- pad boundary. All mutations happen synchronously inside Studio's own Delete
+-- operation, so Undo/Redo sees the removed road, restored survivors, and
+-- controller as one coherent history transaction.
+function JunctionBuilder.CleanupAfterRoadRemoval(
+	junctionId: string,
+	style: RegionStyles.RegionStyle,
+	settings: Settings.EasyRoadSettings,
+	removedRoad: Model?
+): boolean
+	local junctionModel = JunctionInstance.FindById(junctionId)
+	local junctionData = if junctionModel then JunctionInstance.Read(junctionModel) else nil
+	if not junctionModel or not junctionData or junctionData.Kind == "Roundabout" then
+		return false
+	end
+
+	local roads: { Model } = {}
+	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
+		-- DescendantRemoving runs before Parent changes. Exclude by identity;
+		-- never clear the deleting road's topology or Undo may restore it detached.
+		if road ~= removedRoad then
+			table.insert(roads, road)
+		end
+	end
+	local shouldRemove = #roads <= 1 or isSmoothPassThrough(roads, junctionId)
+	if not shouldRemove then
+		JunctionBuilder.Rebuild(junctionId, style, settings, removedRoad)
+		return false
+	end
+
+	for _, road in roads do
+		local data = RoadInstance.Read(road)
+		if data then
+			RoadInstance.StampJunctions(
+				road,
+				if data.StartJunctionId == junctionId then nil else data.StartJunctionId,
+				if data.EndJunctionId == junctionId then nil else data.EndJunctionId
+			)
+			trimApproach(road, style, settings, true)
+		end
+	end
+	JunctionInstance.Delete(junctionModel)
+	return true
 end
 
 -- 2D cross product (XZ plane, ground plane) of (a - o) and (b - o) - the
@@ -1294,7 +1372,8 @@ end
 function JunctionBuilder.Rebuild(
 	junctionId: string,
 	style: RegionStyles.RegionStyle,
-	settings: Settings.EasyRoadSettings
+	settings: Settings.EasyRoadSettings,
+	excludedRoad: Model?
 )
 	local junctionModel = JunctionInstance.FindById(junctionId)
 	if not junctionModel then
@@ -1309,7 +1388,12 @@ function JunctionBuilder.Rebuild(
 		return
 	end
 
-	local roads = JunctionInstance.ConnectedRoads(junctionId)
+	local roads: { Model } = {}
+	for _, road in JunctionInstance.ConnectedRoads(junctionId) do
+		if road ~= excludedRoad then
+			table.insert(roads, road)
+		end
+	end
 	if #roads < 2 then
 		-- A single connected road (or none, if this was the last one
 		-- removed) doesn't need any junction geometry at all.

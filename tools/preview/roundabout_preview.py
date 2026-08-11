@@ -55,6 +55,7 @@ ARM_HANDLE = 0.30
 ENTRY_SPLIT_SCALE = 0.8
 GORE_SAMPLES = 18
 APRON_SAMPLES = 24
+APRON_ARC_STEP_RAD = math.radians(2)
 # Two separate questions about the gore - see RoundaboutBuilder. Does the
 # approach arrive with a median at all (measured at the cut), and on one that
 # does not, how wide must the gore open before the splitter becomes a raised
@@ -63,7 +64,6 @@ MEDIAN_AT_CUT_M = 0.5
 ISLAND_MIN_WIDTH_M = 2.0
 # Tapering nose the island grows back from there - see RoundaboutBuilder.
 ISLAND_NOSE_TAPER_M = 6.0
-NOSE_ARC_STEP_RAD = math.radians(2)
 ARM_SINK = 0.05
 ARM_RUN_FACTOR, ARM_RUN_MIN, ARM_RUN_MAX = 0.85, 28, 90
 
@@ -262,11 +262,12 @@ def emit_arm(curve, components, cut_pavements_m, cut_shoulders_m, cut_at_start,
     offs = offsets_m(components)
     cut_left_shoulder_m, cut_right_shoulder_m = cut_shoulders_m
     cut_left_pavement_m, cut_right_pavement_m = cut_pavements_m
-    needs_taper = (cut_left_shoulder_m + cut_right_shoulder_m > 1e-6) or any(
-        abs(components[i][1] - (cut_left_pavement_m
-                                if (offs[i][0] + offs[i][1]) / 2 < 0
-                                else cut_right_pavement_m)) > 1e-6
-        for i in sidewalk_indices)
+    # Raised pavement always follows the exact station grid. The live builder's
+    # ordinary curved strips are padded midpoint boxes; their overlap is hidden
+    # on a flat deck but becomes visible as steps and gaps on a raised curb.
+    needs_exact_surface = bool(sidewalk_indices) or (
+        cut_left_shoulder_m + cut_right_shoulder_m > 1e-6
+    )
     emitted = emit_road(curve, components, -ARM_SINK,
                         marking_bounds=marking_bounds)
     # Luau sinks only the arm surfaces. Markings have explicit ring ownership
@@ -285,40 +286,11 @@ def emit_arm(curve, components, cut_pavements_m, cut_shoulders_m, cut_at_start,
         )
     max_offset = sum(c[1] for c in components) / 2 * SCALE
     stations = build_stations(curve, MAX_SEGMENT_LENGTH, CHORD_TOLERANCE, max_offset)
-    if not needs_taper:
-        # Preserve the padded interior and ring-end overlap, but replace the
-        # raised strip at the approach cut with an exact quad. That cap cannot
-        # project diagonally over the adjoining carriageway.
-        if sidewalk_indices and len(stations) >= 3:
-            interval = 0 if cut_at_start else len(stations) - 2
-            s0, s1 = stations[interval], stations[interval + 1]
-            p0, r0, _ = curve.frame(s0)
-            p1, r1, _ = curve.frame(s1)
-            for index in sidewalk_indices:
-                # RoadBuilder emits no Part for a zero-width semantic
-                # component. Trying to replace its cap would therefore select
-                # the nearest *other* Sidewalk and delete real pavement.
-                if components[index][1] <= 1e-6:
-                    continue
-                edge = offs[index]
-                poly = [
-                    (p0[0] + r0[0] * edge[0] * SCALE,
-                     p0[1] + r0[1] * edge[0] * SCALE),
-                    (p0[0] + r0[0] * edge[1] * SCALE,
-                     p0[1] + r0[1] * edge[1] * SCALE),
-                    (p1[0] + r1[0] * edge[1] * SCALE,
-                     p1[1] + r1[1] * edge[1] * SCALE),
-                    (p1[0] + r1[0] * edge[0] * SCALE,
-                     p1[1] + r1[1] * edge[0] * SCALE),
-                ]
-                part_center = (sum(p[0] for p in poly) / 4,
-                               sum(p[1] for p in poly) / 4)
-                candidates = [p for p in emitted if p.name == "Sidewalk"]
-                victim = min(candidates,
-                             key=lambda p: math.dist(p.center, part_center))
-                emitted.remove(victim)
-                emitted.append(Part("Sidewalk", poly, SIDEWALK_C, part_center,
-                                    -ARM_SINK + 0.125 * SCALE))
+    # Keep RoadBuilder's midpoint rectangles for the flat arm core. Their
+    # curvature padding is part of the real deck footprint, so ring pavement
+    # ownership must follow these Parts. Only the raised sidewalks and terminal
+    # shoulder tapers below use exact shared-station quads.
+    if not needs_exact_surface:
         return emitted, {"left": [], "right": []}
 
     parts = [p for p in emitted if p.name != "Sidewalk"]
@@ -557,6 +529,23 @@ def _signed_area(poly):
                for a, b in zip(poly, poly[1:] + poly[:1])) / 2
 
 
+def _clean_polygon(poly, tolerance=1e-9):
+    """Remove zero-length edges before convex clipping.
+
+    Exact shoulder and disappearing-pavement tapers legitimately collapse one
+    end of a station quad to a point. Feeding that repeated vertex to the
+    half-plane difference makes the zero-length edge accept the whole subject
+    as both inside and outside, retaining a thin overlap fragment.
+    """
+    cleaned = []
+    for point in poly:
+        if not cleaned or math.dist(cleaned[-1], point) > tolerance:
+            cleaned.append(point)
+    if len(cleaned) > 1 and math.dist(cleaned[0], cleaned[-1]) <= tolerance:
+        cleaned.pop()
+    return cleaned
+
+
 def _convex_intersection(subject, clip, tolerance=1e-9):
     """Clip one convex plan-view footprint by another."""
     if len(subject) < 3 or len(clip) < 3:
@@ -668,9 +657,13 @@ def open_parts_by_footprints(parts, cutters, selected, area_tolerance=1e-7):
 
     cutter_data = []
     for cutter in cutters:
-        xs = [point[0] for point in cutter.poly]
-        ys = [point[1] for point in cutter.poly]
-        cutter_data.append((min(xs), max(xs), min(ys), max(ys), cutter.poly))
+        cutter_poly = _clean_polygon(cutter.poly)
+        if (len(cutter_poly) < 3
+                or abs(_signed_area(cutter_poly)) <= area_tolerance):
+            continue
+        xs = [point[0] for point in cutter_poly]
+        ys = [point[1] for point in cutter_poly]
+        cutter_data.append((min(xs), max(xs), min(ys), max(ys), cutter_poly))
 
     kept = []
     removed = clipped = 0
@@ -774,15 +767,16 @@ def open_angular_parts(parts, center, sectors, selected, clamp=True):
 def check_ring_openings(scene):
     """Raised pavement and edge paint own different mouth hand-offs."""
     faults = []
-    sidewalk_intrusions = ring_boundary_intrusions(
-        scene.get("outer_ring_sidewalk", []),
-        scene["center"],
-        scene.get("pavement_sectors", scene.get("sectors", [])),
-    )
-    if sidewalk_intrusions:
+    sidewalk_overlaps = []
+    for sidewalk in scene.get("outer_ring_sidewalk", []):
+        for surface in scene.get("mouth_surface_parts", []):
+            area = _overlap_area(sidewalk.poly, surface.poly)
+            if area > 1e-5:
+                sidewalk_overlaps.append((sidewalk, surface, area))
+    if sidewalk_overlaps:
         faults.append(
-            f"{len(sidewalk_intrusions)} sidewalk boundary vertices remain "
-            "inside pavement mouth ownership"
+            f"{len(sidewalk_overlaps)} ring sidewalk fragments overlap arm "
+            "or splitter surface ownership"
         )
     marking_intrusions = ring_boundary_intrusions(
         scene.get("outer_ring_markings", []),
@@ -1593,6 +1587,10 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
 
     pavement_sectors, solo_pavement_sectors, edge_marking_sectors = [], [], []
     arm_parts, gore_tris, apron_tris = [], [], []
+    # Physical mouth surfaces are the raised ring-pavement ownership mask.
+    # Generated core Parts retain their real padding; manual pavement/shoulder
+    # strips and splitter geometry contribute their exact polygons.
+    mouth_surface_parts = []
     exit_traces = []          # (curve, arm) per exit, for the turbo peel
     exit_markings = []        # per exit arm, that arm's OWN lane lines
     arm_marking_bounds = []   # exact per-offset ring ownership cuts
@@ -1678,6 +1676,9 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                                     edge_offsets[0], edge_offsets[1]),
                 edge_offsets, ring_kerb, center)
             entry_emitted = emitted
+            mouth_surface_parts.extend(
+                part for part in emitted if part.name != "Marking"
+            )
             for record in arm_marking_bounds[first_record:]:
                 record["parts"] = [p for p in emitted
                                    if p.marking_offset_m is not None
@@ -1701,6 +1702,9 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                                     edge_offsets[0], edge_offsets[1]),
                 edge_offsets, ring_kerb, center)
             exit_emitted = emitted
+            mouth_surface_parts.extend(
+                part for part in emitted if part.name != "Marking"
+            )
             for record in arm_marking_bounds[first_record:]:
                 record["parts"] = [p for p in emitted
                                    if p.marking_offset_m is not None
@@ -1844,21 +1848,27 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 gore_tris.append([L[j], R[j], R[j+1]])
                 gore_tris.append([L[j], R[j+1], L[j+1]])
             if L and R:
+                # Close the frontage with asphalt, not raised splitter
+                # pavement. The chords intentionally enter the circular ring,
+                # where they are carriageway ownership rather than sidewalk.
                 nose, tail = L[-1], R[-1]
-                nose_end = gore_edge(entry, kerb_crossing(entry, last_along, 1, entry_arm), entry_arm)
-                tail_end = gore_edge(exit_, kerb_crossing(exit_, exit_.length-last_along, -1, exit_arm), exit_arm)
+                nose_end = gore_edge(
+                    entry, kerb_crossing(entry, last_along, 1, entry_arm), entry_arm)
+                tail_end = gore_edge(
+                    exit_, kerb_crossing(exit_, exit_.length-last_along, -1, exit_arm), exit_arm)
                 a0 = math.atan2(nose_end[1], nose_end[0])
                 a1 = math.atan2(tail_end[1], tail_end[0])
                 sweep = angle_delta(a1, a0)
-                steps = max(1, math.ceil(abs(sweep)/NOSE_ARC_STEP_RAD))
+                steps = max(1, math.ceil(abs(sweep)/APRON_ARC_STEP_RAD))
                 apex = ((nose[0]+tail[0])/2, (nose[1]+tail[1])/2)
                 boundary = [nose, nose_end]
                 for k in range(1, steps):
                     ang2 = a0 + sweep*(k/steps)
-                    boundary.append((math.cos(ang2)*ring_kerb, math.sin(ang2)*ring_kerb))
+                    boundary.append((math.cos(ang2)*ring_kerb,
+                                     math.sin(ang2)*ring_kerb))
                 boundary += [tail_end, tail]
                 for k in range(len(boundary)-1):
-                    gore_tris.append([apex, boundary[k], boundary[k+1]])
+                    apron_tris.append([apex, boundary[k], boundary[k+1]])
 
         if not (entry and exit_):
             only = entry_arm or exit_arm
@@ -1957,26 +1967,25 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
         arm_parts += emit_road(stem, spoke_profile)
 
     pavement_cl = clamp_sectors(pavement_sectors)
+    mouth_surface_parts.extend(
+        Part("GoreApron", triangle, ASPHALT_C,
+             tuple(sum(point[axis] for point in triangle) / len(triangle)
+                   for axis in (0, 1)), -ARM_SINK)
+        for triangle in apron_tris
+    )
+    mouth_surface_parts.extend(
+        Part("Sidewalk", triangle, ISLAND_C,
+             tuple(sum(point[axis] for point in triangle) / len(triangle)
+                   for axis in (0, 1)), 0.125 * SCALE)
+        for triangle in gore_tris
+    )
     edge_raw = list(edge_marking_sectors)
     min_radius = ring_kerb - MARKING_W_M*1.5*SCALE - 0.5
-    kept, removed, clipped = open_angular_parts(
+    kept, removed, clipped = open_parts_by_footprints(
         ring_parts,
-        center,
-        pavement_cl,
+        mouth_surface_parts,
         lambda part: part in ring_sidewalk,
-        clamp=False,
     )
-    # A solo curved arm does not fill a whole polar sector at every radius.
-    # Remove raised ring pavement by the actual emitted roadway footprints so
-    # the complete drive span opens without creating bare crescents beside it.
-    for mouth in solo_mouths:
-        kept, solo_removed, solo_clipped = open_parts_by_footprints(
-            kept,
-            mouth.get("roadway_parts", []),
-            lambda part: part.name == "Sidewalk",
-        )
-        removed += solo_removed
-        clipped += solo_clipped
     kept, edge_removed, edge_clipped = open_angular_parts(
         kept,
         center,
@@ -2026,6 +2035,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 arm_kinds=arm_kinds,
                 arm_marking_bounds=arm_marking_bounds,
                 shoulder_tapers=shoulder_tapers,
+                mouth_surface_parts=mouth_surface_parts,
                 solo_mouths=solo_mouths,
                 outer_ring_parts=outer_ring_parts,
                 outer_ring_sidewalk=outer_ring_sidewalk,
@@ -2105,6 +2115,31 @@ def render(scene, outdir):
         for triangle in scene["gore"]:
             cv.fill_poly([close_tx(vertex) for vertex in triangle], ISLAND_C)
         name = f"{scene['tag']}_pavement_closeup.png"
+        cv.save(os.path.join(outdir, name))
+        written.append(name)
+    if scene["tag"].startswith("mouth_sidewalk_") and scene.get("legs"):
+        # Screenshot-equivalent crop of a paired mouth. This is deliberately
+        # tighter than the bird's-eye render: the old midpoint boxes looked
+        # acceptable from above but exposed their staggered corners in Studio.
+        cut = scene["legs"][0]["cut"]
+        radial = unit((cut[0] - center[0], cut[1] - center[1]))
+        focus = (
+            center[0] + radial[0] * scene["ring_kerb"],
+            center[1] + radial[1] * scene["ring_kerb"],
+        )
+        close_scale, close_size = 10.0, 760
+        close_tx = lambda point: (
+            (point[0] - focus[0]) * close_scale + close_size / 2,
+            (point[1] - focus[1]) * close_scale + close_size / 2,
+        )
+        cv = Canvas(close_size, close_size, (250, 250, 250))
+        for part in sorted(scene["parts"], key=lambda item: item.y):
+            cv.fill_poly([close_tx(vertex) for vertex in part.poly], part.color)
+        for triangle in scene["apron"]:
+            cv.fill_poly([close_tx(vertex) for vertex in triangle], ASPHALT_C)
+        for triangle in scene["gore"]:
+            cv.fill_poly([close_tx(vertex) for vertex in triangle], ISLAND_C)
+        name = f"{scene['tag']}_mouth_closeup.png"
         cv.save(os.path.join(outdir, name))
         written.append(name)
     return written
@@ -2439,6 +2474,41 @@ def circulating_width(scene, steps=360):
     return worst, worst_ang
 
 
+def splitter_ring_intrusions(scene, tolerance=0.05):
+    """Raised splitter triangles must remain outside the circular kerb.
+
+    Checking vertices is insufficient: the removed nose fan put every vertex
+    on/outside the circle while each straight chord bowed into live traffic.
+    Measure the closest point of every triangle edge to the ring centre and
+    reject any material more than a hairline inside the kerb.
+    """
+    center = scene["center"]
+
+    def radius(point):
+        return math.dist(point, center)
+
+    def edge_radius(a, b):
+        ax, ay = a[0] - center[0], a[1] - center[1]
+        vx, vy = b[0] - a[0], b[1] - a[1]
+        length2 = vx * vx + vy * vy
+        if length2 <= 1e-12:
+            return math.hypot(ax, ay)
+        alpha = max(0.0, min(1.0, -(ax * vx + ay * vy) / length2))
+        return math.hypot(ax + alpha * vx, ay + alpha * vy)
+
+    faults = []
+    for index, triangle in enumerate(scene.get("gore", []), 1):
+        minimum = min(
+            [radius(vertex) for vertex in triangle]
+            + [edge_radius(triangle[i], triangle[(i + 1) % len(triangle)])
+               for i in range(len(triangle))]
+        )
+        intrusion = scene["ring_kerb"] - minimum
+        if intrusion > tolerance:
+            faults.append({"triangle": index, "depth": intrusion})
+    return faults
+
+
 def cluster_gaps(holes, pitch, hairline):
     """Group bare-ground samples by angle and split real holes from hairlines.
 
@@ -2604,6 +2674,15 @@ def report(scene, holes, pitch, hairline):
                       f"{m['width']:.2f} studs")
     else:
         print("    MOUTH: no bare ground inside the mouth envelope")
+    splitter_faults = splitter_ring_intrusions(scene)
+    if splitter_faults:
+        ok = False
+        print(
+            f"    SPLITTER: {len(splitter_faults)} raised triangles enter the "
+            f"circulating carriageway, worst {max(item['depth'] for item in splitter_faults):.2f} studs"
+        )
+    else:
+        print("    splitter clearance: all raised triangles remain outside the ring kerb")
     for fault in check_arm_kinds(scene):
         ok = False
         print(f"    ARM: {fault}")
@@ -2838,6 +2917,21 @@ def CASE_TABLE(dol_default=True):
             (90, one_way_asymmetric(2, True, right_pav=SW_M)),
             (210, one_way_asymmetric(2, False, left_pav=SW_M)),
             (330, two_way(2, 2, False)),
+        ]),
+        # Focused paired-mouth regressions for exact arm pavement and splitter
+        # clearance. Mirrored traffic hands must retain identical physical
+        # sidewalk ownership even though entry/exit roles swap.
+        "mouth_sidewalk_lht": case(70, 2, True, [
+            (0, two_way(2, 2, True)),
+            (90, two_way(1, 1, True)),
+            (180, two_way(2, 2, True)),
+            (270, two_way(3, 1, True)),
+        ]),
+        "mouth_sidewalk_rht": case(70, 2, False, [
+            (0, two_way(2, 2, False)),
+            (90, two_way(1, 1, False)),
+            (180, two_way(2, 2, False)),
+            (270, two_way(1, 3, False)),
         ]),
     }
 

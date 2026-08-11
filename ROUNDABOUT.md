@@ -47,13 +47,14 @@ attributed — see `reference/roadcreator/README.md`).
 4. `buildIsland` → the centre island (see §3.6).
 5. Per approach: `planMouth` → `trimSpoke` → `splitApproachLanes` →
    `armProfileFor` → `buildArm` ×2 → `buildSplitterIsland`.
-6. `openRingPavement` → deletes the ring's own outer pavement inside each
-   mouth's angular sector, so the mouth opens instead of being walled off.
+6. `buildExactRingSidewalk` subtracts the physical arm, apron, and splitter
+   footprints from the ring's raised outer pavement before Parts are emitted.
+   Outer-edge paint keeps its separate angular handoff.
 
 Step 6 is the one that makes step 5 load-bearing: **the ring pavement is
-deleted on the assumption the arms and splitter island replace it.** Anything
-that shortens or skips the island leaves bare ground. That single coupling
-caused the worst defect of this session (§4.1).
+removed only where an emitted mouth surface replaces it.** Using a broad angular
+sector over-deleted curb-return concrete; clipping only by Part centres retained
+corners over the carriageway. Physical footprint ownership avoids both defects.
 
 ### 2.1 Persistent editor and topology
 
@@ -130,10 +131,12 @@ makes the pair wider than the road and steps the whole cross-section at the cut.
 with `atStart` (`inboundSign = if atStart then -1 else 1`). Halving breaks the
 moment a road is asymmetric: a 3/1 dual carriageway gets two 2-lane arms that
 line up with neither side, and a one-way road gets an entry *and* an exit where
-only one exists. One-way approaches get a single arm with pavements on both
-sides and no splitter island. Their outer pavement-band handoff is located by
-`bandExitAngle`: 96 samples find the first crossing bracket and 24 bisections
-put the sector edge on the real curve. This helper must remain above
+only one exists. One-way approaches get a single arm and no splitter island.
+Their left and right source pavement widths are tracked independently: a side
+that exists continues at the approach cut, while a traffic-inboard side tapers
+to zero before circulating asphalt. Their outer pavement-band handoff is
+located by `bandExitAngle`: 96 samples find the first crossing bracket and 24
+bisections put the sector edge on the real curve. This helper must remain above
 `buildMouth`; its earlier accidental omission made every solo one-way mouth
 throw at runtime.
 
@@ -597,51 +600,38 @@ The long thin V-notch down the middle of every approach. Three rounds of
 raised-or-nothing; the answer was a second fill. Design and thresholds in §3.7,
 measurements in §4.4.
 
-### 5.4 Clipping at mouth-sector boundaries — fixed headlessly, live recheck open
-A wedge of raised pavement jutting across the asphalt where an arm meets its
-approach. This was recorded as "detector built, does not reproduce" across 1+1,
-2+2, medians and a 3/1 approach. **That detector was scanning the wrong ground**
-— `scan_mouths` swept away from the ring down the plain approach road (§4.4), so
-it never looked anywhere the clipping could be.
+### 5.4 Physical footprint ownership at mouths - fixed headlessly, live recheck open
 
-Pointed at the mouth it fires immediately, 4 to 75 samples a case. **All of it
-is the splitter island**, which is raised material strictly inside the mouth's
-lateral span by definition — exactly what the overhang rule looks for. Excluding
-the island by identity (tagging the gore triangles, not inferring from position)
-leaves **zero** overhang across 24 cases: 16 radii from 10 to 70, plus 5-leg,
-3/1, medians, no-pavement, no-island and a 65° skew.
+The old opening logic tried to describe a curved mouth as an angular sector.
+That is not the same shape as a curved arm: broad sectors removed concrete
+beside the arm, while centre-only Part tests retained corners inside the
+circulating lane.
 
-So the overhang detector has never reproduced this, and the earlier "does not
-reproduce" was worth nothing either way.
+Raised ring pavement now starts from exact station quads and subtracts only
+surfaces that physically replace it:
 
-**A defect of exactly this class was then found by a different check**, and is
-fixed: the splitter island's nose fan laying a raised wedge across the
-circulating lanes (§3.7, §4.5). Whether it is the one reported is not settled —
-that wedge sits at the mouth by the ring, and the report described the arm's
-seam with its approach. Treat it as a lead, not a closure. What it does settle
-is why the overhang check could not find it: the check excludes the splitter
-island by identity, and the splitter island was the thing at fault.
+- generated Drive/Shoulder/Bike/Parking/Bay Part top footprints;
+- exact arm Sidewalk and terminal-shoulder triangles;
+- flat asphalt GoreApron triangles; and
+- raised splitter triangles.
 
-The controller-side end of the source road now opts into RoadBuilder's exact
-raised cap too. Its first/last Sidewalk or Median interval ends on the true
-station plane instead of projecting a padded box into the generated arm;
-interior intervals retain overlap. The older arm-local pavement-cap replacement
-remains for the other side of that seam.
+Every arm Sidewalk bypasses RoadBuilder's padded curved boxes and uses exact
+shared-station triangles. Degenerate zero-width taper ends are recorded as the
+same two non-degenerate triangles actually emitted, so cutter geometry cannot
+retain or delete an unrelated ring fragment.
 
-The visible ring-side defect was a sidewalk Part straddling the angular edge of
-a mouth: `openRingPavement` kept it because its centre was outside, even though
-its corner was inside.
+The splitter's last circular-frontage fan is now **flat GoreApron asphalt**.
+The former raised Sidewalk fan joined points on the kerb circle with chords,
+placing the two selected concrete triangles inside the circulating annulus.
+Raised splitter material now stops outside that frontage; the flat fan still
+closes the mouth without blocking traffic.
 
-The opening pass now measures the full Part footprint. A fully interior Part is
-deleted; a straddler is clipped by the radial boundary half-plane and its exact
-outside polygon is triangulated back into the ring. Surface and paint ownership
-are deliberately separate: pavement keeps a small conservative angular inset,
-while the outer ring edge line opens to the full merge angles and the matching
-arm edge line is preserved to the same tangent handoff. Arm surfaces are sunk;
-their markings remain on the normal paint plane. Whole-Part deletion was
-rejected because it opens multi-stud holes on three-leg rings. The Python port
-models and asserts the clipped boundary. Next step is the rebuilt Studio look;
-keep this open until the reported overlap is visibly gone.
+Surface and paint ownership remain deliberately separate. Raised pavement uses
+physical footprints; the outer ring edge line opens angularly to its tangent
+handoff, and matching arm paint reaches that boundary. The full 3D parity suite
+passes every case, including LHT/RHT asymmetric one-way mouths, `stress_us`,
+and Bay profiles, and catches all 21 injected ownership failures. Keep only the
+rebuilt Studio visual check open.
 
 ### 5.5 Smaller, known limits
 - **Multi-segment approach sources.** Connected editable conversion currently

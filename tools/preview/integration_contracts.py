@@ -231,14 +231,32 @@ def main():
         reject(consumer, "Superelevation.RollAt(", f"{label} still samples raw station-by-station banking", problems)
     require(
         road_builder,
-        '"RW_CurvedSurfaceCoalesced"',
-        "curved surface coalescing is not visible to diagnostics",
+        'model:SetAttribute("RW_CurvedSurfaceCoalesced", false)',
+        "curved surfaces can still enter the regressed lateral-coalescing path",
         problems,
     )
     require(
         road_builder,
-        '"RW_BankedSurfaceCoalesced"',
-        "banked surface coalescing is not visible to diagnostics",
+        'model:SetAttribute("RW_BankedSurfaceCoalesced", false)',
+        "banked surfaces can still enter the regressed lateral-coalescing path",
+        problems,
+    )
+    require(
+        road_builder,
+        "if optimizedStraight and options.DisableSurfaceCoalescing ~= true then",
+        "surface-band merging is not restricted to the exact-straight fast path",
+        problems,
+    )
+    require(
+        road_builder,
+        "local componentEnd = bandEndByStart[c] or c",
+        "non-straight emission no longer falls back to source components",
+        problems,
+    )
+    reject(
+        road_builder,
+        "compatibleBandEndByStart",
+        "retired curved/banked compatible-band planner is still present",
         problems,
     )
 
@@ -440,34 +458,33 @@ def main():
     reject(roundabout, "local outerBandRadius =", "solo pavement has regressed to a radial outer-band sector", problems)
     reject(roundabout, "sectorAtRadius(outerBandRadius)", "solo pavement is still deleted by an angular sector", problems)
     require(roundabout, "local edgeLineRadius = ringKerbRadius - style.MarkingWidthM * 1.5 * settings.MetersToStuds", "solo edge-paint opening is not measured at the actual outer edge-line centre", problems)
-    require(roundabout, "return nil, sectorAtRadius(edgeLineRadius), soloTrace, soloRoadwayCutters", "solo mouths do not return footprint-owned pavement plus edge-line paint", problems)
+    require(roundabout, "return nil, sectorAtRadius(edgeLineRadius), soloTrace, surfaceCutters", "solo mouths do not return footprint-owned pavement plus edge-line paint", problems)
     require(roundabout, "type ConvexFootprint = { Vector3 }", "roundabout arms cannot expose analytical roadway footprints", problems)
     require(roundabout, "local function subtractConvexFootprint(", "solo sidewalk ownership has no exact convex subtraction", problems)
     require(roundabout, "local buildExactRingSidewalk: any", "ring pavement has no deferred exact-emission path", problems)
     require(roundabout, "buildExactRingSidewalk = function(", "ring pavement exact-emission path is never defined", problems)
-    require(roundabout, "for _, sector in clampSectors(rawSectors) do", "paired mouth sectors are not fed into exact ring pavement", problems)
-    require(roundabout, "for _, cutter in roadwayCutters do", "solo roadway cutters are not fed into exact ring pavement", problems)
+    require(roundabout, "for _, cutter in roadwayCutters do", "mouth surface cutters are not fed into exact ring pavement", problems)
     require(roundabout, "local survivors = subtractConvexFootprint(fragment, cutter.Polygon)", "exact ring pavement does not subtract each mouth ownership polygon", problems)
     require(roundabout, 'part:SetAttribute("RW_ExactRoundaboutPavement", true)', "exact ring pavement parts are not source-identifiable", problems)
     require_count(roundabout, "ExcludeComponentIndices = ringSidewalkComponentIndices(profile)", 2, "RoadBuilder still emits padded ring sidewalk beneath the exact strip", problems)
     require(roundabout, "collectRoadwayFootprints: boolean", "buildArm cannot opt into solo roadway footprint capture", problems)
     require(roundabout, "local stations = RoadBuilder.StationsFor(options)", "solo roadway cutters do not share RoadBuilder's station grid", problems)
-    require(roundabout, "local roadwayPartNames: { [string]: boolean }", "solo roadway cutters have no complete generated-part kind filter", problems)
-    require(roundabout, "Bay = true", "solo roadway cutters omit generated Bay blocks", problems)
-    require(roundabout, "table.insert(roadwayFootprints, partTopPolygon(descendant))", "solo roadway cutters do not use the exact generated core block footprint", problems)
-    require(roundabout, "{ shoulderInner0, shoulderOuter0, shoulderOuter1, shoulderInner1 }", "solo roadway cutters omit the exact shoulder-taper quad", problems)
+    require(roundabout, "local roadwayPartNames: { [string]: boolean }", "generated core cutters have no physical-Part allow-list", problems)
+    require(roundabout, "table.insert(roadwayFootprints, partTopPolygon(descendant))", "generated core cutters do not match RoadBuilder Parts", problems)
+    require(roundabout, "{ shoulderInner0, shoulderOuter0, shoulderOuter1 }", "solo roadway cutters omit the exact shoulder-taper triangle", problems)
+    require(roundabout, "{ pavementInner0, pavementOuter0, pavementOuter1 }", "roundabout arm Sidewalk cutters omit their exact station triangle", problems)
     require(roundabout, "return model, roadwayFootprints", "buildArm drops the captured roadway footprints", problems)
     require(roundabout, "): (MouthSector?, MouthSector, ExitTrace?, { ConvexFootprint })", "buildMouth cannot distinguish footprint-owned solo pavement from paired sectors", problems)
-    require(roundabout, "local soloMouth = not (plan.Entry and plan.Exit)", "buildMouth does not restrict roadway cutters to solo arms", problems)
-    require(roundabout, "local collectSoloRoadway = soloMouth and ringSidewalkWidthM(style) > 1e-6", "buildMouth captures solo cutters when no ring sidewalk exists", problems)
-    require(roundabout, "if sector then", "solo nil pavement sectors cannot be excluded from paired mouth sectors", problems)
-    require(roundabout, "table.insert(mouthSectors, sector)", "paired pavement sectors are no longer preserved", problems)
+    require(roundabout, "local collectSurfaceFootprints = ringSidewalkWidthM(style) > 1e-6", "paired mouths are excluded from physical surface ownership", problems)
+    require(roundabout, "surfaceCutters: { ConvexFootprint }", "splitter/GoreApron surfaces cannot own the ring-pavement cut", problems)
+    require(roundabout, "table.insert(surfaceCutters, { a, b, c })", "splitter/GoreApron triangles are not captured as cutters", problems)
     require(roundabout, "return pavementSector,", "paired mouths no longer return their angular pavement sector", problems)
     require_count(roundabout, "buildExactRingSidewalk(", 2, "exact ring sidewalk is not emitted for both standalone and connected roundabouts", problems)
     exact_open = roundabout.rfind("\tbuildExactRingSidewalk(")
     mouth_build = roundabout.find("\t\t\tbuildMouth(ring, plan")
     if exact_open < 0 or mouth_build < 0 or exact_open < mouth_build:
         problems.append("exact ring pavement is emitted before mouth ownership is known")
+    require(roundabout, "\t\t{},\n\t\tsurfaceCutters\n\t)", "connected ring pavement still uses broad angular mouth sectors", problems)
     reject(roundabout, "openRingSidewalkByFootprints(ringSidewalk, soloRoadwayCutters)", "solo pavement regressed to post-build Part clipping", problems)
     reject(roundabout, "openRingPavement(ringSidewalk, center, mouthSectors, 0)", "paired pavement regressed to post-build Part clipping", problems)
     require(roundabout, "if driveCount == 1 and onlyDriveIndex then", "legacy one-lane roads are still split into two half-width lanes", problems)
@@ -482,7 +499,14 @@ def main():
     require(roundabout, "while expanded do", "contiguous undirected shoulder runs are not assigned to their lane group", problems)
     require(roundabout, "leftShoulderMarkerIndex", "terminal shoulder runs are not collapsed to one marking boundary", problems)
     require(roundabout, "rightShoulderMarkerIndex", "mirrored terminal shoulder runs are not collapsed to one marking boundary", problems)
-    require(roundabout, "local function replaceCutPavementCaps()", "roundabout approach seams still use padded pavement end caps", problems)
+    require(roundabout, "local needsExactSurface = arm.CutShoulderM > 1e-6", "roundabout arms have no exact raised-surface path", problems)
+    require(roundabout, "ExcludeComponentIndices = if #sidewalkIndices > 0 then sidewalkIndices else nil", "RoadBuilder can still emit padded midpoint Sidewalk boxes on roundabout arms", problems)
+    require(roundabout, "needsExactSurface = true", "constant-width roundabout arm Sidewalks can bypass exact station strips", problems)
+    require(roundabout, 'part:SetAttribute("RW_ExactRoundaboutArmSurface", true)', "exact roundabout arm surfaces are not source-identifiable", problems)
+    reject(roundabout, "local function replaceCutPavementCaps()", "roundabout arms regressed to replacing only one padded pavement cap", problems)
+    require(roundabout, "Close the last frontage as FLAT ASPHALT", "splitter frontage has no explicit asphalt ownership at the kerb", problems)
+    require(roundabout, "fillSurface(apex, boundary[k], boundary[k + 1], apronDepth, makeApronPart)", "splitter frontage does not close the mouth with flat asphalt", problems)
+    reject(roundabout, "FillTriangle(apex, boundary[k], boundary[k + 1], depth, DOWN, makeSidewalkPart, ring)", "splitter frontage still lays raised concrete chords across the circular kerb", problems)
     require(road_builder, "ExactStartRaisedCap: boolean?", "RoadBuilder cannot end raised start caps at an ownership plane", problems)
     require(road_builder, "ExactEndRaisedCap: boolean?", "RoadBuilder cannot end raised end caps at an ownership plane", problems)
     require(road_builder, "local exactRaisedCap = raised", "RoadBuilder exact-cap options are declared but not emitted", problems)
@@ -523,17 +547,23 @@ def main():
     require(roundabout_preview, "roadway_parts=[", "Python solo mouths do not retain their emitted roadway cutters", problems)
     require(roundabout_preview, "if is_roadway((part.name, 0.0))", "Python solo cutters do not use the shared roadway-kind rule", problems)
     require(preview_core, 'ROADWAY = {"Drive", "Bike", "Parking", "Shoulder", "Bay"}', "Python roadway-kind parity omits Bay or another RoadProfile roadway surface", problems)
-    require(roundabout_preview, 'mouth.get("roadway_parts", [])', "Python solo roadway cutters are never applied", problems)
-    require(roundabout_preview, 'lambda part: part.name == "Sidewalk"', "Python footprint subtraction is not restricted to raised ring sidewalk", problems)
+    require(roundabout_preview, "mouth_surface_parts", "Python paired and solo mouth surfaces do not share ring ownership", problems)
+    require(roundabout_preview, 'lambda part: part in ring_sidewalk', "Python footprint subtraction is not restricted to raised ring sidewalk", problems)
     require(roundabout_preview, "solo_pavement_sectors.append(pavement_sector)", "Python parity does not keep solo angular diagnostics separate from live paired sectors", problems)
     reject(roundabout_preview, "\n            pavement_sectors.append(pavement_sector)", "Python solo pavement has regressed to angular deletion", problems)
     require(roundabout_preview, "def check_solo_sidewalk_clearance(", "Python parity does not scan the complete solo roadway span", problems)
-    require(roundabout_preview, "if components[index][1] <= 1e-6:", "Python cap replacement can steal a real sidewalk for a zero-width component", problems)
+    require(roundabout_preview, "needs_exact_surface = bool(sidewalk_indices)", "Python parity can still model a constant arm Sidewalk as padded boxes", problems)
+    reject(roundabout_preview, "exact_core = []", "Python roundabout preview no longer models RoadBuilder's padded core Parts", problems)
+    require(roundabout_preview, "Keep RoadBuilder's midpoint rectangles", "Python padded-core ownership contract is undocumented", problems)
+    reject(roundabout_preview, "victim = min(candidates", "Python parity still models single-cap replacement instead of exact arm strips", problems)
     require(roundabout_preview, "part_center = (sum(p[0] for p in poly)", "Python arm emission mutates the immutable roundabout centre", problems)
     require(roundabout_preview, "def seam_step_faults(", "Python parity has no failing approach/arm seam invariant", problems)
     require(roundabout_preview, "if worst > SEAM_STEP_TOLERANCE:", "Python CLI still reports a stepped seam as success", problems)
     require(roundabout_preview, '"solo_pavement_identity"', "Python parity does not exercise the exact-width asymmetric pavement cap path", problems)
     require(roundabout_preview, "faults.extend(check_solo_sidewalk_clearance(scene))", "Python solo sidewalk-clearance check is unreachable", problems)
+    require(roundabout_preview, "def splitter_ring_intrusions(", "Python parity does not reject splitter chords inside the ring kerb", problems)
+    require(roundabout_preview, '"mouth_sidewalk_lht": case(', "Python parity has no focused LHT arm-sidewalk regression", problems)
+    require(roundabout_preview, '"mouth_sidewalk_rht": case(', "Python parity has no focused RHT arm-sidewalk regression", problems)
 
     require(session, "GetStructure: () -> RoadInstance.StructureData", "placement session has no structure API", problems)
     require(session, "RoadInstance.StampStructure(model, appliedStructure)", "placed roads do not persist structure mode", problems)

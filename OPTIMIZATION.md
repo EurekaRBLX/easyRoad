@@ -78,60 +78,39 @@ mismatches, source metadata, and produces the before/after render. Studio build
 time, GC, place-size, and live edit/reopen measurements remain required before
 closing the wider measurement program.
 
-## P0 — error-bounded curved and banked coalescing (phase 1 shipped)
+## P0 — curved and banked coalescing rollback (correctness gate)
 
 Curves cannot use the exact-straight 2048-stud shortcut: a rigid Part cannot
 follow a curved centreline, and a superelevation runoff is a twisting surface.
-The optimization target is therefore fewer proven-compatible Parts, not a
-visual guess that a shallow curve is straight.
+The first lateral-coalescing attempt violated the visual correctness gate: it
+widened each padded interval across several Drive components and exposed
+carriageway-wide transverse seams.
 
-The first curved/banked phase has these contracts:
+The rollback has these contracts:
 
 - `Superelevation.BuildProfile` owns the canonical arc-length roll profile and
-  `Superelevation.RollAtProfile` is the only interpolation path used by road
-  surfaces, markings, and other geometry that must share the road bank. Sample
-  density must not change the resulting smoothed roll curve.
-- `RoadBuilder.StationPlanFor` returns the **final** stations and rolls used by
-  emission, including any curvature and roll refinement. `RoadBuilder.Build`
-  and the public station-query compatibility path must consume this same plan;
-  callers must never receive the pre-runoff grid while the built road silently
-  inserts more stations.
-- On a constant-profile, non-transition curve, adjacent Drive components may
-  form one surface band when their material, colour, surface height, collision
-  policy, station range, and generated shape are compatible. Markings continue
-  to use the untouched component boundaries, and emitted metadata retains the
-  complete source-component range.
-- A banked interval may merge laterally only while an explicit twist-error test
-  keeps the candidate band's horizontal and vertical deviation within the
-  configured surface tolerance. If that proof fails, the existing per-component
-  triangle/wedge emitter is the authoritative fallback. Part-count pressure is
-  never permission to bridge a median, raised component, physical gap, or
-  differently styled surface.
-- Models record whether curved and banked surface coalescing actually occurred,
-  so benchmarks and Studio diagnostics can distinguish the optimized path from
-  its conservative fallback.
+  `Superelevation.RollAtProfile` remains the interpolation path shared by road
+  surfaces, markings, and structures. Sample density must not change the roll.
+- `RoadBuilder.StationPlanFor` returns the final stations and rolls consumed by
+  emission, including curvature and roll refinement.
+- Non-straight intervals never merge laterally. Curves use the build-0.1
+  per-component midpoint-box emitter, so one broad generated surface cannot
+  span several lanes. Raw component and marking arrays remain authoritative.
+- Width, lateral-offset, and bank changes still use exact shared-station wedges.
+  Exact straight ranges retain same-signature Drive merging and the 2048-stud
+  Part limit. Bay slices cannot opt into straight surface merging.
+- Models hard-report curved and banked surface coalescing as false. Part-count
+  pressure is never permission to bridge a median, raised component, physical
+  gap, or differently styled surface.
 
-This phase deliberately excludes `ProfileEnd` widening/narrowing transitions
-and `BuildWithBay`/bay slices. Their moving offsets, zero-width matched
-components, explicit cut ranges, and exact ownership caps need a separate error
-model. They continue through the current segmented emitter until dedicated
-coverage proves equivalent geometry.
-
-Before enabling the optimized path, extend the Python visualizer with banked
-curve plan, side, and cross-section cases. Report maximum plan/height deviation,
-gaps, overlaps, surface/marking Part counts, and fallback decisions for shallow
-curves, tight curves, S-curves, narrow/wide profiles, constant bank, and runoff.
-The preview must consume the same final station-plan rules rather than certifying
-an independently sampled approximation.
-
-Phase 1 now implements those contracts. The headless six-lane boulevard cases
-retain zero outer-edge displacement: a gentle curve falls from 990 to 550
-surface Parts (44.4% fewer), while a six-degree bank runoff falls from 882 to
-858 (2.7% fewer). The worst accepted bank-twist error is 0.0206 studs and the
-worst constant-roll box overhang is 0.0209 studs, both below their 0.025-stud
-limits; more aggressive intervals fall back to the per-component emitter.
-Studio build-time, serialized-size, and live render measurements remain open
-under **Measure first**.
+The Python visualizer consumes the same final station plan and asserts the
+rollback explicitly. The gentle six-lane curve returns to 990 surface Parts and
+the six-degree bank runoff returns to 882, exactly matching build 0.1.
+Non-straight coalescing is false and the maximum Drive surface span is one
+3.65 m component (13.034 studs at the fixture scale), rather than the retired
+three-lane 39.102-stud band. The bird's-eye comparison retains the canonical
+bank side and cross-section plots. Studio build-time, serialized-size, and live
+render measurements remain open under **Measure first**.
 
 ## P1 — incremental rebuilds
 

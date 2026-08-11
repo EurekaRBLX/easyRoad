@@ -263,6 +263,21 @@ return function(
 	local roundaboutEditSessionChangedCn = roundaboutEditSession.ChangeSignal:Connect(function()
 		updateUI()
 	end)
+	local roadsFolderRemoving = false
+	-- Destroying the final road-owned ring synchronously fires this same
+	-- DescendantRemoving listener while the departing road is still queryable.
+	-- Suppress only that nested owner event so it cannot restore/detach the road
+	-- that Studio is in the process of deleting (which would corrupt Undo).
+	local ringRemovalFromRoadCleanup: { [Instance]: boolean } = {}
+	local function connectedRoadsExcept(junctionId: string, removedRoad: Model): { Model }
+		local roads: { Model } = {}
+		for _, road in JunctionInstance.ConnectedRoads(junctionId) do
+			if road ~= removedRoad then
+				table.insert(roads, road)
+			end
+		end
+		return roads
+	end
 
 	-- Deleting a road (Studio's own Delete key, or anything else that
 	-- removes it from the Roads folder) doesn't go through RoadEditSession
@@ -270,9 +285,24 @@ return function(
 	-- otherwise keep a stale pad forever - fires just before the removal
 	-- actually happens, while the road's attributes are still readable, and
 	-- for either end it referenced: rebuilds that junction's pad against
-	-- whatever's left connected, or removes the junction outright if this
-	-- was its last road.
+	-- whatever's left connected, or restores and removes a now-orphaned node
+	-- (including the two source-continuous pieces left after deleting a T arm).
 	local roadRemovingCn = workspace.DescendantRemoving:Connect(function(instance)
+		local roadsFolder = workspace:FindFirstChild("Roads")
+		if instance == roadsFolder then
+			-- Bulk folder deletion is not N independent road edits. Avoid rewriting
+			-- topology while Roblox recursively dismantles the collection.
+			roadsFolderRemoving = true
+			task.defer(function()
+				roadsFolderRemoving = false
+			end)
+			return
+		elseif roadsFolderRemoving then
+			return
+		end
+		if ringRemovalFromRoadCleanup[instance] then
+			return
+		end
 		-- A direct Explorer delete of a connected ring becomes an ordinary
 		-- junction. In-place editor rebuilds destroy a temporary ring too, but in
 		-- that case the stable selected owner still exists for the same controller
@@ -350,16 +380,8 @@ return function(
 		end
 		local startId = instance:GetAttribute("RW_StartJunctionId")
 		local endId = instance:GetAttribute("RW_EndJunctionId")
-		-- DescendantRemoving fires while this Model is still queryable. Detach
-		-- its topology first, then rebuild synchronously inside Studio's Delete
-		-- history operation so Undo restores the road, controller and ring as one
-		-- coherent state rather than restoring only the road a frame later.
-		if typeof(startId) == "string" then
-			instance:SetAttribute("RW_StartJunctionId", nil)
-		end
-		if typeof(endId) == "string" then
-			instance:SetAttribute("RW_EndJunctionId", nil)
-		end
+		-- DescendantRemoving fires while this Model is still queryable. Do not
+		-- mutate its junction ids: exclusion by identity preserves Undo state.
 		local seen: { [string]: boolean } = {}
 		for _, value in { startId, endId } do
 			if typeof(value) ~= "string" or seen[value] then
@@ -372,18 +394,20 @@ return function(
 			if not junctionModel or not junctionData then
 				continue
 			end
-			local remaining = #JunctionInstance.ConnectedRoads(junctionId)
-			if remaining == 0 then
+			local remaining = #connectedRoadsExcept(junctionId, instance :: Model)
+			if junctionData.Kind == "Roundabout" and remaining == 0 then
 				local ring = RoundaboutInstance.FindByJunctionId(junctionId)
 				if ring then
+					ringRemovalFromRoadCleanup[ring] = true
 					ring:Destroy()
+					ringRemovalFromRoadCleanup[ring] = nil
 				end
 				JunctionInstance.Delete(junctionModel)
 			elseif junctionData.Kind == "Roundabout" then
 				local ring = RoundaboutInstance.FindByJunctionId(junctionId)
 				if ring then
 					local ok, rebuilt, message = pcall(function()
-						return RoundaboutBuilder.Rebuild(ring, getStyle(), settings)
+						return RoundaboutBuilder.Rebuild(ring, getStyle(), settings, instance :: Model)
 					end)
 					if not ok or not rebuilt then
 						warn(
@@ -393,7 +417,7 @@ return function(
 					end
 				end
 			else
-				JunctionBuilder.Rebuild(junctionId, getStyle(), settings)
+				JunctionBuilder.CleanupAfterRoadRemoval(junctionId, getStyle(), settings, instance :: Model)
 			end
 		end
 		task.defer(updateUI)

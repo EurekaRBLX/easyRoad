@@ -30,17 +30,44 @@ The source-linked contracts also protect the no-topology-mutation rule and
 cancel an active click chain before a live connection-mode change can reinterpret
 its captured snap targets.
 
+## Junction deletion lifecycle cleanup
+
+Deleting a road now immediately re-evaluates every controller it was connected
+to. Empty and one-arm ordinary junctions are removed; a source-continuous
+two-road through route is restored from its durable untrimmed curves and its
+obsolete pad/controller is removed. Genuine corners and multi-arm junctions are
+rebuilt from the surviving approaches.
+
+Deletion filtering is identity-based while Studio's `DescendantRemoving` event
+still exposes the departing Model. The road's topology attributes are not
+cleared, so Undo can restore the original connection. Roundabout rebuilds use
+the same exclusion rule, and bulk Roads-folder removal is guarded from
+rewriting topology during recursive deletion.
+
+`junction_lifecycle_contract.py` covers orphan, T-collapse, source-continuous
+through, offset/corner preservation, remote coincident endpoints, roundabout
+arm deletion, and the Undo-safe listener wiring.
+
 ## Exact roundabout pavement and asymmetric one-way arms
 
-The circulating pavement is now emitted from exact station quads, with mouth
-roadway footprints subtracted before Roblox Parts are created. This removes the
-padded-box outer-ring overshoot and the raised sidewalk fragments that used to
-sit inside circulating lanes. One-way approaches retain independent left and
-right source pavement widths; only a side that actually exists is generated,
-and the traffic-inboard side tapers to zero at the ring kerb.
+The circulating pavement and every arm sidewalk now use exact shared-station
+quads. Raised ring pavement is clipped only by physical mouth ownership:
+generated arm-core Part footprints, exact shoulder/sidewalk quads, flat
+GoreApron triangles, and raised splitter triangles. This removes the old
+padded-box outer-ring overshoot without cutting broad angular holes beside a
+curved arm.
 
-LHT and RHT bird's-eye/gap/close-up fixtures report no mouth or ring holes and
-a worst approach-to-arm pavement step of 0.10 studs.
+The splitter's final circular frontage is flat asphalt GoreApron rather than a
+raised concrete fan. The two concrete triangles that could chord inside the
+ring and cover circulating asphalt therefore no longer exist. One-way
+approaches retain independent left and right source pavement widths; only a
+side present in the source is continued at the approach cut, and the
+traffic-inboard side tapers to zero at the ring kerb.
+
+Full 3D parity is green for every configured case and catches all 21 injected
+ownership/clipping regressions. Focused four-leg LHT and RHT
+bird's-eye/gap/close-up fixtures report no mouth or ring holes, zero splitter
+intrusion, and a worst approach-to-arm pavement step of 0.10 studs.
 
 ## Literal custom Ground road assets
 
@@ -136,15 +163,19 @@ asset and its metadata/usage count, chooses a non-conflicting Workspace name,
 selects the new Model, and records the operation as one Studio Undo step. The
 action remains visible but disabled until an asset is selected.
 
-## Error-bounded curved and superelevated surface optimization
+## Curved and superelevated surface rollback
 
-Curved roads now coalesce adjacent compatible Drive surfaces without touching
-the original cross-section or its marking boundaries. Flat and constant-bank
-intervals greedily merge only while their midpoint boxes stay inside a
-0.025-stud plan-overhang budget; changing-bank intervals apply a separate
-0.025-stud twist-error budget. Both fall back to the existing per-lane emitter
-when a wider band cannot be proven safe. Profile widening/narrowing and bus-bay
-slices remain on the conservative coalescing path.
+Curved and banked lateral surface coalescing has been rolled back after it made
+padded curve intervals span several Drive components and exposed broad
+transverse seams. Every non-straight interval is again emitted per source
+component, matching build 0.1. Same-signature Drive merging remains available
+only on an exact straight, constant-profile range, where long rectangular Parts
+are geometrically valid and still obey Roblox's 2048-stud axis limit.
+
+Changing width, lateral offset, or bank continues through exact shared-station
+wedges. Raw profiles, component indices, marking boundaries, collision, editing,
+and rebuild metadata are unchanged, and Models explicitly report curved/banked
+surface coalescing as disabled.
 
 `Superelevation.BuildProfile` now owns one deterministic, arc-length-weighted
 roll curve independent of preview/final mesh density. `RoadBuilder.StationPlanFor`
@@ -154,12 +185,13 @@ be skipped. Procedural viaducts and tunnels interpolate that same profile and
 refine rigid shell ranges to a structural seating-error budget; marking roll
 lookup is now logarithmic instead of scanning every station for each span.
 
-The new Python 3D contract renders bird's-eye, outside-edge side, and five
-cross-section views. Its six-lane cases measure 44.4% fewer surface Parts on a
-gentle curve and 2.7% fewer through a six-degree runoff, with zero outer-edge
-displacement, 0.0206 studs maximum bank twist, and 0.0209 studs maximum curved
-box overhang. Live Studio appearance and build-time measurements remain the
-final verification step.
+The Python 3D contract renders the retired wide-band candidate beside the
+per-component rollback, plus the outside-edge banking profile and five
+cross-sections. It verifies exactly 990 Parts for the gentle six-lane curve and
+882 through the six-degree runoff, no non-straight merged bands, a maximum Drive
+surface span of 13.034 studs instead of 39.102, and unchanged source edges.
+Live Studio appearance and build-time measurements remain the final verification
+step.
 
 ## Roundabout approach compatibility, lane advice, seam ownership, and Turbo width parity
 
@@ -252,27 +284,14 @@ Widening/narrowing roads remain endpoint-only snap targets because their
 mid-span split is intentionally unsupported; the two endpoint references use
 their exact ProfileStart/ProfileEnd widths.
 
-## Exact roundabout mouth-sector clipping
+## Superseded roundabout mouth-sector clipping
 
-The live Studio comparison confirmed why the Python render looked cleaner even
-after the marking-plan port: `openRingPavement` decided whether to remove each
-ring sidewalk or outer edge-line Part from its **centre point only**. A Part
-whose centre sat just outside the mouth still had a long tangential corner
-inside it, leaving the concrete wedges and white slashes visible in the report.
-
-The live builder now measures every candidate Part's full top-face angular
-footprint. Parts wholly inside the mouth are removed; boundary straddlers are
-clipped against the exact radial sector ray and their outside polygon is rebuilt
-with exact triangles. Keeping that fragment matters: deleting the whole
-straddler removed the visual intrusion but opened 6-7 stud holes in the sparse
-three-leg UK case.
-
-The Python preview uses the same polygon clip and now fails if any retained ring
-sidewalk/edge-line vertex lies strictly inside a mouth sector. The standard full
-validator and the extended small-radius, five-leg, stress, turbo, and highway
-matrix report zero boundary intrusion and flush seams. The one documented
-`stress_us` arm tear is unchanged and remains the sole known-open failure.
-
+The first live parity repair replaced centre-point deletion with exact radial
+sector clipping. It removed retained corners but still treated a curved mouth
+as an angular wedge, which could over-delete ring pavement and did not own every
+arm sidewalk/splitter surface. The physical-footprint implementation documented
+at the top of this file supersedes that pass: full parity, including
+`stress_us`, is now green and all 21 injected defects are caught.
 ## Preview-matched roundabout markings and exact approach caps
 
 Generated roundabout rings and arms now use the accepted Python preview as
