@@ -26,6 +26,12 @@ persists per-component-kind Roblox material and colour overrides on each
 reusable road type. Overrides affect generated surfaces; imported custom Ground
 Models keep their authored appearance. See `SHIPPED.md`.
 
+The shipped source is also protected by the native-Windows validation stack:
+the exact shoulder-taper ownership definition is shared by the roadway/deck
+collectors without sharing mutable polygon tables, and its deletion is an
+explicit mutation-test failure. GitHub Actions is not expected to run for this
+repository; use the Windows validator as the release gate.
+
 Future finish work, if requested, is custom MaterialVariant/image-asset
 support with continuous UV mapping across generated Wedge Parts. Do not model
 that as independent Texture instances on every adaptive strip: tiling would

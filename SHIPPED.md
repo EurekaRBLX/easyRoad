@@ -36,6 +36,13 @@ internal planning only. See `TODO.md` for planned new features and
   and MaterialVariants remain future work because generated Wedge surfaces need
   continuous top-face UV ownership rather than a restarted Texture on every
   adaptive strip.
+- The native-Windows release gate caught a mutation-contract blind spot where
+  the roadway and deck copies of one shoulder-taper triangle could mask each
+  other. Both ownership paths now derive from one exact footprint definition
+  while retaining independent polygon tables. The final `validate.py` run
+  passed every road/roundabout fixture and every injected break-test in 752 s;
+  all source/loader modules Luau-compile, and both tracked plugin variants
+  rebuild deterministically.
 
 ## Flexible road connections and node-adjacent splitting
 

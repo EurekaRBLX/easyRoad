@@ -55,14 +55,18 @@ roads have no unambiguous profile owner. Imported custom Ground road assets
 replace the generated surfaces and keep their authored material and colour.
 Custom image textures/MaterialVariants remain future UV-mapping work.
 
-The feature branch's focused gates were green before this forward-port:
-touched-source StyLua verify/check, the UI detector, integration contracts,
-roundabout constant parity, road mutation break-tests, and straight
-optimization. That does not validate the combined tree. Before release, rerun
-the touched-source checks and full GitHub Actions suite, then regenerate both
-dist variants from the resolved source. No active Studio instance was available,
-so live Wedge rendering, collision, z-fighting, and grazing-angle mouth checks
-remain open after installing that rebuilt artifact.
+The merged build is green on the native-Windows release stack. All 71
+source/loader modules Luau-compile; touched-source StyLua, the UI detector,
+integration/optimization checks, every road and roundabout fixture, and every
+mutation/parity test pass. The final `tools/preview/validate.py` run took 752 s.
+It caught one source-contract blind spot before release: duplicate literal
+shoulder-taper polygons let a deleted roadway cutter hide behind the deck copy.
+Both paths now derive from one exact definition but retain independent polygon
+tables, and the mutation is caught. Commercial and OSS `.rbxmx` files were
+regenerated from that final source. GitHub Actions is not a release gate for
+this repository because the owner's account does not have Actions enabled.
+No active Studio instance was available, so live Wedge rendering, collision,
+z-fighting, and grazing-angle mouth checks remain open after local installation.
 
 ## Previous: lane marking dropdown + portable plugin-data backup
 

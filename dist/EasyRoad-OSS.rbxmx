@@ -10252,16 +10252,20 @@ local function buildArm(
 					surfacePoints(s1)
 				local down = -curve:FrameAt((s0 + s1) / 2).UpVector
 				if math.max(shoulderWidth0, shoulderWidth1) * scale &gt;= 0.02 then
+					local shoulderFootprint0: ConvexFootprint = { shoulderInner0, shoulderOuter0, shoulderOuter1 }
+					local shoulderFootprint1: ConvexFootprint = { shoulderInner0, shoulderOuter1, shoulderInner1 }
 					if collectRoadwayFootprints then
 						-- These surfaces are FillTriangle wedges, so their BasePart
 						-- bounding boxes are not their plan-view footprint. The source
 						-- quad is exact and convex on RoadBuilder's adaptive station grid.
-						table.insert(roadwayFootprints, { shoulderInner0, shoulderOuter0, shoulderOuter1 })
-						table.insert(roadwayFootprints, { shoulderInner0, shoulderOuter1, shoulderInner1 })
+						table.insert(roadwayFootprints, shoulderFootprint0)
+						table.insert(roadwayFootprints, shoulderFootprint1)
 					end
 					if collectDeckFootprints then
-						table.insert(deckFootprints, { shoulderInner0, shoulderOuter0, shoulderOuter1 })
-						table.insert(deckFootprints, { shoulderInner0, shoulderOuter1, shoulderInner1 })
+						-- Keep the two ownership collections independent: clipping either
+						-- caller's polygons must not mutate the other caller's mask.
+						table.insert(deckFootprints, table.clone(shoulderFootprint0))
+						table.insert(deckFootprints, table.clone(shoulderFootprint1))
 					end
 					FillTriangle(
 						shoulderInner0,
