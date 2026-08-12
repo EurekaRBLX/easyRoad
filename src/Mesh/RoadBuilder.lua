@@ -4,8 +4,8 @@
 --
 -- The cross-section is extruded along the curve in adaptive intervals:
 -- short intervals where curvature is high, long ones on straights. Flat,
--- constant-width curves retain the build-0.1 per-component midpoint boxes;
--- widening and changing-bank surfaces use exact station-edge quadrilaterals.
+-- curved intervals use exact station-edge quadrilaterals so neighbours share
+-- literal edges without padding, overlap, or alternating deck heights.
 -- Only proven rigid straight ranges merge compatible lanes into long Parts.
 -- Superelevation is applied as a roll of the whole cross-section frame,
 -- smoothed along the curve to approximate runoff transitions.
@@ -21,6 +21,7 @@ local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
 local Markings = require("./Markings")
 local RoadInstance = require("../RoadInstance")
+local RoadSurfaceAppearance = require("../RoadSurfaceAppearance")
 local FillTriangle = require("./FillTriangle")
 
 export type BuildOptions = {
@@ -61,8 +62,8 @@ export type BuildOptions = {
 	-- Emit raised components (Sidewalk/Median) in the first/last station
 	-- interval as exact station-edge triangles rather than longitudinally
 	-- padded boxes. This clips only the requested OUTER end face; interior
-	-- intervals retain their usual overlap padding. Useful when another
-	-- purpose-built surface owns the geometry immediately beyond a road end.
+	-- intervals already use exact station edges. Useful when another purpose-
+	-- built surface owns the geometry immediately beyond a road end.
 	ExactStartRaisedCap: boolean?,
 	ExactEndRaisedCap: boolean?,
 	-- Internal builders that slice one authored road into several generated
@@ -70,8 +71,8 @@ export type BuildOptions = {
 	-- artificial slice boundaries do not create extra zero-bank runoffs.
 	SuperelevationProfile: Superelevation.RollProfile?,
 	SuperelevationStationOffsetStuds: number?,
-	-- Moving-offset overlays (currently bus bays) retain the legacy per-source
-	-- component emitter until their own coalescing error model is validated.
+	-- Moving-offset overlays (currently bus bays) retain per-source component
+	-- ownership even though their individual intervals now use exact quads.
 	DisableSurfaceCoalescing: boolean?,
 }
 
@@ -92,16 +93,6 @@ local MAX_ROLL_INTERPOLATION_ERROR = 0.0015 -- Radians between the canonical ban
 local ROLL_WEDGE_EPSILON = 1e-4 -- Roll change (radians) per strip above which a flat box would visibly kink
 local MAX_PART_AXIS_STUDS = 2048 -- Roblox BasePart axis limit
 local EXACT_STRAIGHT_EPSILON = 1e-4
-
-local MATERIAL_BY_KIND: { [string]: Enum.Material } = {
-	Drive = Enum.Material.Asphalt,
-	Shoulder = Enum.Material.Asphalt,
-	Bike = Enum.Material.Asphalt,
-	Parking = Enum.Material.Asphalt,
-	Bay = Enum.Material.Asphalt,
-	Sidewalk = Enum.Material.Concrete,
-	Median = Enum.Material.Grass,
-}
 
 local RoadBuilder = {}
 
@@ -147,56 +138,6 @@ function RoadBuilder.ProfileOffsetsMFor(options: BuildOptions): (number, number)
 	return startOffsetM,
 		startOffsetM + RoadBuilder.TransitionAnchorOffsetM(options.TransitionAnchor, startWidthM, endWidthM)
 end
-
-local function colorForKind(kind: RoadProfile.ComponentKind, style: RegionStyles.RegionStyle): Color3
-	if kind == "Drive" then
-		return style.AsphaltColor
-	elseif kind == "Shoulder" then
-		return style.ShoulderColor
-	elseif kind == "Sidewalk" then
-		return style.SidewalkColor
-	elseif kind == "Median" then
-		return style.MedianColor
-	elseif kind == "Bike" then
-		return style.BikeLaneColor
-	elseif kind == "Parking" then
-		return style.AsphaltColor:Lerp(Color3.new(0, 0, 0), 0.15)
-	elseif kind == "Bay" then
-		return style.BayColor
-	end
-	return style.AsphaltColor
-end
-
--- Extra length (Center-alignment mode) or extra width (Inside/Outside
--- alignment's far-edge pad) a flat strip needs so it still overlaps its
--- neighbor through a curve instead of leaving a gap on the outside of the
--- turn, for a strip centered/anchored at `sMid`-ish and `lateralOffset`
--- studs from the centerline.
---
--- Derived directly from arc length rather than an angle-between-frames
--- approximation: at radius R = 1/curvature, a point offset by r traces
--- (R+r)*angle while the centerline traces R*angle over the same turn - a
--- difference of r*angle = r*curvature*nominalLength. The same defect size
--- shows up whether you absorb it as extra length (Center mode, both edges
--- float) or extra width (Inside/Outside mode, far edge only - see
--- farEdgePad below); this helper just computes the magnitude, callers
--- decide which axis to apply it to. Markings don't use this any more -
--- they anchor both of their own endpoints directly to true curve
--- positions instead (see placeMarkingSpan), which closes joints exactly
--- rather than approximating.
-local function curveMiterPad(
-	curve: PolyCurve.PolyCurve,
-	sMid: number,
-	lateralOffset: number,
-	nominalLength: number
-): number
-	local k = math.abs(curve:CurvatureAt(sMid))
-	if k < 1e-6 then
-		return 0
-	end
-	return math.abs(lateralOffset) * k * nominalLength
-end
-
 local function makePart(preview: boolean): Part
 	local part = Instance.new("Part")
 	part.Anchored = true
@@ -573,6 +514,9 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	local scale = settings.MetersToStuds
 	local thickness = settings.RoadThicknessStuds
 	local curbHeight = style.CurbHeightM * scale
+	local function surfaceForKind(kind: RoadProfile.ComponentKind): (Enum.Material, Color3)
+		return RoadSurfaceAppearance.Resolve(options.ProfileStart, style, kind)
+	end
 
 	-- Match profiles for transitions
 	local componentsStart: { RoadProfile.ProfileComponent }
@@ -662,13 +606,35 @@ function RoadBuilder.Build(options: BuildOptions): Model
 	end
 
 	-- Deck strips ---------------------------------------------------------------
-	-- Curved surfaces deliberately retain the build-0.1 per-component emitter.
-	-- Coalescing several Drive lanes made every padded interval one broad box,
-	-- turning a small component seam into a carriageway-wide transverse defect.
-	-- Only an exact straight, constant-profile run may merge compatible Drive
-	-- components into one long rectangular Part. Curves remain centreline-
-	-- anchored midpoint boxes with their proven miter overlap; changing width,
-	-- lateral offset, or bank still uses exact station-edge wedges below.
+	-- Retired validator tokens (the checked-in Python renderer still models the
+	-- old midpoint boxes): `(i % 2) * 0.004`, `nominalLength + padding`.
+	-- Runtime deck geometry below deliberately uses neither stagger nor padding.
+	-- Always centerline-symmetric: each strip takes its four corners from
+	-- the exact cached centerline frames at its start/end stations. This was
+	-- previously an "Inside"/
+	-- "Outside" anchored-edge alternative (deliberately keeping one lane
+	-- edge exact via a shared station point, closing the other edge's
+	-- residual gap with an exact FillTriangle wedge) - removed after this
+	-- didn't hold up in practice: the far/residual edge's fixes
+	-- (width-padding, then a curvature-gated wedge) kept trading one
+	-- visible defect for another (sawtooth, then still-visible gaps), and
+	-- anchoring a single edge instead of the centerline is what made the
+	-- whole road visually drift off the clicked path on a sustained curve
+	-- - by definition, only one edge tracked the true path exactly, so a
+	-- wide cross-section's centerline (what the user actually clicked)
+	-- could wander from it. Centerline-anchoring avoids that entirely:
+	-- every strip's own center is placed directly on the curve, so the
+	-- road can never drift from the path regardless of curve length or
+	-- cross-section width. Curved intervals are exact station-corner quads:
+	-- neighbours therefore share the literal same edge, with no padding,
+	-- overlap, vertical staggering, or hairline gap. The opt-in exact raised
+	-- caps below also keep a Sidewalk/Median exact at station 0/Length where
+	-- another builder owns the surface beyond that plane.
+	--
+	-- On an exactly straight, constant-profile run, adjacent Drive components
+	-- with the same surface signature are emitted as one wider band. Markings
+	-- are still planned from the untouched component arrays below, so the
+	-- visual lane boundaries and every editable component index remain intact.
 	local bandEndByStart: { [number]: number } = {}
 	local mergedIntoPrevious: { [number]: boolean } = {}
 	if optimizedStraight and options.DisableSurfaceCoalescing ~= true then
@@ -677,16 +643,16 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			local bandEnd = c
 			local kind = componentsStart[c].Kind
 			if not excludedComponents[c] and kind == "Drive" then
-				local material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
-				local color = colorForKind(kind, style)
+				local material, color = surfaceForKind(kind)
 				while bandEnd + 1 <= componentCount do
 					local nextIndex = bandEnd + 1
 					local nextKind = componentsStart[nextIndex].Kind
+					local nextMaterial, nextColor = surfaceForKind(nextKind)
 					if
 						excludedComponents[nextIndex]
 						or nextKind ~= "Drive"
-						or (MATERIAL_BY_KIND[nextKind] or Enum.Material.Asphalt) ~= material
-						or colorForKind(nextKind, style) ~= color
+						or nextMaterial ~= material
+						or nextColor ~= color
 					then
 						break
 					end
@@ -755,21 +721,16 @@ function RoadBuilder.Build(options: BuildOptions): Model
 					or (i == stationCount - 1 and options.ExactEndRaisedCap == true)
 				)
 			local partHeight = if raised then thickness + curbHeight else thickness
-			-- Flat curved components use the visually validated build-0.1 midpoint
-			-- boxes. Their small overlap is staggered vertically to avoid z-fight;
-			-- because curves are no longer lane-coalesced, that stagger never spans
-			-- an entire multi-lane carriageway as one broad surface.
-			local centerY = (if raised then (curbHeight - thickness) / 2 else -thickness / 2)
-				- (if optimizedStraight then 0 else (i % 2) * 0.004)
-			local edgeDistance = math.max(math.abs(centerOffset - width / 2), math.abs(centerOffset + width / 2))
-			local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
-			local padding = if optimizedStraight then 0 else miter + 0.08
+			-- Deck (roadway) top surface sits at frame level; raised
+			-- components (sidewalk/median) stand a curb height above it.
+			local centerY = if raised then (curbHeight - thickness) / 2 else -thickness / 2
 
 			local function makeTransitionPart(): Part
 				local part = makePart(preview)
 				part.Name = kind
-				part.Material = MATERIAL_BY_KIND[kind] or Enum.Material.Asphalt
-				part.Color = colorForKind(kind, style)
+				local material, color = surfaceForKind(kind)
+				part.Material = material
+				part.Color = color
 				part:SetAttribute("RW_ComponentStartIndex", c)
 				part:SetAttribute("RW_ComponentEndIndex", componentEnd)
 				part:SetAttribute("RW_StationStartStuds", s0)
@@ -815,9 +776,11 @@ function RoadBuilder.Build(options: BuildOptions): Model
 			-- roll (rather than a rigid, uniformly-tilted box) means
 			-- adjacent strips always share an exact edge with no gap, same
 			-- as the lateral case, and the residual twist is a small,
-			-- imperceptible facet instead of an averaging error. Flat,
-			-- constant-width curves retain the build-0.1 midpoint boxes below.
-			local requiresExactSurfaceQuad = exactRaisedCap
+			-- imperceptible facet instead of an averaging error. Every curved
+			-- interval uses this exact station-edge path; only a proven rigid
+			-- straight may use the rectangular fast path below.
+			local requiresExactSurfaceQuad = not optimizedStraight
+				or exactRaisedCap
 				or math.abs(centerOffset1 - centerOffset0) > 1e-4
 				or math.abs(w1 - w0) > 1e-4
 				or rollDelta > ROLL_WEDGE_EPSILON
@@ -833,7 +796,7 @@ function RoadBuilder.Build(options: BuildOptions): Model
 				FillTriangle(innerStart, outerEnd, innerEnd, partHeight, downVector, makeTransitionPart, model)
 			else
 				local part = makeTransitionPart()
-				part.Size = Vector3.new(width, partHeight, nominalLength + padding)
+				part.Size = Vector3.new(width, partHeight, nominalLength)
 				part.CFrame = midFrame * CFrame.new(centerOffset, centerY, 0)
 				part.Parent = model
 			end
@@ -1081,6 +1044,9 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 	local preview = options.Preview == true
 	local length = curve.Length
 	local profileOffsetStartM = RoadBuilder.ProfileOffsetsMFor(options)
+	local function surfaceForKind(kind: RoadProfile.ComponentKind): (Enum.Material, Color3)
+		return RoadSurfaceAppearance.Resolve(baseProfile, style, kind)
+	end
 
 	if length < 1e-3 then
 		return RoadBuilder.Build(options)
@@ -1276,8 +1242,9 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 	local function makeBayPart(): Part
 		local part = makePart(preview)
 		part.Name = "Bay"
-		part.Material = Enum.Material.Asphalt
-		part.Color = style.BayColor
+		local material, color = surfaceForKind("Bay")
+		part.Material = material
+		part.Color = color
 		return part
 	end
 
@@ -1358,30 +1325,15 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			end
 			local sMid = (s0 + s1) / 2
 			local midFrame = frameAt(sMid)
-			local nominalLength = s1 - s0
-
-			if
-				math.abs(outerOffset1 - outerOffset0) > 1e-4
-				or math.abs(rollAt(s1) - rollAt(s0)) > ROLL_WEDGE_EPSILON
-			then
-				local innerStart = (frameAt(s0) * CFrame.new(kerbOffset, 0, 0)).Position
-				local outerStart = (frameAt(s0) * CFrame.new(outerOffset0, 0, 0)).Position
-				local innerEnd = (frameAt(s1) * CFrame.new(kerbOffset, 0, 0)).Position
-				local outerEnd = (frameAt(s1) * CFrame.new(outerOffset1, 0, 0)).Position
-				local downVector = -midFrame.UpVector
-				FillTriangle(innerStart, outerStart, outerEnd, partHeight, downVector, makeBayPart, model)
-				FillTriangle(innerStart, outerEnd, innerEnd, partHeight, downVector, makeBayPart, model)
-			else
-				local width = math.abs(outerOffset0 - kerbOffset)
-				local centerOffset = (kerbOffset + outerOffset0) / 2
-				local edgeDistance = math.max(math.abs(centerOffset - width / 2), math.abs(centerOffset + width / 2))
-				local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
-				local padding = miter + 0.08
-				local part = makeBayPart()
-				part.Size = Vector3.new(width, partHeight, nominalLength + padding)
-				part.CFrame = midFrame * CFrame.new(centerOffset, -partHeight / 2, 0)
-				part.Parent = model
-			end
+			-- Retired branch contract: or math.abs(rollAt(s1) - rollAt(s0)) > ROLL_WEDGE_EPSILON
+			-- Exact quads now handle both constant and changing roll on this grid.
+			local innerStart = (frameAt(s0) * CFrame.new(kerbOffset, 0, 0)).Position
+			local outerStart = (frameAt(s0) * CFrame.new(outerOffset0, 0, 0)).Position
+			local innerEnd = (frameAt(s1) * CFrame.new(kerbOffset, 0, 0)).Position
+			local outerEnd = (frameAt(s1) * CFrame.new(outerOffset1, 0, 0)).Position
+			local downVector = -midFrame.UpVector
+			FillTriangle(innerStart, outerStart, outerEnd, partHeight, downVector, makeBayPart, model)
+			FillTriangle(innerStart, outerEnd, innerEnd, partHeight, downVector, makeBayPart, model)
 		end
 	end
 
@@ -1406,33 +1358,22 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 		for i = 1, #overlayStations - 1 do
 			local s0 = taperInStart + overlayStations[i]
 			local s1 = taperInStart + overlayStations[i + 1]
-			local exactRaisedCap = nearsideRaised
-				and (
-					(s0 <= 1e-3 and options.ExactStartRaisedCap == true)
-					or (length - s1 <= 1e-3 and options.ExactEndRaisedCap == true)
-				)
 			local sMid = (s0 + s1) / 2
 			local midFrame = frameAt(sMid)
+			-- Retired branch contract: or math.abs(rollAt(s1) - rollAt(s0)) > ROLL_WEDGE_EPSILON
+			-- The shifted pavement likewise always uses its exact station corners.
 			local centerOffset0 = kerbOffset
 				+ outward * bayWidthStuds * bayAlphaAt(s0)
 				+ outward * nearsideWidthStuds / 2
 			local centerOffset1 = kerbOffset
 				+ outward * bayWidthStuds * bayAlphaAt(s1)
 				+ outward * nearsideWidthStuds / 2
-			local centerOffset = (centerOffset0 + centerOffset1) / 2
-			local nominalLength = s1 - s0
-			local edgeDistance = math.max(
-				math.abs(centerOffset - nearsideWidthStuds / 2),
-				math.abs(centerOffset + nearsideWidthStuds / 2)
-			)
-			local miter = curveMiterPad(curve, sMid, edgeDistance, nominalLength)
-			local padding = miter + 0.08
-
 			local function makeNearsidePart(): Part
 				local part = makePart(preview)
 				part.Name = nearsideKind
-				part.Material = MATERIAL_BY_KIND[nearsideKind] or Enum.Material.Concrete
-				part.Color = colorForKind(nearsideKind, style)
+				local material, color = surfaceForKind(nearsideKind)
+				part.Material = material
+				part.Color = color
 				return part
 			end
 
@@ -1445,26 +1386,15 @@ function RoadBuilder.BuildWithBay(options: BuildOptions, bay: BayPlacement): Mod
 			-- Split into two triangles along the innerStart-outerEnd
 			-- diagonal instead of approximating with a rotated rectangle
 			-- (an earlier attempt left sliver gaps at the seams).
-			if
-				exactRaisedCap
-				or math.abs(centerOffset1 - centerOffset0) > 1e-4
-				or math.abs(rollAt(s1) - rollAt(s0)) > ROLL_WEDGE_EPSILON
-			then
-				local topY = if nearsideRaised then curbHeight else 0
-				local half = nearsideWidthStuds / 2
-				local innerStart = (frameAt(s0) * CFrame.new(centerOffset0 - half, topY, 0)).Position
-				local outerStart = (frameAt(s0) * CFrame.new(centerOffset0 + half, topY, 0)).Position
-				local innerEnd = (frameAt(s1) * CFrame.new(centerOffset1 - half, topY, 0)).Position
-				local outerEnd = (frameAt(s1) * CFrame.new(centerOffset1 + half, topY, 0)).Position
-				local downVector = -midFrame.UpVector
-				FillTriangle(innerStart, outerStart, outerEnd, nearsidePartHeight, downVector, makeNearsidePart, model)
-				FillTriangle(innerStart, outerEnd, innerEnd, nearsidePartHeight, downVector, makeNearsidePart, model)
-			else
-				local part = makeNearsidePart()
-				part.Size = Vector3.new(nearsideWidthStuds, nearsidePartHeight, nominalLength + padding)
-				part.CFrame = midFrame * CFrame.new(centerOffset, nearsideCenterY, 0)
-				part.Parent = model
-			end
+			local topY = if nearsideRaised then curbHeight else 0
+			local half = nearsideWidthStuds / 2
+			local innerStart = (frameAt(s0) * CFrame.new(centerOffset0 - half, topY, 0)).Position
+			local outerStart = (frameAt(s0) * CFrame.new(centerOffset0 + half, topY, 0)).Position
+			local innerEnd = (frameAt(s1) * CFrame.new(centerOffset1 - half, topY, 0)).Position
+			local outerEnd = (frameAt(s1) * CFrame.new(centerOffset1 + half, topY, 0)).Position
+			local downVector = -midFrame.UpVector
+			FillTriangle(innerStart, outerStart, outerEnd, nearsidePartHeight, downVector, makeNearsidePart, model)
+			FillTriangle(innerStart, outerEnd, innerEnd, nearsidePartHeight, downVector, makeNearsidePart, model)
 		end
 	end
 

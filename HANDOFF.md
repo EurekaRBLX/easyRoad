@@ -24,7 +24,47 @@ history, and `KNOWN_ISSUES.md` confirmed bugs.
 - Log every round in `SHIPPED.md` (newest at top) and update `TODO.md`.
 - Push with `git push -u origin main`, retry up to 4× with backoff.
 
-## Latest: lane marking dropdown + portable plugin-data backup
+## Latest: build 1.2.0 — exact curve joins, level roundabouts, and road finishes
+
+`RoadBuilder` now emits every non-straight surface interval as two exact
+station-corner triangles. Neighbouring intervals share their cached station
+edge, replacing both `curveMiterPad + 0.08` overlap and the alternating
+0.004-stud deck drop. `RoadBuilder.StationPlanFor` remains the canonical
+roll-refined preview/final station plan, so widening anchors and persisted
+profile offsets are preserved. Exact straight coalescing is unchanged. Bay
+asphalt and its shifted pavement follow the same geometry rule.
+
+Connected roundabout arms no longer use `ARM_SINK_STUDS` at runtime. The ring,
+arms, approach cut, markings, and splitter apron now use one surface datum.
+Each arm returns exact roadway footprints; those are subtracted from the ring
+roadway before publication so only one coplanar owner remains. `FillTriangle`
+stores its true triangle, depth, and extrusion direction as internal Part
+attributes, and the roundabout clipper consumes those instead of a Wedge's
+rectangular Size/CFrame bounds. The constant remains as dead preview-parity
+history until the run-only Python port can be updated in a tools-authorized
+round.
+
+`RoadProfile.SurfaceOverrides` persists optional Material/Color fields by
+component kind. `RoadSurfaceAppearance` resolves those over region defaults,
+and `RoadSurfaceMaterials` is the curated JSON-safe whitelist. The Road
+Editor's scrolling properties card exposes surface kind, material, colour,
+per-colour reset, and full region-default reset. Ordinary roads, bays,
+thumbnails, placed-road edits, and source-owned roundabout arms inherit it;
+shared junction/ring surfaces remain region-owned because multiple connected
+roads have no unambiguous profile owner. Imported custom Ground road assets
+replace the generated surfaces and keep their authored material and colour.
+Custom image textures/MaterialVariants remain future UV-mapping work.
+
+The feature branch's focused gates were green before this forward-port:
+touched-source StyLua verify/check, the UI detector, integration contracts,
+roundabout constant parity, road mutation break-tests, and straight
+optimization. That does not validate the combined tree. Before release, rerun
+the touched-source checks and full GitHub Actions suite, then regenerate both
+dist variants from the resolved source. No active Studio instance was available,
+so live Wedge rendering, collision, z-fighting, and grazing-angle mouth checks
+remain open after installing that rebuilt artifact.
+
+## Previous: lane marking dropdown + portable plugin-data backup
 
 The Road Editor's marking dropdown had two coupled layout failures: its Grow
 frame still claimed a 100%-wide flex basis after the label, and its list opened
@@ -33,7 +73,8 @@ now uses a zero-width grow basis, supports `OpenUp`, and bounds its options in a
 vertical scrolling frame. The lane marking control opts into `OpenUp`; normal
 settings dropdowns keep expanding downward in flow.
 
-Regional Preference now contains **Back up data** and **Restore data**.
+The dedicated **Settings > Backups** dock contains **Back up data** and
+**Restore data**, separate from Regional Preference.
 `Settings.Export` emits the versioned `easyRoad-data` JSON envelope;
 `Settings.Import` validates and sanitizes it. Restore reconstructs both custom
 libraries, drops invalid entries through the existing deserializers, preserves
@@ -152,22 +193,19 @@ instead of chording. Regression test: `tools/preview/junction_pad_preview.py`,
 The mouth indentation, radius inflation, island/ring gaps, and splitter
 regressions are fixed headlessly. Generated rings and arms now use the Python
 preview's dedicated white edge/divider marking plan rather than ordinary-road
-defaults. Constant-width arm pavement keeps its ring overlap but replaces the
-raised approach-cut cap with exact station-edge triangles; tapering arms retain
-their full exact surface chain. A later Studio check found the remaining wedges
-and extra strokes at the ring opening itself: centre-only sector removal kept
-boundary-straddling sidewalk/outer-line corners. Those Parts are now clipped at
-the exact sector ray, retaining the outside fragment so sparse rings do not gain
-holes. The Python port models and rejects boundary intrusion. Reinstall the
-rebuilt dist and compare a UK 2-lane ring side-by-side before closing live visual
-parity.
+defaults. Arm sidewalks use exact station quads, and raised ring pavement is
+subtracted only by the actual arm, apron, and splitter footprints. The hybrid
+GoreApron/kerb-disc frontage closes the mouth while preserving the approach
+median kerb.
 
-The next live comparison found the remaining Luau-only lines were sunk arm
-markings protruding through ring ownership, not a different marking grammar.
-Arm lines now stop at a per-offset kerb crossing, and Turbo's peel has a small
-deterministic layer gap above the retained concentric divider. Run
-`tools/preview/roundabout_parity_contract.py`: it covers entry/exit bounds,
-mouth fragments, Turbo layer ownership, both traffic hands, and five break-tests.
+Arms, markings, the approach cut, splitter apron, and circulating ring now
+share one surface datum. Every exact arm roadway footprint is subtracted from
+the ring roadway before publication, so only one coplanar owner remains. Arm
+lines stop at their per-offset kerb crossing, and Turbo's peel keeps its small
+deterministic layer gap above the retained concentric divider. The full 3D
+parity suite covers both traffic hands, asymmetric one-way mouths, `stress_us`,
+and Bay profiles and catches all 25 injected ownership failures. Rebuild the
+dist and compare every mouth in Studio before closing live visual parity.
 
 Roundabouts are now selectable and editable after creation. A connected ring
 retains a `Kind = Roundabout` Junction controller; its road ends keep that
@@ -182,9 +220,10 @@ sources cannot be recovered safely; recreate them once to opt into the editor.
 Run `tools/preview/roundabout_editor_preview.py --check`, or pass `--out` for
 before/after bird's-eye PNGs generated through the existing roundabout pipeline.
 
-### Nothing has been confirmed in Studio
-Every result in these docs is headless. The user's screenshots are the
-authority, and they have repeatedly shown defects the tooling passed.
+### Latest geometry still needs rebuilt Studio confirmation
+The latest exact-quad and shared-datum results are headless. The user's
+screenshots are the authority, and they have repeatedly shown defects the
+tooling passed.
 
 ### Structures - placement/management workflow built, unconfirmed live
 `STRUCTURES.md` is the contract. The top-level Road Assets surface imports and

@@ -17,6 +17,35 @@
 -- already know exactly which way is down (the curve's own frame at that
 -- point) - so that heuristic is replaced with a direct `downVector`
 -- argument instead of guessed.
+local TOP_VERTEX_COUNT_ATTRIBUTE = "RW_FillTriangleTopVertexCount"
+local TOP_VERTEX_ATTRIBUTES = {
+	"RW_FillTriangleTopVertex1",
+	"RW_FillTriangleTopVertex2",
+	"RW_FillTriangleTopVertex3",
+}
+local DEPTH_ATTRIBUTE = "RW_FillTriangleDepthStuds"
+local DOWN_VECTOR_ATTRIBUTE = "RW_FillTriangleDownVector"
+
+-- A Wedge Part's Size/CFrame describe its bounding box, not the triangular
+-- source surface passed to this helper. Keep that exact world-space surface and
+-- extrusion contract on every generated wedge so later ownership/clipping
+-- passes can reason about the geometry without reconstructing it approximately.
+local function stampSourceGeometry(
+	part: Part,
+	v1: Vector3,
+	v2: Vector3,
+	v3: Vector3,
+	depth: number,
+	downVector: Vector3
+)
+	part:SetAttribute(TOP_VERTEX_COUNT_ATTRIBUTE, 3)
+	part:SetAttribute(TOP_VERTEX_ATTRIBUTES[1], v1)
+	part:SetAttribute(TOP_VERTEX_ATTRIBUTES[2], v2)
+	part:SetAttribute(TOP_VERTEX_ATTRIBUTES[3], v3)
+	part:SetAttribute(DEPTH_ATTRIBUTE, depth)
+	part:SetAttribute(DOWN_VECTOR_ATTRIBUTE, downVector)
+end
+
 local function fillTriangle(
 	a: Vector3,
 	b: Vector3,
@@ -91,12 +120,16 @@ local function fillTriangle(
 	-- We always know which way is down here (unlike the original tool's
 	-- ambiguous general case) - extrude the depth that way.
 	local flip = if normal:Dot(downVector) > 0 then 1 else -1
+	local split = a + ab.Unit * len1
 
 	if len1 > 0.001 then
 		local part1 = makePart()
 		part1.Shape = Enum.PartType.Wedge
 		part1.Size = Vector3.new(depth, width, len1)
-		part1.CFrame = maincf * CFrame.Angles(math.pi, 0, math.pi / 2) * CFrame.new(flip * (-depth / 2), width / 2, len1 / 2)
+		part1.CFrame = maincf
+			* CFrame.Angles(math.pi, 0, math.pi / 2)
+			* CFrame.new(flip * (-depth / 2), width / 2, len1 / 2)
+		stampSourceGeometry(part1, a, split, c, depth, downVector)
 		part1.Parent = parent
 	end
 	if len2 > 0.001 then
@@ -106,6 +139,7 @@ local function fillTriangle(
 		part2.CFrame = maincf
 			* CFrame.Angles(math.pi, math.pi, -math.pi / 2)
 			* CFrame.new(flip * (depth / 2), width / 2, -len1 - len2 / 2)
+		stampSourceGeometry(part2, split, b, c, depth, downVector)
 		part2.Parent = parent
 	end
 end

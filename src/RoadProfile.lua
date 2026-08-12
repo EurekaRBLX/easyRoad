@@ -11,6 +11,7 @@
 -- roads can be persisted in plugin settings.
 
 local RegionStyles = require("./RegionStyles")
+local RoadSurfaceMaterials = require("./RoadSurfaceMaterials")
 
 export type ComponentKind = "Drive" | "Sidewalk" | "Median" | "Shoulder" | "Bike" | "Parking" | "Bay"
 
@@ -24,6 +25,11 @@ export type ProfileComponent = {
 	WidthM: number,
 	Direction: number, -- +1 forward, -1 backward, 0 = not directional
 	RightBoundary: BoundaryRule?, -- nil = Auto
+}
+
+export type SurfaceOverride = {
+	Material: RoadSurfaceMaterials.MaterialName?,
+	Color: Color3?,
 }
 
 export type RoadProfile = {
@@ -45,6 +51,9 @@ export type RoadProfile = {
 	-- Kerb line lateral offset: nil/true = inset (default), false = flush
 	-- against the plain edge-line position.
 	KerbIndent: boolean?,
+	-- Optional reusable finish overrides. Missing kinds/fields inherit the
+	-- active region and built-in material defaults.
+	SurfaceOverrides: { [ComponentKind]: SurfaceOverride }?,
 }
 
 local ComponentKinds: { ComponentKind } = {
@@ -69,6 +78,11 @@ local BoundaryRules: { BoundaryRule } = {
 	"SolidDash" :: BoundaryRule,
 	"DashSolid" :: BoundaryRule,
 }
+
+local COMPONENT_KIND_SET: { [string]: boolean } = {}
+for _, kind in ComponentKinds do
+	COMPONENT_KIND_SET[kind] = true
+end
 
 local RoadProfile = {}
 
@@ -174,6 +188,18 @@ function RoadProfile.Clone(profile: RoadProfile): RoadProfile
 			RightBoundary = component.RightBoundary,
 		})
 	end
+	local surfaceOverrides: { [ComponentKind]: SurfaceOverride }? = nil
+	if profile.SurfaceOverrides then
+		surfaceOverrides = {}
+		for kind, override in profile.SurfaceOverrides do
+			if COMPONENT_KIND_SET[kind] then
+				(surfaceOverrides :: { [ComponentKind]: SurfaceOverride })[kind] = {
+					Material = RoadSurfaceMaterials.Sanitize(override.Material),
+					Color = if typeof(override.Color) == "Color3" then override.Color else nil,
+				}
+			end
+		end
+	end
 	return {
 		Id = profile.Id,
 		Name = profile.Name,
@@ -185,6 +211,7 @@ function RoadProfile.Clone(profile: RoadProfile): RoadProfile
 		MarkingDashLengthM = profile.MarkingDashLengthM,
 		MarkingDashGapM = profile.MarkingDashGapM,
 		KerbIndent = profile.KerbIndent,
+		SurfaceOverrides = surfaceOverrides,
 	}
 end
 
@@ -253,6 +280,30 @@ end
 -- Serialization (component tables are already plain data, but go through an
 -- explicit whitelist so bad data can never end up in plugin settings)
 
+local function serializeColor(color: Color3): { [string]: number }
+	return {
+		R = math.round(color.R * 255),
+		G = math.round(color.G * 255),
+		B = math.round(color.B * 255),
+	}
+end
+
+local function deserializeColor(raw: any): Color3?
+	if
+		typeof(raw) ~= "table"
+		or typeof(raw.R) ~= "number"
+		or typeof(raw.G) ~= "number"
+		or typeof(raw.B) ~= "number"
+	then
+		return nil
+	end
+	return Color3.fromRGB(
+		math.round(math.clamp(raw.R, 0, 255)),
+		math.round(math.clamp(raw.G, 0, 255)),
+		math.round(math.clamp(raw.B, 0, 255))
+	)
+end
+
 function RoadProfile.Serialize(profile: RoadProfile): { [string]: any }
 	local components = {}
 	for _, component in profile.Components do
@@ -262,6 +313,20 @@ function RoadProfile.Serialize(profile: RoadProfile): { [string]: any }
 			Direction = component.Direction,
 			RightBoundary = component.RightBoundary,
 		})
+	end
+	local surfaceOverrides: { [string]: any }? = nil
+	if profile.SurfaceOverrides then
+		surfaceOverrides = {}
+		for kind, override in profile.SurfaceOverrides do
+			local material = if COMPONENT_KIND_SET[kind] then RoadSurfaceMaterials.Sanitize(override.Material) else nil
+			local color = if typeof(override.Color) == "Color3" then override.Color else nil
+			if COMPONENT_KIND_SET[kind] and (material or color) then
+				(surfaceOverrides :: { [string]: any })[kind] = {
+					Material = material,
+					Color = if color then serializeColor(color) else nil,
+				}
+			end
+		end
 	end
 	return {
 		Id = profile.Id,
@@ -273,6 +338,7 @@ function RoadProfile.Serialize(profile: RoadProfile): { [string]: any }
 		MarkingDashLengthM = profile.MarkingDashLengthM,
 		MarkingDashGapM = profile.MarkingDashGapM,
 		KerbIndent = profile.KerbIndent,
+		SurfaceOverrides = surfaceOverrides,
 	}
 end
 
@@ -299,6 +365,28 @@ function RoadProfile.Deserialize(raw: { [string]: any }): RoadProfile?
 			RightBoundary = rightBoundary,
 		})
 	end
+	local surfaceOverrides: { [ComponentKind]: SurfaceOverride }? = nil
+	if typeof(raw.SurfaceOverrides) == "table" then
+		for rawKind, rawOverride in raw.SurfaceOverrides :: { [any]: any } do
+			if
+				typeof(rawKind) == "string"
+				and table.find(ComponentKinds, rawKind)
+				and typeof(rawOverride) == "table"
+			then
+				local material = RoadSurfaceMaterials.Sanitize(rawOverride.Material)
+				local color = deserializeColor(rawOverride.Color)
+				if material or color then
+					if not surfaceOverrides then
+						surfaceOverrides = {}
+					end
+					(surfaceOverrides :: { [ComponentKind]: SurfaceOverride })[rawKind :: ComponentKind] = {
+						Material = material,
+						Color = color,
+					}
+				end
+			end
+		end
+	end
 	return {
 		Id = raw.Id,
 		Name = if typeof(raw.Name) == "string" then raw.Name else raw.Id,
@@ -310,6 +398,7 @@ function RoadProfile.Deserialize(raw: { [string]: any }): RoadProfile?
 		MarkingDashLengthM = if typeof(raw.MarkingDashLengthM) == "number" then raw.MarkingDashLengthM else nil,
 		MarkingDashGapM = if typeof(raw.MarkingDashGapM) == "number" then raw.MarkingDashGapM else nil,
 		KerbIndent = if typeof(raw.KerbIndent) == "boolean" then raw.KerbIndent else nil,
+		SurfaceOverrides = surfaceOverrides,
 	}
 end
 

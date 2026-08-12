@@ -10,7 +10,7 @@ local ProductLicense = {}
 ProductLicense.Mode = "Commercial" :: Mode
 
 ProductLicense.EulaVersion = "1.0"
-ProductLicense.Build = "1.1.1"
+ProductLicense.Build = "1.2.0"
 ProductLicense.OssLicenseName = "AGPL-3.0"
 
 ProductLicense.WebBase = "https://v2.eurekarblx.com"
@@ -31,7 +31,7 @@ function ProductLicense.IsOss(): boolean
 	return ProductLicense.Mode == "OSS"
 end
 
-ProductLicense.EulaTitle = "easyRoad End User License Agreement (\"EULA\")"
+ProductLicense.EulaTitle = 'easyRoad End User License Agreement ("EULA")'
 ProductLicense.EulaBody = [[Version 1.0 · Effective 2026
 
 This End User License Agreement ("EULA") is between Eureka ("Eureka", "we", "us") and You.

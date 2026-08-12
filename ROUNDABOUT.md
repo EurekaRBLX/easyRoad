@@ -236,9 +236,13 @@ The apron and the island want opposite roundings of that one crossing: the apron
 stops one probe PAST it (stopping at it left a 0.25-stud hairline of bare ground
 just outside the kerb, because the rung is a chord and the kerb is an arc, and
 overlapping the ring deck with flat asphalt costs nothing), the island must
-start one probe BEFORE it. Apron rungs are also sunk by `ARM_SINK_STUDS`: the
-arms' Parts are dropped after building but their curves are not, so an apron
-laid on the curve would sit proud of the carriageway it is continuous with.
+start one probe BEFORE it.
+
+Arms and apron now share the approach/ring surface datum. Every arm exposes its
+exact generated roadway footprints, and those footprints are subtracted from
+the ring deck before publish, so vertical sinking is no longer needed to
+choose a coplanar owner. `ARM_SINK_STUDS` remains only as a dead constant for
+the run-only Python parity scanner until its port can be updated.
 
 ### 3.8 Turbo replaces a concentric-divider arc with an exit peel
 Turbo starts from the same constant-width annulus and concentric Drive/Drive
@@ -571,9 +575,9 @@ line plan being correct. They were fragments of the ring's outer edge line whose
 Part centres lay outside a mouth while their corners crossed inside. The exact
 sector-boundary clip in section 5.4 now removes only those fragments.
 
-The later live comparison exposed a separate painter-order mismatch. Python
-draws the sunk arms before the ring deck; Studio left their marking tops up to 0.009
-studs proud. Each arm line is now bounded at its own offset's expanded ring-kerb
+The later live comparison exposed a separate painter-order mismatch in the
+then-sunk implementation. Studio left arm marking tops up to 0.009 studs proud.
+Each arm line is now bounded at its own offset's expanded ring-kerb
 crossing (`FromStationStuds` on exits, `ToStationStuds` on entries), except the
 outboard edge line, which continues to the exact tangent handoff. Turbo replaces
 the base divider over the peel arc and uses a distinct top plane where the peel
@@ -628,10 +632,16 @@ two concrete chord triangles cannot re-enter the circulating annulus.
 
 Surface and paint ownership remain deliberately separate. Raised pavement uses
 physical footprints; the outer ring edge line opens angularly to its tangent
-handoff, and matching arm paint reaches that boundary. The full 3D parity suite
-passes every case, including LHT/RHT asymmetric one-way mouths, `stress_us`,
-and Bay profiles, and catches all 25 injected ownership failures. Keep only the
-rebuilt Studio visual check open.
+handoff, and matching arm paint reaches that boundary. Arms, markings, the
+approach cut, splitter apron, and circulating ring share one surface datum.
+Every exact arm roadway footprint is subtracted from the ring roadway before
+publication, leaving one coplanar owner without the old 0.05-stud step.
+`FillTriangle` records the source triangle, depth, and extrusion direction so
+the clipper cannot overclaim a Wedge's rectangular bounds. The full 3D parity
+suite passes every case, including LHT/RHT asymmetric one-way mouths,
+`stress_us`, and Bay profiles, and catches all 25 injected ownership failures.
+Keep only the rebuilt Studio Wedge-rendering, collision, and z-fighting check
+open.
 
 ### 5.5 Smaller, known limits
 - **Multi-segment approach sources.** Connected editable conversion currently

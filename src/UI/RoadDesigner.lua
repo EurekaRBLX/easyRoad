@@ -41,6 +41,8 @@ local ProfileFields = require("./ProfileFields")
 local Icons = require("./Icons")
 local RoadThumbnail = require("./RoadThumbnail")
 local RoadProfile = require("../RoadProfile")
+local RoadSurfaceAppearance = require("../RoadSurfaceAppearance")
+local RoadSurfaceMaterials = require("../RoadSurfaceMaterials")
 local RegionStyles = require("../RegionStyles")
 local Settings = require("../Settings")
 local Markings = require("../Mesh/Markings")
@@ -90,6 +92,22 @@ local KIND_LABEL: { [string]: string } = { Bay = "Bus Lane" }
 for _, entry in PALETTE do
 	KIND_LABEL[entry.Kind] = entry.Label
 end
+
+-- Surface labels describe the rendered strip rather than the placeable lane
+-- module. In particular, a Drive module is presented as the road surface the
+-- user expects to recolour, while Sidewalk keeps the project's Commonwealth
+-- "Pavement" terminology.
+local SURFACE_KIND_LABEL: { [string]: string } = {
+	Drive = "Road surface",
+	Sidewalk = "Pavement",
+	Median = "Median",
+	Shoulder = "Shoulder",
+	Bike = "Bike lane",
+	Parking = "Parking",
+	Bay = "Bus bay",
+}
+
+local AUTO_MATERIAL_ID = "__auto_surface_material__"
 
 -- Lane marking (boundary) options, in human-readable terms, matching the
 -- LineType vocabulary in Mesh/Markings.lua.
@@ -1087,6 +1105,154 @@ local function PaletteOrLibraryCard(props: {
 	return e("Frame", frameProps, children)
 end
 
+-- Per-profile material and colour overrides. The profile stores only values
+-- the user explicitly changed; the preview colour shown here is resolved from
+-- the active region when there is no override, so changing regions keeps
+-- untouched surfaces adaptive instead of baking today's default into the road.
+local function SurfaceAppearanceFields(props: {
+	Profile: RoadProfile.RoadProfile,
+	RegionStyle: RegionStyles.RegionStyle,
+	OnChange: (transform: (profile: RoadProfile.RoadProfile) -> ()) -> (),
+	LayoutOrder: number,
+})
+	local selectedKind, setSelectedKind = React.useState("")
+	local kindOptions: { Components.DropdownOption } = {}
+	local seenKinds: { [string]: boolean } = {}
+	for _, component in props.Profile.Components do
+		if not seenKinds[component.Kind] then
+			seenKinds[component.Kind] = true
+			table.insert(kindOptions, {
+				Id = component.Kind,
+				Text = SURFACE_KIND_LABEL[component.Kind] or KIND_LABEL[component.Kind] or component.Kind,
+			})
+		end
+	end
+
+	-- Road profiles normally contain at least one component, but a newly
+	-- cleared profile should not leave behind an editor for a non-existent
+	-- surface kind.
+	if #kindOptions == 0 then
+		return nil
+	end
+
+	local activeKindId = if seenKinds[selectedKind] then selectedKind else kindOptions[1].Id
+	local activeKind = activeKindId :: RoadProfile.ComponentKind
+	local override = if props.Profile.SurfaceOverrides then props.Profile.SurfaceOverrides[activeKind] else nil
+	local _, resolvedColor = RoadSurfaceAppearance.Resolve(props.Profile, props.RegionStyle, activeKind)
+	local hasMaterialOverride = override ~= nil and override.Material ~= nil
+	local hasColorOverride = override ~= nil and override.Color ~= nil
+	local hasAnyOverride = hasMaterialOverride or hasColorOverride
+
+	local materialOptions: { Components.DropdownOption } = {
+		{ Id = AUTO_MATERIAL_ID, Text = "Auto (default)" },
+	}
+	for _, entry in RoadSurfaceMaterials.Entries do
+		table.insert(materialOptions, { Id = entry.Id, Text = entry.Text })
+	end
+
+	local function updateOverride(transform: (surfaceOverride: RoadProfile.SurfaceOverride) -> ())
+		props.OnChange(function(copy)
+			local overrides: { [RoadProfile.ComponentKind]: RoadProfile.SurfaceOverride } = copy.SurfaceOverrides or {}
+			local current: RoadProfile.SurfaceOverride = overrides[activeKind] or {}
+			transform(current)
+			if current.Material ~= nil or current.Color ~= nil then
+				overrides[activeKind] = current
+			else
+				overrides[activeKind] = nil
+			end
+			copy.SurfaceOverrides = if next(overrides) ~= nil then overrides else nil
+		end)
+	end
+
+	return e("Frame", {
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = props.LayoutOrder,
+	}, {
+		Layout = e("UIListLayout", {
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Padding = UDim.new(0, 4),
+		}),
+		Header = e(Components.Section, {
+			Text = "Surface appearance",
+			LayoutOrder = 1,
+		}),
+		Surface = e(Components.Row, { LayoutOrder = 2 }, {
+			Label = e(Components.Label, {
+				Text = "Surface",
+				Width = 52,
+				LayoutOrder = 1,
+			}),
+			Dropdown = e(Components.Dropdown, {
+				Options = kindOptions,
+				SelectedId = activeKindId,
+				OnSelected = setSelectedKind,
+				Grow = true,
+				LayoutOrder = 2,
+			}),
+		}),
+		Material = e(Components.Row, { LayoutOrder = 3 }, {
+			Label = e(Components.Label, {
+				Text = "Material",
+				Width = 52,
+				LayoutOrder = 1,
+			}),
+			Dropdown = e(Components.Dropdown, {
+				Options = materialOptions,
+				SelectedId = if hasMaterialOverride
+					then (override :: RoadProfile.SurfaceOverride).Material
+					else AUTO_MATERIAL_ID,
+				OnSelected = function(id: string)
+					updateOverride(function(current)
+						current.Material = if id == AUTO_MATERIAL_ID then nil else RoadSurfaceMaterials.Sanitize(id)
+					end)
+				end,
+				Grow = true,
+				LayoutOrder = 2,
+			}),
+		}),
+		ColourHeader = e(Components.Row, { LayoutOrder = 4 }, {
+			Label = e(Components.Label, {
+				Text = if hasColorOverride then "Colour" else "Colour (auto)",
+				Dim = not hasColorOverride,
+				Width = 76,
+				LayoutOrder = 1,
+			}),
+			Reset = hasColorOverride and e(Components.Button, {
+				Text = "Reset colour",
+				Grow = true,
+				LayoutOrder = 2,
+				OnClick = function()
+					updateOverride(function(current)
+						current.Color = nil
+					end)
+				end,
+			}),
+		}),
+		Colour = e(Components.ColorField, {
+			Value = resolvedColor,
+			LayoutOrder = 5,
+			OnChanged = function(color: Color3)
+				updateOverride(function(current)
+					current.Color = color
+				end)
+			end,
+		}),
+		Defaults = hasAnyOverride and e(Components.Button, {
+			Text = "Use region defaults",
+			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
+			LayoutOrder = 6,
+			OnClick = function()
+				updateOverride(function(current)
+					current.Material = nil
+					current.Color = nil
+				end)
+			end,
+		}),
+	})
+end
+
 local function Panel(
 	props: {
 		PluginObj: Plugin,
@@ -1260,12 +1426,18 @@ local function Panel(
 			}),
 		})
 	end
+	propertiesChildren.SurfaceAppearance = e(SurfaceAppearanceFields, {
+		Profile = profile,
+		RegionStyle = props.RegionStyle,
+		OnChange = props.OnChange,
+		LayoutOrder = 5,
+	})
 	local afterOptions = ProfileFields.InsertMarkingOptions(
 		propertiesChildren,
 		profile,
 		props.RegionStyle,
 		props.Settings,
-		5,
+		6,
 		props.OnChange
 	)
 	-- Existing marking stretches on this placed road (see RoadEditSession's

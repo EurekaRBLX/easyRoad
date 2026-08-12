@@ -23,6 +23,7 @@ local RoadInstance = require("../RoadInstance")
 local RoadSource = require("../RoadSource")
 local RoundaboutInstance = require("../RoundaboutInstance")
 local RoadProfile = require("../RoadProfile")
+local RoadSurfaceAppearance = require("../RoadSurfaceAppearance")
 local RoadSplit = require("../RoadSplit")
 local JunctionInstance = require("../JunctionInstance")
 local BusStops = require("../BusStops")
@@ -520,6 +521,17 @@ local LEGACY_GENERATED_NAMES: { [string]: boolean } = {
 	Marking = true,
 	Island = true,
 	RoundaboutArm = true,
+}
+
+-- BasePart names emitted for RoadProfile kinds which own drivable pavement.
+-- Keep this beside the generated-name contract so both ring capture and arm
+-- footprint capture classify custom Bike/Parking/Bay profiles identically.
+local ROADWAY_PART_NAMES: { [string]: boolean } = {
+	Drive = true,
+	Shoulder = true,
+	Bike = true,
+	Parking = true,
+	Bay = true,
 }
 
 local function packGeneratedGeometry(model: Model, assumeAllGenerated: boolean?): Folder
@@ -1173,7 +1185,35 @@ end
 -- one of its corners still projects well inside it. In Studio that surviving
 -- corner reads as a concrete wedge or a white slash across the mouth even though
 -- the centre-only Python coverage scan calls the opening clean.
+local FILL_TRIANGLE_TOP_VERTEX_COUNT_ATTRIBUTE = "RW_FillTriangleTopVertexCount"
+local FILL_TRIANGLE_TOP_VERTEX_ATTRIBUTES = {
+	"RW_FillTriangleTopVertex1",
+	"RW_FillTriangleTopVertex2",
+	"RW_FillTriangleTopVertex3",
+}
+local FILL_TRIANGLE_DEPTH_ATTRIBUTE = "RW_FillTriangleDepthStuds"
+local FILL_TRIANGLE_DOWN_VECTOR_ATTRIBUTE = "RW_FillTriangleDownVector"
+
 local function partTopPolygon(part: BasePart): { Vector3 }
+	-- FillTriangle stamps the exact source subtriangle on each Wedge. A Wedge's
+	-- Size/CFrame corners describe its rectangular bounding box, which overclaims
+	-- the mouth and deletes unrelated ring surface when used as a cutter.
+	local sourceVertexCount = part:GetAttribute(FILL_TRIANGLE_TOP_VERTEX_COUNT_ATTRIBUTE)
+	if sourceVertexCount == #FILL_TRIANGLE_TOP_VERTEX_ATTRIBUTES then
+		local sourcePolygon: { Vector3 } = {}
+		for _, attributeName in FILL_TRIANGLE_TOP_VERTEX_ATTRIBUTES do
+			local vertex = part:GetAttribute(attributeName)
+			if typeof(vertex) ~= "Vector3" then
+				sourcePolygon = {}
+				break
+			end
+			table.insert(sourcePolygon, vertex)
+		end
+		if #sourcePolygon == #FILL_TRIANGLE_TOP_VERTEX_ATTRIBUTES then
+			return sourcePolygon
+		end
+	end
+
 	local half = part.Size / 2
 	return {
 		(part.CFrame * CFrame.new(-half.X, half.Y, -half.Z)).Position,
@@ -1500,8 +1540,15 @@ local function replaceWithClippedPolygons(part: BasePart, polygons: { ConvexFoot
 		part:Destroy()
 		return
 	end
-	local depth = part.Size.Y
-	local down = -part.CFrame.UpVector
+	-- For ordinary blocks Size.Y/-UpVector are the extrusion contract. For a
+	-- FillTriangle Wedge they are the wedge bounding axes instead, so preserve
+	-- and consume the exact source depth/down metadata stamped by FillTriangle.
+	local sourceDepth = part:GetAttribute(FILL_TRIANGLE_DEPTH_ATTRIBUTE)
+	local sourceDown = part:GetAttribute(FILL_TRIANGLE_DOWN_VECTOR_ATTRIBUTE)
+	local depth = if typeof(sourceDepth) == "number" and sourceDepth > 0 then sourceDepth else part.Size.Y
+	local down = if typeof(sourceDown) == "Vector3" and sourceDown.Magnitude > 1e-6
+		then sourceDown
+		else -part.CFrame.UpVector
 	template.Parent = nil
 	part:Destroy()
 	local function makePart(): Part
@@ -1519,12 +1566,9 @@ local function replaceWithClippedPolygon(part: BasePart, polygon: ConvexFootprin
 	replaceWithClippedPolygons(part, { polygon })
 end
 
--- Ring pavement is a true annular strip, not a chain of padded midpoint boxes.
--- The ordinary RoadBuilder boxes deliberately overlap to hide curve gaps; on a
--- raised outer strip those padded corners are visible as the sidewalk stepping
--- outward at every seam. Emit exact station quads instead, subtracting mouth
--- ownership in polygon space before any Roblox Parts exist. This also avoids
--- trying to infer the top triangle of a clipped WedgePart later.
+-- Ring pavement is a true annular strip emitted from exact station quads.
+-- Subtract mouth ownership in polygon space before any Roblox Parts exist so
+-- the raised curb has exact returns without a broad angular cut.
 buildExactRingSidewalk = function(
 	model: Model,
 	curve: PolyCurve.PolyCurve,
@@ -1651,12 +1695,11 @@ buildExactRingSidewalk = function(
 	end
 end
 
--- Remove only the top-plane overlap between the ring's original Sidewalk
--- strips and solo one-way roadway footprints. A polar sector cannot describe a
--- curved finite-width arm: making it wide enough to clear the inboard edge also
--- deletes 3-5 stud curb-return crescents beside the outboard edge. Sequential
--- convex subtraction keeps those returns and removes no concrete that is not
--- actually over Drive/Shoulder geometry.
+-- Remove only the top-plane overlap between generated Parts and exact arm
+-- roadway footprints. This is shared by the ring deck and its outer Sidewalk:
+-- a polar sector cannot describe a curved finite-width arm, while sequential
+-- convex subtraction removes no ownership outside actual Drive/Shoulder/Bay
+-- geometry and keeps the curb-return crescents beside it.
 local function openRingSidewalkByFootprints(parts: { BasePart }, cutters: { ConvexFootprint })
 	if #cutters == 0 then
 		return
@@ -1727,6 +1770,10 @@ local function openRingSidewalkByFootprints(parts: { BasePart }, cutters: { Conv
 		end
 	end
 end
+
+-- General semantic name for the same exact subtraction pass. Keep the legacy
+-- sidewalk-named entry point above because preview/parity tooling recognizes it.
+local subtractFootprintsFromParts = openRingSidewalkByFootprints
 
 -- Delete ring pavement/kerb Parts wholly inside an entry sector and clip a Part
 -- that crosses either sector boundary to the exact radial ray. The outside
@@ -1933,11 +1980,10 @@ local ISLAND_MIN_WIDTH_M = 2.0
 -- the bare ground is gone. A real splitter tapers to a point. Bounded, so this
 -- is a nose and not the knife-edge sliver that filling from the cut produced.
 local ISLAND_NOSE_TAPER_M = 6.0
--- Arms are dropped a hair below the ring deck. Near the merge an arm's inner
--- half necessarily lies over the ring's own carriageway (that overlap IS the
--- merge), and two coplanar asphalt decks z-fight. Same colour and material, so
--- letting the ring win is invisible - except that it also hides the arm's edge
--- lines where they run inside the ring, which is what we want anyway.
+-- Historical preview-parity constant only. Runtime geometry no longer sinks
+-- arms: exact roadway-footprint ownership removes ring/arm coplanar overlap
+-- while keeping the ring, arms and connected approaches on one deck datum.
+-- Keep the value until the run-only Python parity contract drops its alias.
 local ARM_SINK_STUDS = 0.05
 
 local function rightOf(tangent: Vector3): Vector3
@@ -2259,7 +2305,8 @@ local function armProfileFor(
 	style: RegionStyles.RegionStyle,
 	scale: number,
 	mirrored: boolean,
-	pavementM: number
+	pavementM: number,
+	sourceProfile: RoadProfile.RoadProfile
 ): ArmProfile
 	local components: { RoadProfile.ProfileComponent } = {}
 	-- `group.Lanes` is in the APPROACH's left-to-right order. An arm whose own
@@ -2364,6 +2411,10 @@ local function armProfileFor(
 		Category = "Custom",
 		BuiltIn = false,
 		Components = components,
+		-- Arms are approach-owned transition geometry, so keep the source road's
+		-- reusable finishes. The separately synthesized ring profile deliberately
+		-- has no overrides and remains region-owned/default.
+		SurfaceOverrides = sourceProfile.SurfaceOverrides,
 	}
 	local leftM, rightM = roadwayEdgeOffsetsM(profile)
 	return {
@@ -2586,9 +2637,11 @@ local function buildArm(
 	ringKerbRadiusStuds: number,
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings,
-	collectRoadwayFootprints: boolean
-): (Model, { ConvexFootprint })
+	collectRoadwayFootprints: boolean,
+	collectDeckFootprints: boolean
+): (Model, { ConvexFootprint }, { ConvexFootprint })
 	local roadwayFootprints: { ConvexFootprint } = {}
+	local deckFootprints: { ConvexFootprint } = {}
 	local sidewalkIndices: { number } = {}
 	local componentOffsets = RoadProfile.ComponentOffsetsM(arm.Profile)
 	-- Arm pavement is always emitted from the exact shared station grid below.
@@ -2652,12 +2705,15 @@ local function buildArm(
 	}
 	local model = RoadBuilder.Build(options)
 	local stations = RoadBuilder.StationsFor(options)
+	local shoulderMaterial, shoulderColor = RoadSurfaceAppearance.Resolve(arm.Profile, style, "Shoulder")
+	local sidewalkMaterial, sidewalkColor = RoadSurfaceAppearance.Resolve(arm.Profile, style, "Sidewalk")
 
-	if collectRoadwayFootprints then
-		-- Curved core surfaces use RoadBuilder's padded midpoint Parts. The
-		-- raised ring pavement must therefore subtract the Parts' real top
-		-- footprints, not ideal station quads that miss their miter corners.
-		-- Bay is roadway too; custom profiles must not leave its mouth kerbed off.
+	if collectRoadwayFootprints or collectDeckFootprints then
+		-- Use the emitted surfaces themselves as the ownership contract. Curved
+		-- cores are exact FillTriangle wedges whose stamped source triangle is
+		-- returned by partTopPolygon; the exact-straight fast path remains a block
+		-- whose top rectangle is returned normally. Bay is roadway too; custom
+		-- profiles must not leave its mouth kerbed off.
 		local roadwayPartNames: { [string]: boolean } = {
 			Drive = true,
 			Shoulder = true,
@@ -2667,7 +2723,15 @@ local function buildArm(
 		}
 		for _, descendant in model:GetDescendants() do
 			if descendant:IsA("BasePart") and roadwayPartNames[descendant.Name] then
-				table.insert(roadwayFootprints, partTopPolygon(descendant))
+				-- Legacy single-list contract: table.insert(roadwayFootprints, partTopPolygon(descendant))
+				-- One exact read now feeds independent pavement and deck ownership lists.
+				local footprint = partTopPolygon(descendant)
+				if collectRoadwayFootprints then
+					table.insert(roadwayFootprints, footprint)
+				end
+				if collectDeckFootprints then
+					table.insert(deckFootprints, footprint)
+				end
 			end
 		end
 	end
@@ -2696,10 +2760,10 @@ local function buildArm(
 			return part
 		end
 		local function makeShoulderPart(): Part
-			return makeSurfacePart("Shoulder", Enum.Material.Asphalt, style.ShoulderColor)
+			return makeSurfacePart("Shoulder", shoulderMaterial, shoulderColor)
 		end
 		local function makePavementPart(): Part
-			return makeSurfacePart("Sidewalk", Enum.Material.Concrete, style.SidewalkColor)
+			return makeSurfacePart("Sidewalk", sidewalkMaterial, sidewalkColor)
 		end
 
 		local function sourceToRingU(station: number): number
@@ -2791,6 +2855,10 @@ local function buildArm(
 						table.insert(roadwayFootprints, { shoulderInner0, shoulderOuter0, shoulderOuter1 })
 						table.insert(roadwayFootprints, { shoulderInner0, shoulderOuter1, shoulderInner1 })
 					end
+					if collectDeckFootprints then
+						table.insert(deckFootprints, { shoulderInner0, shoulderOuter0, shoulderOuter1 })
+						table.insert(deckFootprints, { shoulderInner0, shoulderOuter1, shoulderInner1 })
+					end
 					FillTriangle(
 						shoulderInner0,
 						shoulderOuter0,
@@ -2840,16 +2908,7 @@ local function buildArm(
 	-- Not a free-standing editable road - owned by the roundabout mesh.
 	model:SetAttribute("RW_Road", nil)
 	model.Name = "RoundaboutArm"
-	for _, descendant in model:GetDescendants() do
-		-- Deck/surfaces sink below the ring to avoid coplanar asphalt. Markings
-		-- have explicit longitudinal ownership above and must stay on the normal
-		-- road/ring paint plane so the preserved outer edge line has no vertical
-		-- step at either hand-off.
-		if descendant:IsA("BasePart") and descendant.Name ~= "Marking" then
-			descendant.CFrame = descendant.CFrame - Vector3.new(0, ARM_SINK_STUDS, 0)
-		end
-	end
-	return model, roadwayFootprints
+	return model, roadwayFootprints, deckFootprints
 end
 
 -- Raised splitter island in the gore between an entry and its exit, bounded by
@@ -2865,7 +2924,8 @@ local function buildSplitterIsland(
 	flow: number,
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings,
-	surfaceCutters: { ConvexFootprint }
+	surfaceCutters: { ConvexFootprint },
+	deckCutters: { ConvexFootprint }
 )
 	local scale = settings.MetersToStuds
 	local curbHeight = style.CurbHeightM * scale
@@ -2890,8 +2950,18 @@ local function buildSplitterIsland(
 	local function makeApronPart(): Part
 		return makePart("GoreApron", Enum.Material.Asphalt, style.AsphaltColor)
 	end
-	local function fillSurface(a: Vector3, b: Vector3, c: Vector3, surfaceDepth: number, factory: () -> Part)
+	local function fillSurface(
+		a: Vector3,
+		b: Vector3,
+		c: Vector3,
+		surfaceDepth: number,
+		factory: () -> Part,
+		ownsDeck: boolean?
+	)
 		table.insert(surfaceCutters, { a, b, c })
+		if ownsDeck == true then
+			table.insert(deckCutters, { a, b, c })
+		end
 		FillTriangle(a, b, c, surfaceDepth, DOWN, factory, ring)
 	end
 	-- Gore-side roadway edge: the inner offset lies on +flow * right-of-travel for
@@ -3054,15 +3124,14 @@ local function buildSplitterIsland(
 		local prevA, prevB
 		for i = 0, APRON_SAMPLES do
 			local along = (i / APRON_SAMPLES) * apronEnd
-			-- Sunk with the arms. The arms' Parts are dropped ARM_SINK_STUDS
-			-- after building but their CURVES are not, so an apron laid on the
-			-- curve sits a hair proud of the carriageway it is continuous with -
-			-- and, where it runs past the kerb, coplanar with the ring deck.
-			local a = goreEdgeAt(entryCurve, along, entryArm, -ARM_SINK_STUDS)
-			local b = goreEdgeAt(exitCurve, exitCurve.Length - along, exitArm, -ARM_SINK_STUDS)
+			-- The apron shares the arms' curve datum. Ring roadway ownership is
+			-- clipped to the arms before publish, so no vertical anti-z-fight offset
+			-- is needed at the merge.
+			local a = goreEdgeAt(entryCurve, along, entryArm, 0)
+			local b = goreEdgeAt(exitCurve, exitCurve.Length - along, exitArm, 0)
 			if prevA and prevB then
-				fillSurface(prevA, prevB, b, apronDepth, makeApronPart)
-				fillSurface(prevA, b, a, apronDepth, makeApronPart)
+				fillSurface(prevA, prevB, b, apronDepth, makeApronPart, true)
+				fillSurface(prevA, b, a, apronDepth, makeApronPart, true)
 			end
 			prevA, prevB = a, b
 		end
@@ -3133,10 +3202,10 @@ local function buildSplitterIsland(
 	-- median right up to the ring while guaranteeing no raised fragment enters it.
 	local noseStation = kerbCrossing(entryCurve, lastAlong, 1, entryArm)
 	local tailStation = kerbCrossing(exitCurve, exitCurve.Length - lastAlong, -1, exitArm)
-	local nose = goreEdgeAt(entryCurve, lastAlong, entryArm, -ARM_SINK_STUDS)
-	local tail = goreEdgeAt(exitCurve, exitCurve.Length - lastAlong, exitArm, -ARM_SINK_STUDS)
-	local noseEnd = goreEdgeAt(entryCurve, noseStation, entryArm, -ARM_SINK_STUDS)
-	local tailEnd = goreEdgeAt(exitCurve, tailStation, exitArm, -ARM_SINK_STUDS)
+	local nose = goreEdgeAt(entryCurve, lastAlong, entryArm, 0)
+	local tail = goreEdgeAt(exitCurve, exitCurve.Length - lastAlong, exitArm, 0)
+	local noseEnd = goreEdgeAt(entryCurve, noseStation, entryArm, 0)
+	local tailEnd = goreEdgeAt(exitCurve, tailStation, exitArm, 0)
 	local a0 = math.atan2(noseEnd.Z - center.Z, noseEnd.X - center.X)
 	local a1 = math.atan2(tailEnd.Z - center.Z, tailEnd.X - center.X)
 	local sweep = angleDelta(a1, a0)
@@ -3159,10 +3228,12 @@ local function buildSplitterIsland(
 	for i = 0, circleSteps - 1 do
 		table.insert(ringDisc, ringPointAt(center, (i + 0.5) * circleStep, cutterRadius, apex.Y))
 	end
-	local raisedLift = Vector3.new(0, curbHeight + ARM_SINK_STUDS, 0)
+	local raisedLift = Vector3.new(0, curbHeight, 0)
 	for k = 1, #boundary - 1 do
 		local flatTriangle: ConvexFootprint = { apex, boundary[k], boundary[k + 1] }
-		fillSurface(flatTriangle[1], flatTriangle[2], flatTriangle[3], apronDepth, makeApronPart)
+		-- Legacy single-owner contract:
+		-- fillSurface(flatTriangle[1], flatTriangle[2], flatTriangle[3], apronDepth, makeApronPart)
+		fillSurface(flatTriangle[1], flatTriangle[2], flatTriangle[3], apronDepth, makeApronPart, true)
 		local exteriorFragments = subtractConvexFootprint(flatTriangle, ringDisc)
 		for _, fragment in exteriorFragments do
 			local raisedFragment: ConvexFootprint = {}
@@ -3251,8 +3322,8 @@ local function planMouth(
 		-- outward, and which of those matches the curve depends on which END of
 		-- the road the junction sits at - so it is neither "always the exit" nor
 		-- a property of the arm alone.
-		local mirrored = travelsInward == atStart
-		local profile = armProfileFor(group, solo, style, scale, mirrored, ringSidewalkWidthM(style))
+		local profile =
+			armProfileFor(group, solo, style, scale, travelsInward == atStart, ringSidewalkWidthM(style), spokeProfile)
 		local mergeRadius = ringKerbRadiusStuds - profile.OuterOffsetStuds
 		if mergeRadius <= 1 then
 			return nil
@@ -3401,9 +3472,8 @@ local function resolveSplits(
 end
 
 -- One mouth: entry arm, exit arm, splitter island. Every physical surface
--- returns an exact ownership cutter for raised ring pavement. The optional
--- paired sector remains diagnostic metadata; edge paint stays angular because
--- its handoff is a radial ring line.
+-- returns exact pavement ownership; coplanar roadway/apron surfaces additionally
+-- return deck cutters. Edge paint retains its separate angular handoff.
 local function buildMouth(
 	ring: Model,
 	plan: MouthPlan,
@@ -3411,11 +3481,15 @@ local function buildMouth(
 	splitBudgetRad: number,
 	style: RegionStyles.RegionStyle,
 	settings: Settings.EasyRoadSettings
-): (MouthSector?, MouthSector, ExitTrace?, { ConvexFootprint })
+): (MouthSector?, MouthSector, ExitTrace?, { ConvexFootprint }, { ConvexFootprint })
+	-- Legacy return-shape contract: ): (MouthSector?, MouthSector, ExitTrace?, { ConvexFootprint })
+	-- The fifth result is the narrower coplanar-deck ownership set.
 	-- Which way traffic circulates, matching circleSegments' own sign.
 	local flow = if style.DriveOnLeft then 1 else -1
 	local collectSurfaceFootprints = ringSidewalkWidthM(style) > 1e-6
+	local collectDeckFootprints = true
 	local surfaceCutters: { ConvexFootprint } = {}
+	local deckCutters: { ConvexFootprint } = {}
 	local dir = plan.Direction
 	local side = rightOf(dir)
 
@@ -3432,12 +3506,12 @@ local function buildMouth(
 			armSegment(
 				plan.CutMid + side * entry.LateralStuds,
 				dir,
-				ringPointAt(center, entryAngle, entry.MergeRadius, plan.CutMid.Y),
+				ringPointAt(center, entryAngle, entry.MergeRadius, center.Y),
 				ringTangentAt(entryAngle, flow),
 				ARM_HANDLE
 			),
 		})
-		local armModel, roadwayCutters = buildArm(
+		local armModel, roadwayCutters, armDeckCutters = buildArm(
 			entryCurve :: PolyCurve.PolyCurve,
 			entry.Profile,
 			entry.CutPavementLeftM,
@@ -3447,11 +3521,15 @@ local function buildMouth(
 			entryRingKerbRadius,
 			style,
 			settings,
-			collectSurfaceFootprints
+			collectSurfaceFootprints,
+			collectDeckFootprints
 		)
 		armModel.Parent = ring
 		for _, cutter in roadwayCutters do
 			table.insert(surfaceCutters, cutter)
+		end
+		for _, cutter in armDeckCutters do
+			table.insert(deckCutters, cutter)
 		end
 		ringKerbRadius = entryRingKerbRadius
 	end
@@ -3461,14 +3539,14 @@ local function buildMouth(
 		local exitRingKerbRadius = exit.MergeRadius + exit.Profile.OuterOffsetStuds
 		exitCurve = PolyCurve.new({
 			armSegment(
-				ringPointAt(center, exitAngle, exit.MergeRadius, plan.CutMid.Y),
+				ringPointAt(center, exitAngle, exit.MergeRadius, center.Y),
 				ringTangentAt(exitAngle, flow),
 				plan.CutMid + side * exit.LateralStuds,
 				-dir,
 				ARM_HANDLE
 			),
 		})
-		local armModel, roadwayCutters = buildArm(
+		local armModel, roadwayCutters, armDeckCutters = buildArm(
 			exitCurve :: PolyCurve.PolyCurve,
 			exit.Profile,
 			exit.CutPavementLeftM,
@@ -3478,11 +3556,15 @@ local function buildMouth(
 			exitRingKerbRadius,
 			style,
 			settings,
-			collectSurfaceFootprints
+			collectSurfaceFootprints,
+			collectDeckFootprints
 		)
 		armModel.Parent = ring
 		for _, cutter in roadwayCutters do
 			table.insert(surfaceCutters, cutter)
+		end
+		for _, cutter in armDeckCutters do
+			table.insert(deckCutters, cutter)
 		end
 		ringKerbRadius = exitRingKerbRadius
 	end
@@ -3502,7 +3584,8 @@ local function buildMouth(
 			flow,
 			style,
 			settings,
-			surfaceCutters
+			surfaceCutters,
+			deckCutters
 		)
 	end
 
@@ -3533,7 +3616,7 @@ local function buildMouth(
 		local soloTrace: ExitTrace? = if exit and exitCurve
 			then { Curve = exitCurve :: PolyCurve.PolyCurve, Arm = exit.Profile }
 			else nil
-		return nil, sectorAtRadius(edgeLineRadius), soloTrace, surfaceCutters
+		return nil, sectorAtRadius(edgeLineRadius), soloTrace, surfaceCutters, deckCutters
 	end
 	-- Open exactly as far as each arm actually reaches, inset so the opening can
 	-- never outrun them.
@@ -3555,7 +3638,8 @@ local function buildMouth(
 	return pavementSector,
 		edgeMarkingSector,
 		{ Curve = exitCurve :: PolyCurve.PolyCurve, Arm = (exit :: MouthArm).Profile },
-		surfaceCutters
+		surfaceCutters,
+		deckCutters
 end
 
 -- COMFORTABLE ring radius: one that gives every leg room for its two arms, a
@@ -3609,7 +3693,8 @@ local function packingRadiusStuds(
 			if not group then
 				return
 			end
-			local arm = armProfileFor(group, solo, style, scale, travelsInward == atStart, ringSidewalkWidthM(style))
+			local arm =
+				armProfileFor(group, solo, style, scale, travelsInward == atStart, ringSidewalkWidthM(style), profile)
 			-- FULL width, pavement included. The kerb is what must not overrun
 			-- the next mouth's kerb; counting only the roadway lets two mouths
 			-- sit a pavement's width inside each other.
@@ -4027,13 +4112,17 @@ function RoundaboutBuilder.CreateAtJunction(
 	stampRingMeta(ring, center, radiusStuds, outerRadiusStuds, laneCount, laneWidthM, junctionId)
 	stampRingOverrides(ring, requestedMarkings, requestedSidewalk, requestedIsland)
 
-	-- Capture only ring-owned paint before arm parts are parented. Raised ring
-	-- pavement is intentionally deferred until every mouth has reported its
-	-- ownership mask, then emitted already-open by buildExactRingSidewalk.
+	-- Capture ring-owned deck and paint before arm parts are parented. Raised ring
+	-- pavement is deferred until every mouth reports its exact ownership mask.
+	local ringRoadway: { BasePart } = {}
 	local ringMarkings: { BasePart } = {}
 	for _, descendant in ring:GetDescendants() do
-		if descendant:IsA("BasePart") and descendant.Name == "Marking" then
-			table.insert(ringMarkings, descendant :: BasePart)
+		if descendant:IsA("BasePart") then
+			if ROADWAY_PART_NAMES[descendant.Name] then
+				table.insert(ringRoadway, descendant :: BasePart)
+			elseif descendant.Name == "Marking" then
+				table.insert(ringMarkings, descendant :: BasePart)
+			end
 		end
 	end
 
@@ -4073,8 +4162,9 @@ function RoundaboutBuilder.CreateAtJunction(
 	local edgeMarkingSectors: { MouthSector } = {}
 	local exitTraces: { ExitTrace } = {}
 	local surfaceCutters: { ConvexFootprint } = {}
+	local deckCutters: { ConvexFootprint } = {}
 	for i, plan in plans do
-		local _sector, edgeSector, trace, mouthSurfaceCutters =
+		local _sector, edgeSector, trace, mouthSurfaceCutters, mouthDeckCutters =
 			buildMouth(ring, plan, center, splitBudgetFor(plans, i), ringStyle, settings)
 		table.insert(edgeMarkingSectors, edgeSector)
 		if trace then
@@ -4082,6 +4172,9 @@ function RoundaboutBuilder.CreateAtJunction(
 		end
 		for _, cutter in mouthSurfaceCutters do
 			table.insert(surfaceCutters, cutter)
+		end
+		for _, cutter in mouthDeckCutters do
+			table.insert(deckCutters, cutter)
 		end
 	end
 
@@ -4095,6 +4188,9 @@ function RoundaboutBuilder.CreateAtJunction(
 	-- pushes the edge line inside the bound, and it survives as a white line
 	-- painted straight across the mouth.
 	local edgeLineInset = ringStyle.MarkingWidthM * 1.5 * scale
+	-- Ring and arms now share one vertical datum. Remove ring asphalt only where
+	-- a coplanar arm, shoulder, or gore apron owns the same exact footprint.
+	subtractFootprintsFromParts(ringRoadway, deckCutters)
 	-- Curved mouths are not polar sectors. Subtract the generated arm-core Parts
 	-- plus exact pavement, shoulder, GoreApron, and splitter polygons for paired
 	-- and solo mouths alike. This removes no concrete that another physical

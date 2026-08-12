@@ -4,6 +4,39 @@ A running log of what's been built, most recent first. Not user-facing;
 internal planning only. See `TODO.md` for planned new features and
 `KNOWN_ISSUES.md` for confirmed bugs.
 
+## Build 1.2.0 — exact shared-edge surfaces, level roundabout ownership, and reusable finishes
+
+- Every non-straight generated surface interval now uses the exact cached
+  start/end station corners. Adjacent intervals therefore share one literal
+  cross-section edge instead of overlapping padded midpoint rectangles at
+  alternating 0.004-stud heights. Exact-straight roads retain their coalesced
+  low-Part path, while curved bus-bay asphalt and its displaced pavement use the
+  same exact-quad station grid. The canonical roll-refined station plan,
+  widening anchors, and persisted profile offsets remain intact.
+- Connected roundabout arms are no longer lowered beneath the source approach
+  and circulating ring. Arms, markings, the approach cut, splitter apron, and
+  ring share one datum. Every exact arm roadway footprint is subtracted from the
+  ring roadway before publication, leaving one coplanar surface owner;
+  `FillTriangle` source-triangle metadata prevents Wedge bounds from overclaiming
+  that ownership. The upstream exact ring-pavement footprint pass and hybrid
+  GoreApron/kerb-disc cutter continue to close the mouth without losing the
+  approach median kerb.
+- Saved road types and placed-road edits now expose **Surface appearance** in
+  the Road Editor. Each component kind present can override a curated Roblox
+  material and colour, while **Auto (default)** and **Use region defaults**
+  inherit the active region. The additive overrides clone, serialize, restore
+  through JSON backup, invalidate thumbnails, and reach ordinary generated
+  roads, bus bays, placed-road rebuilds, and source-owned roundabout arms.
+  Shared ring, island, splitter, and junction surfaces remain region-owned.
+- A custom Ground road asset still replaces EasyRoad's generated surfaces and
+  deliberately retains the material, colour, collision, hierarchy, and metadata
+  authored on its imported Model. Profile overrides affect generated/fallback
+  surfaces only. Existing profiles omit the additive field and build unchanged.
+- Built-in Roblox materials are the first finish phase. Arbitrary image assets
+  and MaterialVariants remain future work because generated Wedge surfaces need
+  continuous top-face UV ownership rather than a restarted Texture on every
+  adaptive strip.
+
 ## Flexible road connections and node-adjacent splitting
 
 Road Tools now separates two connection workflows. **Build junction** keeps
@@ -132,7 +165,6 @@ rigid repeat-to-fit path. The check is part of the Windows validation runner.
   and 2x2-to-3x3 transition layouts. It also verifies UK highway `NoLine`
   suppression and an explicit local `NoLine` span, with nine injected
   colour/ownership regressions.
-
 ## Lane-marking selector containment + JSON backup/restore
 
 - The Road Editor's boundary-marking dropdown now takes only the remaining

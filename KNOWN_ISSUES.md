@@ -7,30 +7,26 @@ internal planning only. See `TODO.md` for planned new features and
 - **Live roundabout appearance parity needs one more rebuilt-dist check.** The
   first rebuilt parity attempt still left concrete wedges at ring mouths.
   Headlessly, every arm sidewalk is now an exact station-quad surface and the
-  ring footway is subtracted only by actual arm, apron, and splitter
-  footprints. The splitter's final frontage keeps a flat GoreApron underlay and
-  restores raised concrete only outside a circumscribed kerb-disc cutter. That
-  reconnects the median kerb without restoring the two triangles that chorded
-  across circulating lanes. Full parity,
-  including `stress_us`, passes with all 25 injected defects caught; keep this
-  item open only until the rebuilt plugin is visually checked in Studio.
-- **Curve rendering is rolled back headlessly and still needs rebuilt-dist
-  Studio confirmation.** Curved/banked lateral coalescing is disabled after its
-  broad multi-lane boxes exposed transverse seams. Curves again use the
-  build-0.1 centreline-symmetric, per-component midpoint boxes; width, offset,
-  and bank transitions retain exact wedges. The focused contract proves the
-  original 990/882 Part counts and one-component maximum span. Keep this open
-  until a user confirms the rebuilt plugin has no gaps, sawtooth, or drift.
-- **Superelevation preview/final parity is fixed headlessly but still needs a
-  rebuilt-dist Studio check.** The previous density-dependent box average and
-  midpoint-roll hypothesis are no longer current: `Superelevation.BuildProfile`
-  now owns one arc-length-weighted roll curve independent of mesh density,
-  `RoadBuilder.StationPlanFor` supplies the final roll-refined stations to both
-  preview and final emission, and changing-roll strips use exact station-edge
-  wedges. Procedural structures consume the same profile. The Python 3D
-  contract verifies zero outer-edge displacement and the original Part counts
-  without any non-straight lateral bands, but Roblox rendering and live rebuild
-  parity remain unverified until the rebuilt plugin is exercised in Studio.
+  ring footway is subtracted only by actual arm, apron, and splitter footprints.
+  The splitter's final frontage keeps a flat GoreApron underlay and restores
+  raised concrete only outside a circumscribed kerb-disc cutter, reconnecting
+  the median kerb without restoring the two triangles that chorded across the
+  circulating lanes. Arms, markings, the approach cut, the splitter apron, and
+  the ring share one datum; exact arm roadway footprints are subtracted from the
+  ring roadway so only one coplanar surface owner remains. Full parity,
+  including `stress_us`, passes with all 25 injected defects caught. Keep this
+  open only until the rebuilt plugin is visually checked in Studio.
+- **Exact curved surfaces and canonical superelevation need rebuilt-dist Studio
+  confirmation.** Every non-straight surface interval now uses cached start/end
+  station-corner quads, replacing padded midpoint rectangles and the alternating
+  0.004-stud deck drop while preserving transition anchors and profile offsets.
+  `Superelevation.BuildProfile` still owns one arc-length-weighted roll curve,
+  `RoadBuilder.StationPlanFor` supplies the roll-refined stations to preview and
+  final emission, and procedural structures consume the same profile. Headless
+  contracts cover the shared-edge geometry and outer-edge displacement, but not
+  Roblox Wedge rendering, collision feel, or z-fighting. Keep this open until
+  the rebuilt plugin is driven over ordinary chained bends and every roundabout
+  mouth in Studio.
 - **Hover-trap click-swallowing keeps recurring - three separate instances
   now, all fixed as found, but treat any future report of "clicking in the
   viewport does nothing" as this bug family first.** (1) The pie menu's

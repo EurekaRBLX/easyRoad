@@ -16,6 +16,21 @@ plugin preferences and custom road/region presets with validation and explicit
 confirmation, in its own dock rather than Regional Preference. See
 `SHIPPED.md`; placed-road/world backup remains correctly owned by the place.
 
+## Curved seams, roundabout level, and surface appearance — SHIPPED
+
+Curved surfaces now use exact shared station edges instead of padded,
+vertically staggered rectangles. Connected roundabout arms and the circulating
+deck share one elevation datum, with exact arm-roadway footprints subtracted
+from the ring roadway so only one coplanar owner remains. The Road Editor
+persists per-component-kind Roblox material and colour overrides on each
+reusable road type. Overrides affect generated surfaces; imported custom Ground
+Models keep their authored appearance. See `SHIPPED.md`.
+
+Future finish work, if requested, is custom MaterialVariant/image-asset
+support with continuous UV mapping across generated Wedge Parts. Do not model
+that as independent Texture instances on every adaptive strip: tiling would
+restart at every station and recreate visible seams.
+
 Performance work is tracked separately in `OPTIMIZATION.md`. The first exact-
 straight phase (2048-stud longitudinal Parts plus identical adjacent Drive-lane
 surface merging) is shipped; mixed straight/curve sub-runs, Studio benchmarks,
@@ -1057,8 +1072,6 @@ in-place machinery already built, unrelated to the junction work above.
   crossings (zigzag give-way markings).
 - **Tunnels / bridges standard.** Promoted and expanded into the model-backed
   roads, viaducts, and tunnels priority section at the top of this file.
-- **Deep settings: material/colour overrides.** Per-component-kind material
-  and colour tweaks in the standalone settings page.
 - **Units settings.** Speed in km/h / mph / studs-per-second; distance in
   km / mi / kilostuds. Currently everything is hardcoded metric internally.
 - **Shoulder-optional highway presets.** Built-in highway profiles always

@@ -106,7 +106,12 @@ kinds have a direction (with/against the road). **Duplicate road** turns the
 current built-in or user road into a separately named, editable user type;
 user roads persist in plugin settings across sessions. The lane-marking
 selector stays inside the editor at narrow widths, opens upward from the
-bottom bar, and scrolls through every marking choice.
+bottom bar, and scrolls through every marking choice. **Surface appearance**
+lets each road type preselect a Roblox material and colour for its road,
+pavement, median, shoulder, bike-lane, and parking surfaces while untouched
+fields continue inheriting the active region. These controls affect generated
+surfaces only; a custom Ground road asset retains the materials and colours
+authored on its imported Model.
 
 Persistent Studio changes use isolated ChangeHistoryService recordings. Each
 placed segment, roundabout, junction edit, road rebuild, or asset operation is
