@@ -40,11 +40,11 @@ local ROUNDABOUT_DASH_LENGTH_M = 3
 local ROUNDABOUT_DASH_GAP_M = 3
 local ROUNDABOUT_MARKING_COLOR = Color3.fromRGB(245, 245, 245)
 
--- Python's preview is a painter: the ordinary ring is drawn over the sunk arms
--- and Turbo is drawn over the ordinary ring markings. Studio has no equivalent
--- draw order for opaque Parts, so equal or nearly equal top faces flicker and
--- the sunk arm markings can poke up to 0.009 studs through the ring. Keep the
--- same visible geometry, but make those two ownership boundaries explicit. The
+-- Python's preview is a painter: the ordinary ring is drawn over the arms and
+-- Turbo is drawn over the ordinary ring markings. Studio has no equivalent draw
+-- order for opaque Parts, so equal or nearly equal top faces flicker. Keep the
+-- same visible geometry, but make those ownership boundaries explicit while
+-- retaining the source road, arm, and ring on one deck datum. The
 -- apron is also painted last in Python, but its interior does not intersect the
 -- arm/Turbo lines; lifting that asphalt would introduce a visible lip instead
 -- of fixing a real overlap. All affected marking Parts are non-collidable.
@@ -1980,12 +1980,6 @@ local ISLAND_MIN_WIDTH_M = 2.0
 -- the bare ground is gone. A real splitter tapers to a point. Bounded, so this
 -- is a nose and not the knife-edge sliver that filling from the cut produced.
 local ISLAND_NOSE_TAPER_M = 6.0
--- Historical preview-parity constant only. Runtime geometry no longer sinks
--- arms: exact roadway-footprint ownership removes ring/arm coplanar overlap
--- while keeping the ring, arms and connected approaches on one deck datum.
--- Keep the value until the run-only Python parity contract drops its alias.
-local ARM_SINK_STUDS = 0.05
-
 local function rightOf(tangent: Vector3): Vector3
 	return Vector3.new(-tangent.Z, 0, tangent.X)
 end
@@ -3129,8 +3123,8 @@ local function buildSplitterIsland(
 		for i = 0, APRON_SAMPLES do
 			local along = (i / APRON_SAMPLES) * apronEnd
 			-- The apron shares the arms' curve datum. Ring roadway ownership is
-			-- clipped to the arms before publish, so no vertical anti-z-fight offset
-			-- is needed at the merge.
+			-- clipped to the arms before publish, so no vertical anti-z-fight
+			-- offset is needed at either the road/arm or arm/ring hand-off.
 			local a = goreEdgeAt(entryCurve, along, entryArm, 0)
 			local b = goreEdgeAt(exitCurve, exitCurve.Length - along, exitArm, 0)
 			if prevA and prevB then
@@ -3510,6 +3504,8 @@ local function buildMouth(
 			armSegment(
 				plan.CutMid + side * entry.LateralStuds,
 				dir,
+				-- Preserve the source-cut datum at the outer end, but meet the
+				-- circulating ring on the controller's own deck elevation.
 				ringPointAt(center, entryAngle, entry.MergeRadius, center.Y),
 				ringTangentAt(entryAngle, flow),
 				ARM_HANDLE

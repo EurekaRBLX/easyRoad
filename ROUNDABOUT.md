@@ -238,11 +238,11 @@ just outside the kerb, because the rung is a chord and the kerb is an arc, and
 overlapping the ring deck with flat asphalt costs nothing), the island must
 start one probe BEFORE it.
 
-Arms and apron now share the approach/ring surface datum. Every arm exposes its
-exact generated roadway footprints, and those footprints are subtracted from
-the ring deck before publish, so vertical sinking is no longer needed to
-choose a coplanar owner. `ARM_SINK_STUDS` remains only as a dead constant for
-the run-only Python parity scanner until its port can be updated.
+Arms, apron, ring, and source roads now share one vertical datum. Every arm
+exposes its exact generated roadway footprints, and those footprints are
+subtracted from the ring deck before publish, so vertical sinking is no longer
+needed to choose a coplanar owner. The old `ARM_SINK_STUDS` displacement and its
+preview-only alias are deliberately gone.
 
 ### 3.8 Turbo replaces a concentric-divider arc with an exit peel
 Turbo starts from the same constant-width annulus and concentric Drive/Drive

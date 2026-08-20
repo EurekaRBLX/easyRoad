@@ -44,6 +44,11 @@ internal planning only. See `TODO.md` for planned new features and
   all source/loader modules Luau-compile, and both tracked plugin variants
   rebuild deterministically.
 
+`roundabout_arm_height_preview.py` additionally locks Drive, shoulder,
+sidewalk/kerb, and marking top-plane continuity at flat, elevated, and banked
+source cuts, and retains the retired 0.05-stud sink as a failing regression
+mutant.
+
 ## Flexible road connections and node-adjacent splitting
 
 Road Tools now separates two connection workflows. **Build junction** keeps
@@ -259,8 +264,8 @@ end of a trimmed source road can now end raised Sidewalk/Median components on
 the exact station plane, while interior RoadBuilder intervals keep their normal
 overlap. At the ring, outer arm edge paint is preserved to its actual tangent
 handoff and the ring edge opening uses the full marking sector; surface Parts
-still use the conservative pavement sector. Arm surfaces remain sunk, but
-paint stays on the normal marking plane.
+still use the conservative pavement sector. This historical arm-only sink was
+retired by the later height-continuity fix above.
 
 Turbo no longer guesses exit lane boundaries by dividing arm width by the
 edited ring lane width. Each peel resolves the exit profile's actual adjacent
@@ -989,9 +994,8 @@ looks like anyway. The apron and the island want opposite roundings of that one
 crossing: the apron stops one probe PAST it, the island must start one probe
 BEFORE it. Stopping the apron exactly at the crossing left a 0.25-stud hairline
 of bare ground just outside the kerb, because the rung is a chord and the kerb
-is an arc. Apron rungs are also sunk by ARM_SINK_STUDS now - the arms' Parts are
-dropped after building but their curves are not, so an apron laid on the curve
-sat a hair proud of the carriageway it is continuous with.
+is an arc. The former arm/apron sink described here was later retired once
+physical mouth ownership made that vertical displacement unnecessary.
 
 Whether this is the "clipping" reported live is NOT settled. It is the same
 class - a wedge of raised pavement across the carriageway - but it sits at the
@@ -1785,10 +1789,10 @@ mouth still builds - it reads as one wide opening, which is what a roundabout
 that tight looks like - and the splitter island gives out at
 `MIN_GORE_WIDTH_STUDS` instead of trailing into slivers.
 
-Also: arms are sunk `0.05` studs below the ring deck. Near the merge an arm's
-inner half necessarily lies over the ring's carriageway (that overlap IS the
-merge) and two coplanar asphalt decks z-fight; letting the ring win is
-invisible and also hides the arm's edge lines where they run inside the ring.
+At this historical stage, arms were sunk `0.05` studs below the ring deck to
+resolve coplanar overlap. Physical mouth ownership later made the displacement
+unnecessary, and the height-continuity fix removed it so source roads and arms
+share one top plane.
 
 ## Roundabout entrance/exit deflection (asymmetric mouth corners) — superseded
 

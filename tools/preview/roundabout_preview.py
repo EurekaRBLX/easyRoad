@@ -65,7 +65,6 @@ MEDIAN_AT_CUT_M = 0.5
 ISLAND_MIN_WIDTH_M = 2.0
 # Tapering nose the island grows back from there - see RoundaboutBuilder.
 ISLAND_NOSE_TAPER_M = 6.0
-ARM_SINK = 0.05
 ARM_RUN_FACTOR, ARM_RUN_MIN, ARM_RUN_MAX = 0.85, 28, 90
 
 # Python can resolve equal-height overlaps by paint order; Studio cannot.  Keep
@@ -269,14 +268,11 @@ def emit_arm(curve, components, cut_pavements_m, cut_shoulders_m, cut_at_start,
     needs_exact_surface = bool(sidewalk_indices) or (
         cut_left_shoulder_m + cut_right_shoulder_m > 1e-6
     )
-    emitted = emit_road(curve, components, -ARM_SINK,
+    # Arms, markings, and their source road share one surface datum. Mouth
+    # footprint subtraction owns the overlap; no vertical displacement is
+    # needed to choose which surface remains visible.
+    emitted = emit_road(curve, components, 0.0,
                         marking_bounds=marking_bounds)
-    # Luau sinks only the arm surfaces. Markings have explicit ring ownership
-    # and remain on the normal paint plane so the outboard edge line can meet
-    # both the source road and ring without a vertical step.
-    for part in emitted:
-        if part.name == "Marking":
-            part.y += ARM_SINK
     if edge_line_offsets_m is not None:
         retarget_edge_line(
             emitted,
@@ -375,7 +371,7 @@ def emit_arm(curve, components, cut_pavements_m, cut_shoulders_m, cut_at_start,
                 part_center = (sum(p[0] for p in poly) / 4,
                                sum(p[1] for p in poly) / 4)
                 part = Part("Shoulder", poly, KIND_C["Shoulder"],
-                            part_center, -ARM_SINK)
+                            part_center, 0.0)
                 parts.append(part)
                 shoulder_parts[side].append(part)
             if max(pav_w0, pav_w1) * SCALE >= 0.02:
@@ -383,7 +379,7 @@ def emit_arm(curve, components, cut_pavements_m, cut_shoulders_m, cut_at_start,
                 part_center = (sum(p[0] for p in poly) / 4,
                                sum(p[1] for p in poly) / 4)
                 parts.append(Part("Sidewalk", poly, SIDEWALK_C, part_center,
-                                  -ARM_SINK + 0.125 * SCALE))
+                                  0.125 * SCALE))
     return parts, shoulder_parts
 
 
@@ -2048,7 +2044,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
     mouth_surface_parts.extend(
         Part("GoreApron", triangle, ASPHALT_C,
              tuple(sum(point[axis] for point in triangle) / len(triangle)
-                   for axis in (0, 1)), -ARM_SINK)
+                   for axis in (0, 1)), 0.0)
         for triangle in apron_tris
     )
     mouth_surface_parts.extend(
