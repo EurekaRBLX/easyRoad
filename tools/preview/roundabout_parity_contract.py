@@ -162,6 +162,16 @@ def static_faults(source):
     require(source, "RightPavementM: number",
             "LaneGroup does not preserve right-side source pavement")
 
+    plan_mouth = function_scope(source, "local function planMouth(")
+    require(plan_mouth, "local mirrored = travelsInward == atStart",
+            "planMouth does not bind the near/far-end arm orientation")
+    require(plan_mouth,
+            "CutPavementLeftM = if mirrored then group.RightPavementM else group.LeftPavementM",
+            "mirrored arms do not swap the source left pavement into local left")
+    require(plan_mouth,
+            "CutPavementRightM = if mirrored then group.LeftPavementM else group.RightPavementM",
+            "mirrored arms do not swap the source right pavement into local right")
+
     crossing = function_scope(source, "local function bandEdgeExitAngle(")
     require(crossing, "signedOffsetStuds: number",
             "solo band crossing is still specialized to one roadway edge")

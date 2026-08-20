@@ -21,6 +21,10 @@ internal planning only. See `TODO.md` for planned new features and
   that ownership. The upstream exact ring-pavement footprint pass and hybrid
   GoreApron/kerb-disc cutter continue to close the mouth without losing the
   approach median kerb.
+- Near-end and far-end roundabout approaches now use one explicit mirror
+  decision for both the arm profile and the source pavement widths copied into
+  it. This restores asymmetric left/right sidewalk handoffs on every entry and
+  exit, removing the rectangular raised caps exposed by the 1.2.0 merge.
 - Saved road types and placed-road edits now expose **Surface appearance** in
   the Road Editor. Each component kind present can override a curated Roblox
   material and colour, while **Auto (default)** and **Use region defaults**

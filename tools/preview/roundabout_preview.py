@@ -141,6 +141,24 @@ def split_approach_lanes(components, inbound_sign, style_pav=SW_M):
             groups[-1] if groups[-1]["lanes"] else None)
 
 
+def arm_is_mirrored(travels_inward, at_start):
+    """Whether an arm sees the source cross-section in reverse order.
+
+    Entry/exit alone is not enough: the same physical arm changes orientation
+    when the junction owns the source road's near end instead of its far end.
+    Keep this two-variable rule explicit so asymmetric pavement caps can be
+    checked for both topology orientations.
+    """
+    return travels_inward == at_start
+
+
+def source_pavements_for_arm(group, travels_inward, at_start):
+    """Map source left/right pavement into an arm's local cross-section."""
+    if arm_is_mirrored(travels_inward, at_start):
+        return group["pav_right"], group["pav_left"]
+    return group["pav_left"], group["pav_right"]
+
+
 def arm_from_group(group, drive_on_left, solo=False, mirrored=False, ring_pav=SW_M):
     """`group["lanes"]` is in the APPROACH's left-to-right order.
 
@@ -1648,12 +1666,21 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
         def make(group, travels_inward):
             if not group:
                 return None
-            # Junction at the far end (inbound sign +1 above), so the outward
-            # arm is the mirrored one - see armProfileFor.
+            # This fixture places the junction at the source road's far end.
+            # Keep the full near/far rule visible even here; the parity suite
+            # separately exercises its complementary near-end mapping.
+            mirrored = arm_is_mirrored(travels_inward, False)
             (comps, outer, inner, road_centre, cut_shoulders,
              core_shift_local, cut_pavements) = arm_from_group(
-                group, drive_on_left, solo, not travels_inward,
+                group, drive_on_left, solo, mirrored,
                 SW_M if sidewalk else 0.0)
+            expected_pavements = source_pavements_for_arm(
+                group, travels_inward, False)
+            if cut_pavements != expected_pavements:
+                raise AssertionError(
+                    "arm/source pavement mapping drifted: "
+                    f"{cut_pavements!r} != {expected_pavements!r}"
+                )
             merge = ring_kerb - outer
             span_centre = (group["left"] + group["right"]) / 2
             core_centre = span_centre + core_shift_local * (1 if travels_inward else -1)
@@ -1667,7 +1694,7 @@ def build(ring_r, ring_lanes, legs, drive_on_left, tag, grow=False, sidewalk=Tru
                 cut_shoulders=cut_shoulders,
                 source_pavements=(group["pav_left"], group["pav_right"]),
                 cut_pavements=cut_pavements,
-                mirrored=not travels_inward,
+                mirrored=mirrored,
                 solo=solo,
             ))
             return dict(comps=comps, outer=outer, inner=inner, merge=merge,

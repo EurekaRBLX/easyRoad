@@ -27,6 +27,7 @@ trap as an invariant nobody re-reads.
 | `roundabout_preview.py` | Ring, arms, mouths, splitter islands, turbo markings, and the scans that only mean anything on a roundabout. |
 | `roundabout_editor_preview.py` | Before/after bird's-eye editor showcase for a connected UK roundabout. Reuses `roundabout_preview.py` directly so adjustable radius, lane count/width, appearance toggles, mouths, and markings are rendered by the canonical component pipeline. |
 | `roundabout_arm_height_preview.py` | Side-elevation and banked-cut regression for the road-to-arm handoff. It requires Drive, shoulder, sidewalk/kerb, and marking top planes to share one datum on flat, elevated, and banked approaches, and rejects the retired 0.05-stud arm sink plus its apron/frontage compensations. |
+| `roundabout_cut_handoff_preview.py` | Source-linked asymmetric-pavement regression for all four near/far-end entry/exit orientations. It requires the arm profile and copied source widths to share one mirror decision, catches the rectangular sidewalk-cap regression, and injects four breaks. |
 | `road_preview.py` | An ordinary road on its own - straights, arcs down to R=30, an S-curve, avenues, motorways. Bare ground inside the road, edge sawtooth, broken edge lines. |
 | `straight_optimization_preview.py` | Exact-straight 2048-stud splitting, explicit stretch breakpoints, conservative Drive-only lateral merging, source-range metadata contracts, and a before/after surface-Part render. |
 | `curved_superelevation_optimization_preview.py` | Regression harness for the build-0.1 per-component curved emitter and the retired wide-band candidate. Ports the density-independent roll profile and roll-aware station refinement, proves non-straight coalescing stays disabled at 990/882 reference Parts, bounds each Drive span to one component, checks exact source-edge parity, injects break-tests, and renders bird's-eye/side/cross-section comparisons. |
@@ -93,6 +94,8 @@ python3 roundabout_editor_preview.py --check
 python3 roundabout_editor_preview.py --out out/roundabout-editor
 python3 roundabout_arm_height_preview.py --check
 python3 roundabout_arm_height_preview.py --out out/roundabout-arm-height.png
+python3 roundabout_cut_handoff_preview.py --check
+python3 roundabout_cut_handoff_preview.py --out out/roundabout-cut-handoff.png
 python3 road_preview.py --render          # every road case, with PNGs
 python3 turbo_check.py                    # turbo peel + its break-tests
 python3 road_break_tests.py               # road scans + their break-tests

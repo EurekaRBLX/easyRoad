@@ -3320,8 +3320,8 @@ local function planMouth(
 		-- outward, and which of those matches the curve depends on which END of
 		-- the road the junction sits at - so it is neither "always the exit" nor
 		-- a property of the arm alone.
-		local profile =
-			armProfileFor(group, solo, style, scale, travelsInward == atStart, ringSidewalkWidthM(style), spokeProfile)
+		local mirrored = travelsInward == atStart
+		local profile = armProfileFor(group, solo, style, scale, mirrored, ringSidewalkWidthM(style), spokeProfile)
 		local mergeRadius = ringKerbRadiusStuds - profile.OuterOffsetStuds
 		if mergeRadius <= 1 then
 			return nil
