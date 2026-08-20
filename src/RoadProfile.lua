@@ -215,6 +215,43 @@ function RoadProfile.Clone(profile: RoadProfile): RoadProfile
 	}
 end
 
+-- Re-express a profile for a curve whose station direction has been reversed.
+-- Looking along the reversed curve swaps physical left/right, and traffic that
+-- was travelling toward the old start now travels with the new curve. Merely
+-- cloning the old profile therefore breaks asymmetric handoffs (for example a
+-- one-way highway's narrow inner shoulder jumps to the outer edge).
+--
+-- RightBoundary belongs to the component on the LEFT of a boundary. After the
+-- component order is reversed, that owner is the old component immediately to
+-- the right, so take the preceding old component's rule. Directional compound
+-- lines also exchange their physical stripe sides.
+function RoadProfile.Reverse(profile: RoadProfile): RoadProfile
+	local reversed = RoadProfile.Clone(profile)
+	local source = profile.Components
+	local components: { ProfileComponent } = table.create(#source)
+
+	local function mirroredBoundary(rule: BoundaryRule?): BoundaryRule?
+		if rule == "SolidDash" then
+			return "DashSolid"
+		elseif rule == "DashSolid" then
+			return "SolidDash"
+		end
+		return rule
+	end
+
+	for oldIndex = #source, 1, -1 do
+		local component = source[oldIndex]
+		table.insert(components, {
+			Kind = component.Kind,
+			WidthM = component.WidthM,
+			Direction = -component.Direction,
+			RightBoundary = if oldIndex > 1 then mirroredBoundary(source[oldIndex - 1].RightBoundary) else nil,
+		})
+	end
+	reversed.Components = components
+	return reversed
+end
+
 -- Match two profiles for a widening / narrowing transition segment.
 --
 -- Returns two component lists of equal length. Where one profile has a

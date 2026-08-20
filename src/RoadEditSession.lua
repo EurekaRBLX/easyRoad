@@ -1739,7 +1739,11 @@ local function createRoadEditSession(
 			return {
 				Position = curve:PosAt(0),
 				Tangent = -curve:TangentAt(0),
-				Profile = RoadProfile.Clone(profile),
+				-- The continuation curve points away from the old start, so its
+				-- local left/right frame is reversed too. Preserve the physical
+				-- cross-section rather than mirroring asymmetric shoulders, bays,
+				-- directional lanes, and boundary markings across the datum.
+				Profile = RoadProfile.Reverse(profile),
 				ProfileOffsetM = -originalData.ProfileOffsetStartM,
 			}
 		end
