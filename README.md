@@ -17,7 +17,7 @@
 <br />
 <div align="center">
   <a href="https://github.com/EurekaRBLX/easyRoad">
-    <img src="https://avatars.githubusercontent.com/u/340591808?v=4" alt="Eureka organization avatar" width="80" height="80">
+    <img src="images/easyroad-logo.png" alt="easyRoad logo" width="120" height="120">
   </a>
 
   <h3 align="center">easyRoad</h3>
