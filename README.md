@@ -72,10 +72,14 @@
 <!-- ABOUT THE PROJECT -->
 ## About The Project
 
-[![easyRoad Python geometry preview][product-screenshot]](tools/preview/README.md)
+| Curved avenue | Divided highway |
+| :---: | :---: |
+| [![Curved avenue Python geometry preview][product-screenshot]](images/screenshot.png) | [![Divided highway Python geometry preview][highway-render]](images/highway.png) |
+| **Parallel roadways** | **Turbo roundabout** |
+| [![Parallel roadways Python geometry preview][parallel-render]](images/parallel-roadways.png) | [![Turbo roundabout Python geometry preview][roundabout-render]](images/roundabout.png) |
 
-*Python geometry preview from the project's validation tools. See the
-[rendering and validation limits](tools/preview/README.md).*
+*Python geometry previews from the project's validation tools. Select an image
+to view the full render. See the [rendering and validation limits](tools/preview/README.md).*
 
 easyRoad is a Roblox Studio plugin. Use it to place roads, connect junctions,
 and edit road cross-sections.
@@ -283,6 +287,9 @@ Project Link: [https://github.com/EurekaRBLX/easyRoad](https://github.com/Eureka
 [discord-shield]: https://img.shields.io/badge/Discord-Eureka-5865F2?style=for-the-badge&logo=discord&logoColor=white
 [discord-url]: https://discord.gg/srGUZ25jrz
 [product-screenshot]: images/screenshot.png
+[highway-render]: images/highway.png
+[parallel-render]: images/parallel-roadways.png
+[roundabout-render]: images/roundabout.png
 [Luau]: https://img.shields.io/badge/Luau-00A2FF?style=for-the-badge&logo=luau&logoColor=white
 [Luau-url]: https://luau.org/
 [Roblox-Studio]: https://img.shields.io/badge/Roblox_Studio-006FFF?style=for-the-badge&logo=robloxstudio&logoColor=white

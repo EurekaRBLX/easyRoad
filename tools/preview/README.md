@@ -6,6 +6,77 @@ Studio checks described in the [development guide](../../docs/development.md).
 Python 3.10 or later is required. The tools use the standard library; no Python
 packages are needed.
 
+## How the preview works
+
+The tools start with explicit geometry inputs. A road case supplies a curve and
+a cross-section. A roundabout case supplies the ring radius, lanes, traffic
+side, approach profiles, and markings.
+
+1. Select the case and its inputs.
+2. Build the geometry with the shared Python helpers.
+3. Draw the emitted polygons in material colours or as a coverage map.
+4. Run the relevant scans and inspect their text reports.
+
+The renderer and scans use the model geometry for different purposes. The
+renderer shows its shape. The scans measure selected coverage, width, seam,
+marking, and ownership rules. A rendered image is not a scan result.
+
+### Material view and coverage view
+
+These views use the same `turbo4` roundabout scene and viewport.
+
+| Material view | Coverage view |
+| --- | --- |
+| [![Python Turbo roundabout polygons drawn in material colours](../../images/roundabout.png)](../../images/roundabout.png) | [![The same Python roundabout footprint drawn in gray on a magenta background](../../images/preview/roundabout-coverage.png)](../../images/preview/roundabout-coverage.png) |
+| Surface colours separate the roadway, pavement, island, and markings. | Gray shows the modeled coverage. Magenta shows the background. |
+
+Magenta outside the expected road footprint is normal. Magenta inside that
+footprint can indicate uncovered geometry. Gray alone does not establish that
+a surface is drivable or has the correct material or height. The coverage
+image draws polygons; it does not mark the sample points used by the scans.
+
+A thin magenta pixel is a render observation, not a measured gap. Polygon
+rasterization can produce small edge differences. Compare the image scale with
+the scan pitch and reporting threshold before treating a pixel as a defect.
+
+The scans sample selected regions. A gap smaller than the sample pitch can be
+missed. Check the reported pitch, thresholds, and scan scope before drawing a
+conclusion. Use Studio to verify the plugin result.
+
+### More geometry examples
+
+| Curved avenue | Parallel roadways |
+| --- | --- |
+| [![Python curved avenue with a median and pavement](../../images/screenshot.png)](../../images/screenshot.png) | [![Python parallel carriageways built along fitted offset curves](../../images/parallel-roadways.png)](../../images/parallel-roadways.png) |
+| `scurve_r80` supplies the curve and avenue profile. | Offset cubic chunks feed the shared road emitter. |
+
+These are headless Python geometry renders. They are not Roblox Studio
+screenshots. Several emission paths still use legacy midpoint boxes, as
+described in [Scope and limitations](#scope-and-limitations).
+
+### Regenerate the README images
+
+Run this command from the repository root:
+
+```sh
+python3 tools/preview/readme_gallery.py
+```
+
+The command writes the material renders under `images/` and the paired
+roundabout coverage view under `images/preview/`.
+
+| Image | Case or geometry source |
+| --- | --- |
+| `images/screenshot.png` | `road_preview.CASES["scurve_r80"]`: curved avenue. |
+| `images/highway.png` | `road_preview.CASES["motorway_tight"]`: divided motorway. |
+| `images/parallel-roadways.png` | `parallel_preview.demo_curve` and `offset_curve`: fitted offset chunks converted to `preview_core` curves, then built with `emit_road`. |
+| `images/roundabout.png` | `roundabout_preview.CASES["turbo4"]`: four-arm Turbo roundabout. |
+| `images/preview/roundabout-coverage.png` | The same `turbo4` geometry and viewport, drawn as coverage. |
+
+The gallery uses the modeled surface polygons. The separate
+`parallel_preview.py` renderer draws an offset-path schematic; it does not draw
+the emitted road surfaces used in this gallery.
+
 ## Run the suite
 
 Run commands from the repository root:
@@ -47,6 +118,7 @@ their data and alignment rules.
 
 | Tool | Checks or output |
 | --- | --- |
+| `readme_gallery.py` | Standardized material and coverage renders for the repository documentation. |
 | `preview_core.py` | Shared curve, cross-section, emission, and geometry helpers. Some emission paths model legacy boxes. |
 | `roundabout_preview.py` | Ring, arms, mouths, splitter islands, and roundabout scans. |
 | `road_preview.py` | Ordinary road gaps, edge shape, and selected marking continuity. |
@@ -111,11 +183,13 @@ uses an output directory; many other preview scripts use a PNG file path.
 Roundabout renders use the ignored `out/` directory by default:
 
 - `<case>_parts.png` shows the modeled surfaces in their material colours.
-- `<case>_gaps.png` marks uncovered sample points in magenta.
+- `<case>_gaps.png` draws modeled coverage in gray on a magenta background.
 
-Magenta inside the expected covered footprint can indicate a gap. The scan is
-sampled, so features below its pitch can be missed. The `--hairline` option
-controls the reported roundabout gap threshold; its default is 0.15 studs.
+The coverage image does not show the scan's sample points. Magenta outside the
+expected covered footprint is normal. Magenta inside it can indicate a gap.
+Read the text report for sampled scan results. Features below the scan pitch
+can be missed. The `--hairline` option controls the reported roundabout gap
+threshold; its default is 0.15 studs.
 
 The scans answer different questions:
 
