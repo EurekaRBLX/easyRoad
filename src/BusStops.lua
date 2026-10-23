@@ -5,7 +5,7 @@
 -- road model, not a cross-section change - the road's lane layout is
 -- untouched. For a real physical pull-in bay (a cross-section change), see
 -- RoadBuilder.BuildWithBay / the pie menu's separate "Add Bus Bay" flow.
--- (See TODO.md for the still-deferred marking "stretch" mechanic.)
+-- Marking stretches are managed separately by MarkingStretches.lua.
 
 local HttpService = game:GetService("HttpService")
 

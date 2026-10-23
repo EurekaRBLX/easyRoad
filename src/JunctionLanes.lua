@@ -1,6 +1,6 @@
 --!strict
 -- Per-lane connection graph at a junction - the data-model half of the
--- CS2-style "lane connector" feature from TODO.md's Phase 3, plus a thin
+-- proposed lane connector feature in ROADMAP.md, plus a thin
 -- mock Traffic Light API sharing the same graph.
 --
 -- v0 / reserved API surface, not a built feature: ComputeConnections below

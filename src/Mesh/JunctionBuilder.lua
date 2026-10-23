@@ -69,7 +69,7 @@
 --    skewed triangles across the asphalt). Every failure mode in this
 --    layer degrades to less decoration on top of an intact base pad.
 --
--- Still missing (TODO.md): stop lines/crosswalks/lane guidance through the
+-- Still missing (ROADMAP.md): stop lines/crosswalks/lane guidance through the
 -- pad. One-segment transitions and bay roads keep their source-relative
 -- features while trimming; genuinely multi-segment roads remain unsliced.
 

@@ -3,8 +3,7 @@
 -- rendering into a ViewportFrame as a road-library thumbnail.
 --
 -- This is a straight-line call into the real RoadBuilder rather than a
--- separate render algorithm - confirmed feasible without new extrusion
--- logic (see TODO.md's "Road library icons" note): a straight PolyCurve of
+-- separate render algorithm. A straight PolyCurve of
 -- a fixed short length produces exactly the deck strips + markings a real
 -- road would have, just with no curvature to sample.
 

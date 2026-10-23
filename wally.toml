@@ -1,8 +1,10 @@
 [package]
+# Keep the existing registry scope. This repository does not claim a new Wally scope.
 name = "gamesonrblx/easyroad"
 version = "0.1.0"
 registry = "https://github.com/UpliftGames/wally-index"
 realm = "shared"
+license = "AGPL-3.0-only"
 
 [dependencies]
 Signal = "stravant/goodsignal@0.3.1"

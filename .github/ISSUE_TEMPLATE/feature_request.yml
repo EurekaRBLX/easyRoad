@@ -1,0 +1,17 @@
+name: Feature request
+description: Propose a change to easyRoad.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Describe the road-building task that you cannot complete.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed result
+      description: Describe the expected behavior and any alternatives you tried.
+    validations:
+      required: true

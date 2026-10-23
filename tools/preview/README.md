@@ -1,221 +1,164 @@
-# Headless preview and validation
+# Preview and validation tools
 
-There is no Roblox Studio in this environment and no Luau runtime. This
-directory is the only automated evidence the geometry works, and it is worth
-being precise about what that evidence is: **these tools re-implement the
-geometry in Python; they do not execute the plugin.** A green run says the
-algorithm as ported produces sound geometry. It cannot say the Lua does.
+These Python tools model geometry and inspect selected source contracts. They
+do not execute the Luau plugin or Roblox Studio. Use them with Luau parsing and
+Studio checks described in the [development guide](../../docs/development.md).
+Python 3.10 or later is required. The tools use the standard library; no Python
+packages are needed.
 
-Run everything:
+## Run the suite
+
+Run commands from the repository root:
 
 ```sh
-python3 tools/preview/validate.py          # quick set, ~1-2 min
-python3 tools/preview/validate.py --full   # every case, several minutes
-python3 tools/preview/validate.py --list   # what would run
+python3 tools/preview/validate.py --list
+python3 tools/preview/validate.py
+python3 tools/preview/validate.py --full
 ```
 
-`validate.py` carries a `KNOWN_OPEN` table of (suite, case, check) triples that
-fail on purpose, each with a reason. It fails on a **new** failure and also when
-a known-open one starts **passing** - a stale expected-failure list is the same
-trap as an invariant nobody re-reads.
+The default run selects a smaller set of roundabout cases. `--full` expands
+that set. Runtime depends on the machine and selected cases.
 
-## The pieces
+`validate.py` keeps expected failures in `KNOWN_OPEN`. It reports a new failure
+as an error. It also reports an expected failure that starts passing, so the
+entry can be reviewed and removed. Inspect the current table before assuming
+that every reported failure is new.
 
-| file | what it is |
-|---|---|
-| `preview_core.py` | The shared emission port: curve + cross-section to the rigid boxes RoadBuilder emits, one per (component, station interval). Geometry, `build_stations`, `emit_road`, `Part`, `point_in`, colours, region constants. Scenario-agnostic. |
-| `roundabout_preview.py` | Ring, arms, mouths, splitter islands, turbo markings, and the scans that only mean anything on a roundabout. |
-| `roundabout_editor_preview.py` | Before/after bird's-eye editor showcase for a connected UK roundabout. Reuses `roundabout_preview.py` directly so adjustable radius, lane count/width, appearance toggles, mouths, and markings are rendered by the canonical component pipeline. |
-| `roundabout_arm_height_preview.py` | Side-elevation and banked-cut regression for the road-to-arm handoff. It requires Drive, shoulder, sidewalk/kerb, and marking top planes to share one datum on flat, elevated, and banked approaches, and rejects the retired 0.05-stud arm sink plus its apron/frontage compensations. |
-| `roundabout_cut_handoff_preview.py` | Source-linked asymmetric-pavement regression for all four near/far-end entry/exit orientations. It requires the arm profile and copied source widths to share one mirror decision, catches the rectangular sidewalk-cap regression, and injects four breaks. |
-| `start_extension_preview.py` | Source-linked bird's-eye contract for `Place More` continuation. It checks both road ends across straight, curved, and asymmetric profile-offset fixtures: Start must reverse the endpoint tangent, local profile offset, and component order/directions, while End retains each. The six-panel render makes the physical seam datum and outgoing tangent visible, and five injected sign/profile failures must be rejected. |
-| `road_preview.py` | An ordinary road on its own - straights, arcs down to R=30, an S-curve, avenues, motorways. Bare ground inside the road, edge sawtooth, broken edge lines. |
-| `straight_optimization_preview.py` | Exact-straight 2048-stud splitting, explicit stretch breakpoints, conservative Drive-only lateral merging, source-range metadata contracts, and a before/after surface-Part render. |
-| `curved_superelevation_optimization_preview.py` | Regression harness for the build-0.1 per-component curved emitter and the retired wide-band candidate. Ports the density-independent roll profile and roll-aware station refinement, proves non-straight coalescing stays disabled at 990/882 reference Parts, bounds each Drive span to one component, checks exact source-edge parity, injects break-tests, and renders bird's-eye/side/cross-section comparisons. |
-| `structure_preview.py` | Rigid imported-module socket stepping, procedural viaduct elevation, single/twin pier and cap geometry, independent finish channels, and arched tunnel cross-section; check-only or one combined PNG. |
-| `ground_asset_preview.py` | Source-linked custom Ground asset contract: strict/recoverable socket validation, safe procedural-surface replacement ordering, shared rigid repeat-to-fit coverage, injected failures, and a combined plan/cross-section PNG. |
-| `parallel_preview.py` | Curved parallel-carriageway offset/refit, an opposed pair, and independent direction choices for larger groups. |
-| `transition_anchor_preview.py` | Bird's-eye one-way 3-to-4 and 4-to-3 transition datum contract. Shows Centre / Left edge / Right edge side by side, checks the selected reference remains numerically fixed throughout the smoothstep taper and into a chained constant-width segment, verifies legacy offsets default to zero, and includes twelve injected break-tests. |
-| `cross_section_connection_preview.py` | Bird's-eye connection-mode contract across left / centre / right snap references. Contrasts the default split-and-build-junction workflow with target-preserving tangential lead-ins, covers distance-ranked endpoint/mid-span selection, parallel carriageway anchoring, carried/transition profile-offset alignment, live preview refresh, and feature-bearing targets, and includes 26 injected break-tests. |
-| `setup_wizard_preview.py` | Source-linked first-run setup QA: representative Welcome, Units, and Enjoy screens, the actual six-step progress fractions, easyRoad's theme accent, full-host sizing, unit choices, and five injected break-tests. |
-| `regional_marking_preview.py` | Bird's-eye US/UK marking-colour contract: yellow US opposing-flow centre and divided-carriageway traffic-left edges, white same-direction/traffic-right lines, global highway `NoLine` suppression for UK median edges, exactly one yellow line at a one-way highway's Drive/inner-shoulder boundary, and direction-stable 2x2↔3x3 yellow-edge mapping. The bottom US panel also shows an explicit local `NoLine` span. Includes nine injected semantic break-tests. |
-| `hardware_reference_check.py` | Parses the five `hardware/*.rbxmx` references and verifies their deck/base, parapet/wall, and tunnel-crown cues. |
-| `junction_pad_preview.py`, `corner_preview.py` | Junction pad and curb-return shapes. Not yet wired into `validate.py`. |
-| `turbo_check.py`, `road_break_tests.py`, `structure_break_tests.py` | Break-tests: reintroduce a defect and confirm the relevant scan catches it. |
-| `roundabout_parity_contract.py` | Static plus 3D ownership contract for arm markings, exact arm sidewalks, generated roadway footprints, ring-pavement subtraction, hybrid splitter frontage, Turbo overlays, and LHT/RHT one-way mouths; catches 25 injected regressions. |
-| `check_parity.py` | Constants shared with the Lua. Constants only. |
-| `dump_compare.py` | Diffs a live plugin dump against this port. |
-| `raster.py` | Stdlib-only PNG writer. |
+## Scope and limitations
 
-`preview_core.py` was split out of `roundabout_preview.py`, which used to be the
-whole tool. The emission port was always generic, so a road scenario cost a file
-rather than a rewrite.
+A successful run supports the specific checks that ran. It does not establish
+that the plugin loads, works in Studio, or renders exactly like the model.
 
-## Adding a scenario
+The current runtime `RoadBuilder` emits exact station-corner quadrilaterals for
+curved surfaces. Several Python render paths still model earlier padded
+midpoint boxes. Keep this difference in mind when interpreting preview gaps,
+surface-Part counts, or render comparisons. Source-linked checks can detect
+selected implementation changes, but they do not make a Python port equivalent
+to execution of the Luau module.
 
-Import from `preview_core`, build a parts list, write scans that ask questions
-your scenario can actually answer - then **write a break-test before believing
-any of them**. Every scan in `road_preview.py` passed every case the first time
-it ran, and two were measuring nothing:
+The roundabout parity contract models selected surface and marking ownership
+rules in three dimensions. General Roblox Wedge rendering, camera-dependent
+flicker, collision, and arbitrary Bézier grades still need Studio checks.
+`Markings.lua` is not fully ported. General profile transitions and bus bays are
+also outside the Part-level road port, although dedicated tools check some of
+their data and alignment rules.
 
-- the sawtooth scan compared adjacent samples, but a strip boundary is a single
-  jump with flat runs either side, so every jump was measured against a zero and
-  no sign change was ever seen;
-- its threshold was then a fixed 0.1 studs, which the clean road's own miter
-  breathing exceeded. It is now 1% of the road's own width, because the
-  legitimate jitter scales with the road: 0.121 studs on a 40-stud road, 0.233
-  on an 85-stud one - 0.30% and 0.27%.
+## Tool map
 
-Three rules in `check_turbo` died the same way. See ROUNDABOUT.md section 6.
-
-## Simulating the emission
-
-Every other check in this repo works on idealised geometry - centrelines and
-offset polygons. Roblox never sees those. It sees rigid boxes, one per
-(component, station interval), each a rotated rectangle approximating an arc.
-Facets, sliver gaps and z-fighting only exist at that level, so an idealised
-render cannot show them. This tool ports the emission path directly:
-
-| ported from | what |
+| Tool | Checks or output |
 | --- | --- |
-| `RoadBuilder.buildStations` | adaptive stepping, incl. the offset-edge curvature term |
-| `RoadBuilder` deck-strip branch | `Size = (width, h, nominalLength + padding)`, `CFrame = midFrame * CFrame.new(centerOffset, y, 0)` |
-| `RoadBuilder.curveMiterPad` | `padding = |edgeDistance| * curvature * nominalLength + 0.08` |
-| `RoadBuilder.placeMarkingSpan` | endpoints anchored to true curve positions |
-| `RoundaboutBuilder` | ring, split arms, splitter island, mouth sector opening |
+| `preview_core.py` | Shared curve, cross-section, emission, and geometry helpers. Some emission paths model legacy boxes. |
+| `roundabout_preview.py` | Ring, arms, mouths, splitter islands, and roundabout scans. |
+| `road_preview.py` | Ordinary road gaps, edge shape, and selected marking continuity. |
+| `roundabout_editor_preview.py` | Radius, lane, width, and appearance changes in the Python roundabout model. |
+| `roundabout_arm_height_preview.py` | Source-linked surface datum at flat, elevated, and banked arm cuts. |
+| `roundabout_cut_handoff_preview.py` | Source-linked asymmetric pavement handoff at both road ends. |
+| `roundabout_parity_contract.py` | Selected source and 3D surface/paint ownership contracts, with injected regressions. |
+| `junction_lifecycle_contract.py` | Saved junction and roundabout lifecycle source contracts. |
+| `integration_contracts.py` | Selected UI, source-data, placement, and rebuild integration contracts. |
+| `start_extension_preview.py` | Start/end continuation tangent, component direction, and profile offset. |
+| `straight_optimization_preview.py` | Straight-run length limits, compatible Drive merging, and source metadata. |
+| `curved_superelevation_optimization_preview.py` | Canonical roll, station refinement, and non-straight merge restrictions; retains legacy emission comparisons. |
+| `structure_preview.py` | Rigid module fit, slab and pier layout, finishes, and tunnel cross-section. |
+| `ground_asset_preview.py` | Socket validation, imported Ground assets, and surface replacement rules. |
+| `hardware_reference_check.py` | Dimensions and structural cues in the five hardware reference Models. |
+| `parallel_preview.py` | Curved offsets and independent roadway directions. |
+| `transition_anchor_preview.py` | Centre/left/right alignment through widening and narrowing transitions. |
+| `cross_section_connection_preview.py` | Snapping reference and target-preserving connection contracts. |
+| `multinode_junction_preview.py` | Junction approach ports and per-corner geometry contracts. |
+| `marking_boundary_preview.py` | Selected road-profile boundary marking rules. |
+| `setup_wizard_preview.py` | Selected first-run setup UI and source contracts. |
+| `regional_marking_preview.py` | Selected US/UK marking colours and boundary semantics. |
+| `turbo_check.py` | Turbo exit peels and injected marking defects. |
+| `road_break_tests.py`, `structure_break_tests.py` | Injected defects that must be detected by the relevant scans. |
+| `junction_pad_preview.py`, `corner_preview.py` | Standalone junction pad and corner experiments; not in the main validation runner. |
+| `check_parity.py` | Constants present in the Python and Luau roundabout code. |
+| `dump_compare.py` | Diagnostic planning output for comparison with a Studio junction dump. |
+| `raster.py` | PNG writer used by the preview tools. |
 
-## Running one scenario directly
-
-```sh
-cd tools/preview
-python3 roundabout_preview.py             # uk4 uk3 us4
-python3 roundabout_preview.py uk5mini     # a named case
-python3 roundabout_preview.py --no-render # scan only
-python3 roundabout_editor_preview.py --check
-python3 roundabout_editor_preview.py --out out/roundabout-editor
-python3 roundabout_arm_height_preview.py --check
-python3 roundabout_arm_height_preview.py --out out/roundabout-arm-height.png
-python3 roundabout_cut_handoff_preview.py --check
-python3 roundabout_cut_handoff_preview.py --out out/roundabout-cut-handoff.png
-python3 road_preview.py --render          # every road case, with PNGs
-python3 turbo_check.py                    # turbo peel + its break-tests
-python3 road_break_tests.py               # road scans + their break-tests
-python3 straight_optimization_preview.py --check
-python3 straight_optimization_preview.py --out out/straight-optimization.png
-python3 curved_superelevation_optimization_preview.py --check
-python3 curved_superelevation_optimization_preview.py --out out/curved-bank.png
-python3 structure_preview.py --check      # module coverage + pier contact
-python3 ground_asset_preview.py --check   # Ground import, sockets + replacement ownership
-python3 parallel_preview.py --check       # curved offsets + direction layouts
-python3 transition_anchor_preview.py --check
-python3 transition_anchor_preview.py --out out/transition-anchors.png
-python3 cross_section_connection_preview.py --check
-python3 cross_section_connection_preview.py --out out/cross-section-connections.png
-python3 setup_wizard_preview.py --check
-python3 setup_wizard_preview.py --out out/setup-wizard.png
-python3 regional_marking_preview.py --check
-python3 regional_marking_preview.py --out out/regional-marking-colours.png
-python3 structure_break_tests.py          # prove gaps/hovering piers fail
-python3 hardware_reference_check.py       # inspect rbxmx structural references
-python3 structure_preview.py --out out/structures.png
-python3 ground_asset_preview.py --out out/ground-road-assets.png
-python3 parallel_preview.py --out out/parallel-roadways.png
-```
-
-Exits non-zero if any case has visible bare ground, so it works as a check.
-Stdlib only - no numpy, no Pillow; `raster.py` writes PNGs with `zlib`.
-
-## Output
-
-Two views per case, in `out/` (gitignored):
-
-- `<case>_parts.png` - every emitted part in its material colour, which is
-  roughly what Studio will show.
-- `<case>_gaps.png` - **magenta is bare ground.** Anything magenta inside the
-  ring footprint is a hole no part covers.
-
-It also measures the **approach/arm seam**: it sweeps the road's own
-perpendicular either side of the cut and compares how far the covered material
-reaches on each side. A non-zero step is the pavement or kerb line jogging
-sideways where the road meets the mouth. Sizing the arms from their own
-half-width plus a splitter (rather than from the approach's roadway edges)
-scores 1.80 studs stepped; aligned, 0.00.
-
-The bare-ground scan samples the ring footprint on a polar grid and clusters whatever it
-finds by angle, reporting each cluster's depth in studs. Clusters shallower
-than `--hairline` (default 0.15 studs) are reported but do not fail: the ring's
-innermost strips are chords of the island circle, so their inner edge stands
-off it by about 0.05 studs at default settings, and no padding removes that
-without overlapping the island instead.
-
-## Parity with the Lua
-
-`roundabout_preview.py` is a hand-written Python **re-implementation** of
-`RoundaboutBuilder.lua`, not an execution of it. Nothing keeps the two in sync,
-so a constant tuned on one side and forgotten on the other lets the preview
-quietly certify geometry the plugin never builds.
+## Run one tool
 
 ```sh
-python3 check_parity.py     # exits non-zero on drift
+python3 tools/preview/roundabout_preview.py uk5mini
+python3 tools/preview/roundabout_preview.py --no-render
+python3 tools/preview/road_preview.py --render
+python3 tools/preview/roundabout_editor_preview.py --check
+python3 tools/preview/roundabout_arm_height_preview.py --check
+python3 tools/preview/roundabout_cut_handoff_preview.py --check
+python3 tools/preview/straight_optimization_preview.py --check
+python3 tools/preview/curved_superelevation_optimization_preview.py --check
+python3 tools/preview/structure_preview.py --check
+python3 tools/preview/ground_asset_preview.py --check
+python3 tools/preview/parallel_preview.py --check
+python3 tools/preview/transition_anchor_preview.py --check
+python3 tools/preview/cross_section_connection_preview.py --check
+python3 tools/preview/setup_wizard_preview.py --check
+python3 tools/preview/regional_marking_preview.py --check
 ```
 
-It compares every constant present on both sides and flags orphans, so renames
-and deletions surface. It does **not** compare the algorithm - two
-implementations can agree on every number and still do different things with
-them. Run it alongside `roundabout_preview.py` after touching either file.
+Render-capable check tools accept an `--out` path. For example:
 
-## Behavioural comparison (`dump_compare.py`)
+```sh
+python3 tools/preview/structure_preview.py --out tools/preview/out/structures.png
+python3 tools/preview/roundabout_editor_preview.py --out tools/preview/out/roundabout-editor
+```
 
-`check_parity.py` compares constants. This compares what the two
-implementations actually *do*, which is the part that matters.
+Use each script's `--help` output for its options. `roundabout_editor_preview.py`
+uses an output directory; many other preview scripts use a PNG file path.
 
-1. In Studio, select the junction, set Radius / Lanes / Lane width, press
-   **Print geometry to Output**. That calls
-   `RoundaboutBuilder.DescribeJunction`, which reuses `planMouth`,
-   `splitBudgetFor` and `resolveSplits` - the same functions the real build
-   calls - and does not modify anything.
-2. Run the preview side with the same inputs:
+## Read the output
+
+Roundabout renders use the ignored `out/` directory by default:
+
+- `<case>_parts.png` shows the modeled surfaces in their material colours.
+- `<case>_gaps.png` marks uncovered sample points in magenta.
+
+Magenta inside the expected covered footprint can indicate a gap. The scan is
+sampled, so features below its pitch can be missed. The `--hairline` option
+controls the reported roundabout gap threshold; its default is 0.15 studs.
+
+The scans answer different questions:
+
+| Check | Question | Limit |
+| --- | --- | --- |
+| `scan_gaps` | Is the ring annulus covered? | Does not cover the approach mouths. |
+| `scan_mouths` | Is the mouth envelope covered without excessive overhang? | Does not establish that every covering material has the correct height or kind. |
+| `circulating_width` | How much drivable ring width remains? | Does not establish approach coverage. |
+| `seam_steps` | Do lateral extents agree at the approach cut? | Does not establish the complete end-cap shape. |
+| `check_turbo` | Does each peel reach the selected exit boundary? | Does not supply a traffic-design assessment. |
+| `check_parity.py` | Do shared constants agree? | Does not compare algorithms or runtime behavior. |
+
+## Compare a Studio planning dump
+
+1. Select a junction in Studio.
+2. Set the roundabout radius, lanes, and lane width.
+3. Select **Print geometry to Output**.
+4. Run the Python planner with the same inputs:
 
    ```sh
-   python3 dump_compare.py --radius 30 --lanes 1 --legs 0,90,180,270
+   python3 tools/preview/dump_compare.py --radius 30 --lanes 1 --legs 0,90,180,270
    ```
 
-3. Diff. Same field order and precision on both sides, so plain `diff` works.
+5. Compare the fields and explain each difference.
 
-A mismatch is a real divergence and preview results cannot be trusted until it
-is explained. A match means the difference between preview renders and Studio
-is the RENDERER - idealised polygons versus rigid parts - and not the geometry.
+The Studio action calls `RoundaboutBuilder.DescribeJunction` without changing
+the road. The preview assumes radial legs. For a non-radial approach, the
+plugin follows the approach centreline, so its mouth angle can differ from the
+leg bearing used by the preview.
 
-Known caveat: the preview's legs are radial, so its mouth angle is simply the
-leg bearing. The plugin aims along the approach's own centreline
-(`rayCircleFirstHit`), which only coincides for radial approaches. Expect
-`mouthAngle` to differ for legs that do not point at the centre - which is
-common for roads produced by an X-split.
+Agreement supports the reported planning fields. It does not establish full
+algorithm equivalence, emitted Instance geometry, or rendering parity.
 
-## What a green run does NOT cover
+## Add or change a scenario
 
-- Nothing executes in Roblox. A nil identifier, a Luau error, or the Lua
-  diverging from this port are all invisible here.
-- Mostly Part **footprints in plan**. The roundabout parity contract models the
-  two explicit marking top planes, but general heights, render order, dash phase
-  and z-fighting still require a live check.
-- `transition_anchor_preview.py` deliberately ports only the cross-section datum
-  translation: Centre remains at zero, Left edge remains at the source left
-  coordinate, or Right edge remains at the source right coordinate. It checks
-  both one-way 3-to-4 widening and 4-to-3 narrowing, then carries the resulting
-  profile-centre offset into a constant-width continuation and requires both
-  edges and the centre to meet with zero join error. General emitted transition
-  strips, `MatchForTransition` topology, and bus bays (`BuildWithBay`) are not
-  ported, so this does not certify their Part-level seams.
-- `curved_superelevation_optimization_preview.py` is deliberately narrower than
-  a general 3D road port: it models an exact circular centreline with a
-  station-defined bank runoff and the current two-triangle top-surface
-  construction. It proves each greedy lateral merge stays inside the builder's
-  0.025-stud bank-twist bound and, for constant roll, the 0.025-stud extra
-  midpoint-box plan-overhang bound. Its bird's-eye panels draw the actual
-  curvature-padded midpoint boxes rather than ideal station-edge quads. It does
-  not certify arbitrary Bezier grade, Roblox Wedge render order, collision, or a
-  lane-width transition.
-- `Markings.lua` is not ported - `emit_road` approximates it in ~30 lines, so a
-  wrong marking is largely invisible, and `scan_mouths` counts a marking Part as
-  coverage.
+1. Reuse the shared helpers when their geometry matches the feature.
+2. State the question each scan answers.
+3. Add a fixture that exercises that question.
+4. Inject a representative defect and confirm the scan rejects it.
+5. Record behavior that the model does not cover.
+6. Compare affected source rules with the Luau implementation.
+7. Check the affected plugin workflow in Studio.
+
+Keep sample pitch and thresholds tied to the geometry under test. Avoid checks
+that can pass because they inspected an unrelated road, line, or surface.
+Update model limits when the runtime emission method changes.

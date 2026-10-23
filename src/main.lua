@@ -1697,7 +1697,7 @@ return function(
 		-- second-level submenu (Add Bus Bay / Edit Lane Markings / Back) at
 		-- the same anchor - a standalone marker-only "Add Bus Stop" used to
 		-- live here too, removed since a real bus bay already serves as a
-		-- stop (see SHIPPED.md). "Add Bus Bay" opens a click-drag-to-place
+		-- stop. "Add Bus Bay" opens a click-drag-to-place
 		-- mode for a point on the road, then a length/width panel (see the
 		-- ConfirmingBay branch below) before committing the real
 		-- carved-out geometry. Hidden entirely for Highway-category roads,

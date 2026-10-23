@@ -1,8 +1,7 @@
 --!strict
 -- Reads and writes JunctionNode models: the shared point multiple roads
 -- connect to, replacing pure positional coincidence with a real reference
--- (see TODO.md's "Junctions & intersections" section for the design this
--- implements). Follows RoadInstance.lua's own convention - all data lives
+-- (see docs/architecture.md). Follows RoadInstance.lua's convention: data lives
 -- as attributes on the model itself.
 --
 -- A road references the junction it starts/ends at by Id (RW_StartJunctionId

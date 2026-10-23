@@ -10,7 +10,6 @@ on:
 # Explicit token scopes (repo default is read-only).
 permissions:
   contents: read
-  actions: write
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
@@ -34,8 +33,13 @@ jobs:
         run: python tools/preview/validate.py
 
       # Pure-Python builder (no Rojo binary). Produces Studio-loadable .rbxmx.
-      - name: Build EasyRoad.rbxmx
-        run: python tools/build_rbxmx.py dist/EasyRoad.rbxmx
+      - name: Build AGPL plugin artifacts
+        run: python tools/build_rbxmx.py
+
+      - name: Check distribution licenses and source freshness
+        run: |
+          python tools/check_distribution.py
+          git diff --exit-code -- dist src/LicenseNotices.lua
 
       - name: Install Rojo
         env:
@@ -49,7 +53,10 @@ jobs:
           ./rojo --version
 
       - name: Build EasyRoad.rbxm
-        run: ./rojo build default.project.json -o EasyRoad.rbxm
+        run: |
+          ./rojo build default.project.json -o EasyRoad.rbxm
+          ./rojo build default.project.json -o /tmp/EasyRoad-rojo.rbxmx
+          python tools/check_distribution.py --rojo-xml /tmp/EasyRoad-rojo.rbxmx
 
       - name: Upload plugin artifacts
         uses: actions/upload-artifact@v4
@@ -58,4 +65,7 @@ jobs:
           path: |
             EasyRoad.rbxm
             dist/EasyRoad.rbxmx
+            dist/EasyRoad-OSS.rbxmx
+            LICENSE
+            THIRD_PARTY_NOTICES.md
           if-no-files-found: error

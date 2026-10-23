@@ -1,116 +1,84 @@
-# Existing solutions survey: intersections & roundabouts
+# Intersection and roundabout geometry options
 
-Answering "are there open-source solutions we can make use of instead of
-hand-rolling the buggy corner geometry." Two viable directions found:
-(1) a **robust primitive** — 2D polygon boolean/union — that removes the
-whole fault class, and (2) a **translate-me MIT codebase**,
-`MarcusElg/roadcreator`, that already has a working arbitrary-N-way
-intersection AND the only OSS roundabout mesh generator found, using a
-corner primitive (bounded Bézier) that's inherently more robust than our
-fillet. Findings below.
+This document compares geometry approaches for future development. It does
+not define the current implementation or promise a change to it. See
+[ROUNDABOUT.md](../ROUNDABOUT.md) for the current roundabout design.
 
-## Newest & strongest: RoadCreator (MIT C#, translate to Luau)
+## Existing reference code
 
-`reference/roadcreator/` — full analysis in its README. The most directly
-useful reference: its intersection corner is a **quadratic Bézier through a
-control point** (a convex combination of 3 fixed points — bounded, cannot
-spike/self-intersect for any angle), on an **angle-sorted connection ring**,
-fanned from the true centre; its roundabout **projects each feeder onto the
-ring and Bézier-blends** the cross-section in (a real merge, the fix for our
-"humps"). Both are C#→Luau translation, not a paradigm change. This is the
-lowest-risk high-value path: swap our `Fillet.Compute` corner for the
-bounded-Bézier corner, and rebuild the roundabout feed as a ring projection.
+| Reference | Useful properties | Limits |
+| --- | --- | --- |
+| [RoadHelper](roadhelper/README.md) | Analytic T/X geometry, bounded corner fillets, intersection markings, and endpoint matching. | Uses two road axes and a fixed approach layout. The selected files have no roundabout generator. |
+| [RoadCreator](roadcreator/README.md) | Angle-sorted approaches, quadratic Bézier corners, and approach-to-ring connections. | Uses Unity mesh APIs. A Luau adaptation needs coordinate, surface, and editing checks. |
 
-## The core insight
+Both selected code sets have MIT license texts in their directories. Keep
+their notices with copied or adapted code. The easyRoad
+[BezierCorner.lua](../src/Geometry/BezierCorner.lua) module already records a
+RoadCreator adaptation. Its presence does not mean that every junction uses
+that corner method.
 
-Every fault we've reported live (5-way spikes, through-pair notches,
-mouth-crossing bands, self-intersecting sidewalk) comes from ONE thing:
-our pad builder decides *topology* (which approach edges pair, in what
-order, convex or reflex) and *rounds corners* in the same pass. Any
-approach that **first gets a provably-valid pad outline, then rounds it**
-eliminates the whole class, because rounding a known-simple polygon is
-well-conditioned. That's what the options below give us.
+## Separate topology from surface generation
 
-## Option A — Pure-Lua 2D polygon boolean (RECOMMENDED to prototype)
+A junction generator must decide which approach edges connect before it emits
+surface triangles. A roundabout generator must also decide which surface owns
+each part of an approach mouth. Keep those decisions explicit.
 
-Treat each approach's footprint (its trimmed end quad, extended to the
-junction centre) as a 2D polygon. **Union all of them** → the pad outline.
-The union of simple polygons is always a valid simple polygon: no pairing
-decision, no self-intersection possible, any leg count, any angles. Then
-triangulate the outline (ear-clipping) for asphalt, and round the reflex/
-convex vertices with our existing `Fillet.Compute` — now safe, because the
-outline is guaranteed simple.
+Test the resulting boundaries for winding, intersections, degenerate edges,
+and overlap. A bounded corner curve alone does not make the full boundary
+valid. A polygon union can produce several components or holes, so a boolean
+operation alone does not guarantee one simple outline.
 
-- **Libraries (pure Lua, Luau-portable, no FFI/DLL):**
-  - `Bigfoot71/2d-polygon-boolean-lua` — 460 lines, Greiner-Hormann, zero
-    host deps (only needs `unpack`→`table.unpack`). Cloned & verified
-    clean. Weakness: Greiner-Hormann is shaky on *degenerate* input
-    (shared vertices / collinear overlapping edges — exactly what road
-    quads meeting at a shared centre produce), so inputs need a tiny jitter
-    or a more robust variant.
-  - `PolyBool` (devforum "PolyBool Lua Library") — port of velipso/polybool,
-    uses the more degenerate-robust sweep approach. Better base if we hit
-    Greiner-Hormann's edge cases.
-- **Pros:** synchronous, pure Lua, no watertight-solid requirement, keeps
-  our per-Part editable output, MIT-ish licensed, small. Separates
-  "valid outline" from "rounded corners" cleanly.
-- **Cons:** need to pick/harden a robust boolean impl; triangulation +
-  rounding is new code (but on clean input). Roundabout still separate.
-- **Roundabout fit:** ring = an annulus polygon (outer circle minus inner
-  circle); each feeder mouth = subtract the spoke's footprint from the
-  sidewalk band, union its asphalt. Same primitive does both.
+## Polygon operations in Luau
 
-## Option B — Roblox engine CSG (`GeometryService:UnionAsync`)
+One option is to combine approach footprints in the ground plane before
+triangulating the resulting surface. For a roundabout, footprint subtraction
+can open a pavement band at an approach mouth.
 
-Build each approach/ring as a *watertight solid*, `UnionAsync` them; the
-engine computes the boolean pad. Roundabout = ring solid `SubtractAsync`
-island. Robust boolean geometry, zero hand-rolled corner math, any
-topology.
+This approach can retain synchronous geometry planning and output made from
+Roblox Parts. It also requires explicit rules for shared vertices, collinear
+edges, holes, disconnected results, numerical tolerances, and triangulation.
+Ground-plane clipping must preserve the intended surface height on banked or
+graded roads.
 
-- **Pros:** the engine does the hard part; genuinely robust; handles
-  junctions AND roundabouts with the same call.
-- **Cons:** async (100s of ms per op — fine for a click-to-build step, not
-  live preview); requires watertight/manifold input (our thin-strip build
-  isn't — we'd build purpose-made solid prisms); output is a Union/MeshPart
-  (loses our per-component Parts → per-lane markings/editing get harder,
-  must be overlaid separately); corners come out **sharp** (union of boxes)
-  — rounded curb returns would need pre-rounded input solids, back to
-  fillet math. Confirmed available in Studio plugins & at runtime (2026).
+Possible research sources include
+[2d-polygon-boolean-lua](https://github.com/Bigfoot71/2d-polygon-boolean-lua)
+and PolyBool implementations. They are not vendored dependencies here.
+Verify the exact implementation, license, and degenerate-input behavior before
+adopting any code. Do not perturb input coordinates merely to hide an invalid
+boundary; a perturbation can change a visible road joint.
 
-## Option C — RoadHelper fixed T/X template (already vendored)
+The current roundabout builder already uses convex footprint subtraction for
+surface ownership. Evaluate a general polygon library against that existing
+behavior before increasing the scope of the geometry system.
 
-`reference/roadhelper/RoadIntersectionGenerator.lua`. Robust *because* it's
-a fixed 2-axis box (analytic corner points, space-bounded fillet), but only
-T and X, ±10° angle. Good for a "snap to a clean T/X" mode; not a general
-N-way answer. **No roundabout in RoadHelper at all.**
+## Roblox solid geometry operations
 
-## Option D — SUMO `NBNodeShapeComputer` (reference algorithm only)
+Engine boolean operations are another possible approach. A prototype would
+need purpose-built solid inputs, current API and plugin permission checks,
+measured execution time, and tests for the resulting collision geometry.
 
-Eclipse SUMO's `netconvert` computes arbitrary-N-way junction *boundary*
-shapes from road edges — the most battle-tested version of this. But it's
-C++/EPL (port the algorithm, not the code), and conceptually it's the SAME
-approach we already have (order approaches by angle, intersect adjacent
-facing edges, special-case the rest). Porting it = a more edge-case-hardened
-version of our current node model, not a different paradigm. Worth mining
-for its special-case handling if we stay with the current approach.
+The output and execution model can differ from the current per-Part surface
+builder. Lane markings, source metadata, undo, live preview, and local edits
+still need a design. Solid union does not by itself supply rounded kerbs or a
+road editing model.
 
-## What does NOT exist
+## Other algorithm references
 
-- No open-source library that **generates roundabout pavement mesh**
-  procedurally. SUMO models a roundabout as one-way edges + junctions (no
-  mesh); RoadHelper has none; OpenDRIVE/RoadRunner author them by hand.
-  Our roundabout stays bespoke regardless — Option A or B are the only ways
-  to make it more robust.
+[Eclipse SUMO](https://github.com/eclipse-sumo/sumo) includes junction boundary
+construction in `NBNodeShapeComputer`. It can inform research into approach
+ordering and special cases. It is not vendored code or a dependency. Review
+the license of the exact source files before copying or translating code.
 
-## Recommendation
+## Evaluation procedure
 
-Prototype **Option A** as a standalone `src/Geometry/PolygonBoolean.lua`
-primitive (harden a Greiner-Hormann/PolyBool union for degenerate road
-input) + a small ear-clip triangulator. It's the smallest change that kills
-the whole fault class, stays synchronous and pure-Lua, keeps editable
-output, and serves junctions and roundabouts with one primitive. Building
-the *primitive* is non-colliding groundwork (new module); wiring it into
-`JunctionBuilder`/`RoundaboutBuilder` is a later, coordinated step (those
-files are being actively worked). Option B is the fallback if per-vertex
-rounding on the union proves fiddly and we're willing to accept async +
-sharp corners + non-editable unions.
+1. Define the input and output boundary rules.
+2. Record the source and license of each proposed dependency.
+3. Test T, X, skewed, and multi-approach junctions.
+4. Test unequal widths, one-way roads, close mouths, and both traffic sides.
+5. Test shared vertices, collinear edges, short approaches, and steep grades.
+6. Compare surface coverage, overlap, Part count, and rebuild time.
+7. Check placement, edits, undo, save, and reload in Roblox Studio.
+
+Keep the existing geometry path available until the replacement preserves
+these behaviors. Python previews provide algorithm checks; they do not
+execute the Roblox plugin.
