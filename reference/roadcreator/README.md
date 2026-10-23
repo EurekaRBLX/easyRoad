@@ -1,97 +1,72 @@
-# RoadCreator reference (junction + roundabout, translate C# → Luau)
+# RoadCreator reference
 
-Vendored read-only reference (outside `src/`, not built). The strongest
-reference found so far: a Unity/C# road tool with BOTH a working
-arbitrary-N-way intersection generator AND a real roundabout generator (the
-only OSS roundabout mesh generator located in this whole survey). MIT
-licensed, so its algorithms can be translated into Luau.
+This directory contains selected C# source files from a Unity road tool.
+The files are references for intersection and roundabout geometry. They are
+outside the plugin build paths and are not included in the generated plugin.
 
-## Source & license
+## Source and license
 
-- Repo: https://github.com/MarcusElg/roadcreator
-- Commit: `ba42880192d366febb92da87fd09ba985e923b68` (2019-10-12)
-- License: MIT — Copyright 2019 MCrafterzz. `LICENSE-roadcreator.md`.
-  Translated algorithms keep an attribution comment.
+- Source: [MarcusElg/roadcreator](https://github.com/MarcusElg/roadcreator)
+- Recorded commit: `ba42880192d366febb92da87fd09ba985e923b68`
+- License: MIT
+- Copyright: 2019 MCrafterzz
+- Full license: [LICENSE-roadcreator.md](LICENSE-roadcreator.md)
+
+Keep the copyright and license notices when you copy or translate this code.
+The easyRoad module [BezierCorner.lua](../../src/Geometry/BezierCorner.lua)
+records its adaptation from this project.
 
 ## Files
 
-| File | Lines | What |
-|------|-------|------|
-| `Intersection.cs` | 1071 | Arbitrary-N-way intersection mesh. `CreateMainMesh` is the core. |
-| `Roundabout.cs` | 1274 | Roundabout mesh: ring + per-feeder blend sections + centre island. |
-| `IntersectionConnection.cs` | 31 | Per-approach record. **`IComparable` by `YRotation`** — the ring is angle-sorted. |
-| `MainRoad.cs` | 21 | Through-road pair (start/end connection indices) for 4-ways. |
-| `RoundaboutExtraMesh.cs` | 26 | Sidewalk/verge band descriptor. |
-| `Misc.cs` | ~380 | The portable math primitives (translate these first). |
+| File | Purpose |
+| --- | --- |
+| [Intersection.cs](Intersection.cs) | Builds intersection surfaces and connection corners. |
+| [Roundabout.cs](Roundabout.cs) | Builds the circulating ring, approach connections, and central island. |
+| [IntersectionConnection.cs](IntersectionConnection.cs) | Stores approach data and sorts connections by `YRotation`. |
+| [MainRoad.cs](MainRoad.cs) | Stores a pair of through-road connections. |
+| [RoundaboutExtraMesh.cs](RoundaboutExtraMesh.cs) | Describes an additional surface band. |
+| [Misc.cs](Misc.cs) | Provides curve, intersection, and distance calculations. |
 
-## How its INTERSECTION works (and why it's more robust than ours)
+## Intersection geometry
 
-Each approach is an `IntersectionConnection`: `leftPoint`, `rightPoint`
-(its two pavement-edge points at the intersection), `lastPoint` (a centre
-reference), `curvePoint` (a corner control point), and `YRotation` (its
-facing angle). Connections are **sorted by `YRotation`** (the `IComparable`)
-so they form an ordered ring — each adjacent pair gets exactly one corner,
-no "which pairs with which" decision per rebuild.
+Each approach stores its left and right edges, a centre reference, a corner
+control point, and its facing angle. The connections are sorted by
+`YRotation`. Adjacent connections then define the boundary corners.
 
-`CreateMainMesh` walks the sorted ring. Between `connection[i].leftPoint`
-and `connection[i+1].rightPoint` it draws the corner as a **quadratic
-Bézier through `curvePoint`** (`Misc.Lerp3CenterHeight(left, curvePoint,
-right, t)`), and fills inward to the intersection centre as a fan (`t<0.5`
-lerps a centre-reference toward centre, `t>0.5` back out).
+`CreateMainMesh` samples a quadratic Bézier curve between an approach edge and
+the next approach edge. `curvePoint` controls the corner shape.
+`Misc.Lerp3CenterHeight` evaluates the curve in plan view and interpolates the
+height between its endpoints. The surface triangles connect that boundary to
+the intersection centre.
 
-**The key difference from easyRoad's corner:** our corner is a circular
-fillet built from the *intersection of the two edge lines* (`Fillet.Compute`),
-which fails or scoops when the lines are near-parallel, diverging, or
-reflex — the whole source of the spikes/notches. RoadCreator's corner is a
-Bézier that is a **convex combination of three fixed points**
-(left, curvePoint, right): it is bounded inside their triangle by
-construction and **cannot spike or self-intersect for ANY corner angle**.
-`curvePoint` is auto-placed where the edge lines meet (via
-`Misc.GetLineIntersection`, which returns a `MaxVector3` sentinel when
-parallel → fall back to the midpoint) and is also an editable drag handle.
+A quadratic Bézier curve stays within the triangle formed by its endpoints
+and control point in plan view. This bounds an individual corner curve. It does not prove
+that a complete intersection boundary is valid. Approach order, degenerate
+edges, control-point distance, and neighbouring corners still need checks.
 
-Through-roads on a 4-way (`MainRoad` + `CreateMainRoadsMeshes`) get their
-control points from `GetLineIntersection` of the two roads' edge lines,
-with a `GetCenter` midpoint fallback when parallel — clean through-pair
-handling with no special "is this a through pair" dot test.
+`GetLineIntersection` helps place the control points. The caller uses a
+midpoint fallback when the lines have no usable intersection. Through-road
+pairs use separate left and right control points.
 
-## How its ROUNDABOUT works (the humps fix)
+## Roundabout geometry
 
-`Roundabout.GenerateRoundabout`:
-1. `CreateRoundaboutVertices` — the ring circle vertices (inner + outer).
-2. `CreateRoadSections` — the ring pavement between feeders.
-3. Per feeder: `FindNearestPoints` / `CalculateNearestIntersectionPoint`
-   project the feeder's left/right edges onto the ring, then
-   `AddNewRoadConnectionVertices` builds a **connection section** — a Bézier
-   blend (`curvePoint`/`curvePoint2`) from the feeder's cross-section into
-   the ring's own edge. This is a real merge lane, not two corner triangles.
-4. `CreateCenterExtraMeshes` — the central island.
+`GenerateRoundabout` combines these operations:
 
-easyRoad's roundabout builds isolated flare triangles at each mouth, which
-is where the "humps and lumps" come from. RoadCreator instead **projects
-the feeder onto the ring and blends with a Bézier section along the ring**,
-so the feeder pavement and ring pavement are one continuous surface.
+1. `CreateRoundaboutVertices` creates the inner and outer ring vertices.
+2. `CalculateNearestIntersectionPoint` projects each approach edge toward the ring.
+3. `FindNearestPoints` selects the ring connection vertices.
+4. `AddNewRoadConnectionVertices` samples Bézier connections from the approach to the ring.
+5. `CreateRoadSections` fills the ring surface between the connections.
+6. `CreateCenterExtraMeshes` builds the central island surfaces.
 
-## Portable primitives to translate first (`Misc.cs`)
+These operations are a reference for connecting a road cross-section to a
+ring. They are not a direct replacement for easyRoad's surface ownership,
+regional markings, editing metadata, or rebuild logic.
 
-- `Lerp3CenterHeight(start, center, end, t)` — quadratic Bézier through 3
-  points; the corner/merge curve. ~10 lines. **The single most useful lift.**
-- `GetLineIntersection(p1, d1, p2, d2)` — 2D line intersection, returns a
-  `MaxVector3` sentinel when parallel/behind. The corner control-point and
-  through-pair primitive.
-- `CalculateLeft(forward)` — ground-plane perpendicular.
-- `CalculateDistance(a, ctrl, b)` — Bézier arc-length estimate → segment
-  count. `GetCenter`, `MaxVector3` sentinel.
+## Translation considerations
 
-## Recommended takeaways for easyRoad (keeping our methodology)
-
-1. **Swap the fillet corner for a quadratic-Bézier-through-a-control-point.**
-   Bounded by construction → kills the spike/notch/scoop class outright.
-   Auto-place the control at the edge-line intersection (midpoint fallback),
-   optionally editable later. This is a smaller, safer change than the
-   polygon-boolean rewrite in `../INTERSECTION_ROUNDABOUT_OPTIONS.md`, and
-   it composes with easyRoad's existing angle-sorted approach nodes.
-2. **Roundabout: project each feeder onto the ring and Bézier-blend** the
-   cross-section into the ring edge, replacing the flare triangles — the
-   direct fix for the humps.
-3. Both are C#→Luau translation of MIT code, not a paradigm change.
+`Misc.cs` contains useful small primitives: `Lerp3CenterHeight`,
+`GetLineIntersection`, `CalculateLeft`, `CalculateDistance`, and `GetCenter`.
+Check Unity and Roblox coordinate conventions before translating them.
+Use explicit tolerances for parallel lines and degenerate vectors. Preserve
+the upstream attribution with each adaptation.

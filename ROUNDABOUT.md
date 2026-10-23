@@ -1,774 +1,191 @@
-# EasyRoad — the roundabout, end to end
-
-Written for whoever picks this up next, human or agent. `SHIPPED.md` has the
-chronological history and `TODO.md` the live backlog; this file is the standing
-picture: what the roundabout is meant to be, how it is built, what has been
-settled and must not be re-litigated blind, and what is still wrong.
-
-The roundabout has been the single most expensive part of this project. Several
-rounds shipped geometry that looked right in theory and cursed in Studio. Almost
-everything below was paid for that way — please read it before changing
-`Mesh/RoundaboutBuilder.lua`.
-
----
-
-## 1. The vision
-
-A roundabout is **one continuous circulating ring** with **split one-way arms**
-merging tangentially onto its rim.
-
-- The ring is never sliced. It is a single closed curve built by
-  `RoadBuilder.Build`, exactly like any other road.
-- Each approach is trimmed back and split into an **entry arm** and an **exit
-  arm**, each a genuine one-way road with its own profile.
-- An arm's centreline ends at the radius that puts its outer roadway edge
-  exactly on the ring's kerb, carrying the ring's own tangent — so kerb,
-  pavement and carriageway flow *into* the ring rather than butting against it.
-- The wedge between an entry and its exit is the **gore**, filled by a raised
-  **splitter island**.
-- The hole inside the ring is the **centre island**.
-
-The reference for this shape is the user's own M20 J4 photograph plus the
-CivicArc / RoadCreator sources vendored in `reference/` (read-only, MIT,
-attributed — see `reference/roadcreator/README.md`).
-
----
-
-## 2. The build pipeline
-
-`RoundaboutBuilder.CreateAtJunction` (the junction→roundabout path) and
-`RoundaboutBuilder.Create` (the standalone tool path) both run:
-
-1. `circleSegments` → four cubic Béziers approximating a circle. **Not** an
-   analytic circle: anything that assumes exact radius will drift.
-2. `ringComponents` → the ring's profile (N circulating lanes + one pavement on
-   the outward side).
-3. `RoadBuilder.Build` → the ring's parts.
-4. `buildIsland` → the centre island (see §3.6).
-5. Per approach: `planMouth` → `trimSpoke` → `splitApproachLanes` →
-   `armProfileFor` → `buildArm` ×2 → `buildSplitterIsland`.
-6. `buildExactRingSidewalk` subtracts the physical arm, apron, and splitter
-   footprints from the ring's raised outer pavement before Parts are emitted.
-   Outer-edge paint keeps its separate angular handoff.
-
-Step 6 is the one that makes step 5 load-bearing: **the ring pavement is
-removed only where an emitted mouth surface replaces it.** Using a broad angular
-sector over-deleted curb-return concrete; clipping only by Part centres retained
-corners over the carriageway. Physical footprint ownership avoids both defects.
-
-### 2.1 Persistent editor and topology
-
-New connected roundabouts retain their original `Junction` Model as a hidden
-controller with `RW_JunctionKind = "Roundabout"`; it is no longer deleted after
-the first build. The visible ring mirrors that controller's id and editable
-radius/lane/appearance fields. Connected road ends keep the same junction id,
-stable road id, and stable endpoint-port ids.
-
-Selecting the ring or any generated arm opens `RoundaboutPanel`. Each edit is
-one ChangeHistory recording and calls `RoundaboutBuilder.Rebuild`, which reads
-only `JunctionInstance.ConnectedRoads(controllerId)`. Ordinary edits never run a
-proximity scan, so enlarging a ring cannot annex a nearby unrelated road. The
-selected ring Model is rebuilt in place so Selection and third-party non-`RW_`
-attributes survive.
-
-Each one-segment approach retains its untrimmed `RoadSource`. Radius changes can
-therefore shorten or lengthen the controller-side end without compounding an
-old trim, while preserving the remote junction, road/port identity, raw custom
-attributes, structures, and bus stops. Transition profiles, bays, and
-marking/kerb stretches are rejected before mutation until source-window slicing
-is implemented; the panel reports the blocking approach rather than moving it.
-**Convert to junction** restores those source ends and regenerates the ordinary
-multinode pad. Centre movement is intentionally not exposed because moving a
-connected topology owner safely is a separate operation.
-
-The initial circulating-lane field is profile-derived. For each connected
-endpoint, `RoadProfile.MaxMotorLanesPerCarriageway` counts only positive-width
-Drive components, separates carriageways at a Median, and counts direction
-signs independently. The maximum wins: a divided 3/2 approach suggests 3, an
-undivided 2+2 suggests 2, and a five-lane one-way suggests 5. Shoulders,
-pavement, cycle lanes, parking and bays never inflate the result. The panel
-follows that advice until the user edits the field, then preserves the explicit
-choice.
-
-Conversion has no Highway-category gate. Directed one-way roads and legacy
-single-Drive profiles can form mouths; the latter keep one full-width lane in
-the shared flare rather than being halved. The remaining preflight restriction
-is source topology: connected approaches must still expose exactly one
-recoverable segment, with no transition, bay, or marking/kerb stretch that
-would need source-window slicing. Multi-segment parallel carriageways are
-therefore still blocked even though their road profiles are valid.
-
-Legacy standalone rings remain editable. A legacy ring with generated arms but
-no controller is read-only because its already-shortened source approaches
-cannot be reconstructed safely; recreate that junction once to opt in.
-`tools/preview/roundabout_editor_preview.py` renders a before/after bird's-eye
-view through the canonical `roundabout_preview` component pipeline and checks
-radius, lane count/width, appearance toggles, mouths, seams, and marking
-ownership.
-
----
-
-## 3. Settled decisions — do not re-litigate blind
-
-Each of these was arrived at by measurement or by a live failure. Changing one
-without reading its note will re-open a bug that has already been paid for.
-
-### 3.1 Circulation sign
-`circleSegments` uses `sign = if driveOnLeft then 1`. Increasing angle runs +X
-toward +Z, which viewed from above is clockwise, so left-hand drive is `+1`.
-Everything downstream reads handedness off this: pavement side in
-`ringComponents` / `armProfileFor`, island side in `ringInnerHalfWidthM`,
-`flow` in `buildMouth`. It was inverted before `cfe4ca9` and was *internally
-consistent*, which is exactly why it survived so long — nothing looked wrong
-until the arms encoded direction.
-
-### 3.2 Arms are aligned to the approach's own roadway edges
-Not sized from their own half-width plus a splitter. Sizing them the latter way
-makes the pair wider than the road and steps the whole cross-section at the cut.
-
-### 3.3 Lanes split by `Direction`, not by halving the count
-`Direction` is relative to the curve's own travel, so the inbound sign flips
-with `atStart` (`inboundSign = if atStart then -1 else 1`). Halving breaks the
-moment a road is asymmetric: a 3/1 dual carriageway gets two 2-lane arms that
-line up with neither side, and a one-way road gets an entry *and* an exit where
-only one exists. One-way approaches get a single arm and no splitter island.
-Their left and right source pavement widths are tracked independently: a side
-that exists continues at the approach cut, while a traffic-inboard side tapers
-to zero before circulating asphalt. Their outer pavement-band handoff is
-located by `bandExitAngle`: 96 samples find the first crossing bracket and 24
-bisections put the sector edge on the real curve. This helper must remain above
-`buildMouth`; its earlier accidental omission made every solo one-way mouth
-throw at runtime.
-
-One compatibility exception is deliberate. A legacy/custom profile containing
-exactly one positive-width, undirected Drive cannot express which traffic flow
-owns it. Splitting it geometrically creates two half-width non-lanes, so
-`splitUndirected` instead gives the shared mouth one full-width entry flare and
-one full-width exit flare. Profiles with real direction metadata still produce
-only their physically valid arm.
-
-### 3.4 The mouth sector is inset, never expanded
-Deleting less ring pavement than the arms cover is invisible. Deleting more is
-bare ground in a ring of pavement.
-
-### 3.5 `ARM_HANDLE = 0.30`
-Both ends fight: a long handle walks the ring-end control point across the gore
-until entry and exit close on each other; a short one kinks the arm into a
-hairpin. 0.30 was measured, not chosen.
-
-### 3.6 The centre island matches the ring's polygon above a measured threshold
-The ring is emitted as rigid strips, so its inner edge is a **polygon**
-inscribed in a circle. A `Cylinder` island of the matching radius overlaps it in
-a scallop all the way round. `buildIsland` therefore fans the island onto the
-ring's **own station angles**, obtained from `RoadBuilder.StationsFor` — never
-re-derived, because the station rule is adaptive and a second copy would agree
-only until someone retuned `CHORD_TOLERANCE`.
-
-The cylinder is kept when the scallop is under `ISLAND_FAN_MIN_SCALLOP_STUDS`
-(0.02). The test is on the **scallop**, not the radius, because station count
-does not track radius the way one would guess — it is set from chord tolerance
-against the ring's own half-width, so a *small* ring with a wide carriageway
-gets very fine stations. A radius threshold would have spent 300+ Parts
-smoothing rings whose scallop was already a thousandth of a stud.
-
-### 3.7 A mouth has TWO fills, not one: flat apron, then raised island
-The gore — the wedge between a diverging entry and exit — is **never left open**.
-It carries flat asphalt at deck level from the cut until it has opened wide
-enough to be a refuge, and a raised kerbed island from there in to the ring.
-
-    cut ............ 2 m wide ............ ring kerb
-    |<- flat apron ->|<- raised splitter island ->|
-
-Three earlier versions all asked "raised island, or nothing?", and every answer
-to that question is wrong, because near the cut that wedge is not a median at
-all — it is the approach's own carriageway fanning out into the mouth. All three
-shipped and all three were reported:
-
-1. island filled the whole gore → a raised strip down an approach with no
-   median ("there is median when there is no median for the type of road used")
-2. island started at the width crossing → the same, thinner: a raised sliver
-   ~17 studs down the approach
-3. island started at the ring's outer edge → the wedge in front of it became
-   bare ground, reported as the mouth indentation
-
-The width test now chooses **which surface**, not whether there is one, and the
-two questions it was being asked at once are separated:
-
-- `MEDIAN_AT_CUT_M = 0.5` — does this approach arrive with a median? Measured at
-  the cut, where a road without one is zero by construction. If it does, the
-  island continues it straight from the cut and no apron is laid.
-- `ISLAND_MIN_WIDTH_M = 2.0` — on an approach with no median, how wide must the
-  gore open before the splitter earns a kerb? 2 m is the usual minimum for a
-  pedestrian refuge. At the old 0.5 m the island began as a knife edge tens of
-  studs out, which is defect 2 above.
-
-This also retires the "start at the ring's outer edge" rule that used to live
-here. Its job was to cover the pavement `openRingPavement` deletes across the
-mouth sector (§4.1); the apron covers that band now, and covers it with the
-right material — a mouth is precisely where the circulatory pavement ring is
-interrupted by carriageway.
-
-**Nothing raised may begin inside the ring kerb**, and that has to be stated
-separately because retiring the outer-edge rule removed the guarantee that used
-to make it impossible. On a crowded ring the width test can first reach 2 m at a
-station already past the kerb; the rung loop then keeps its first rung (its
-break only fires from `i > 0`), the nose fan runs from that deep apex out to the
-kerb arc, and the mouth gets a raised wedge laid straight across the circulating
-lanes. Measured on a 4-leg 2+2 at R=45: gore material from r=36.1 out to a kerb
-at r=54.5, leaving 7.6 studs of a 26.1-stud carriageway drivable — 0.58 of one
-lane, on an ordinary radius. Same shape at R=50, and on a 1+1 ring from R=22 to
-R=40. So the kerb crossing is computed too, and if the island cannot start
-before it there simply is no raised splitter at that mouth — the apron is the
-whole of it, which is what a mini-roundabout looks like anyway.
-
-**The island tapers to a nose.** Stopping it dead at the width crossing leaves a
-blunt flat chop across the middle of the carriageway with both arms' edge lines
-carrying on past it — which is what the mouth still read as once the bare ground
-was gone, and was reported as the indentation a second time. From the width
-crossing the island now grows a nose back down the approach over
-`ISLAND_NOSE_TAPER_M` (6 m), each rung the gore scaled about its own midline so
-it closes to a point. It sits ON the apron rather than replacing it: the apron
-is flat asphalt at deck level and the nose is raised, so the wedge either side
-of the nose stays carriageway. Bounded, so this is a nose and not the knife-edge
-sliver that filling from the cut produced.
-
-The apron and the island want opposite roundings of that one crossing: the apron
-stops one probe PAST it (stopping at it left a 0.25-stud hairline of bare ground
-just outside the kerb, because the rung is a chord and the kerb is an arc, and
-overlapping the ring deck with flat asphalt costs nothing), the island must
-start one probe BEFORE it.
-
-Arms, apron, ring, and source roads now share one vertical datum. Every arm
-exposes its exact generated roadway footprints, and those footprints are
-subtracted from the ring deck before publish, so vertical sinking is no longer
-needed to choose a coplanar owner. The old `ARM_SINK_STUDS` displacement and its
-preview-only alias are deliberately gone.
-
-### 3.8 Turbo replaces a concentric-divider arc with an exit peel
-Turbo starts from the same constant-width annulus and concentric Drive/Drive
-divider as Continuous mode. It does **not** spiral the full ring. For each exit,
-`buildTurboMarkings` owns one bounded arc; `openTurboReplacementArcs` clips the
-ordinary divider only over that arc and leaves every other portion concentric.
-Painting both lines together is not acceptable: their different dash phases
-fill one another's gaps and produced the excess white strokes reported in
-Studio.
-
-The peel targets the exit profile's actual adjacent Drive/Drive boundary.
-`armDriveBoundaryOffsetsStuds` orders those boundaries from the outboard edge
-toward the splitter, excluding shoulders, parking and other non-Drive reserve.
-Ring divider `k` maps to the corresponding outside-in boundary; if a narrower
-exit has no such boundary, that peel is omitted instead of being aimed past the
-arm's inner edge.
-
-Changing the ring lane width can put its divider at a different radius from the
-arm boundary. The polar phase therefore smoothsteps from the ring radius to the
-real target radius with zero radial derivative at both ends, then follows the
-exit arm's own line. It is sampled geometrically, not inferred from total arm
-width divided by `laneWidthM`, so edited and unequal/custom widths keep a real
-handoff. Dashes are walked backwards from the arm end so the last dash lands at
-that handover.
-
-`TURBO_MARKING_LIFT_STUDS` still gives the peel deterministic vertical
-ownership where it follows arm paint. The Python pipeline models the same
-replacement sectors and validates against the scene's edited `lane_width_m`;
-it no longer gets a pass from painter order or a hard-coded default width.
-
-**The divider is concentric outside each replacement sector.** What makes the
-mode Turbo is the exit peel, not a continuously migrating annulus. The sector
-scales with the angular room to the previous exit, while the end target comes
-from that exit's own profile. This distinction is important: the former is ring
-geometry; the latter is lane mathematics.
-
-Four rounds were spent instead trying to spiral the WHOLE ring, and every one
-was wrong in a different way. Recorded so nobody tries again:
-
-| attempt | what broke |
-|---|---|
-| migrate evenly across each arc | reads as a slow drift; loses the commitment a turbo is meant to signal |
-| aim at the mouth **centre** | the exit is not the centre — kerb reached at 88.7° against an exit at 55.0°, a half-mouth late |
-| entry edge → exit edge | delivered exactly (53.9° vs 55.0°) but drew nothing across the mouths, leaving the divider on ~30% of the ring |
-| exit → exit | full coverage and correct delivery, but a 13-stud jump at every exit reads as two unrelated lines, and driving the divider to the kerb pinches the outer lane to zero exactly where a 2-lane exit needs it widest |
-
-The last of those settled the ownership shape: a full-ring spiral cannot both
-stay concentric-looking and hand off cleanly. A bounded replacement peel can.
-
-**The peel ends on the exit arm's own lane line**, not on the ring. That took
-threading the exit arm's `PolyCurve` and `ArmProfile` out of `buildMouth`
-(`ExitTrace`) into the marking pass; five earlier versions tried to land on that
-line using ring coordinates alone and every one ended on the ring's outer EDGE
-line instead, because the line they were aiming at is out in the arm and moving.
-
-Two rules keep that handoff stable:
-
-- **Use the profile boundary, not lane-width division.** The old
-  `(OuterOffset + InnerOffset) / laneStuds` estimate coupled arm lane count to
-  the editable ring width. Changing the width could make the inferred count
-  drop and suppress every peel. Adjacent Drive components are now the only
-  destination list.
-- **Interpolate radius in polar space, then follow the arm.** A free cubic
-  across a long ring arc sags toward the island; blending unrelated ring/arm
-  parameters kinks. Smoothstep changes only radius while angle follows the
-  ring, reaching the real boundary with zero radial slope before the arm phase.
-
-Also not built, the other half of "turbo on the arms": **lane arrows and
-destination legends on the approaches**, which is how a real turbo tells a
-driver which lane to pick. A `Markings.lua` job on ordinary one-way roads, not
-ring geometry.
-
-It runs after the mouth openings, deliberately. Mouth ownership first removes
-outer ring paint where an arm takes over. Turbo then emits the peels and clips
-only the matching pre-captured concentric dividers over their replacement
-sectors; peel Parts themselves are never candidates for that clip.
-
-Falls back to a plain ring on one circulating lane, with no exits, or when an
-exit has no compatible Drive/Drive boundary for a particular divider.
-
-### 3.8b A shoulder is a tapered reserve behind a solid line, not a lane
-A `LaneGroup` carries a `LaneSpec { Kind, WidthM, Directional }` per strip, not
-a bare width. Flattening to a width was a real bug: a shoulder is
-`Direction = 0` roadway, so the "undirected roadway belongs to whichever side it
-abuts" pass folds it into a group, and `armProfileFor` then re-emitted every
-strip as `{ Kind = "Drive" }`. A 2+2 motorway built 3+3 arms — wrong colour, and
-`Markings.lua` puts a lane boundary between two Drive components where a solid
-edge line belongs.
-
-Fixing that exposed **two ordering bugs underneath it**, both invisible while
-every strip came out as an identical-width Drive, because reordering identical
-things changes nothing you can see:
-
-- the undirected pass runs *after* the directional one and appended as it went,
-  so a shoulder landed at the inboard end of its group however far outboard it
-  actually sat. `splitApproachLanes` now collects indices and sorts them.
-- **an arm whose own travel runs against the approach curve sees the
-  cross-section mirrored.** What was at approach offset +x is at arm offset −x,
-  so its components list back to front. Which arm that is depends on both the
-  arm and which END of the road the junction sits at: `mirrored =
-  (travelsInward == atStart)`. It is neither "always the exit" nor a property of
-  the arm alone.
-
-Either one alone puts the hard shoulder on the **gore** side of the mouth,
-against the splitter island. But preserving its kind and full width all the way
-to the ring is also wrong: it still draws three surface strips feeding a
-two-lane ring. `armProfileFor` replaces each tapered terminal shoulder with a
-zero-width Shoulder marker. Paired entry/exit arms consume only the contiguous
-traffic-outboard run; a solo one-way highway consumes both terminal runs and
-stores their left/right widths independently. Those markers keep the semantic
-Drive/Shoulder boundaries, so `Markings.lua` draws the required solid lines,
-while Drive components remain the only running lanes at the merge. The
-remaining roadway centre is shifted by `(leftShoulder - rightShoulder) / 2`, so
-asymmetric one-way shoulders do not slide the live lanes sideways.
-
-**The arm's pavement is load-bearing, and now tapers.** An arm needs one at
-`style.SidewalkWidthM` by the ring even when its approach has none. Keeping it
-full-width to the cut stepped the outer edge 7.2 studs sideways on a motorway
-approach. It cannot simply be removed:
-`openRingPavement` deletes the ring's own footway across each mouth sector, and
-it is the arm's pavement that covers the band from the ring's kerb out to its
-outer edge there. Removing it trades the step for **6 studs of bare ground** on
-exactly the highway legs.
-
-`buildArm` now fills coordinated edge-anchored surfaces outside the fixed
-travel lanes. Each terminal shoulder smoothsteps independently from full width
-at the cut to zero at the merge. Pavement starts outside the current shoulder
-edge and grows from the approach's real width (zero for a motorway) to the ring
-width on the traffic-outboard side. A solo arm's inboard pavement instead
-tapers to zero before the circulating carriageway; carrying ring-width pavement
-there produces the long raised kerb sweep that used to cross the annulus. The
-surfaces therefore neither overlap nor expose ground. The highway cases measure
-0.00 / 0.00 / 0.10 studs of seam step; every 3.3 m shoulder measures
-11.78 -> <=0.02 studs (the surface-emission cutoff); none carries a
-`KNOWN_OPEN` exception.
-
-### 3.9 "Minimum" radius means the cliff, not the comfort
-Two different numbers were being asked of one function, and the answer was the
-wrong one.
-
-- **`MinimumRadiusStuds`** is now the hard floor: below it there is no
-  roundabout in the literal sense. The centre island's radius is
-  `radius − ringInnerHalfWidth`, so once the requested radius drops below that
-  half-width the ring's inner edge has passed the centre and the "annulus" is a
-  self-overlapping disc. A 4-leg 2+2 at R=10 comes out as a four-pointed raised
-  star with a hexagon in the middle. Closed form, exact, and small.
-- **`SuggestedRadiusStuds`** carries the angular packing estimate that used to
-  be called the minimum — every leg's two arms, its deflection split, and a
-  strip of kerb before the next leg, summed against 360°.
-
-The packing number is a fine suggestion and was a bad floor. Sweeping radius
-against `circulating_width`, the geometry holds all the way down to **R=18** on
-4-leg 2+2, 4-leg 1+1, 3-leg 1+1 and 5-leg 1+1 — against packing numbers of 70.5,
-42.8, 27.5 and 64.2. Two to four times too conservative, and the failure below
-the real floor is a cliff rather than a slope, which is why a conservative
-estimate never located it.
-
-This matters beyond tidiness: the radius is advisory now, so the user sees the
-number and decides. A "minimum" that is four times the truth teaches them to
-ignore it.
-
----
-
-## 4. Defects fixed, with their measurements
-
-### 4.1 Bare-ground band at R=34–36
-Two faults, both introduced by the `MIN_GORE_WIDTH_M` change itself:
-
-1. Leading samples were dropped from a **fixed grid** with `continue`, while the
-   same loop also breaks at the ring kerb — so on rings whose arms converge
-   early the skipped samples were consumed and the break fired before enough
-   rungs accumulated. Fixed by **re-parameterising** the rungs.
-2. The island could start **inside** the ring's outer edge. At R=35 the gore
-   reached radius 42.3 against an outer edge of 45.1, and **all 150**
-   bare-ground samples sat in the 2.8 studs between.
-
-Bare-ground samples, 3-leg 1+1: 172/250 → 1/2, at 0.13–0.21 studs against a
-0.084-stud sample pitch.
-
-**A hypothesis that was wrong and is worth not repeating:** that
-`openRingPavement` deleted parts by their *centre* while their bodies extended
-past the sector edge. The probe disproved it outright — all 250 holes sat
-*inside* the sectors, and the sectors are identical at R=33 (clean) and R=35
-(broken). Deletion was never involved.
-
-### 4.2 Phantom median on approaches with no median
-The gore is measured between the two arms' **inner roadway edges**. On a road
-with a median those start that median's width apart; on one without, they start
-touching. Filling from the cut regardless put a raised strip down the middle of
-a road that has none. See §3.7 for the rule that resolves it.
-
-### 4.3 Approach roads not detected
-`collectNearbyRoads` measured each candidate by the smaller of its two
-**endpoint** distances, so any road whose closest point is mid-span was silently
-dropped. Now samples the curve for the true nearest approach. **This is only
-half the problem — see §5.1.**
-
-### 4.4 The mouth indentation, and the sign error that hid it
-The V-notch (design in §3.7). What made it survive three rounds is worth more
-than the fix: **the check that was supposed to catch it was scanning the wrong
-ground.**
-
-`scan_mouths` walked `cut - inward * at` while `inward` points from the cut
-toward the centre, so `at` marched *outward down the plain approach road*
-instead of inward into the mouth. Every "no bare ground inside the mouth
-envelope" it had ever printed was measured over the one stretch of road nobody
-was worried about — the same blind spot the function's own docstring was written
-to close, reintroduced one line below the paragraph describing it.
-
-Correcting one sign failed three defects at once on the default cases:
-
-| case | GORE | HOLE | OVERHANG |
-|---|---|---|---|
-| uk4 | 32 samples, worst 7.67 studs | 56, worst 3.67 | 4, worst 8.67 |
-| uk3 | 102 samples, worst 15.00 studs | — | 3, worst 15.67 |
-| us4 | 32 samples, worst 7.67 studs | 48, worst 3.00 | 4, worst 8.67 |
-
-Open gore also stopped being excused as by-design, since under the two-fill rule
-no part of a mouth is ever legitimately bare, and `report()` started folding
-mouth findings into its pass/fail result — it had been printing them and then
-returning clean.
-
-Two further faults in the check surfaced while verifying the fix, both of which
-would have made the *next* result untrustworthy:
-
-- **The envelope reached into the neighbouring leg.** Taking the outermost
-  covered samples as the mouth's edges assumes nothing else is within the
-  sweep's 70-stud span. On a R=45 ring with legs 65° apart it hit the next road
-  and called the 44 studs of grass between them a tear inside the mouth. It now
-  walks outward from the centreline and stops at the first bare run wider than
-  `max_skip`.
-- **`min_gap` was below the sample pitch,** so one dark sample read as a hole:
-  a 0.33-stud "gore" at R=10, R=15 and on a 3/1 approach, exactly one pitch
-  wide, all gone at four times the density. `min_gap` is now floored at two
-  pitches.
-
-After the fix: **zero bare ground and zero overhang across 24 cases** — 16 radii
-from R=10 to R=70 on a 3-leg 1+1, plus 5-leg, 4-leg 2+2, a 3/1 approach, two
-median profiles, pavement off, island off, and the 65° skew. The R=34–38 band
-of §4.1 stays clean.
-
-The check was verified to still have teeth by stripping the apron back out of a
-built scene — that *is* the pre-fix geometry — and confirming it fails: uk4 back
-to 20 GORE / 44 HOLE, uk3 to 66 GORE. A fix that passes by blinding its own test
-is the one failure mode this repo cannot afford again.
-
----
-
-## 5. Open problems
-
-### 5.1 ~~Roads passing beside/through the roundabout are not connected~~ — FIXED
-Initial placement and explicit connection find the nearest
-station on a passing road and use `RoadSplit.SplitAtJunction` when that station
-is safely interior. The two resulting pieces retain their outer approach-port
-ids and share the roundabout controller at the cut. Normal editor rebuilds do
-not repeat detection or splitting; they use the controller's exact topology.
-
-### 5.2 ~~Small radius requests are silently inflated~~ — FIXED
-The requested radius is now **built as asked**. `MinimumRadiusStuds` is advice,
-shown in the panel before the click, never a clamp applied after it.
-
-The clamp was wrong on the merits as well as the UX. Measured with it disabled,
-the geometry is clean far below what it enforced:
-
-    3-leg 1+1   minimum 27.5   clean at R = 10, 14, 18, 22, 26
-    4-leg 2+2   minimum 70.5   clean at R = 10 .. 35
-
-The formula is a conservative packing estimate, not a measured failure point.
-Small rings do eventually crowd - the split gets squeezed until entry and exit
-run up against each other and the splitter pinches - but that degrades
-gradually and visibly, which the user can judge.
-
-**Still open:** re-derive the minimum from where the geometry actually fails,
-so the recommendation is worth following.
-
-### 5.3b Optional pavement and optional island — SHIPPED
-`RoundaboutSidewalk` and `RoundaboutIsland` on both `RegionStyle` (region
-default, checkboxes in the region editor) and `JunctionData` (per-roundabout,
-tri-state dropdowns in the junction panel). Optional, and nil reads as ENABLED,
-so nothing built before them changes.
-
-The subtle part is not the toggle, it is what the pavement width is used FOR.
-Several radii are derived by subtracting it from the ring's outer edge, so
-`ringSidewalkWidthM(style)` returns 0 when the pavement is off and every one of
-those sites goes through it. Using the region's nominal width with no pavement
-present would put the ring's kerb *inside* its own carriageway.
-
-`ringComponents` returns early rather than inserting a zero-width Sidewalk: a
-zero-width component is still emitted as a Part and still swept up by
-`openRingPavement`'s name match.
-
-Island off leaves the centre as open ground on purpose — the ring is a closed
-annulus either way, so this is a landscaped centre the user fills, not a hole.
-A flush drivable centre (mini-roundabout) is a different feature, not built.
-
-### 5.3a Continuous vs SolidLanes — SHIPPED
-`RegionStyle.RoundaboutMarkings` ("Continuous" | "SolidLanes" | "Turbo") sets the regional
-default; `JunctionData.RoundaboutMarkings` overrides it per roundabout. Both
-optional, both nil-reads-as-Continuous, so every region and junction that
-predates the field keeps its behaviour.
-
-`SolidLanes` sets `RightBoundary = "Solid"` on every circulating lane but the
-last, discouraging weaving on the ring. `Continuous` leaves the boundary on
-"Auto", which resolves to the region's dashed lane line.
-
-**This was briefly shipped with the value named "Turbo", which it is not** —
-see 5.3c. Renamed before anyone could build against it. The last lane is
-skipped deliberately: `RightBoundary` describes the gap to the component on its
-right, and the last lane's neighbour is the pavement, whose edge line is the
-region's business.
-
-`JunctionInstance` validates the value against a local list rather than
-importing `RegionStyles`' union — it is a leaf module everything else reads and
-is worth keeping free of that dependency for one field. The two lists are kept
-in step by hand.
-
-### 5.3 ~~Markings do not match the preview~~ — SHIPPED HEADLESS
-The preview never ported `Mesh/Markings.lua`; it approximates it with solid
-white roadway edges, dashed white Drive/Drive boundaries, and solid
-Drive/non-Drive roadway separators. The Lua now supplies that same
-roundabout-owned line plan directly to RoadBuilder, with the preview's 3m/3m
-dash rhythm, origin phase, and final partial dash. SolidLanes switches only the
-circulating Drive/Drive dividers to solid.
-
-This deliberately does **not** replace `Markings.lua`: ordinary roads retain
-regional boundary rules, the Road Editor, restrictions, and both stretch
-systems. The generated ring and arms are the only callers of the exact-plan
-hook. The first live Studio comparison showed extra white slashes despite this
-line plan being correct. They were fragments of the ring's outer edge line whose
-Part centres lay outside a mouth while their corners crossed inside. The exact
-sector-boundary clip in section 5.4 now removes only those fragments.
-
-The later live comparison exposed a separate painter-order mismatch in the
-then-sunk implementation. Studio left arm marking tops up to 0.009 studs proud.
-Each arm line is now bounded at its own offset's expanded ring-kerb
-crossing (`FromStationStuds` on exits, `ToStationStuds` on entries), except the
-outboard edge line, which continues to the exact tangent handoff. Turbo replaces
-the base divider over the peel arc and uses a distinct top plane where the peel
-follows arm paint. `tools/preview/roundabout_parity_contract.py` locks the 3D
-ownership rules with destructive break-tests.
-
-The Continuous/SolidLanes/Turbo selector is available per roundabout and has a
-regional default.
-
-### 5.3c ~~A real TURBO roundabout~~ — SHIPPED, see §3.8
-Built as a third `RoundaboutMarkings` mode. The lane-width regression is fixed:
-peels resolve actual exit Drive/Drive component boundaries, ease to their real
-radii, and replace (rather than overlay) the base divider over each owned arc.
-Rule and reasoning are in §3.8.
-
-Not built, and not needed for the markings to be right: **entry lanes are not
-matched to spiral lanes.** A driver should be committed to a destination by the
-lane they enter in, which means `splitApproachLanes` would have to know which
-circulating lane each approach lane feeds. It splits by `Direction` only. That
-is lane-connection work, not markings.
-
-### 5.3d ~~The mouth INDENTATION~~ — FIXED, see §3.7 and §4.4
-The long thin V-notch down the middle of every approach. Three rounds of
-raised-or-nothing; the answer was a second fill. Design and thresholds in §3.7,
-measurements in §4.4.
-
-### 5.4 Physical footprint ownership at mouths - fixed headlessly, live recheck open
-
-The old opening logic tried to describe a curved mouth as an angular sector.
-That is not the same shape as a curved arm: broad sectors removed concrete
-beside the arm, while centre-only Part tests retained corners inside the
-circulating lane.
-
-Raised ring pavement now starts from exact station quads and subtracts only
-surfaces that physically replace it:
-
-- generated Drive/Shoulder/Bike/Parking/Bay Part top footprints;
-- exact arm Sidewalk and terminal-shoulder triangles;
-- flat asphalt GoreApron triangles; and
-- raised splitter triangles.
-
-Every arm Sidewalk bypasses RoadBuilder's padded curved boxes and uses exact
-shared-station triangles. Degenerate zero-width taper ends are recorded as the
-same two non-degenerate triangles actually emitted, so cutter geometry cannot
-retain or delete an unrelated ring fragment.
-
-The splitter's last circular-frontage fan is now **hybrid**. A complete flat
-GoreApron underlay closes the mouth, while a circumscribed kerb-disc cutter
-restores only the part of that fan outside the circular kerb as raised
-Sidewalk. The approach median therefore reaches the ring again, but the former
-two concrete chord triangles cannot re-enter the circulating annulus.
-
-Surface and paint ownership remain deliberately separate. Raised pavement uses
-physical footprints; the outer ring edge line opens angularly to its tangent
-handoff, and matching arm paint reaches that boundary. Arms, markings, the
-approach cut, splitter apron, and circulating ring share one surface datum.
-Every exact arm roadway footprint is subtracted from the ring roadway before
-publication, leaving one coplanar owner without the old 0.05-stud step.
-`FillTriangle` records the source triangle, depth, and extrusion direction so
-the clipper cannot overclaim a Wedge's rectangular bounds. The full 3D parity
-suite passes every case, including LHT/RHT asymmetric one-way mouths,
-`stress_us`, and Bay profiles, and catches all 25 injected ownership failures.
-Keep only the rebuilt Studio Wedge-rendering, collision, and z-fighting check
-open.
-
-### 5.5 Smaller, known limits
-- **Multi-segment approach sources.** Connected editable conversion currently
-  requires exactly one recoverable segment. This blocks curved parallel
-  carriageways even though Highway, one-way, and one-lane profiles themselves
-  are accepted. General source-window slicing is the required fix.
-- **Crowded rings.** 5+ legs, or wide approaches on a small radius, squeeze the
-  split until the arms run up against each other partway along. A 4-leg ring
-  with legs 65° apart at R=45 now scans clean, so this is narrower than it was.
-- **Splitter waist.** A 4-leg ring dips ~0.7 studs partway along. Cosmetic.
-- **Island rim hairline.** ~0.1 studs where the ring's innermost strips chord
-  across the island. Reported by the tooling as below visible, not failed.
-
----
-
-## 6. The tooling, and exactly what it does not cover
-
-`tools/preview` simulates **the parts `RoadBuilder` actually emits** — rigid
-boxes per station interval, not idealised polygons. `preview_core.py` is the
-generic emission port; `roundabout_preview.py` and `road_preview.py` are
-scenarios on top of it, and `validate.py` runs the lot with a `KNOWN_OPEN` table
-of failures that are expected today. See `tools/preview/README.md`.
-
-| check | covers | blind to |
-|---|---|---|
-| `scan_gaps` | bare ground, `island_r` → `outerR` | everything outside the ring annulus |
-| `scan_mouths` | bare ground **and** overhang, cut → ring | a wrong marking (it counts a marking Part as coverage); anything narrower than two sample pitches; whether raised material *should* be raised, only that the splitter island is |
-| `circulating_width` | narrowest DRIVABLE width of the ring, all the way round | anything outside the ring band; it answers "can you drive round it", nothing else |
-| `seam_steps` | lateral extent at the cut | the *shape* of an end cap |
-| `check_turbo` (run it via `turbo_check.py`) | each peel starts at a circulating divider, targets that exit's actual Drive/Drive boundary under the edited lane width, lands its far end on the arm line, and owns a base-divider replacement sector | whether the peel is the right traffic-design line to draw at all — that remains a judgement from reference photographs |
-| `check_arm_kinds` | non-shoulder running surfaces keep their KIND and width; the shoulder marker is outboard and zero-width at the ring | the physical shoulder wedge between cut and ring |
-| `check_shoulder_tapers` | emitted shoulder polygons have source width at the cut and zero width at the ring | markings and vertical/z-fighting defects |
-| `road_preview.py` | an ordinary road: bare ground inside its own footprint, edge sawtooth, broken edge lines | lane-width transitions and bus bays, which are **not ported at all** |
-| `check_parity.py` | constants shared with the Lua | the algorithm, and any missing rule set |
-
-Five lessons that cost real time:
-
-0. **Every check here answers one question, and says nothing about the rest.**
-   `scan_gaps` and `scan_mouths` both look for MISSING material, so neither can
-   see a ring paved over in kerb — which is exactly how a too-small roundabout
-   fails. `circulating_width` exists because of that, and it in turn knows
-   nothing about bare ground. Three green checks are three answers, not a
-   verdict.
-
-0. **A check can point at the wrong ground and still print "clean".**
-   `scan_mouths` was added *because* `scan_gaps` never looked at the mouths, and
-   then swept away from the ring for its entire life (§4.4). One sign. The
-   habit that catches this: before believing a pass, make the check fail on
-   purpose. Stripping the apron out of a built scene and confirming the numbers
-   come back is what proved the mouth fix was real rather than invisible.
-
-0. **An invariant kept across a design change certifies what you stopped
-   wanting.** Three of `check_turbo`'s rules have now died this way. The first
-   asserted the peel "reaches the ring's outer edge at each exit" — that
-   property turned out to *be* the defect, so it was replaced rather than
-   relaxed. The second asked whether the peel ended near any `Marking`; a real
-   test while Turbo suppressed the ring's lane lines, and a tautology the moment
-   it stopped, because the peel now lies along a ring divider for its whole
-   first phase and the nearest marking is always ~0. Scoping it to the exit
-   arms' own markings was still not enough: measured over the whole peel it
-   passed a peel rotated 40° off its exit, since a 30° arc and an 80-stud arm
-   cross somewhere however they are turned. Only the peel's **far end**, against
-   **that exit's** lines, says anything. Each of those passed everything until a
-   break-test was written for it specifically.
-1. **`scan_gaps` never looked at the mouths.** On a 40-stud ring it covers
-   29.9→50.1 studs and never examined 50.1→92.7 — 68% of the built radius, and
-   every bit of the entry/exit slip. Every "no bare ground" it printed for a
-   year was about the annulus that was already fine. `scan_mouths` exists now
-   because of this.
-2. **The preview and plugin once disagreed about radius growth.** Both now use
-   the requested radius by default; `build(..., grow=True)` is an explicit
-   suggestion-sized experiment only. `dump_compare.py` was the last stale path
-   and now reports the advisory minimum without applying it.
-0. **The port can be wrong in ways nothing compares.** `split_approach_lanes`
-   spelled "is this roadway?" as `!= "Sidewalk"` where the Lua uses
-   `RoadProfile.IsRoadway`, whose table excludes `Median`. So on every median
-   profile the preview adopted the median into whichever arm it abutted, while
-   the plugin correctly left it to become the splitter gore — two different
-   roundabouts, both reported clean, for as long as the median cases have
-   existed. Nothing compared them, and `check_parity.py` structurally cannot:
-   it diffs constants. The habit that catches this class is spelling a shared
-   rule the same way on both sides (`is_roadway` now mirrors `ROADWAY`), not
-   re-deriving it per call site.
-3. **`check_parity.py` compares constants, not behaviour.** Both gaps above were
-   behaviour divergences it structurally cannot see. `dump_compare.py` +
-   the junction panel's *Print geometry to Output* button compare behaviour, and
-   **have still never been run against a live junction.**
-
-Reproduce the R-band defect (now fixed, keep as a regression check):
+# Roundabout design
+
+This guide describes the roundabout geometry and its editing rules. See
+[usage](docs/usage.md) for the main placement workflow and
+[known issues](KNOWN_ISSUES.md) for current limitations.
+
+## Geometry
+
+A roundabout has one continuous circulating ring. Each connected approach has
+an entry arm, an exit arm, or one directed arm. Arms meet the ring tangentially.
+The space between a paired entry and exit is the gore. Flat asphalt covers the
+gore near the approach cut. A raised splitter island can occupy its wider part.
+The centre island fills the inside of the ring when that option is enabled.
+
+`src/Mesh/RoundaboutBuilder.lua` owns the build pipeline:
+
+1. `circleSegments` constructs four cubic Bézier segments.
+2. `ringComponents` defines the circulating lanes and optional outer pavement.
+3. `RoadBuilder.Build` emits the ring surfaces.
+4. `buildIsland` constructs the optional centre island.
+5. `planMouth` plans each connection.
+6. `trimSpoke` trims the source road.
+7. `splitApproachLanes` and `armProfileFor` define each directed arm.
+8. `buildArm` and `buildSplitterIsland` emit the mouth surfaces.
+9. The clipping passes remove ring surfaces where the mouth owns the surface.
+
+The four Bézier segments approximate a circle. Use the evaluated curve and its
+station plan for joins. An analytic radius alone does not describe every point
+on that curve.
+
+## Editing and saved topology
+
+Select a ring or one of its generated arms to open the roundabout panel. The
+panel can change radius, circulating lane count, lane width, marking mode,
+pavement, and centre island. The clearance guide and suggested radius are
+advice. The builder uses the requested radius.
+
+A connected roundabout retains a hidden junction controller. Its
+`RW_JunctionKind` is `Roundabout`. The ring stores the controller ID. Each
+connected road retains its road ID, endpoint port IDs, and junction connection.
+`RoundaboutBuilder.Rebuild` reads roads connected to that controller. A normal
+edit does not adopt unrelated nearby roads.
+
+Each supported approach retains an untrimmed `RoadSource`. Radius edits derive
+a new source window from that data. This prevents repeated edits from
+progressively shortening the road. **Convert to junction** restores the source
+ends and rebuilds an ordinary junction. Each edit uses one Studio undo
+recording.
+
+The initial circulating lane count comes from the widest individual motor
+carriageway. Drive components with positive width count as lanes. A median
+separates carriageways, and traffic directions are counted separately.
+Shoulders, pavement, cycle lanes, parking, and bus bays do not add lanes.
+
+Initial placement and explicit connection can split a passing road at a safe
+interior station. Subsequent editor rebuilds use the saved connections.
+
+### Supported approach sources
+
+Editable connected conversion requires one recoverable curve segment for each
+approach. Conversion rejects these features before it changes the road:
+
+- a widening or narrowing transition;
+- a bus bay;
+- marking or kerb stretches;
+- an unreadable or unsupported source curve.
+
+The panel identifies the blocking road. Remove the blocking feature or use a
+separate approach segment before conversion. Multi-segment parallel roadways
+can therefore remain unavailable even when their profiles are valid.
+
+Standalone legacy rings remain editable. A legacy connected ring without a
+recoverable controller is read-only. Recreate its junction to use the current
+editor. Connected centre movement is not available.
+
+## Geometry rules
+
+### Circulation and lane direction
+
+Left-hand traffic circulates clockwise. `circleSegments` uses a positive angle
+sign for that direction. Downstream calculations use the same traffic-side
+choice for pavement placement and entry or exit selection.
+
+Approach lanes split by `Direction`, relative to the source curve. The inbound
+sign reverses when the junction is at the start of that curve. Do not split an
+asymmetric profile by halving its lane count.
+
+A directed one-way approach has one arm and no paired splitter island. A
+legacy profile with one undirected Drive component uses full-width shared
+entry and exit flares. This compatibility case does not divide the component
+into half-width lanes.
+
+Arms use the approach's roadway edges as their alignment reference. Component
+order reverses when arm travel reverses the source cross-section. Preserve each
+component kind: a Shoulder remains a Shoulder and does not become a Drive lane.
+Terminal shoulder widths taper independently toward the ring. Pavement grows
+from the actual approach width to the required ring-side width.
+
+### Surface ownership
+
+Arms, the approach cut, the circulating ring, and the flat apron share a road
+surface datum. Exact arm roadway footprints are subtracted from the ring
+roadway. This avoids a vertical step between the arm and ring.
+
+Raised ring pavement starts from exact station quadrilaterals. The clipping
+pass subtracts the footprints of arm roadway, arm pavement, flat apron, and
+splitter surfaces. A broad angular opening does not match a curved arm and can
+remove pavement beside the connection. A Part-centre test can leave corners
+over the carriageway.
+
+`FillTriangle` records source triangle vertices, depth, and extrusion direction.
+The clipper uses that data instead of treating a Wedge as a rectangular top
+surface. Adjacent curved road surfaces use shared station corners in the
+current `RoadBuilder` implementation.
+
+Paint has its own ownership rules. The ring edge line opens at the tangent
+handoff. Arm markings terminate at their ring-kerb crossings, except where the
+outboard edge line continues to that handoff. Turbo markings use a separate
+visible top plane where they follow arm paint.
+
+### Splitter island and centre island
+
+A mouth without an approach median starts with a flat asphalt apron. The
+splitter can become raised after the gore reaches `ISLAND_MIN_WIDTH_M`,
+currently 2 m. Its nose tapers over `ISLAND_NOSE_TAPER_M`, currently 6 m. An
+approach median wider than `MEDIAN_AT_CUT_M`, currently 0.5 m, can continue into
+the raised splitter from the cut.
+
+Raised splitter material must remain outside the circulating kerb. A crowded
+mouth can use only a flat apron if there is no room for a raised splitter.
+The final splitter frontage uses a flat underlay and a kerb-disc cutter. Only
+the portion outside the circulating kerb becomes raised pavement.
+
+The centre island follows the ring's own station boundary when its circular
+scallop exceeds `ISLAND_FAN_MIN_SCALLOP_STUDS`, currently 0.02 studs. Smaller
+scallops use a cylinder. Disabling the centre island leaves open ground for
+landscaping; it does not create a drivable mini-roundabout centre.
+
+## Marking modes
+
+| Mode | Result |
+| --- | --- |
+| `Continuous` | Dashed circulating lane dividers. |
+| `SolidLanes` | Solid circulating Drive-to-Drive dividers. |
+| `Turbo` | Bounded exit peels replace matching portions of the concentric dividers. |
+
+The regional style supplies the default. Each roundabout can override it.
+Missing values retain `Continuous` mode. Pavement and centre island options are
+also available as regional defaults and per-roundabout overrides.
+
+Turbo mode keeps a constant-width ring. It does not spiral the whole annulus.
+Each peel targets an actual adjacent Drive-to-Drive boundary on the exit arm.
+The radial transition uses smooth interpolation, then follows the exit arm's
+own line. A narrower exit can omit a peel when no compatible boundary exists.
+The peel replaces its base-divider arc instead of adding a second dash pattern.
+One circulating lane, no exits, or no compatible exit boundary uses the ordinary
+ring marking result for that divider.
+
+Approach arrows, destination legends, and explicit entry-to-circulating lane
+connections remain separate work. Turbo markings do not provide those features.
+
+## Validation
+
+Run the suite from the repository root:
 
 ```sh
-cd tools/preview
-python3 -c "import roundabout_preview as P; \
-  legs=[(b,P.two_way(1,1,True)) for b in (0,120,240)]; \
-  P.render(P.build(35.0,1,legs,True,'probe',grow=False),'out')"
-```
-
-Renders `out/probe_parts.png` and `out/probe_gaps.png` — **magenta is bare
-ground**. Run the full suite with `python3 roundabout_preview.py` (no
-`--no-render`, which is how you get the images).
-
-The turbo peel has its own runner, because its interesting cases are lane-count
-combinations rather than radii and because it carries the break-tests:
-
-```sh
+python3 tools/preview/validate.py
+python3 tools/preview/validate.py --full
+python3 tools/preview/roundabout_parity_contract.py
 python3 tools/preview/turbo_check.py
+python3 tools/preview/check_parity.py
 ```
 
-Eight scenes plus one break-test per `check_turbo` rule. The break-tests are the
-point — every rule that has silently died here passed the real geometry right up
-until one was written for it.
+Generate a named preview:
 
----
+```sh
+python3 tools/preview/roundabout_preview.py uk5mini
+python3 tools/preview/roundabout_editor_preview.py --out tools/preview/out/roundabout-editor
+```
 
-## 7. The standing hazard
+These tools are Python models and source checks. They do not execute Luau or
+Roblox Studio. Some rendering paths still model legacy midpoint boxes, while
+current curved runtime surfaces use exact station-corner quadrilaterals.
+See the [preview guide](tools/preview/README.md) for the scope of each check.
 
-**There is no Luau runtime or typechecker in the dev environment.** `stylua`
-proves a file *parses*; nothing proves an identifier exists. A misplaced edit
-once shipped `ringComponents` referencing a nil global, and every
-`Make Roundabout` threw on its first line until it was caught live in Studio.
-`tools/preview` structurally cannot catch that class — it re-implements the
-geometry rather than executing the Lua.
-
-So: when adding a helper to `RoundaboutBuilder.lua`, check it is defined **above**
-its first use. `DOWN` and `angleDelta` had to be moved for exactly this reason
-when `buildIsland` grew to need them. Closing this properly is the highest-value
-unbuilt item in `TODO.md`.
-
-**Nothing in this file has been confirmed in Studio by the agent that wrote it.**
-Every result quoted here is headless. Treat live screenshots as the authority.
+In Studio, inspect ordinary and asymmetric approaches on both traffic sides.
+Check the arm cut, pavement returns, splitter frontage, lane markings, and the
+full circulating width. Test radius edits, conversion, undo, and redo. Inspect
+from low and high camera angles for gaps, raised wedges, and flickering faces.
+Drive over the joins to check collision. Python render order cannot verify
+Roblox Wedge rendering or collision.

@@ -12,9 +12,7 @@ local Icons = {
 	Sidewalk = "rbxassetid://102169083647798", -- Pavement / walkway
 	Bike = "rbxassetid://117323310944439",
 	Parking = "rbxassetid://135215443300853",
-	-- Not surfaced in the palette yet - reserved for the future per-instance
-	-- "click a placed road" panel (see TODO.md). BusLane replaces the old
-	-- Bay/"Bus Bay" module concept; BusStop is a future decoration icon.
+	-- Segment-level bus features use separate icons from the road palette.
 	BusLane = "rbxassetid://86439959503324",
 	BusStop = "rbxassetid://97224093362859",
 }

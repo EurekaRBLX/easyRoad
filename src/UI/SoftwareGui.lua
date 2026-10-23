@@ -38,8 +38,6 @@ local function SoftwareGui(props: {
 	OnViewEula: (() -> ())?,
 	OnRunSetup: (() -> ())?,
 })
-	local commercial = ProductLicense.RequiresEula()
-
 	local scrollProps = Components.ScrollBar()
 	scrollProps.Size = UDim2.fromScale(1, 1)
 	scrollProps.BackgroundColor3 = Theme.BACKGROUND
@@ -98,32 +96,20 @@ local function SoftwareGui(props: {
 			LayoutOrder = 7,
 		}),
 		License = e(Line, {
-			Text = if commercial
-				then "Early access · Licensed under the easyRoad EULA"
-				else "Distributed under AGPL-3.0 (open-source build)",
+			Text = "License: " .. ProductLicense.OssLicenseName .. " (GNU Affero GPL version 3).",
 			Dim = true,
 			LayoutOrder = 8,
 		}),
-		Policies = e(Line, {
-			Text = if commercial
-				then string.format(
-					"Also subject to Eureka Terms (%s) and Privacy (%s).",
-					ProductLicense.TermsUrl,
-					ProductLicense.PrivacyUrl
-				)
-				else "This open-source build's AGPL-3.0 license supersedes the commercial EULA for this binary.",
+		Source = e(Line, {
+			Text = "Source code: " .. ProductLicense.SourceUrl,
 			Dim = true,
 			LayoutOrder = 9,
 		}),
-		OssNote = commercial
-			and e(Line, {
-				Text = string.format(
-					"Eureka plans to open-source easyRoad under AGPL-3.0. When published, that license supersedes this EULA for the open-source distribution. Notice: %s",
-					ProductLicense.DiscordUrl
-				),
-				Dim = true,
-				LayoutOrder = 10,
-			}),
+		Notices = e(Line, {
+			Text = "The plugin package includes the full license and third-party notices. This software comes without warranty.",
+			Dim = true,
+			LayoutOrder = 10,
+		}),
 		Note = e(Line, {
 			Text = "Works alongside easyLight for advanced signal control.",
 			Dim = true,
@@ -134,12 +120,6 @@ local function SoftwareGui(props: {
 			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
 			LayoutOrder = 12,
 			OnClick = props.OnRunSetup :: () -> (),
-		}),
-		ViewEula = commercial and props.OnViewEula and e(Components.Button, {
-			Text = "View EULA",
-			Size = UDim2.new(1, 0, 0, Theme.ROW_HEIGHT),
-			LayoutOrder = 13,
-			OnClick = props.OnViewEula :: () -> (),
 		}),
 		Close = e(Components.Button, {
 			Text = "Close",

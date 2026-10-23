@@ -1,22 +1,15 @@
 #!/usr/bin/env python3
-"""Headless checks for an ORDINARY road - the scenario the tool never had.
+"""Headless checks for ordinary road geometry in the Python preview model.
 
     python3 tools/preview/road_preview.py            # scan, no images
     python3 tools/preview/road_preview.py --render    # + PNGs
 
-`roundabout_preview.py` has only ever built a ring and its arms, so every
-sliver gap and sawtooth that shipped on a plain curved road was found by a user
-in Studio and fixed by eye. The emission port is generic - a curve plus a
-cross-section becomes rigid boxes per (component, station interval) - so the
-same three questions can be asked of a road on its own, which is what this
-does.
+This model emits rigid boxes for each component and station interval. The
+current Luau builder uses exact station-corner quads on curves, so this render
+does not prove runtime surface parity. See tools/preview/README.md for limits.
 
-WHAT THIS DOES NOT COVER, deliberately. Lane-width TRANSITIONS
-(`MatchForTransition`) and BUS BAYS (`BuildWithBay`) are not ported. Modelling
-them here from scratch would produce a check that agrees with my own model
-rather than with RoadBuilder - the trap ROUNDABOUT.md 6 is about. They need the
-Lua ported the way `build_stations` and `emit_road` were, and until then this
-says nothing about them. See TODO.md.
+This suite does not model lane-width transitions or bus bays. Separate
+contracts cover some related source rules. Validate the plugin in Studio.
 """
 import argparse
 import math

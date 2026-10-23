@@ -74,9 +74,8 @@ local LINE_TYPE_LABELS: { [string]: string } = {
 
 -- Palette entries: every placeable module, with Commonwealth-flavoured
 -- display names (Sidewalk reads as "Pavement", matching the reference kit).
--- Bay ("Bus Lane") is deliberately NOT offered here - see TODO.md: it's
--- moving to the future per-instance "click a placed road" panel instead of
--- the general module palette.
+-- Bus bays are edited on placed road segments through the pie menu.
+-- They are not cross-section palette entries.
 local PALETTE: { { Kind: RoadProfile.ComponentKind, Label: string } } = {
 	{ Kind = "Drive" :: RoadProfile.ComponentKind, Label = "Lane" },
 	{ Kind = "Sidewalk" :: RoadProfile.ComponentKind, Label = "Pavement" },

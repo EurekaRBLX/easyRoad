@@ -1,222 +1,148 @@
+<a id="readme-top"></a>
+
 # easyRoad
 
-A Roblox Studio plugin for building roads the way Cities: Skylines 2 does:
-click-to-place curve tools, automatic superelevation (banking), lane
-widening/narrowing transitions, fully configurable custom road
-cross-sections, and regional style presets (US / UK / EU / JP / AU).
+Build and edit roads in Roblox Studio.
 
-Build it with [Rojo](https://rojo.space) (`aftman install` provides it):
+**Status:** This repository is private while Eureka prepares an open-source
+release under **AGPL-3.0-only**. There is no release date.
 
-```
-rojo build default.project.json -o EasyRoad.rbxm
-```
+[User guide](docs/usage.md) · [Development guide](docs/development.md) ·
+[Known issues](KNOWN_ISSUES.md) · [Contribute](CONTRIBUTING.md)
 
-Then drag the `.rbxm` into your Studio plugins folder (or use
-`rojo build --plugin EasyRoad.rbxm`... i.e. install as a local plugin).
+## Contents
 
-**No toolchain?** Two alternatives:
+- [About the project](#about-the-project)
+- [Built with](#built-with)
+- [Getting started](#getting-started)
+- [Usage](#usage)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+- [Contact](#contact)
+- [Acknowledgments](#acknowledgments)
 
-* Download the commercial/EULA [`dist/EasyRoad.rbxmx`](dist/EasyRoad.rbxmx)
-  or the [`dist/EasyRoad-OSS.rbxmx`](dist/EasyRoad-OSS.rbxmx) build from this
-  repo and drop it in your Studio plugins folder (Studio loads `.rbxmx` the
-  same as `.rbxm`). Both are rebuilt whenever the source changes.
+## About the project
 
-To rebuild both variants yourself without Rojo:
+easyRoad is a Roblox Studio plugin. Use it to place straight roads and curves,
+connect intersections, and edit road cross-sections.
 
-```
-python3 tools/build_rbxmx.py --license commercial
-python3 tools/build_rbxmx.py --license oss
-```
+The plugin includes:
 
-## Using it
+- Straight, Curve, Freeform, and Roundabout placement tools.
+- Road widening and narrowing with a fixed center or edge.
+- Road profiles with lanes, sidewalks, medians, shoulders, cycle lanes, and parking.
+- Region presets for the US, UK, EU, Japan, and Australia.
+- Automatic or manual road banking, also called superelevation.
+- Parallel roads with separate travel directions.
+- Editable junctions and connected roundabouts.
+- Custom ground road models, viaducts, and tunnel shells.
+- Material and color settings for generated road surfaces.
+- Local settings and preset backup through JSON.
 
-1. Click the **EasyRoad** toolbar button. On first launch, Quick Setup walks
-   through region, terminology, traffic side, and Roblox/metric/imperial units;
-   its choices remain editable under Settings. The panel then opens and the
-   placement tool activates.
-2. Pick a tool:
-   * **Straight** — click start, click end.
-   * **Curve** — click start, click a guide point (controls the tangent),
-     click end. Quadratic bezier, like CS2's curved tool.
-   * **Freeform** — click start, two control points, then the end. Cubic
-     bezier.
-3. Pick a road from the **Road** dropdown (the built-in set is generated
-   from the active region style).
-4. Click in the viewport to place points. A ghost preview follows the mouse.
-   * **R / F** raise or lower the placement elevation.
-   * **Right-click / Esc** cancels the current placement.
-   * Starting a road near the end of an existing one snaps to it and locks
-     the tangent for a smooth continuation (and after each placement the
-     tool chains from the road you just placed).
-   * Finishing near an existing road shows a blue **SNAPPED** marker. In Road
-     Tools, **Snap point** chooses its centreline, left roadway edge, or right
-     roadway edge; the choice is remembered between sessions.
-   * **Connection** chooses what that magnetic point means. **Build junction**
-     keeps the topology-aware default and can split a road even when its other
-     end is already owned by a junction or roundabout. **Cross-section only**
-     aligns either end of a ramp, flyover, or custom connection and bends the
-     new road into a smooth tangent lead-in without splitting the target or
-     creating a junction pad.
-   * Drawing completely across another road shows a green **X INTERSECTION**
-     marker and splits both roads into one real junction when placed. Red
-     markers explain crossings that cannot safely be split; roads at a
-     different elevation remain grade-separated.
-5. **Widening / narrowing**: set the "Widen / narrow to" dropdown to a
-   second road profile. The segment you place transitions from the current
-   profile at its start to the target profile at its end — lane widths (and
-   the markings between them) interpolate along the segment, extra lanes
-   taper in/out. **Lane placement** chooses whether the centre, left edge, or
-   right edge stays fixed, so the new lane appears on the intended side. After
-   placing a transition, the chain continues with the target profile on that
-   same alignment.
-6. **Literal ground roads, viaducts, and tunnels**: in Road Tools choose the
-   road/structure mode before placing. A custom Ground asset replaces generated
-   lanes, markings, kerbs, and pavements with a repeated Roblox Model while the
-   editable profile remains its alignment/snapping envelope. Viaduct mode
-   generates a structural slab, edge parapets, and terrain-projected concrete
-   piers; Tunnel mode generates a base, tall walls, and a segmented arched
-   vault. Open **Road Assets**, import a Workspace Model for any of those three
-   roles, then choose it from Road Tools.
-   See [`STRUCTURES.md`](STRUCTURES.md).
-7. **Parallel roadways**: enable the option in Road Tools, choose 2-16
-   carriageways, and set the edge-to-edge gap under Advanced. A pair can be
-   made opposing automatically; larger groups expose an independent reverse
-   switch for each roadway. Curves are laterally refitted instead of copied by
-   one fixed world offset.
-8. **Edit an intersection**: select its asphalt pad. The junction panel shows
-   one stable approach port per connected road and one cyan handle per curb
-   corner. Keep **Link all corner radii** enabled for one shared value, or turn
-   it off, click a cyan handle, and set that corner's turn radius independently.
-9. **Edit a roundabout**: select the circulating ring or any generated arm.
-   The roundabout panel edits radius, circulating lane count, lane width,
-   markings, pavement, and centre island, with minimum/suggested-radius advice.
-   Connected rings can be converted back to an ordinary junction. Older
-   connected rings remain read-only because their deleted source approaches
-   cannot be reconstructed safely; recreate that junction once to opt in.
+The plugin generates Roblox geometry. Region presets are design defaults for
+game development. They do not establish compliance with road design standards.
 
-The Highways category includes one-way 1, 2, 3, 4, and 5-lane presets with an
-inner and outer shoulder, intended for the parallel-carriageway workflow.
+## Built with
 
-### Custom roads (Edit Roads...)
+- [Luau](https://luau.org/) and [Roblox Studio](https://create.roblox.com/).
+- [React Lua](https://github.com/jsdotlua/react-lua) for the interface.
+- [GoodSignal](https://github.com/stravant/goodsignal) for signals.
+- Python for the XML model builder and geometry checks.
+- [Rojo](https://rojo.space/) as an alternative model builder.
 
-The road editor edits a road's cross-section as an ordered list of
-components, left to right: **Drive**, **Sidewalk**, **Median**, **Shoulder**,
-**Bike**, **Parking**. Each has a width in meters, and traffic-carrying
-kinds have a direction (with/against the road). **Duplicate road** turns the
-current built-in or user road into a separately named, editable user type;
-user roads persist in plugin settings across sessions. The lane-marking
-selector stays inside the editor at narrow widths, opens upward from the
-bottom bar, and scrolls through every marking choice. **Surface appearance**
-lets each road type preselect a Roblox material and colour for its road,
-pavement, median, shoulder, bike-lane, and parking surfaces while untouched
-fields continue inheriting the active region. These controls affect generated
-surfaces only; a custom Ground road asset retains the materials and colours
-authored on its imported Model.
+## Getting started
 
-Persistent Studio changes use isolated ChangeHistoryService recordings. Each
-placed segment, roundabout, junction edit, road rebuild, or asset operation is
-therefore one Ctrl+Z step; EasyRoad refuses to mutate the DataModel if Studio
-cannot open that action's recording.
+### Prerequisites
 
-### Grand settings (Settings...)
+To use the plugin, install Roblox Studio on a supported Windows or macOS system.
+You also need repository access during private preparation.
 
-* **Region** — US / UK / EU / JP / AU preset. Controls drive side, default
-  lane/sidewalk/shoulder widths, marking colors and dash patterns (double
-  solid yellow center line in the US, dashed white in the UK, ...), curb
-  height, and the maximum superelevation rate. Changing region regenerates
-  the built-in road set.
-* **Studs per meter** — the world scale (default 3.571, i.e. 1 stud = 0.28m).
-* **Superelevation** — `Auto` derives the bank from the design speed and
-  curve radius using the standard highway design relationship
-  `e + f = V² / (127R)`, clamped to the region's maximum, with a smoothed
-  runoff so the bank develops gradually. `Manual` applies a fixed angle
-  signed by curve direction. `Off` builds flat roads.
-* **Placement** — endpoint snap radius, optional grid snapping, elevation
-  step for R/F.
-* **Geometry** — road deck thickness and maximum strip length (strips adapt
-  automatically: shorter where curvature is higher).
+To build the XML model, install Python 3.10 or later. The Python builder uses
+the standard library. It does not need additional Python packages.
 
-Settings also holds procedural-structure defaults: concrete colour,
-road/structure overlap, viaduct parapet gap, tunnel wall clearance, elevated
-concrete median, and the parallel-roadway gap. A road copies these when its
-placement session starts and Road Tools Advanced can override them.
+### Installation
 
-The Settings submenu also includes dedicated **Software** and **Backups** docks.
-Software shows the local easyRoad build and product information; Backups keeps
-portable data operations separate from regional and engineering preferences.
+1. Download [EasyRoad.rbxmx](dist/EasyRoad.rbxmx) from this repository.
+2. Open Roblox Studio.
+3. Open **Plugins → Plugins Folder**.
+4. Copy `EasyRoad.rbxmx` into that folder.
+5. Restart Roblox Studio.
+6. Click **easyRoad** in the Plugins toolbar.
 
-* **Backups** — **Back up data** exposes portable JSON for plugin settings
-  and custom road/region presets; copy it with Ctrl+C. **Restore data** accepts
-  that JSON, validates it, previews the number of presets, and requires a
-  second confirmation before replacing the current plugin data. Placed roads
-  remain stored in the open place and are not part of this backup.
+Install one copy of the plugin. `EasyRoad-OSS.rbxmx` is a compatibility filename
+for the same AGPL build.
 
-## Architecture
+To build from source, run this command from the repository root:
 
-```
-loader.server.lua          Toolbar button + dock panel + lazy loading
-src/
-  main.lua                 Wires settings, library, session, and UI together
-  Settings.lua             Persisted grand settings (region, scale, snapping, ...)
-  RegionStyles.lua         US/UK/EU/JP/AU style presets (pure data)
-  RoadProfile.lua          Cross-section data model + transition matching
-  RoadLibrary.lua          Built-in (style-derived) + user-saved road profiles
-  createRoadSession.lua    Interactive placement: clicks, snapping, preview, undo
-  RoadSplit.lua            Splits one road at one or more shared junction nodes
-  JunctionInstance.lua     Junction owner plus serialized multinode controls
-  RoundaboutInstance.lua   Selectable ring metadata linked to its controller
-  RoundaboutEditSession.lua Selection, undo, rebuild, and conversion lifecycle
-  RoadSource.lua           Durable untrimmed one-segment road source metadata
-  StructureAssets.lua      Validates/imports game-owned road/structure Models
-  StructureBuilder.lua     Tiles Ground/viaduct/tunnel modules; builds structures
-  Geometry/
-    CurveSegment.lua       Line / quadratic / cubic segments, arc-length tables,
-                           signed ground-plane curvature
-    PolyCurve.lua          Segment chains evaluated by distance; frames with roll
-    CurveIntersections.lua Ground-plane curve crossings + bounded refinement
-    Fitting.lua            Click patterns -> segments (incl. tangent-locked fits)
-    Superelevation.lua     Bank angle from curvature + design speed; runoff smoothing
-  Mesh/
-    Markings.lua           Cross-section boundaries -> marking line layout
-    RoadBuilder.lua        Curve + profile + style -> Model of parts
-    JunctionBuilder.lua    Stable approach/corner nodes, trims, pad, and curb returns
-    RoundaboutBuilder.lua  Ring/arms plus persistent rebuild and conversion
-  UI/
-    Theme.lua              Colors and metrics
-    Components.lua         Button / dropdown / number field / checkbox / rows
-    RoadAssetsPanel.lua    Imports, renames, and removes custom structure Models
-    EasyRoadGui.lua        Main panel + page routing
-    LaneEditor.lua         Custom road (cross-section) editor
-    SettingsGui.lua        Grand settings page
+```sh
+python3 tools/build_rbxmx.py
+python3 tools/check_distribution.py
 ```
 
-The code is layered in three parts: a **functionality layer**
-(`createRoadSession` + `Mesh/` + `Geometry/`) that handles input, previews,
-and placement; a **settings layer** (`Settings`, `RegionStyles`,
-`RoadProfile`, `RoadLibrary`) that feeds configuration into it; and a
-**React UI layer** (`UI/`) that edits the settings and drives the session.
+The builder updates both filenames in `dist` with the same AGPL build.
+On Windows, use `python` in place of `python3` if that is the installed command. See the
+[development guide](docs/development.md) for Rojo builds and validation.
 
-Key mechanics:
+## Usage
 
-* **Arc-length parameterization** — every curve segment precomputes a
-  length lookup table, so cross-sections, dash patterns, and transitions are
-  spaced by real distance along the road, not by bezier parameter.
-* **Adaptive stripping** — the builder subdivides by chord-deviation
-  tolerance (`step ≈ √(8·tol/κ)`), so tight curves get short strips and
-  straights get long ones.
-* **Transitions** — `RoadProfile.MatchForTransition` aligns two profiles
-  component-by-component from the outer edges inward, padding the middle
-  with zero-width lanes so widths (and markings) lerp cleanly along the
-  segment.
-* **Snapping metadata** — each placed road model carries `RW_*` attributes
-  (endpoint positions, tangents, profile ids), which is what endpoint
-  snapping and tangent continuation read back. At-grade interior crossings
-  split both curves around a shared junction id.
+1. Click **easyRoad** in the Plugins toolbar.
+2. Complete Quick Setup for region, terminology, traffic side, and units.
+3. Open **Road Tools**.
+4. Select a road profile.
+5. Select **Straight**.
+6. Click the start point in the viewport.
+7. Click the end point to place the road.
 
-## Roadmap / not yet implemented
+Use **R** to raise placement elevation. Use **F** to lower it. Press **Escape**
+or the **middle mouse button** to cancel placement. These are the default
+bindings; change them in **Settings → Keybinds**.
 
-* Junction lane guidance, stop/give-way lines, crosswalks and box markings.
-* Explicit undoable Terrain excavation/restoration for tunnels.
-* Custom portal, abutment, and pier assets.
-* Arrow / text surface decals (turn arrows, crosswalks).
-* A real toolbar icon.
+See the [user guide](docs/usage.md) for curves, connections, custom roads,
+structures, editing, and backups. Check [known issues](KNOWN_ISSUES.md) before
+using a new build in an existing place.
+
+## Roadmap
+
+Planned work includes intersection control markings, crossings, signals,
+terrain operations for tunnels, and further performance work. See
+[ROADMAP.md](ROADMAP.md). Planned items have no promised delivery date.
+
+## Contributing
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before you change the project. During
+private preparation, contribution access is limited to invited collaborators.
+
+Use [Issues](https://github.com/EurekaRBLX/easyRoad/issues) for bugs and feature
+requests. Use the private reporting procedure in [SECURITY.md](SECURITY.md)
+for security vulnerabilities.
+
+## License
+
+The project is prepared for release under the
+**GNU Affero General Public License, version 3 only** (`AGPL-3.0-only`).
+See [LICENSE](LICENSE) for the complete terms.
+
+Third-party code and reference material retain their own license terms. See
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Preserve those notices when
+you distribute the software. The commercial EULA does not apply to this build.
+
+## Contact
+
+Use [Issues](https://github.com/EurekaRBLX/easyRoad/issues) for project questions.
+Eureka also maintains the [Eureka Discord](https://discord.gg/srGUZ25jrz).
+
+Project: [EurekaRBLX/easyRoad](https://github.com/EurekaRBLX/easyRoad).
+Repository links require access during private preparation.
+
+## Acknowledgments
+
+- Eureka and the easyRoad contributors.
+- The authors of the dependencies and reference projects listed in
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+- [Best-README-Template](https://github.com/othneildrew/Best-README-Template)
+  for the README structure.
+- ASD-STE-100 as the writing reference for clear technical instructions. See
+  the [writing guide](docs/writing-guide.md) for the project's review rules.
+
+[Back to top](#readme-top)
